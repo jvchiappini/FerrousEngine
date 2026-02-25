@@ -5,3 +5,5 @@ edition = "2021"
 
 [dependencies]
 wgpu = "23.0"
+anyhow = "1.0"
+thiserror = "1.0"
