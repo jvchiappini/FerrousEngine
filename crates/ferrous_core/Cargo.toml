@@ -1,0 +1,8 @@
+[package]
+name = "ferrous_core"
+version = "0.1.0"
+edition = "2021"
+
+ # core types depend on simple math utilities; use the workspace version of glam
+[dependencies]
+glam = { workspace = true }

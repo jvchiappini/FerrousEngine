@@ -1,0 +1,30 @@
+# Generated .gitignore for a Rust workspace
+
+# Ignore build artifacts
+/target/
+**/target/
+
+# Ignore editor-specific files
+**/*.swp
+**/.idea/
+**/.vscode/
+
+# Ignore dependency caches
+**/Cargo.lock
+
+# Ignore temporary files
+*~
+*.tmp
+
+# Ignore OS files
+.DS_Store
+Thumbs.db
+
+# Ignore logs
+*.log
+
+# Ignore compiled binaries
+*.exe
+*.dll
+*.so
+*.dylib

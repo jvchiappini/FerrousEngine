@@ -1,0 +1,14 @@
+[package]
+name = "ferrous_editor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ferrous_core = { path = "../ferrous_core" }
+ferrous_renderer = { path = "../ferrous_renderer" }
+
+# egui no longer exposes a "winit" feature; the winit integration
+# is provided by a separate crate (egui_winit) or handled manually in
+# user code. For now we simply depend on egui itself and will add
+# the winit integration in the editor binary later when it's needed.
+egui = "0.29"

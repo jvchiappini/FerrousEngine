@@ -1,0 +1,14 @@
+[workspace]
+members = [
+    "crates/ferrous_core",
+    "crates/ferrous_renderer",
+    "crates/ferrous_editor",
+]
+resolver = "2"
+
+[workspace.dependencies]
+wgpu = "23.0" # O la versión más estable actual
+glam = "0.29"
+egui = "0.29"
+winit = "0.30"
+log = "0.4"
