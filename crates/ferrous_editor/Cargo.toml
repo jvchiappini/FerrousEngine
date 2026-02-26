@@ -6,6 +6,15 @@ edition = "2021"
 [dependencies]
 ferrous_core = { path = "../ferrous_core" }
 ferrous_renderer = { path = "../ferrous_renderer" }
+ferrous_gui = { path = "../ferrous_gui" }
+
+# direct GPU types for configuration
+wgpu = "23.0"
+
+# windowing and event loop
+winit = "0.30"
+# helper to block on async initialization
+pollster = "0.3"
 
 # egui no longer exposes a "winit" feature; the winit integration
 # is provided by a separate crate (egui_winit) or handled manually in
