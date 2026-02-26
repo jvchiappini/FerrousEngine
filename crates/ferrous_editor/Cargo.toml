@@ -11,4 +11,5 @@ ferrous_renderer = { path = "../ferrous_renderer" }
 # is provided by a separate crate (egui_winit) or handled manually in
 # user code. For now we simply depend on egui itself and will add
 # the winit integration in the editor binary later when it's needed.
-egui = "0.29"
+# Eguis removed; tendremos nuestro propio motor UI en ferrous_gui
+# egui = "0.29"

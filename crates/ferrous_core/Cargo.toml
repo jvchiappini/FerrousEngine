@@ -9,3 +9,5 @@ glam = { workspace = true }
 wgpu = "23.0"
 anyhow = "1.0"
 thiserror = "1.0"
+// needed for input types and later editor/event loop
+winit = "0.28"

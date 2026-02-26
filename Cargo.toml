@@ -3,13 +3,14 @@ members = [
     "crates/ferrous_core",
     "crates/ferrous_renderer",
     "crates/ferrous_editor",
+    "crates/ferrous_gui",
 ]
 resolver = "2"
 
 [workspace.dependencies]
 wgpu = "23.0" # O la versión más estable actual
 glam = "0.29"
-egui = "0.29"
+# el motor tendrá su propio sistema de UI; ya no dependemos de egui
 winit = "0.30"
 log = "0.4"
 pollster = "0.3"

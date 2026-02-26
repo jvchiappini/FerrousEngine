@@ -2,6 +2,8 @@
 // renderizador y emite un frame. Permite compilar el pipeline sin depender de
 // una aplicación completa.
 
+use ferrous_gui;
+
 fn main() {
     pollster::block_on(async {
         let context = ferrous_core::context::EngineContext::new()
@@ -16,7 +18,16 @@ fn main() {
         );
 
         let mut encoder = renderer.begin_frame();
-        renderer.render_to_target(&mut encoder);
+        // generamos un rectángulo de UI sobre la escena para demostrar
+        // la composición de capas. La coordenada (50,50) es la esquina
+        // superior izquierda en píxeles y el tamaño es 200x100.
+        let mut ui_batch = ferrous_gui::GuiBatch::new();
+        ui_batch.push(ferrous_gui::GuiQuad {
+            pos: [50.0, 50.0],
+            size: [200.0, 100.0],
+            color: [0.0, 1.0, 0.0, 0.5],
+        });
+        renderer.render_to_target(&mut encoder, Some(&ui_batch));
 
         // además de enviar los comandos, copiamos el contenido de la textura
         // de color a un buffer CPU para poder guardarlo en disco y verificar

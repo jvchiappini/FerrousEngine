@@ -1,0 +1,12 @@
+[package]
+name = "ferrous_gui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+wgpu = "23.0"
+bytemuck = { version = "1.14", features = ["derive"] } # habilita macros derive para Pod/Zeroable
+
+# glam may be convenient; bring in for math types
+glam = "0.29"

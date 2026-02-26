@@ -6,6 +6,8 @@ pub mod render_target;
 use crate::pipeline::FerrousPipeline;
 use crate::render_target::RenderTarget;
 use ferrous_core::context::EngineContext;
+// re-export UI types so callers de-referencing the renderer can use them
+pub use ferrous_gui::{GuiBatch, GuiQuad};
 
 /// Estructura de más alto nivel que orquesta el renderizado.
 ///
@@ -18,6 +20,11 @@ pub struct Renderer {
     /// destino en el que se renderiza
     pub render_target: RenderTarget,
     pipeline: FerrousPipeline,
+    /// motor de la interfaz de usuario que se dibuja encima
+    ui_renderer: ferrous_gui::GuiRenderer,
+    /// dimensiones actuales del render target
+    width: u32,
+    height: u32,
 }
 
 impl Renderer {
@@ -30,10 +37,14 @@ impl Renderer {
     ) -> Self {
         let rt = RenderTarget::new(&context.device, width, height, format);
         let pipe = FerrousPipeline::new(&context.device, format);
+        let ui = ferrous_gui::GuiRenderer::new(context.device.clone(), format, 1024, width, height);
         Self {
             context,
             render_target: rt,
             pipeline: pipe,
+            ui_renderer: ui,
+            width,
+            height,
         }
     }
 
@@ -51,7 +62,16 @@ impl Renderer {
     ///
     /// Se crea un `RenderPass` que limpia color y profundidad y emite un
     /// `draw(0..3,0..1)` para el triángulo del shader.
-    pub fn render_to_target(&self, encoder: &mut wgpu::CommandEncoder) {
+    /// Dibuja la escena 3D y, opcionalmente, la interfaz de usuario encima.
+    ///
+    /// El parámetro `ui_batch` permite al llamador pasar un lote de quads
+    /// que serán compositados sobre el color target después de renderizar
+    /// la escena. Si no se proporciona, sólo se realiza el pase 3D.
+    pub fn render_to_target(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        ui_batch: Option<&ferrous_gui::GuiBatch>,
+    ) {
         let color_view = &self.render_target.color_view;
         let depth_view = &self.render_target.depth_view;
         let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -83,5 +103,26 @@ impl Renderer {
 
         rpass.set_pipeline(&self.pipeline.pipeline);
         rpass.draw(0..3, 0..1);
+
+        drop(rpass); // cerrar el pase 3D antes de iniciar el pase UI
+
+        if let Some(batch) = ui_batch {
+            // renderizamos la UI en un pase separado que no limpia nada
+            self.ui_renderer
+                .render(encoder, color_view, batch, &self.context.queue);
+        }
+    }
+
+    /// Cambia el tamaño del render target y actualiza el renderer de UI.
+    pub fn resize(&mut self, new_width: u32, new_height: u32) {
+        if new_width == self.width && new_height == self.height {
+            return;
+        }
+        self.render_target
+            .resize(&self.context.device, new_width, new_height);
+        self.ui_renderer
+            .resize(&self.context.queue, new_width, new_height);
+        self.width = new_width;
+        self.height = new_height;
     }
 }

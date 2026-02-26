@@ -8,6 +8,8 @@ wgpu = "23.0"
 anyhow = "1.0"
 thiserror = "1.0"
 ferrous_core = { path = "../ferrous_core" }
+winit = "0.30" # el renderer puede necesitar winit más adelante
+ferrous_gui = { path = "../ferrous_gui" }
 
 [dev-dependencies]
 pollster = "0.3"
