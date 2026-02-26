@@ -104,11 +104,11 @@ impl TextBatch {
         let atlas = &font.atlas;
         let mut x = position[0];
         let y = position[1];
-        
+
         // Coincidimos con la escala EM fija del generador (-0.3 a 1.3 = 1.6 de ancho)
-        let box_scale = 1.6; 
+        let box_scale = 1.6;
         let quad_size = size * box_scale;
-        
+
         for c in text.chars() {
             if let Some(metric) = atlas.metrics.get(&c) {
                 // El punto base (baseline) está desplazado por el padding de 0.3
@@ -122,7 +122,7 @@ impl TextBatch {
                     uv1: [metric.uv[2], metric.uv[3]],
                     color,
                 });
-                
+
                 // Avance horizontal usando la métrica de la fuente
                 x += metric.advance * size;
             }
@@ -131,7 +131,6 @@ impl TextBatch {
 }
 
 // -------------------------------------------------------------------------
-
 
 /// Motor de renderizado de UI que sabe dibujar `GuiBatch` sobre una textura
 /// existente.
@@ -218,19 +217,20 @@ impl GuiRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let uniform_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("GUI Uniform Bind Group Layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: NonZeroU64::new(std::mem::size_of::<Uniforms>() as u64),
-                },
-                count: None,
-            }],
-        });
+        let uniform_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("GUI Uniform Bind Group Layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: NonZeroU64::new(std::mem::size_of::<Uniforms>() as u64),
+                    },
+                    count: None,
+                }],
+            });
 
         let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("GUI Uniform Bind Group"),
@@ -242,30 +242,32 @@ impl GuiRenderer {
         });
 
         // layout for font atlas texture+sampler
-        let font_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("GUI Font Bind Group Layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+        let font_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("GUI Font Bind Group Layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
 
         // create text pipeline (separate shader file)
-        let text_shader = device.create_shader_module(wgpu::include_wgsl!("../../../assets/shaders/text.wgsl"));
+        let text_shader =
+            device.create_shader_module(wgpu::include_wgsl!("../../../assets/shaders/text.wgsl"));
         let text_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("GUI Text Pipeline Layout"),
             bind_group_layouts: &[&uniform_bind_group_layout, &font_bind_group_layout],
@@ -293,27 +295,32 @@ impl GuiRenderer {
                         array_stride: text_instance_size,
                         step_mode: wgpu::VertexStepMode::Instance,
                         attributes: &[
-                            wgpu::VertexAttribute { // pos
+                            wgpu::VertexAttribute {
+                                // pos
                                 format: wgpu::VertexFormat::Float32x2,
                                 offset: 0,
                                 shader_location: 1,
                             },
-                            wgpu::VertexAttribute { // size
+                            wgpu::VertexAttribute {
+                                // size
                                 format: wgpu::VertexFormat::Float32x2,
                                 offset: 8,
                                 shader_location: 2,
                             },
-                            wgpu::VertexAttribute { // uv0
+                            wgpu::VertexAttribute {
+                                // uv0
                                 format: wgpu::VertexFormat::Float32x2,
                                 offset: 16,
                                 shader_location: 3,
                             },
-                            wgpu::VertexAttribute { // uv1
+                            wgpu::VertexAttribute {
+                                // uv1
                                 format: wgpu::VertexFormat::Float32x2,
                                 offset: 24,
                                 shader_location: 4,
                             },
-                            wgpu::VertexAttribute { // color
+                            wgpu::VertexAttribute {
+                                // color
                                 format: wgpu::VertexFormat::Float32x4,
                                 offset: 32,
                                 shader_location: 5,
@@ -343,7 +350,8 @@ impl GuiRenderer {
         // font bind group will be created later when atlas is available
         let font_bind_group = None;
 
-        let shader = device.create_shader_module(wgpu::include_wgsl!("../../../assets/shaders/gui.wgsl"));
+        let shader =
+            device.create_shader_module(wgpu::include_wgsl!("../../../assets/shaders/gui.wgsl"));
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("GUI Pipeline Layout"),
@@ -536,12 +544,13 @@ impl GuiRenderer {
                     let required = tb.len() as u32;
                     if required > self.text_max_instances {
                         let new_size = std::mem::size_of::<TextQuad>() as u64 * required as u64;
-                        self.text_instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                            label: Some("GUI Text Instance Buffer (resized)"),
-                            size: new_size,
-                            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                            mapped_at_creation: false,
-                        });
+                        self.text_instance_buffer =
+                            self.device.create_buffer(&wgpu::BufferDescriptor {
+                                label: Some("GUI Text Instance Buffer (resized)"),
+                                size: new_size,
+                                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                                mapped_at_creation: false,
+                            });
                         self.text_max_instances = required;
                     }
                     queue.write_buffer(&self.text_instance_buffer, 0, text_bytes);

@@ -1,7 +1,8 @@
-use ferrous_core::{context::EngineContext, InputState};
-use ferrous_gui::{GuiBatch, GuiQuad, Widget};
-use ferrous_renderer::{Renderer, Viewport};
 use ferrous_assets::Font;
+use ferrous_core::{context::EngineContext, InputState};
+use ferrous_gui::{GuiBatch, GuiQuad, InteractiveButton, Slider};
+use ferrous_gui::TextInput;
+use ferrous_renderer::{Renderer, Viewport};
 use std::sync::Arc;
 
 // trait needed to extract a raw window handle from winit::window::Window
@@ -16,49 +17,8 @@ use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId};
 
-
-/// Simple interactive widget used for testing hit‑testing and color change.
-struct TestButton {
-    rect: [f32; 4], // x, y, width, height
-    hovered: bool,
-    pressed: bool,
-}
-
-impl TestButton {
-    fn new(x: f32, y: f32, w: f32, h: f32) -> Self {
-        Self {
-            rect: [x, y, w, h],
-            hovered: false,
-            pressed: false,
-        }
-    }
-
-    fn hit(&self, x: f64, y: f64) -> bool {
-        let x = x as f32;
-        let y = y as f32;
-        x >= self.rect[0]
-            && x <= self.rect[0] + self.rect[2]
-            && y >= self.rect[1]
-            && y <= self.rect[1] + self.rect[3]
-    }
-}
-
-impl Widget for TestButton {
-    fn draw(&self, batch: &mut GuiBatch) {
-        let color = if self.pressed {
-            [0.8, 0.2, 0.2, 1.0]
-        } else if self.hovered {
-            [0.2, 0.8, 0.2, 1.0]
-        } else {
-            [0.2, 0.2, 0.8, 1.0]
-        };
-        batch.push(GuiQuad {
-            pos: [self.rect[0], self.rect[1]],
-            size: [self.rect[2], self.rect[3]],
-            color,
-        });
-    }
-}
+// interactive button widget lives in its own module, so we can delete the
+// ad-hoc `TestButton` that previously duplicated the logic.
 
 /// Application state managed by winit's `ApplicationHandler` API.
 struct EditorApp {
@@ -67,7 +27,9 @@ struct EditorApp {
     surface: Option<wgpu::Surface<'static>>,
     config: Option<wgpu::SurfaceConfiguration>,
     input: InputState,
-    test_button: TestButton,
+    button: InteractiveButton,
+    slider: Slider,
+    text_input: TextInput,
     viewport: Viewport,
     window_size: (u32, u32),
     last_update: std::time::Instant,
@@ -83,7 +45,9 @@ impl EditorApp {
             surface: None,
             config: None,
             input: InputState::new(),
-            test_button: TestButton::new(50.0, 50.0, 100.0, 100.0),
+            button: InteractiveButton::new(50.0, 50.0, 100.0, 100.0),
+            slider: Slider::new(50.0, 200.0, 200.0, 20.0, 0.5),
+            text_input: TextInput::new(50.0, 240.0, 200.0, 24.0),
             viewport: Viewport {
                 x: 0,
                 y: 0,
@@ -188,36 +152,76 @@ impl ApplicationHandler for EditorApp {
                     renderer.resize(w, h);
                 }
             }
-            WindowEvent::KeyboardInput { event, .. } => {
-                // we prefer to use the physical key so WASD movement applies
-                // consistently regardless of keyboard layout. the `event`
-                // structure contains both `physical_key` and `state`.
-                let winit::event::KeyEvent {
-                    physical_key,
-                    state,
-                    ..
-                } = event;
-                if let winit::keyboard::PhysicalKey::Code(code) = physical_key {
-                    self.input
-                        .update_key(code, state == winit::event::ElementState::Pressed);
-                }
-            }
             WindowEvent::CursorMoved { position, .. } => {
                 self.input.set_mouse_position(position.x, position.y);
-                self.test_button.hovered = self.test_button.hit(position.x, position.y);
+                self.button.hovered = self.button.hit(position.x, position.y);
+                if self.slider.dragging {
+                    // update slider value while dragging
+                    self.slider.update_value(position.x);
+                }
+                // change focus based on cursor if not dragging slider
+                if !self.slider.dragging {
+                    if self.text_input.hit(position.x, position.y) {
+                        self.text_input.focused = true;
+                    } else {
+                        self.text_input.focused = false;
+                    }
+                }
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let pressed = state == winit::event::ElementState::Pressed;
                 self.input.update_mouse_button(button, pressed);
                 if pressed {
                     let (mx, my) = self.input.mouse_position();
-                    if self.test_button.hit(mx, my) {
-                        self.test_button.pressed = true;
+                    if self.button.hit(mx, my) {
+                        self.button.pressed = true;
                     } else {
-                        self.test_button.pressed = false;
+                        self.button.pressed = false;
+                    }
+                    // slider thumb press
+                    if self.slider.thumb_hit(mx, my) {
+                        self.slider.dragging = true;
+                    }
+                    // clicking text input will focus it
+                    if self.text_input.hit(mx, my) {
+                        self.text_input.focused = true;
                     }
                 } else {
-                    self.test_button.pressed = false;
+                    self.button.pressed = false;
+                    // stop slider dragging when mouse released
+                    self.slider.dragging = false;
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                // existing key handling plus text insertion/backspace
+                let winit::event::KeyEvent {
+                    physical_key,
+                    state,
+                    text,
+                    ..
+                } = event;
+                if let winit::keyboard::PhysicalKey::Code(code) = physical_key {
+                    self.input
+                        .update_key(code, state == winit::event::ElementState::Pressed);
+                }
+                if self.text_input.focused {
+                    // insert any text from the event
+                    if let Some(txt) = text {
+                        for c in txt.chars() {
+                            if !c.is_control() {
+                                self.text_input.insert_char(c);
+                            }
+                        }
+                    }
+                    // handle backspace key via KeyCode
+                    if state == winit::event::ElementState::Pressed {
+                        use winit::keyboard::KeyCode;
+                        if physical_key
+                            == winit::keyboard::PhysicalKey::Code(KeyCode::Backspace)
+                        {
+                            self.text_input.backspace();
+                        }
+                    }
                 }
             }
             _ => (),
@@ -241,7 +245,7 @@ impl ApplicationHandler for EditorApp {
                 && mx < (self.viewport.x + self.viewport.width) as f64
                 && my >= self.viewport.y as f64
                 && my < (self.viewport.y + self.viewport.height) as f64;
-            if inside && !self.test_button.hovered {
+            if inside && !self.button.hovered {
                 renderer.handle_input(&mut self.input, dt);
             }
 
@@ -261,15 +265,45 @@ impl ApplicationHandler for EditorApp {
                 size: [w as f32, 200.0],
                 color: [0.145, 0.145, 0.145, 1.0],
             });
-            self.test_button.draw(&mut batch);
-
-            // build a small text batch if we have a font
+            self.button.draw(&mut batch);
+            // draw slider
+            self.slider.draw(&mut batch);
+            // prepare text batch before drawing input
             let mut text_batch = ferrous_gui::TextBatch::new();
+            // draw text input using font batch
+            if let Some(font) = &self.font {
+                if self.text_input.placeholder.is_empty() {
+                    self.text_input.placeholder = "Type here...".to_string();
+                }
+                self.text_input.draw(&mut batch, &mut text_batch, Some(font));
+            } else {
+                self.text_input.draw(&mut batch, &mut text_batch, None);
+            }
+
+            // build additional text examples if we have a font
             if let Some(font) = &self.font {
                 // Render text to verify the MSDF pipeline is working correctly.
-                text_batch.draw_text(font, "Hello FerrousEngine!", [10.0, 10.0], 24.0, [1.0, 1.0, 1.0, 1.0]);
-                text_batch.draw_text(font, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", [10.0, 40.0], 18.0, [1.0, 0.9, 0.3, 1.0]);
-                text_batch.draw_text(font, "abcdefghijklmnopqrstuvwxyz 0123456789", [10.0, 64.0], 18.0, [0.7, 0.85, 1.0, 1.0]);
+                text_batch.draw_text(
+                    font,
+                    "Hello FerrousEngine!",
+                    [10.0, 10.0],
+                    24.0,
+                    [1.0, 1.0, 1.0, 1.0],
+                );
+                text_batch.draw_text(
+                    font,
+                    "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                    [10.0, 40.0],
+                    18.0,
+                    [1.0, 0.9, 0.3, 1.0],
+                );
+                text_batch.draw_text(
+                    font,
+                    "abcdefghijklmnopqrstuvwxyz 0123456789",
+                    [10.0, 64.0],
+                    18.0,
+                    [0.7, 0.85, 1.0, 1.0],
+                );
             }
 
             // acquire the swapchain frame before drawing; we will render
