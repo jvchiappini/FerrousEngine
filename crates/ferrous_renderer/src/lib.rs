@@ -113,6 +113,59 @@ impl Renderer {
         }
     }
 
+    /// Renders the scene directly into an arbitrary texture view (typically
+    /// the current swapchain frame) instead of the internal render target.
+    ///
+    /// This is useful when the caller already has a `TextureView` from a
+    /// `Surface` and wants the triangle/UI to appear on screen.
+    pub fn render_to_view(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        ui_batch: Option<&ferrous_gui::GuiBatch>,
+    ) {
+        // reuse most of the same logic as `render_to_target`, but render
+        // directly into the provided view. we still supply a depth attachment
+        // from our internal render target so that the pipeline's depth format
+        // matches what it was created with.
+        let depth_view = &self.render_target.depth_view;
+        let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Render Pass (swapchain)"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.1,
+                        g: 0.2,
+                        b: 0.3,
+                        a: 1.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            occlusion_query_set: None,
+            timestamp_writes: None,
+        });
+
+        rpass.set_pipeline(&self.pipeline.pipeline);
+        rpass.draw(0..3, 0..1);
+        drop(rpass);
+
+        if let Some(batch) = ui_batch {
+            self.ui_renderer
+                .render(encoder, view, batch, &self.context.queue);
+        }
+    }
+
     /// Cambia el tamaño del render target y actualiza el renderer de UI.
     pub fn resize(&mut self, new_width: u32, new_height: u32) {
         if new_width == self.width && new_height == self.height {

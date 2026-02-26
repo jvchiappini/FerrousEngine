@@ -188,8 +188,8 @@ impl ApplicationHandler for EditorApp {
             let mut batch = GuiBatch::new();
             self.test_button.draw(&mut batch);
 
-            renderer.render_to_target(&mut encoder, Some(&batch));
-
+            // acquire the swapchain frame before drawing; we will render
+            // directly into its texture view
             let frame = match surface.get_current_texture() {
                 Ok(f) => f,
                 Err(_) => {
@@ -199,9 +199,12 @@ impl ApplicationHandler for EditorApp {
                         .expect("failed to acquire swap chain texture")
                 }
             };
-            let _view = frame
+            let view = frame
                 .texture
                 .create_view(&wgpu::TextureViewDescriptor::default());
+
+            renderer.render_to_view(&mut encoder, &view, Some(&batch));
+
             renderer.context.queue.submit(Some(encoder.finish()));
             frame.present();
         }
