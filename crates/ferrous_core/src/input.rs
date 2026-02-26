@@ -18,6 +18,8 @@ pub struct InputState {
     keys_down: HashSet<KeyCode>,
     mouse_buttons: HashSet<MouseButton>,
     mouse_pos: (f64, f64),
+    /// movement since last time `consume_mouse_delta` was called
+    mouse_delta: (f32, f32),
 }
 
 impl InputState {
@@ -56,12 +58,22 @@ impl InputState {
 
     /// Update the current mouse cursor position (window coordinates).
     pub fn set_mouse_position(&mut self, x: f64, y: f64) {
+        let (px, py) = self.mouse_pos;
         self.mouse_pos = (x, y);
+        self.mouse_delta = ((x - px) as f32, (y - py) as f32);
     }
 
     /// Retrieve the last recorded mouse position.
     pub fn mouse_position(&self) -> (f64, f64) {
         self.mouse_pos
+    }
+
+    /// Retrieve and reset the mouse movement delta (in pixels) since the
+    /// last call. This is useful for applying camera rotations.
+    pub fn consume_mouse_delta(&mut self) -> (f32, f32) {
+        let d = self.mouse_delta;
+        self.mouse_delta = (0.0, 0.0);
+        d
     }
 }
 
@@ -90,5 +102,10 @@ mod tests {
         assert!(!state.is_button_down(MouseButton::Left));
         state.set_mouse_position(10.0, 20.0);
         assert_eq!(state.mouse_position(), (10.0, 20.0));
+        // delta should reflect movement
+        state.set_mouse_position(15.0, 25.0);
+        assert_eq!(state.consume_mouse_delta(), (5.0, 5.0));
+        // consumption resets
+        assert_eq!(state.consume_mouse_delta(), (0.0, 0.0));
     }
 }

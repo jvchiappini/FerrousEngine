@@ -46,6 +46,10 @@ pub struct Renderer {
     pub mesh: mesh::Mesh,
     /// region within the window where 3D content is drawn
     pub viewport: Viewport,
+    /// orbital camera state
+    yaw: f32,
+    pitch: f32,
+    distance: f32,
 }
 
 impl Renderer {
@@ -95,7 +99,15 @@ impl Renderer {
         // simple cube mesh for testing
         let mesh = mesh::Mesh::cube(&context.device);
         // default viewport is full render target
-        let viewport = Viewport { x: 0, y: 0, width, height };
+        let viewport = Viewport {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        };
+        let yaw = 0.0;
+        let pitch = 0.0;
+        let distance = 5.0;
         Self {
             context,
             render_target: rt,
@@ -109,6 +121,9 @@ impl Renderer {
             camera_bind_group,
             mesh,
             viewport,
+            yaw,
+            pitch,
+            distance,
         }
     }
 
@@ -287,26 +302,45 @@ impl Renderer {
 
     /// Handle user input to modify the camera position. `dt` is the elapsed
     /// time since the last call in seconds.
-    pub fn handle_input(&mut self, input: &ferrous_core::input::InputState, dt: f32) {
-        let mut dir = glam::Vec3::ZERO;
+    pub fn handle_input(&mut self, input: &mut ferrous_core::input::InputState, dt: f32) {
         use ferrous_core::input::KeyCode;
+        // translate along camera-relative axes
+        let mut move_dir = glam::Vec3::ZERO;
         if input.is_key_pressed(KeyCode::KeyW) {
-            dir.z -= 1.0;
+            move_dir.z += 1.0; // forward along view direction
         }
         if input.is_key_pressed(KeyCode::KeyS) {
-            dir.z += 1.0;
+            move_dir.z -= 1.0;
         }
         if input.is_key_pressed(KeyCode::KeyA) {
-            dir.x -= 1.0;
+            move_dir.x -= 1.0;
         }
         if input.is_key_pressed(KeyCode::KeyD) {
-            dir.x += 1.0;
+            move_dir.x += 1.0;
         }
-        if dir.length_squared() > 0.0 {
+        if move_dir.length_squared() > 0.0 {
+            let forward = (self.camera.target - self.camera.eye).normalize();
+            let right = forward.cross(self.camera.up).normalize();
+            let world_disp = (forward * move_dir.z + right * move_dir.x).normalize();
             let speed = 5.0;
-            let displacement = dir.normalize() * speed * dt;
+            let displacement = world_disp * speed * dt;
             self.camera.eye += displacement;
-            self.camera.target += displacement; // keep looking in same direction
+            self.camera.target += displacement; // move target with eye
+        }
+
+        // handle mouse orbit when right button held
+        if input.is_button_down(ferrous_core::input::MouseButton::Right) {
+            let (dx, dy) = input.consume_mouse_delta();
+            let sensitivity = 0.005;
+            self.yaw -= dx * sensitivity; // invert horizontal drag
+            self.pitch -= dy * sensitivity; // invert vertical drag
+            // clamp pitch to avoid flipping
+            let limit = std::f32::consts::FRAC_PI_2 - 0.01;
+            self.pitch = self.pitch.clamp(-limit, limit);
+            // recompute camera eye relative to target
+            let rot = glam::Mat3::from_euler(glam::EulerRot::YXZ, self.yaw, self.pitch, 0.0);
+            let offset = rot * glam::Vec3::new(0.0, 0.0, self.distance);
+            self.camera.eye = self.camera.target + offset;
         }
     }
 }

@@ -158,13 +158,19 @@ impl Mesh {
         ];
 
         let indices: &[u16] = &[
-            // front
-            0, 1, 2, 2, 3, 0, // back
-            4, 5, 6, 6, 7, 4, // left
-            8, 9, 10, 10, 11, 8, // right
-            12, 13, 14, 14, 15, 12, // top
-            16, 17, 18, 18, 19, 16, // bottom
-            20, 21, 22, 22, 23, 20,
+            // front (z+)
+            0, 1, 2, 2, 3, 0,
+            // back (z-)
+            4, 6, 5, 4, 7, 6,
+            // left (x-)
+            8, 9, 10, 8, 10, 11,
+            // right (x+)
+            // winding reversed so that normal points +X
+            12, 14, 13, 12, 15, 14,
+            // top (y+)
+            16, 17, 18, 16, 18, 19,
+            // bottom (y-)
+            20, 22, 21, 20, 23, 22,
         ];
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

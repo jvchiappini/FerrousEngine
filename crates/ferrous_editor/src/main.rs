@@ -81,7 +81,12 @@ impl EditorApp {
             config: None,
             input: InputState::new(),
             test_button: TestButton::new(50.0, 50.0, 100.0, 100.0),
-            viewport: Viewport { x: 0, y: 0, width: 0, height: 0 },
+            viewport: Viewport {
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 0,
+            },
             window_size: (0, 0),
             last_update: std::time::Instant::now(),
         }
@@ -150,20 +155,20 @@ impl ApplicationHandler for EditorApp {
                 if let (Some(surface), Some(renderer), Some(config)) =
                     (&self.surface, &mut self.renderer, &mut self.config)
                 {
-                            let (w, h) = (new_size.width.max(1), new_size.height.max(1));
+                    let (w, h) = (new_size.width.max(1), new_size.height.max(1));
                     config.width = w;
                     config.height = h;
                     surface.configure(&renderer.context.device, &config);
-                            // compute viewport: leave 300px on left, 200px bottom
-                            let vp = Viewport {
-                                x: 300,
-                                y: 0,
-                                width: w.saturating_sub(300),
-                                height: h.saturating_sub(200),
-                            };
-                            renderer.set_viewport(vp);
-                            self.viewport = vp;
-                            self.window_size = (w, h);
+                    // compute viewport: leave 300px on left, 200px bottom
+                    let vp = Viewport {
+                        x: 300,
+                        y: 0,
+                        width: w.saturating_sub(300),
+                        height: h.saturating_sub(200),
+                    };
+                    renderer.set_viewport(vp);
+                    self.viewport = vp;
+                    self.window_size = (w, h);
                     renderer.resize(w, h);
                 }
             }
@@ -171,7 +176,11 @@ impl ApplicationHandler for EditorApp {
                 // we prefer to use the physical key so WASD movement applies
                 // consistently regardless of keyboard layout. the `event`
                 // structure contains both `physical_key` and `state`.
-                let winit::event::KeyEvent { physical_key, state, .. } = event;
+                let winit::event::KeyEvent {
+                    physical_key,
+                    state,
+                    ..
+                } = event;
                 if let winit::keyboard::PhysicalKey::Code(code) = physical_key {
                     self.input
                         .update_key(code, state == winit::event::ElementState::Pressed);
@@ -217,7 +226,7 @@ impl ApplicationHandler for EditorApp {
                 && my >= self.viewport.y as f64
                 && my < (self.viewport.y + self.viewport.height) as f64;
             if inside && !self.test_button.hovered {
-                renderer.handle_input(&self.input, dt);
+                renderer.handle_input(&mut self.input, dt);
             }
 
             let mut encoder = renderer.begin_frame();
@@ -228,13 +237,13 @@ impl ApplicationHandler for EditorApp {
             batch.push(GuiQuad {
                 pos: [0.0, 0.0],
                 size: [300.0, h as f32],
-                color: [0.2, 0.2, 0.2, 1.0],
+                color: [0.145, 0.145, 0.145, 1.0],
             });
             // draw grey bottom panel
             batch.push(GuiQuad {
                 pos: [0.0, (h.saturating_sub(200)) as f32],
                 size: [w as f32, 200.0],
-                color: [0.2, 0.2, 0.2, 1.0],
+                color: [0.145, 0.145, 0.145, 1.0],
             });
             self.test_button.draw(&mut batch);
 
