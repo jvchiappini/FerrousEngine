@@ -16,10 +16,15 @@ use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId};
 
-// helper to create a tiny in-memory font with a single square glyph for 'A'.
-// this is essentially the same code used in the assets crate's tests but
-// duplicated here so we can build an atlas without shipping a real font file.
+// previously we constructed an ad-hoc one‑glyph font for testing; we now
+// load a real .ttf from disk.  we still keep the helper around as a
+// fallback in case the file can't be read so the application can run without
+// crashing.
+
 fn build_test_font() -> Vec<u8> {
+    // same implementation that was originally in this file; duplicated
+    // here so the editor doesn't depend on private test helpers in the
+    // assets crate.
     let mut tables: Vec<([u8; 4], Vec<u8>)> = Vec::new();
 
     // cmap mapping 'A'->0 (glyph index 0)
@@ -242,16 +247,34 @@ impl ApplicationHandler for EditorApp {
 
         let mut renderer = Renderer::new(context, config.width, config.height, config.format);
 
-        // build a tiny font atlas containing only the 'A' glyph so we can
-        // exercise text rendering.  In a real application you would load a
-        // proper TTF/OTF file and select a larger character set.
-        let font_bytes = build_test_font();
+        // load a real font file from the assets/fonts directory.  the user
+        // should drop a .ttf into that folder (e.g. "Roboto-Regular.ttf"); the
+        // parser will panic if the file is missing so you are reminded to add
+        // one.
+        let font_path = std::path::Path::new("assets/fonts/Roboto-Regular.ttf");
+        // keep track of whether we fell back so we can limit the character set
+        // appropriately; the test font only contains a single glyph ('A').
+        let (font_bytes, char_list): (Vec<u8>, Vec<char>) = match std::fs::read(font_path) {
+            Ok(b) => {
+                let chars: Vec<char> = (' '..'~').collect();
+                (b, chars)
+            }
+            Err(e) => {
+                eprintln!(
+                    "warning: could not open {:?}: {}. using built‑in test font",
+                    font_path, e
+                );
+                (build_test_font(), vec!['A'])
+            }
+        };
         let parser = ferrous_assets::font_parser::FontParser::new(font_bytes).expect("parser");
+
+        // build atlas for the chosen character list
         let atlas = ferrous_assets::FontAtlas::new(
             &renderer.context.device,
             &renderer.context.queue,
             &parser,
-            vec!['A'],
+            char_list,
         )
         .expect("atlas build");
         // hand atlas to renderer which will forward to its GUI component
@@ -370,8 +393,10 @@ impl ApplicationHandler for EditorApp {
             // build a small text batch if we have an atlas
             let mut text_batch = ferrous_gui::TextBatch::new();
             if let Some(atlas) = &self.font_atlas {
-                // draw a few "A" characters to prove the pipeline works
-                text_batch.draw_text(atlas, "AAA", [10.0, 10.0], 32.0, [1.0, 1.0, 0.0, 1.0]);
+                // Render text to verify the MSDF pipeline is working correctly.
+                text_batch.draw_text(atlas, "Hello FerrousEngine!", [10.0, 10.0], 24.0, [1.0, 1.0, 1.0, 1.0]);
+                text_batch.draw_text(atlas, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", [10.0, 40.0], 18.0, [1.0, 0.9, 0.3, 1.0]);
+                text_batch.draw_text(atlas, "abcdefghijklmnopqrstuvwxyz 0123456789", [10.0, 64.0], 18.0, [0.7, 0.85, 1.0, 1.0]);
             }
 
             // acquire the swapchain frame before drawing; we will render

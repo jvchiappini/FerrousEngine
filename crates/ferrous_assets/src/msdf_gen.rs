@@ -1,121 +1,120 @@
-//! Simplified MSDF generator used by the atlas packer.
+//! Simplified MSDF/SDF generator used by the atlas packer.
 
 use crate::path::GlyphCommand;
 
-/// Generate a very basic multi-channel signed distance field for a glyph.
-/// `pixel_range` is the distance scaling factor controlling the width of the
-/// transition band; typical values are 2.0–4.0.
-pub fn generate_msdf(commands: &[GlyphCommand], size: u32) -> Vec<u8> {
-    #[derive(Clone, Copy)]
-    struct Segment {
-        x0: f32,
-        y0: f32,
-        x1: f32,
-        y1: f32,
-    }
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Segment {
+    pub x0: f32,
+    pub y0: f32,
+    pub x1: f32,
+    pub y1: f32,
+}
 
-    let mut segs: Vec<Segment> = Vec::new();
-    let mut cur_x = 0.0f32;
-    let mut cur_y = 0.0f32;
+pub(crate) fn point_seg_dist(px: f32, py: f32, s: &Segment) -> f32 {
+    let vx = s.x1 - s.x0;
+    let vy = s.y1 - s.y0;
+    let wx = px - s.x0;
+    let wy = py - s.y0;
+    let c1 = vx * wx + vy * wy;
+    let c2 = vx * vx + vy * vy;
+    let b = if c2 > 0.0 {
+        (c1 / c2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let projx = s.x0 + b * vx;
+    let projy = s.y0 + b * vy;
+    let dx = px - projx;
+    let dy = py - projy;
+    (dx * dx + dy * dy).sqrt()
+}
+
+fn line_winding(px: f32, py: f32, s: &Segment) -> i32 {
+    if (s.y0 <= py && s.y1 > py) || (s.y1 <= py && s.y0 > py) {
+        let t = (py - s.y0) / (s.y1 - s.y0);
+        let ix = s.x0 + t * (s.x1 - s.x0);
+        if ix > px {
+            return if s.y1 > s.y0 { 1 } else { -1 };
+        }
+    }
+    0
+}
+
+pub fn generate_msdf(commands: &[GlyphCommand], size: u32) -> Vec<u8> {
+    let mut segments: Vec<Segment> = Vec::new();
+    let mut cursor = (0.0, 0.0);
+
     for cmd in commands {
-        match *cmd {
-            GlyphCommand::MoveTo(x, y) => {
-                cur_x = x;
-                cur_y = y;
-            }
+        match cmd {
+            GlyphCommand::MoveTo(x, y) => cursor = (*x, *y),
             GlyphCommand::LineTo(x, y) => {
-                segs.push(Segment { x0: cur_x, y0: cur_y, x1: x, y1: y });
-                cur_x = x;
-                cur_y = y;
+                segments.push(Segment { x0: cursor.0, y0: cursor.1, x1: *x, y1: *y });
+                cursor = (*x, *y);
             }
             GlyphCommand::QuadTo { ctrl_x, ctrl_y, to_x, to_y } => {
-                let steps = 8;
-                let mut px = cur_x;
-                let mut py = cur_y;
+                let steps = 16;
+                let mut prev_x = cursor.0;
+                let mut prev_y = cursor.1;
                 for i in 1..=steps {
                     let t = i as f32 / steps as f32;
                     let mt = 1.0 - t;
-                    let x = mt * mt * cur_x + 2.0 * mt * t * ctrl_x + t * t * to_x;
-                    let y = mt * mt * cur_y + 2.0 * mt * t * ctrl_y + t * t * to_y;
-                    segs.push(Segment { x0: px, y0: py, x1: x, y1: y });
-                    px = x;
-                    py = y;
+                    let nx = mt * mt * cursor.0 + 2.0 * mt * t * ctrl_x + t * t * to_x;
+                    let ny = mt * mt * cursor.1 + 2.0 * mt * t * ctrl_y + t * t * to_y;
+                    segments.push(Segment { x0: prev_x, y0: prev_y, x1: nx, y1: ny });
+                    prev_x = nx;
+                    prev_y = ny;
                 }
-                cur_x = to_x;
-                cur_y = to_y;
+                cursor = (*to_x, *to_y);
             }
         }
     }
 
-    if segs.is_empty() {
-        return vec![255u8; (size * size * 4) as usize];
+   if segments.is_empty() {
+        return vec![255u8; (size * size * 4) as usize]; // ¡Cambiado a 255!
     }
 
-    // compute bbox
-    let (mut minx, mut maxx, mut miny, mut maxy) = (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY);
-    for s in &segs {
-        minx = minx.min(s.x0).min(s.x1);
-        maxx = maxx.max(s.x0).max(s.x1);
-        miny = miny.min(s.y0).min(s.y1);
-        maxy = maxy.max(s.y0).max(s.y1);
-    }
-    let pad = 0.1;
-    minx -= pad;
-    miny -= pad;
-    maxx += pad;
-    maxy += pad;
+    // CORRECCIÓN DE ESCALA: Usamos una caja global de EM (EM Box) en lugar de una individual
+    // La mayoría de las fuentes existen entre Y = -0.3 (descendentes) y 1.3 (ascendentes)
+    let cell_minx = -0.3;
+    let cell_maxx =  1.3;
+    let cell_miny = -0.3;
+    let cell_maxy =  1.3;
 
-    fn point_seg_dist(px: f32, py: f32, s: &Segment) -> (f32, f32) {
-        let vx = s.x1 - s.x0;
-        let vy = s.y1 - s.y0;
-        let wx = px - s.x0;
-        let wy = py - s.y0;
-        let c1 = vx * wx + vy * wy;
-        let c2 = vx * vx + vy * vy;
-        let b = if c2 > 0.0 { (c1 / c2).clamp(0.0, 1.0) } else { 0.0 };
-        let projx = s.x0 + b * vx;
-        let projy = s.y0 + b * vy;
-        let dx = px - projx;
-        let dy = py - projy;
-        let dist = (dx * dx + dy * dy).sqrt();
-        let angle = vy.atan2(vx);
-        (dist, angle)
-    }
+    let pixel_range = 4.0;
+    let inv_size = 1.0 / size as f32;
+    let units_per_pixel = (cell_maxx - cell_minx) * inv_size;
+    let dist_scale = 1.0 / (pixel_range * units_per_pixel);
 
     let mut out = vec![0u8; (size * size * 4) as usize];
-    let pixel_range = 4.0;
     for iy in 0..size {
         for ix in 0..size {
-            let nx = ix as f32 / (size as f32);
-            let ny = iy as f32 / (size as f32);
-            let gx = minx + nx * (maxx - minx);
-            let gy = miny + ny * (maxy - miny);
-            let mut best_r = f32::MAX;
-            let mut best_g = f32::MAX;
-            let mut best_b = f32::MAX;
-            for seg in &segs {
-                let (d, ang) = point_seg_dist(gx, gy, seg);
-                let cos = ang.cos().abs();
-                let sin = ang.sin().abs();
-                if cos > 0.8 {
-                    best_r = best_r.min(d);
-                } else if sin > 0.8 {
-                    best_g = best_g.min(d);
-                } else {
-                    best_b = best_b.min(d);
-                }
+            let nx = (ix as f32 + 0.5) * inv_size;
+            let ny = ((size - 1 - iy) as f32 + 0.5) * inv_size;
+            let gx = cell_minx + nx * (cell_maxx - cell_minx);
+            let gy = cell_miny + ny * (cell_maxy - cell_miny);
+
+            let mut min_dist = f32::MAX;
+            let mut winding = 0;
+
+            for s in &segments {
+                let d = point_seg_dist(gx, gy, s);
+                if d < min_dist { min_dist = d; }
+                winding += line_winding(gx, gy, s);
             }
-            if best_r == f32::MAX { best_r = best_g.min(best_b); }
-            if best_g == f32::MAX { best_g = best_r.min(best_b); }
-            if best_b == f32::MAX { best_b = best_r.min(best_g); }
-            let er = (0.5 + best_r * pixel_range).clamp(0.0, 1.0);
-            let eg = (0.5 + best_g * pixel_range).clamp(0.0, 1.0);
-            let eb = (0.5 + best_b * pixel_range).clamp(0.0, 1.0);
+
+            let inside = winding != 0;
+            // CORRECCIÓN SIGNO SDF: Adentro es Negativo, Afuera es Positivo
+            let sign = if inside { -1.0 } else { 1.0 };
+            
+            let sd = sign * min_dist * dist_scale;
+            let encoded = (0.5 + sd).clamp(0.0, 1.0);
+            let val = (encoded * 255.0) as u8;
+            
             let offset = ((iy * size + ix) * 4) as usize;
-            out[offset + 0] = (er * 255.0) as u8;
-            out[offset + 1] = (eg * 255.0) as u8;
-            out[offset + 2] = (eb * 255.0) as u8;
-            out[offset + 3] = 255;
+            out[offset] = val;     // R
+            out[offset + 1] = val; // G
+            out[offset + 2] = val; // B
+            out[offset + 3] = 255; // A
         }
     }
     out

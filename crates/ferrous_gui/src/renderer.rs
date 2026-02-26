@@ -98,25 +98,32 @@ impl TextBatch {
         &mut self,
         atlas: &ferrous_assets::FontAtlas,
         text: &str,
-        position: [f32; 2],
+        position:[f32; 2],
         size: f32,
         color: [f32; 4],
     ) {
         let mut x = position[0];
         let y = position[1];
-        let scale = size / atlas.glyph_size as f32;
+        
+        // Nuestro nuevo rango de atlas EM fijo de -0.3 a 1.3 tiene un tamaño de 1.6
+        let box_scale = 1.6; 
+        let quad_size = size * box_scale;
+        
         for c in text.chars() {
             if let Some(metric) = atlas.metrics.get(&c) {
-                let w = metric.size[0] * scale;
-                let h = metric.size[1] * scale;
+                // Centramos y posicionamos correctamente aplicando el offset (-0.3)
+                let qx = x - (0.3 * size);
+                let qy = y - (0.3 * size);
+
                 self.push(TextQuad {
-                    pos: [x, y],
-                    size: [w, h],
+                    pos:[qx, qy],
+                    size: [quad_size, quad_size],
                     uv0: [metric.uv[0], metric.uv[1]],
                     uv1: [metric.uv[2], metric.uv[3]],
                     color,
                 });
-                x += w;
+                // Avanzamos el cursor virtual horizontal
+                x += metric.advance * size;
             }
         }
     }

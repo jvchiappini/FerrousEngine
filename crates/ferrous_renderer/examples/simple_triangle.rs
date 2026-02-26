@@ -27,7 +27,7 @@ fn main() {
             size: [200.0, 100.0],
             color: [0.0, 1.0, 0.0, 0.5],
         });
-        renderer.render_to_target(&mut encoder, Some(&ui_batch));
+        renderer.render_to_target(&mut encoder, Some(&ui_batch), None);
 
         // además de enviar los comandos, copiamos el contenido de la textura
         // de color a un buffer CPU para poder guardarlo en disco y verificar
