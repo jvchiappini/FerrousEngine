@@ -4,4 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# minimal dependencies, maybe none for now
+wgpu = "23.0"
+anyhow = "1.0"
+bytemuck = { version = "1.14", features = ["derive"] }
+
+[dev-dependencies]
+pollster = "0.3"

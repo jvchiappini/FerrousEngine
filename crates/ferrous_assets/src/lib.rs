@@ -1,20 +1,22 @@
 //! Asset utilities for FerrousEngine
 
+
 pub mod binary_reader;
+pub mod tables;
+pub mod path;
+pub mod msdf_gen;
+pub mod atlas;
 
 /// Structures and logic for parsing TrueType fonts.
 pub mod font_parser {
     use crate::binary_reader::*;
     use std::collections::HashMap;
     use std::io::{Read, Seek};
+    use crate::tables::TableRecord;
+    use crate::path::GlyphCommand;
 
-    #[derive(Debug, Clone)]
-    pub struct TableRecord {
-        pub tag: [u8; 4],
-        pub checksum: u32,
-        pub offset: u32,
-        pub length: u32,
-    }
+    // using TableRecord from tables.rs
+    // pub use was removed because the root re-exports it directly
 
     pub struct FontParser {
         data: Vec<u8>,
@@ -29,17 +31,8 @@ pub mod font_parser {
     /// renderer we are building.  Coordinates are normalized (divided by
     /// `units_per_em`) and are in the same coordinate space as the original
     /// font (y increasing upward).
-    #[derive(Debug, PartialEq, Clone)]
-    pub enum GlyphCommand {
-        MoveTo(f32, f32),
-        LineTo(f32, f32),
-        QuadTo {
-            ctrl_x: f32,
-            ctrl_y: f32,
-            to_x: f32,
-            to_y: f32,
-        },
-    }
+    // path module exposes GlyphCommand
+    // same for GlyphCommand
 
     impl FontParser {
         /// Create a new `FontParser` from raw font bytes. It will read the
@@ -700,5 +693,122 @@ mod tests {
         } else {
             panic!("outline did not close with a LineTo");
         }
+    }
+}
+
+// atlas types are defined in atlas.rs and re-exported below
+
+// re-export atlas types to keep public API unchanged
+pub use atlas::{GlyphMetrics, FontAtlas};
+
+// additional tests for atlas and msdf generation
+#[cfg(test)]
+mod atlas_tests {
+    use super::*;
+    use wgpu::{Instance, InstanceDescriptor};
+    // bring pollster into scope for async helpers
+    use pollster;
+
+    // duplicate simple glyph font builder so tests do not depend on private helper
+    fn build_font_with_simple_glyph() -> Vec<u8> {
+        let mut tables: Vec<([u8; 4], Vec<u8>)> = Vec::new();
+        // cmap map 'A'->0
+        let mut cmap = Vec::new();
+        cmap.extend(&0u16.to_be_bytes());
+        cmap.extend(&1u16.to_be_bytes());
+        let subtable_record_pos = cmap.len();
+        cmap.extend(&3u16.to_be_bytes());
+        cmap.extend(&1u16.to_be_bytes());
+        cmap.extend(&0u32.to_be_bytes());
+        let fmt_start = cmap.len();
+        cmap.extend(&4u16.to_be_bytes());
+        cmap.extend(&0u16.to_be_bytes());
+        cmap.extend(&0u16.to_be_bytes());
+        cmap.extend(&2u16.to_be_bytes());
+        cmap.extend(&0u16.to_be_bytes());
+        cmap.extend(&0u16.to_be_bytes());
+        cmap.extend(&0u16.to_be_bytes());
+        cmap.extend(&('A' as u16).to_be_bytes());
+        cmap.extend(&0u16.to_be_bytes());
+        cmap.extend(&('A' as u16).to_be_bytes());
+        cmap.extend(&(-65i16).to_be_bytes());
+        cmap.extend(&0u16.to_be_bytes());
+        let fmt_length = (cmap.len() - fmt_start) as u16;
+        cmap[fmt_start + 2..fmt_start + 4].copy_from_slice(&fmt_length.to_be_bytes());
+        let offset_val = fmt_start as u32;
+        cmap[subtable_record_pos + 4..subtable_record_pos + 8]
+            .copy_from_slice(&offset_val.to_be_bytes());
+        tables.push((*b"cmap", cmap));
+        let mut head = vec![0u8; 54];
+        head[18..20].copy_from_slice(&1000u16.to_be_bytes());
+        head[50..52].copy_from_slice(&1i16.to_be_bytes());
+        tables.push((*b"head", head));
+        let mut glyf = Vec::new();
+        glyf.extend(&1i16.to_be_bytes());
+        glyf.extend(&0i16.to_be_bytes());
+        glyf.extend(&0i16.to_be_bytes());
+        glyf.extend(&100i16.to_be_bytes());
+        glyf.extend(&100i16.to_be_bytes());
+        glyf.extend(&3u16.to_be_bytes());
+        glyf.extend(&0u16.to_be_bytes());
+        for _ in 0..4 { glyf.push(0x01); }
+        glyf.extend(&0i16.to_be_bytes());
+        glyf.extend(&0i16.to_be_bytes());
+        glyf.extend(&0i16.to_be_bytes());
+        glyf.extend(&100i16.to_be_bytes());
+        glyf.extend(&100i16.to_be_bytes());
+        glyf.extend(&0i16.to_be_bytes());
+        glyf.extend(&0i16.to_be_bytes());
+        glyf.extend(&(-100i16).to_be_bytes());
+        tables.push((*b"glyf", glyf));
+        let mut loca = Vec::new();
+        loca.extend(&0u32.to_be_bytes());
+        let glyf_len = tables.iter().find(|(t, _)| t == b"glyf").unwrap().1.len() as u32;
+        loca.extend(&glyf_len.to_be_bytes());
+        tables.push((*b"loca", loca));
+        let mut data = Vec::new();
+        data.extend(&0u32.to_be_bytes());
+        let num_tables = tables.len() as u16;
+        data.extend(&num_tables.to_be_bytes());
+        data.extend(&0u16.to_be_bytes());
+        data.extend(&0u16.to_be_bytes());
+        data.extend(&0u16.to_be_bytes());
+        let mut offset = 12 + (16 * tables.len());
+        let mut positions = Vec::new();
+        for (_, tbl) in &tables {
+            positions.push(offset as u32);
+            offset += tbl.len();
+        }
+        for ((tag, tbl), &pos) in tables.iter().zip(&positions) {
+            data.extend(tag);
+            data.extend(&0u32.to_be_bytes());
+            data.extend(&pos.to_be_bytes());
+            data.extend(&(tbl.len() as u32).to_be_bytes());
+        }
+        for (_, tbl) in &tables {
+            data.extend(tbl);
+        }
+        data
+    }
+
+    #[test]
+    fn simple_msdf_length() {
+        let cmds = vec![font_parser::GlyphCommand::MoveTo(0.0, 0.0), font_parser::GlyphCommand::LineTo(1.0, 0.0)];
+        // import generator locally
+        use crate::msdf_gen::generate_msdf;
+        let bmp = generate_msdf(&cmds, 8);
+        assert_eq!(bmp.len(), 8 * 8 * 4);
+    }
+
+    #[test]
+    #[ignore]
+    fn build_atlas() {
+        let instance = Instance::new(InstanceDescriptor::default());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None)).unwrap();
+        let font = build_font_with_simple_glyph();
+        let parser = font_parser::FontParser::new(font).unwrap();
+        let atlas = FontAtlas::new(&device, &queue, &parser, vec!['A']).unwrap();
+        assert!(atlas.metrics.contains_key(&'A'));
     }
 }

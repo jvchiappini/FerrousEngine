@@ -10,3 +10,6 @@ bytemuck = { version = "1.14", features = ["derive"] } # habilita macros derive 
 
 # glam may be convenient; bring in for math types
 glam = "0.29"
+
+# font atlas generator lives in the assets crate
+ferrous_assets = { path = "../ferrous_assets" }

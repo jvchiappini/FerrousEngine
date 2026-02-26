@@ -7,6 +7,7 @@ edition = "2021"
 ferrous_core = { path = "../ferrous_core" }
 ferrous_renderer = { path = "../ferrous_renderer" }
 ferrous_gui = { path = "../ferrous_gui" }
+ferrous_assets = { path = "../ferrous_assets" }
 
 # direct GPU types for configuration
 wgpu = "23.0"

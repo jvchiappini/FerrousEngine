@@ -7,6 +7,7 @@ pub mod render_target;
 
 use crate::pipeline::FerrousPipeline;
 use crate::render_target::RenderTarget;
+use ferrous_gui::TextBatch;
 use ferrous_core::context::EngineContext;
 use wgpu::util::DeviceExt;
 // re-export UI types so callers de-referencing the renderer can use them
@@ -150,6 +151,7 @@ impl Renderer {
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         ui_batch: Option<&ferrous_gui::GuiBatch>,
+        text_batch: Option<&TextBatch>,
     ) {
         // update camera uniform prior to borrowing any fields
         self.update_camera_buffer();
@@ -196,7 +198,7 @@ impl Renderer {
         if let Some(batch) = ui_batch {
             // renderizamos la UI en un pase separado que no limpia nada
             self.ui_renderer
-                .render(encoder, color_view, batch, &self.context.queue);
+                .render(encoder, color_view, batch, &self.context.queue, text_batch);
         }
     }
 
@@ -210,6 +212,7 @@ impl Renderer {
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
         ui_batch: Option<&ferrous_gui::GuiBatch>,
+        text_batch: Option<&TextBatch>,
     ) {
         // reuse most of the same logic as `render_to_target`, but render
         // directly into the provided view. we still supply a depth attachment
@@ -258,8 +261,13 @@ impl Renderer {
 
         if let Some(batch) = ui_batch {
             self.ui_renderer
-                .render(encoder, view, batch, &self.context.queue);
+                .render(encoder, view, batch, &self.context.queue, text_batch);
         }
+    }
+
+    /// Provide font atlas data to the internal GUI renderer.
+    pub fn set_font_atlas(&mut self, view: &wgpu::TextureView, sampler: &wgpu::Sampler) {
+        self.ui_renderer.set_font_atlas(view, sampler);
     }
 
     /// Cambia el tamaño del render target y actualiza el renderer de UI.
