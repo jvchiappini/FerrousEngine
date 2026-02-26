@@ -334,7 +334,7 @@ impl Renderer {
             let sensitivity = 0.005;
             self.yaw -= dx * sensitivity; // invert horizontal drag
             self.pitch -= dy * sensitivity; // invert vertical drag
-            // clamp pitch to avoid flipping
+                                            // clamp pitch to avoid flipping
             let limit = std::f32::consts::FRAC_PI_2 - 0.01;
             self.pitch = self.pitch.clamp(-limit, limit);
             // recompute camera eye relative to target

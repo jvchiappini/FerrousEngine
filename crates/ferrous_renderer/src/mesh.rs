@@ -159,17 +159,13 @@ impl Mesh {
 
         let indices: &[u16] = &[
             // front (z+)
-            0, 1, 2, 2, 3, 0,
-            // back (z-)
-            4, 6, 5, 4, 7, 6,
-            // left (x-)
+            0, 1, 2, 2, 3, 0, // back (z-)
+            4, 6, 5, 4, 7, 6, // left (x-)
             8, 9, 10, 8, 10, 11,
             // right (x+)
             // winding reversed so that normal points +X
-            12, 14, 13, 12, 15, 14,
-            // top (y+)
-            16, 17, 18, 16, 18, 19,
-            // bottom (y-)
+            12, 14, 13, 12, 15, 14, // top (y+)
+            16, 17, 18, 16, 18, 19, // bottom (y-)
             20, 22, 21, 20, 23, 22,
         ];
 
