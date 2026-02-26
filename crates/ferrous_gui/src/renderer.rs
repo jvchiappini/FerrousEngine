@@ -93,36 +93,37 @@ impl TextBatch {
         bytemuck::cast_slice(&self.quads)
     }
 
-    /// Draw the given string using the supplied atlas.
     pub fn draw_text(
         &mut self,
-        atlas: &ferrous_assets::FontAtlas,
+        font: &ferrous_assets::font::Font, // <-- Ahora pide la estructura Font
         text: &str,
-        position:[f32; 2],
+        position: [f32; 2],
         size: f32,
         color: [f32; 4],
     ) {
+        let atlas = &font.atlas;
         let mut x = position[0];
         let y = position[1];
         
-        // Nuestro nuevo rango de atlas EM fijo de -0.3 a 1.3 tiene un tamaño de 1.6
+        // Coincidimos con la escala EM fija del generador (-0.3 a 1.3 = 1.6 de ancho)
         let box_scale = 1.6; 
         let quad_size = size * box_scale;
         
         for c in text.chars() {
             if let Some(metric) = atlas.metrics.get(&c) {
-                // Centramos y posicionamos correctamente aplicando el offset (-0.3)
+                // El punto base (baseline) está desplazado por el padding de 0.3
                 let qx = x - (0.3 * size);
                 let qy = y - (0.3 * size);
 
                 self.push(TextQuad {
-                    pos:[qx, qy],
+                    pos: [qx, qy],
                     size: [quad_size, quad_size],
                     uv0: [metric.uv[0], metric.uv[1]],
                     uv1: [metric.uv[2], metric.uv[3]],
                     color,
                 });
-                // Avanzamos el cursor virtual horizontal
+                
+                // Avance horizontal usando la métrica de la fuente
                 x += metric.advance * size;
             }
         }

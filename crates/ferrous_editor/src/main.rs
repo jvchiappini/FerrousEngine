@@ -1,7 +1,7 @@
 use ferrous_core::{context::EngineContext, InputState};
 use ferrous_gui::{GuiBatch, GuiQuad, Widget};
 use ferrous_renderer::{Renderer, Viewport};
-
+use ferrous_assets::Font;
 use std::sync::Arc;
 
 // trait needed to extract a raw window handle from winit::window::Window
@@ -16,110 +16,6 @@ use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId};
 
-// previously we constructed an ad-hoc one‑glyph font for testing; we now
-// load a real .ttf from disk.  we still keep the helper around as a
-// fallback in case the file can't be read so the application can run without
-// crashing.
-
-fn build_test_font() -> Vec<u8> {
-    // same implementation that was originally in this file; duplicated
-    // here so the editor doesn't depend on private test helpers in the
-    // assets crate.
-    let mut tables: Vec<([u8; 4], Vec<u8>)> = Vec::new();
-
-    // cmap mapping 'A'->0 (glyph index 0)
-    let mut cmap = Vec::new();
-    cmap.extend(&0u16.to_be_bytes()); // version
-    cmap.extend(&1u16.to_be_bytes()); // numSubtables
-    let subtable_record_pos = cmap.len();
-    cmap.extend(&3u16.to_be_bytes()); // platform
-    cmap.extend(&1u16.to_be_bytes()); // encoding
-    cmap.extend(&0u32.to_be_bytes()); // offset placeholder
-
-    let fmt_start = cmap.len();
-    cmap.extend(&4u16.to_be_bytes()); // format
-    cmap.extend(&0u16.to_be_bytes()); // length placeholder
-    cmap.extend(&0u16.to_be_bytes()); // language
-    cmap.extend(&2u16.to_be_bytes()); // segCountX2
-    cmap.extend(&0u16.to_be_bytes()); // searchRange
-    cmap.extend(&0u16.to_be_bytes()); // entrySelector
-    cmap.extend(&0u16.to_be_bytes()); // rangeShift
-    cmap.extend(&('A' as u16).to_be_bytes()); // endCodes
-    cmap.extend(&0u16.to_be_bytes()); // reservedPad
-    cmap.extend(&('A' as u16).to_be_bytes()); // startCodes
-    cmap.extend(&(-65i16).to_be_bytes()); // idDeltas: -65 -> map 65 to 0
-    cmap.extend(&0u16.to_be_bytes()); // idRangeOffsets
-
-    let fmt_length = (cmap.len() - fmt_start) as u16;
-    cmap[fmt_start + 2..fmt_start + 4].copy_from_slice(&fmt_length.to_be_bytes());
-    let offset_val = fmt_start as u32;
-    cmap[subtable_record_pos + 4..subtable_record_pos + 8]
-        .copy_from_slice(&offset_val.to_be_bytes());
-
-    tables.push((*b"cmap", cmap));
-
-    // head table: basic header with unitsPerEm and indexToLocFormat
-    let mut head = vec![0u8; 54];
-    head[18..20].copy_from_slice(&1000u16.to_be_bytes());
-    head[50..52].copy_from_slice(&1i16.to_be_bytes());
-    tables.push((*b"head", head));
-
-    // glyf: simple square
-    let mut glyf = Vec::new();
-    glyf.extend(&1i16.to_be_bytes()); // numberOfContours
-    glyf.extend(&0i16.to_be_bytes()); // xMin
-    glyf.extend(&0i16.to_be_bytes()); // yMin
-    glyf.extend(&100i16.to_be_bytes()); // xMax
-    glyf.extend(&100i16.to_be_bytes()); // yMax
-    glyf.extend(&3u16.to_be_bytes()); // endPtsOfContours[0]
-    glyf.extend(&0u16.to_be_bytes()); // instructionLength
-    for _ in 0..4 {
-        glyf.push(0x01); // on-curve flags
-    }
-    // coords
-    glyf.extend(&0i16.to_be_bytes());
-    glyf.extend(&0i16.to_be_bytes());
-    glyf.extend(&0i16.to_be_bytes());
-    glyf.extend(&100i16.to_be_bytes());
-    glyf.extend(&100i16.to_be_bytes());
-    glyf.extend(&0i16.to_be_bytes());
-    glyf.extend(&0i16.to_be_bytes());
-    glyf.extend(&(-100i16).to_be_bytes());
-    tables.push((*b"glyf", glyf));
-
-    // loca entries for two glyphs
-    let mut loca = Vec::new();
-    loca.extend(&0u32.to_be_bytes());
-    let glyf_len = tables.iter().find(|(t, _)| t == b"glyf").unwrap().1.len() as u32;
-    loca.extend(&glyf_len.to_be_bytes());
-    tables.push((*b"loca", loca));
-
-    // assemble font file
-    let mut data = Vec::new();
-    data.extend(&0u32.to_be_bytes());
-    let num_tables = tables.len() as u16;
-    data.extend(&num_tables.to_be_bytes());
-    data.extend(&0u16.to_be_bytes());
-    data.extend(&0u16.to_be_bytes());
-    data.extend(&0u16.to_be_bytes());
-
-    let mut offset = 12 + (16 * tables.len());
-    let mut positions = Vec::new();
-    for (_, tbl) in &tables {
-        positions.push(offset as u32);
-        offset += tbl.len();
-    }
-    for ((tag, tbl), &pos) in tables.iter().zip(&positions) {
-        data.extend(tag);
-        data.extend(&0u32.to_be_bytes());
-        data.extend(&pos.to_be_bytes());
-        data.extend(&(tbl.len() as u32).to_be_bytes());
-    }
-    for (_, tbl) in &tables {
-        data.extend(tbl);
-    }
-    data
-}
 
 /// Simple interactive widget used for testing hit‑testing and color change.
 struct TestButton {
@@ -175,8 +71,8 @@ struct EditorApp {
     viewport: Viewport,
     window_size: (u32, u32),
     last_update: std::time::Instant,
-    // atlas used for text rendering; built once on resume
-    font_atlas: Option<ferrous_assets::FontAtlas>,
+    // font used for text rendering; built once on resume
+    font: Option<Font>,
 }
 
 impl EditorApp {
@@ -196,7 +92,7 @@ impl EditorApp {
             },
             window_size: (0, 0),
             last_update: std::time::Instant::now(),
-            font_atlas: None,
+            font: None,
         }
     }
 }
@@ -247,40 +143,17 @@ impl ApplicationHandler for EditorApp {
 
         let mut renderer = Renderer::new(context, config.width, config.height, config.format);
 
-        // load a real font file from the assets/fonts directory.  the user
-        // should drop a .ttf into that folder (e.g. "Roboto-Regular.ttf"); the
-        // parser will panic if the file is missing so you are reminded to add
-        // one.
-        let font_path = std::path::Path::new("assets/fonts/Roboto-Regular.ttf");
-        // keep track of whether we fell back so we can limit the character set
-        // appropriately; the test font only contains a single glyph ('A').
-        let (font_bytes, char_list): (Vec<u8>, Vec<char>) = match std::fs::read(font_path) {
-            Ok(b) => {
-                let chars: Vec<char> = (' '..'~').collect();
-                (b, chars)
-            }
-            Err(e) => {
-                eprintln!(
-                    "warning: could not open {:?}: {}. using built‑in test font",
-                    font_path, e
-                );
-                (build_test_font(), vec!['A'])
-            }
-        };
-        let parser = ferrous_assets::font_parser::FontParser::new(font_bytes).expect("parser");
-
-        // build atlas for the chosen character list
-        let atlas = ferrous_assets::FontAtlas::new(
+        // load a real font file using the new high-level loader.
+        let font = Font::load(
+            "assets/fonts/Roboto-Regular.ttf",
             &renderer.context.device,
             &renderer.context.queue,
-            &parser,
-            char_list,
-        )
-        .expect("atlas build");
+            ' '..'~',
+        );
         // hand atlas to renderer which will forward to its GUI component
-        renderer.set_font_atlas(&atlas.view, &atlas.sampler);
+        renderer.set_font_atlas(&font.atlas.view, &font.atlas.sampler);
 
-        self.font_atlas = Some(atlas);
+        self.font = Some(font);
 
         self.renderer = Some(renderer);
         self.surface = Some(surface);
@@ -390,13 +263,13 @@ impl ApplicationHandler for EditorApp {
             });
             self.test_button.draw(&mut batch);
 
-            // build a small text batch if we have an atlas
+            // build a small text batch if we have a font
             let mut text_batch = ferrous_gui::TextBatch::new();
-            if let Some(atlas) = &self.font_atlas {
+            if let Some(font) = &self.font {
                 // Render text to verify the MSDF pipeline is working correctly.
-                text_batch.draw_text(atlas, "Hello FerrousEngine!", [10.0, 10.0], 24.0, [1.0, 1.0, 1.0, 1.0]);
-                text_batch.draw_text(atlas, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", [10.0, 40.0], 18.0, [1.0, 0.9, 0.3, 1.0]);
-                text_batch.draw_text(atlas, "abcdefghijklmnopqrstuvwxyz 0123456789", [10.0, 64.0], 18.0, [0.7, 0.85, 1.0, 1.0]);
+                text_batch.draw_text(font, "Hello FerrousEngine!", [10.0, 10.0], 24.0, [1.0, 1.0, 1.0, 1.0]);
+                text_batch.draw_text(font, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", [10.0, 40.0], 18.0, [1.0, 0.9, 0.3, 1.0]);
+                text_batch.draw_text(font, "abcdefghijklmnopqrstuvwxyz 0123456789", [10.0, 64.0], 18.0, [0.7, 0.85, 1.0, 1.0]);
             }
 
             // acquire the swapchain frame before drawing; we will render

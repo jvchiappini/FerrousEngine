@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use std::collections::HashMap;
-use crate::msdf_gen::generate_msdf;
+use super::msdf_gen::generate_msdf;
 
 #[derive(Debug, Clone)]
 pub struct GlyphMetrics {
@@ -23,7 +23,7 @@ impl FontAtlas {
     pub fn new<I: IntoIterator<Item = char>>(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        parser: &crate::font_parser::FontParser,
+        parser: &super::parser::FontParser,
         chars: I,
     ) -> Result<Self> {
         let glyph_size = 64;

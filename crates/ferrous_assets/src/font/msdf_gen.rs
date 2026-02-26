@@ -1,6 +1,6 @@
 //! Simplified MSDF/SDF generator used by the atlas packer.
 
-use crate::path::GlyphCommand;
+use super::path::GlyphCommand;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Segment {
