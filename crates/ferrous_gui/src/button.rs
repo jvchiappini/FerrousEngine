@@ -67,4 +67,22 @@ impl Widget for Button {
         };
         cmds.push(RenderCommand::Quad { rect, color });
     }
+
+    fn hit(&self, mx: f64, my: f64) -> bool {
+        self.hit(mx, my)
+    }
+
+    fn mouse_move(&mut self, mx: f64, my: f64) {
+        self.hovered = self.hit(mx, my);
+    }
+
+    fn mouse_input(&mut self, mx: f64, my: f64, pressed: bool) {
+        if pressed {
+            // press only when the cursor is over us
+            self.pressed = self.hit(mx, my);
+        } else {
+            // release on any mouse-up
+            self.pressed = false;
+        }
+    }
 }

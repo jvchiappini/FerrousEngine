@@ -76,4 +76,30 @@ impl Widget for Slider {
             color: self.thumb_color,
         });
     }
+
+    fn hit(&self, mx: f64, my: f64) -> bool {
+        // we consider the whole control as hittable (for focusing purposes)
+        let x = mx as f32;
+        let y = my as f32;
+        x >= self.rect[0]
+            && x <= self.rect[0] + self.rect[2]
+            && y >= self.rect[1]
+            && y <= self.rect[1] + self.rect[3]
+    }
+
+    fn mouse_move(&mut self, mx: f64, _my: f64) {
+        if self.dragging {
+            self.update_value(mx);
+        }
+    }
+
+    fn mouse_input(&mut self, mx: f64, _my: f64, pressed: bool) {
+        if pressed {
+            if self.thumb_hit(mx, _my) {
+                self.dragging = true;
+            }
+        } else {
+            self.dragging = false;
+        }
+    }
 }

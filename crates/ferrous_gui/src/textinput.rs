@@ -1,4 +1,5 @@
 use crate::{layout::Rect, RenderCommand, Widget};
+use winit::keyboard::KeyCode;
 
 /// Simple single-line text input widget.
 ///
@@ -88,6 +89,11 @@ impl Widget for TextInput {
             color: self.bg_color,
         });
         // text command
+        let display = if self.text.is_empty() {
+            &self.placeholder
+        } else {
+            &self.text
+        };
         cmds.push(RenderCommand::Text {
             rect: Rect {
                 x: self.rect[0] + 4.0,
@@ -95,9 +101,45 @@ impl Widget for TextInput {
                 width: 0.0,
                 height: 0.0,
             },
-            text: self.text.clone(),
+            text: display.clone(),
             color: self.text_color,
             font_size: 16.0,
         });
+    }
+
+    fn hit(&self, mx: f64, my: f64) -> bool {
+        self.hit(mx, my)
+    }
+
+    fn mouse_input(&mut self, mx: f64, my: f64, pressed: bool) {
+        if pressed {
+            // focus on press inside the rect, unfocus otherwise
+            self.focused = self.hit(mx, my);
+        }
+    }
+
+    fn keyboard_input(
+        &mut self,
+        text: Option<&str>,
+        key: Option<KeyCode>,
+        pressed: bool,
+    ) {
+        if !self.focused {
+            return;
+        }
+        if let Some(txt) = text {
+            for c in txt.chars() {
+                if !c.is_control() {
+                    self.insert_char(c);
+                }
+            }
+        }
+        if pressed {
+            if let Some(k) = key {
+                if k == KeyCode::Backspace {
+                    self.backspace();
+                }
+            }
+        }
     }
 }

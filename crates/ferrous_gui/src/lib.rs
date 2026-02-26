@@ -11,5 +11,5 @@ pub use renderer::{GuiBatch, GuiQuad, GuiRenderer, TextBatch};
 pub use button::Button as InteractiveButton;
 pub use slider::Slider;
 pub use textinput::TextInput;
-pub use widget::{Canvas, Widget};
+pub use widget::{Canvas, ViewportWidget, Widget};
 pub use widget::{Column, Row, Text, UiButton};

@@ -1,7 +1,7 @@
 use ferrous_assets::Font;
 use ferrous_core::{context::EngineContext, InputState};
 use ferrous_gui::TextInput;
-use ferrous_gui::{GuiBatch, GuiQuad, InteractiveButton, Slider};
+use ferrous_gui::{Canvas, GuiBatch, GuiQuad, InteractiveButton, Slider, ViewportWidget};
 use ferrous_renderer::{Renderer, Viewport};
 use std::sync::Arc;
 
@@ -27,10 +27,14 @@ struct EditorApp {
     surface: Option<wgpu::Surface<'static>>,
     config: Option<wgpu::SurfaceConfiguration>,
     input: InputState,
-    button: InteractiveButton,
-    slider: Slider,
-    text_input: TextInput,
     viewport: Viewport,
+    // new UI container that handles focus for us
+    ui: Canvas,
+    // keep shared references to widgets so we can inspect their state
+    ui_button: std::rc::Rc<std::cell::RefCell<InteractiveButton>>,
+    ui_slider: std::rc::Rc<std::cell::RefCell<Slider>>,
+    ui_text_input: std::rc::Rc<std::cell::RefCell<TextInput>>,
+    ui_viewport: std::rc::Rc<std::cell::RefCell<ViewportWidget>>,
     window_size: (u32, u32),
     last_update: std::time::Instant,
     // font used for text rendering; built once on resume
@@ -44,26 +48,51 @@ struct EditorApp {
 
 impl EditorApp {
     fn new() -> Self {
-        Self {
+        // create the widgets wrapped in Rc<RefCell> so they can be shared
+        let ui_button = std::rc::Rc::new(std::cell::RefCell::new(
+            InteractiveButton::new(50.0, 50.0, 100.0, 100.0),
+        ));
+        let ui_slider = std::rc::Rc::new(std::cell::RefCell::new(
+            Slider::new(50.0, 200.0, 200.0, 20.0, 0.5),
+        ));
+        let ui_text_input = std::rc::Rc::new(std::cell::RefCell::new(
+            TextInput::new(50.0, 240.0, 200.0, 24.0),
+        ));
+        let ui_viewport = std::rc::Rc::new(std::cell::RefCell::new(ViewportWidget::new(
+            0.0, 0.0, 0.0, 0.0,
+        )));
+
+        let mut app = Self {
             renderer: None,
             window: None,
             surface: None,
             config: None,
             input: InputState::new(),
-            button: InteractiveButton::new(50.0, 50.0, 100.0, 100.0),
-            slider: Slider::new(50.0, 200.0, 200.0, 20.0, 0.5),
-            text_input: TextInput::new(50.0, 240.0, 200.0, 24.0),
             viewport: Viewport {
                 x: 0,
                 y: 0,
                 width: 0,
                 height: 0,
             },
+            // new UI container that handles focus for us
+            ui: Canvas::new(),
+            ui_button: ui_button.clone(),
+            ui_slider: ui_slider.clone(),
+            ui_text_input: ui_text_input.clone(),
+            ui_viewport: ui_viewport.clone(),
             window_size: (0, 0),
             last_update: std::time::Instant::now(),
             font: None,
             font_rx: None,
-        }
+        };
+
+        // register widgets with canvas so the library handles hit/focus
+        app.ui.add(ui_button);
+        app.ui.add(ui_slider);
+        app.ui.add(ui_text_input);
+        app.ui.add(ui_viewport);
+
+        app
     }
 }
 
@@ -159,49 +188,29 @@ impl ApplicationHandler for EditorApp {
                     };
                     renderer.set_viewport(vp);
                     self.viewport = vp;
+                    // keep the viewport widget in sync so it can receive focus
+                    self.ui_viewport.borrow_mut().rect = [
+                        vp.x as f32,
+                        vp.y as f32,
+                        vp.width as f32,
+                        vp.height as f32,
+                    ];
                     self.window_size = (w, h);
                     renderer.resize(w, h);
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.input.set_mouse_position(position.x, position.y);
-                self.button.hovered = self.button.hit(position.x, position.y);
-                if self.slider.dragging {
-                    // update slider value while dragging
-                    self.slider.update_value(position.x);
-                }
-                // change focus based on cursor if not dragging slider
-                if !self.slider.dragging {
-                    if self.text_input.hit(position.x, position.y) {
-                        self.text_input.focused = true;
-                    } else {
-                        self.text_input.focused = false;
-                    }
-                }
+                // hand movement to GUI; this takes care of hover/drag updates
+                self.ui.mouse_move(position.x, position.y);
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let pressed = state == winit::event::ElementState::Pressed;
                 self.input.update_mouse_button(button, pressed);
-                if pressed {
-                    let (mx, my) = self.input.mouse_position();
-                    if self.button.hit(mx, my) {
-                        self.button.pressed = true;
-                    } else {
-                        self.button.pressed = false;
-                    }
-                    // slider thumb press
-                    if self.slider.thumb_hit(mx, my) {
-                        self.slider.dragging = true;
-                    }
-                    // clicking text input will focus it
-                    if self.text_input.hit(mx, my) {
-                        self.text_input.focused = true;
-                    }
-                } else {
-                    self.button.pressed = false;
-                    // stop slider dragging when mouse released
-                    self.slider.dragging = false;
-                }
+                let (mx, my) = self.input.mouse_position();
+                // let the canvas manage focus/pressed/drag states for all
+                // registered widgets
+                self.ui.mouse_input(mx, my, pressed);
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 // existing key handling plus text insertion/backspace
@@ -215,23 +224,16 @@ impl ApplicationHandler for EditorApp {
                     self.input
                         .update_key(code, state == winit::event::ElementState::Pressed);
                 }
-                if self.text_input.focused {
-                    // insert any text from the event
-                    if let Some(txt) = text {
-                        for c in txt.chars() {
-                            if !c.is_control() {
-                                self.text_input.insert_char(c);
-                            }
-                        }
-                    }
-                    // handle backspace key via KeyCode
-                    if state == winit::event::ElementState::Pressed {
-                        use winit::keyboard::KeyCode;
-                        if physical_key == winit::keyboard::PhysicalKey::Code(KeyCode::Backspace) {
-                            self.text_input.backspace();
-                        }
-                    }
-                }
+                // forward keyboard event to whichever widget currently has focus
+                self.ui.keyboard_input(
+                    text.as_deref(),
+                    if let winit::keyboard::PhysicalKey::Code(k) = physical_key {
+                        Some(k)
+                    } else {
+                        None
+                    },
+                    state == winit::event::ElementState::Pressed,
+                );
             }
             _ => (),
         }
@@ -265,8 +267,11 @@ impl ApplicationHandler for EditorApp {
                 && mx < (self.viewport.x + self.viewport.width) as f64
                 && my >= self.viewport.y as f64
                 && my < (self.viewport.y + self.viewport.height) as f64;
-            if inside && !self.button.hovered {
-                renderer.handle_input(&mut self.input, dt);
+            if inside {
+                // move camera only when the viewport itself has focus
+                if self.ui_viewport.borrow().focused {
+                    renderer.handle_input(&mut self.input, dt);
+                }
             }
 
             let mut encoder = renderer.begin_frame();
@@ -285,20 +290,13 @@ impl ApplicationHandler for EditorApp {
                 size: [w as f32, 200.0],
                 color: [0.145, 0.145, 0.145, 1.0],
             });
-            self.button.draw(&mut batch);
-            // draw slider
-            self.slider.draw(&mut batch);
-            // prepare text batch before drawing input
+            // collect UI render commands (including widgets) and convert
+            // them to batches. TextInput.collect already handles placeholder.
+            let mut cmds = Vec::new();
+            self.ui.collect(&mut cmds);
             let mut text_batch = ferrous_gui::TextBatch::new();
-            // draw text input using font batch
-            if let Some(font) = &self.font {
-                if self.text_input.placeholder.is_empty() {
-                    self.text_input.placeholder = "Type here...".to_string();
-                }
-                self.text_input
-                    .draw(&mut batch, &mut text_batch, Some(font));
-            } else {
-                self.text_input.draw(&mut batch, &mut text_batch, None);
+            for cmd in &cmds {
+                cmd.to_batches(&mut batch, &mut text_batch, self.font.as_ref());
             }
 
             // build additional text examples if we have a font
@@ -324,6 +322,32 @@ impl ApplicationHandler for EditorApp {
                     [10.0, 64.0],
                     18.0,
                     [0.7, 0.85, 1.0, 1.0],
+                );
+                // show slider value so we actually reference ui_slider field
+                let val = self.ui_slider.borrow().value;
+                text_batch.draw_text(
+                    font,
+                    &format!("slider = {:.2}", val),
+                    [10.0, 90.0],
+                    18.0,
+                    [1.0, 1.0, 0.2, 1.0],
+                );
+                // show button/ text input state to keep references live
+                let btn_pressed = self.ui_button.borrow().pressed;
+                text_batch.draw_text(
+                    font,
+                    &format!("button pressed = {}", btn_pressed),
+                    [10.0, 110.0],
+                    18.0,
+                    [0.9, 0.5, 0.2, 1.0],
+                );
+                let txt_content = self.ui_text_input.borrow().text.clone();
+                text_batch.draw_text(
+                    font,
+                    &format!("text = '{}'", txt_content),
+                    [10.0, 130.0],
+                    18.0,
+                    [0.5, 0.9, 0.2, 1.0],
                 );
             }
 
