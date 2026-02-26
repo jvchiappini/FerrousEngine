@@ -6,7 +6,7 @@ pub mod binary_reader;
 pub mod font_parser {
     use crate::binary_reader::*;
     use std::collections::HashMap;
-    use std::io::Read;
+    use std::io::{Read, Seek};
 
     #[derive(Debug, Clone)]
     pub struct TableRecord {
@@ -20,6 +20,25 @@ pub mod font_parser {
         data: Vec<u8>,
         tables: HashMap<[u8; 4], TableRecord>,
         index_to_loc_format: i16,
+        /// value read from head table, used to normalize glyph coordinates
+        units_per_em: u16,
+    }
+
+    /// A simplified representation of drawing commands for a glyph.  This is
+    /// deliberately small – only what the engine needs for the Manim-style
+    /// renderer we are building.  Coordinates are normalized (divided by
+    /// `units_per_em`) and are in the same coordinate space as the original
+    /// font (y increasing upward).
+    #[derive(Debug, PartialEq, Clone)]
+    pub enum GlyphCommand {
+        MoveTo(f32, f32),
+        LineTo(f32, f32),
+        QuadTo {
+            ctrl_x: f32,
+            ctrl_y: f32,
+            to_x: f32,
+            to_y: f32,
+        },
     }
 
     impl FontParser {
@@ -30,6 +49,7 @@ pub mod font_parser {
                 data,
                 tables: HashMap::new(),
                 index_to_loc_format: 0,
+                units_per_em: 0,
             };
             parser
                 .read_offset_and_directory()
@@ -74,8 +94,22 @@ pub mod font_parser {
                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "no head table"))?;
             let start = rec.offset as usize;
             let mut cur = std::io::Cursor::new(&self.data[start..(start + rec.length as usize)]);
-            // skip major/minor, fontRevision, checksumAdjustment, magicNumber
-            cur.set_position(12);
+            // head structure (see OpenType spec):
+            // 0: majorVersion u16
+            // 2: minorVersion u16
+            // 4: fontRevision Fixed (32bits)
+            // 8: checkSumAdjustment u32
+            // 12: magicNumber u32
+            // 16: flags u16
+            // 18: unitsPerEm u16
+            // ...
+            // 50: indexToLocFormat i16
+
+            // read unitsPerEm at offset 18
+            cur.set_position(18);
+            self.units_per_em = read_u16_be(&mut cur)?;
+            // read indexToLocFormat at offset 50
+            cur.set_position(50);
             self.index_to_loc_format = read_i16_be(&mut cur)?;
             Ok(())
         }
@@ -170,6 +204,15 @@ pub mod font_parser {
             0
         }
 
+        /// Testing helper: return the raw bytes of the cmap table (if present).
+        #[cfg(test)]
+        pub fn debug_cmap_bytes(&self) -> Option<&[u8]> {
+            self.tables.get(b"cmap").map(|rec| {
+                let start = rec.offset as usize;
+                &self.data[start..start + rec.length as usize]
+            })
+        }
+
         /// For debugging purposes we can query glyf offset from loca
         pub fn glyph_offset(&self, glyph_index: u16) -> Option<u32> {
             let loca = self.tables.get(b"loca")?;
@@ -192,6 +235,244 @@ pub mod font_parser {
                 let off = read_u32_be(&mut cur).ok()?;
                 Some(glyf.offset + off)
             }
+        }
+
+        /// Return the offset (absolute in file) of the specified glyph.  This is
+        /// a thin wrapper around `glyph_offset` which returns `None` if the glyph
+        /// has zero length (empty) or the offset table is missing.
+        fn get_glyph_data_offset(&self, glyph_index: u16) -> Option<usize> {
+            self.glyph_offset(glyph_index).map(|o| o as usize)
+        }
+
+        /// Parse the glyph outline for the given glyph index.  Only simple glyphs
+        /// (numberOfContours >= 0) are handled; composite glyphs return `None`.
+        fn parse_glyph(&self, glyph_index: u16) -> Option<Vec<GlyphCommand>> {
+            let glyf_rec = self.tables.get(b"glyf")?;
+            let off = self.get_glyph_data_offset(glyph_index)?;
+            // if offset points to end of table or beyond, nothing to parse
+            if off as u32 >= glyf_rec.offset + glyf_rec.length {
+                return None;
+            }
+            let relative = off - glyf_rec.offset as usize;
+            let slice = &self.data
+                [glyf_rec.offset as usize..(glyf_rec.offset as usize + glyf_rec.length as usize)];
+            let mut cur = std::io::Cursor::new(&slice[relative..]);
+
+            // header
+            let number_of_contours = read_i16_be(&mut cur).ok()?;
+            let _x_min = read_i16_be(&mut cur).ok()?;
+            let _y_min = read_i16_be(&mut cur).ok()?;
+            let _x_max = read_i16_be(&mut cur).ok()?;
+            let _y_max = read_i16_be(&mut cur).ok()?;
+
+            if number_of_contours < 0 {
+                // composite glyph: skip for now
+                return None;
+            }
+
+            let contour_count = number_of_contours as usize;
+            // read end points
+            let mut end_pts = Vec::with_capacity(contour_count);
+            for _ in 0..contour_count {
+                end_pts.push(read_u16_be(&mut cur).ok()?);
+            }
+            let instruction_length = read_u16_be(&mut cur).ok()? as usize;
+            // skip instructions
+            let _ = cur.seek(std::io::SeekFrom::Current(instruction_length as i64));
+
+            // total points = last end point + 1, or 0 if none
+            let total_points = end_pts.last().map(|v| *v as usize + 1).unwrap_or(0);
+            if total_points == 0 {
+                return Some(Vec::new());
+            }
+
+            // read flags with repeat logic
+            #[derive(Clone, Copy)]
+            struct RawPoint {
+                x: i32,
+                y: i32,
+                on_curve: bool,
+            }
+
+            let mut flags: Vec<u8> = Vec::with_capacity(total_points);
+            while flags.len() < total_points {
+                let flag = {
+                    let mut buf = [0u8; 1];
+                    cur.read_exact(&mut buf).ok()?;
+                    buf[0]
+                };
+                flags.push(flag);
+                if flag & 0x08 != 0 {
+                    // repeat
+                    let mut buf = [0u8; 1];
+                    cur.read_exact(&mut buf).ok()?;
+                    let count = buf[0] as usize;
+                    for _ in 0..count {
+                        flags.push(flag);
+                    }
+                }
+            }
+
+            // read coordinate deltas
+            let mut points: Vec<RawPoint> = Vec::with_capacity(total_points);
+            let mut cur_x = 0i32;
+            let mut cur_y = 0i32;
+            for &flag in &flags {
+                // x
+                let dx = if flag & 0x02 != 0 {
+                    // x-short vector
+                    let mut buf = [0u8; 1];
+                    cur.read_exact(&mut buf).ok()?;
+                    let val = buf[0] as i32;
+                    if flag & 0x10 != 0 {
+                        val
+                    } else {
+                        -val
+                    }
+                } else if flag & 0x10 != 0 {
+                    0
+                } else {
+                    read_i16_be(&mut cur).ok()? as i32
+                };
+                cur_x = cur_x.wrapping_add(dx);
+
+                // y
+                let dy = if flag & 0x04 != 0 {
+                    let mut buf = [0u8; 1];
+                    cur.read_exact(&mut buf).ok()?;
+                    let val = buf[0] as i32;
+                    if flag & 0x20 != 0 {
+                        val
+                    } else {
+                        -val
+                    }
+                } else if flag & 0x20 != 0 {
+                    0
+                } else {
+                    read_i16_be(&mut cur).ok()? as i32
+                };
+                cur_y = cur_y.wrapping_add(dy);
+
+                points.push(RawPoint {
+                    x: cur_x,
+                    y: cur_y,
+                    on_curve: flag & 0x01 != 0,
+                });
+            }
+
+            // helper to normalize a RawPoint to normalized f32
+            let normalize = |x: i32, y: i32| -> (f32, f32) {
+                let scale = self.units_per_em as f32;
+                (x as f32 / scale, y as f32 / scale)
+            };
+
+            // build commands contour by contour
+            let mut commands: Vec<GlyphCommand> = Vec::new();
+            let mut start_index = 0;
+            for &end_pt in &end_pts {
+                let end_index = end_pt as usize;
+                if end_index < start_index || end_index >= points.len() {
+                    break; // malformed
+                }
+                let contour = &points[start_index..=end_index];
+                if contour.is_empty() {
+                    start_index = end_index + 1;
+                    continue;
+                }
+
+                // insert implied on-curve points between consecutive off-curves
+                let mut interp: Vec<RawPoint> = Vec::with_capacity(contour.len() * 2);
+                for i in 0..contour.len() {
+                    interp.push(contour[i]);
+                    let next = &contour[(i + 1) % contour.len()];
+                    if !contour[i].on_curve && !next.on_curve {
+                        let mid_x = (contour[i].x + next.x) / 2;
+                        let mid_y = (contour[i].y + next.y) / 2;
+                        interp.push(RawPoint {
+                            x: mid_x,
+                            y: mid_y,
+                            on_curve: true,
+                        });
+                    }
+                }
+
+                // ensure first point is on-curve
+                if !interp[0].on_curve {
+                    // compute midpoint between last and first
+                    let last = interp.last().unwrap();
+                    let mid_x = (last.x + interp[0].x) / 2;
+                    let mid_y = (last.y + interp[0].y) / 2;
+                    commands.push(GlyphCommand::MoveTo(
+                        mid_x as f32 / self.units_per_em as f32,
+                        mid_y as f32 / self.units_per_em as f32,
+                    ));
+                } else {
+                    let (nx, ny) = normalize(interp[0].x, interp[0].y);
+                    commands.push(GlyphCommand::MoveTo(nx, ny));
+                }
+
+                // iterate through interp points and generate line/quad commands
+                let mut i = 0;
+                while i < interp.len() {
+                    if interp[i].on_curve {
+                        let (_cx, _cy) = normalize(interp[i].x, interp[i].y);
+                        if i + 1 < interp.len() {
+                            if interp[i + 1].on_curve {
+                                let (nx, ny) = normalize(interp[i + 1].x, interp[i + 1].y);
+                                commands.push(GlyphCommand::LineTo(nx, ny));
+                                i += 1;
+                            } else if i + 2 < interp.len() && interp[i + 2].on_curve {
+                                // quad with control at i+1
+                                let (ctrlx, ctrly) = normalize(interp[i + 1].x, interp[i + 1].y);
+                                let (nx, ny) = normalize(interp[i + 2].x, interp[i + 2].y);
+                                commands.push(GlyphCommand::QuadTo {
+                                    ctrl_x: ctrlx,
+                                    ctrl_y: ctrly,
+                                    to_x: nx,
+                                    to_y: ny,
+                                });
+                                i += 2;
+                            } else {
+                                // shouldn't happen, fall back to line
+                                let (nx, ny) = normalize(interp[i + 1].x, interp[i + 1].y);
+                                commands.push(GlyphCommand::LineTo(nx, ny));
+                                i += 1;
+                            }
+                        } else {
+                            // last point; if it's not the starting point, close contour
+                            // by drawing a line back to the first MoveTo coordinate
+                            if let GlyphCommand::MoveTo(sx, sy) = commands.first().cloned().unwrap()
+                            {
+                                let (lx, ly) = normalize(interp[i].x, interp[i].y);
+                                if (lx - sx).abs() > std::f32::EPSILON
+                                    || (ly - sy).abs() > std::f32::EPSILON
+                                {
+                                    commands.push(GlyphCommand::LineTo(sx, sy));
+                                }
+                            }
+                            i += 1;
+                        }
+                    } else {
+                        // off-curve shouldn't appear because we inserted middles; advance
+                        i += 1;
+                    }
+                }
+
+                start_index = end_index + 1;
+            }
+
+            Some(commands)
+        }
+
+        /// Public API: given a character return its outline commands normalized by
+        /// units per em.  If anything goes wrong or the glyph is empty we return an
+        /// empty vector.  This is what the renderer will consume.
+        pub fn get_glyph_outline(&self, c: char) -> Vec<GlyphCommand> {
+            let idx = self.get_glyph_index(c);
+            // even if idx == 0 we attempt to parse; some fonts may place a
+            // valid outline at glyph 0 (notdef). Returning an empty vector only
+            // if parsing fails or glyph data is absent.
+            self.parse_glyph(idx).unwrap_or_default()
         }
     }
 }
@@ -252,6 +533,8 @@ mod tests {
 
         // head table with indexToLocFormat = 0 at byte 50
         let mut head = vec![0u8; 54];
+        // set a sane unitsPerEm value at offset 18 so division never panics
+        head[18..20].copy_from_slice(&1000u16.to_be_bytes());
         head[50..52].copy_from_slice(&0i16.to_be_bytes());
         tables.push((*b"head", head));
 
@@ -292,9 +575,130 @@ mod tests {
     fn test_font_parser_cmap() {
         let font = build_minimal_font();
         let parser = FontParser::new(font).expect("parser must succeed");
+        // debug info to help diagnose mapping failure
+        if let Some(bytes) = parser.debug_cmap_bytes() {
+            eprintln!("cmap bytes: {:?}", bytes);
+        }
         assert_eq!(parser.get_glyph_index('A'), 5);
         assert_eq!(parser.get_glyph_index('B'), 0);
         // no glyf table in the minimal font, glyph_offset should return None
         assert!(parser.glyph_offset(0).is_none());
+    }
+
+    /// Build a tiny font with a single simple glyph (a square) and map 'A' to
+    /// it.  The glyph index used will be 0 and we use indexToLocFormat=1 to
+    /// make building the loca table easier.
+    fn build_font_with_simple_glyph() -> Vec<u8> {
+        let mut tables: Vec<([u8; 4], Vec<u8>)> = Vec::new();
+
+        // cmap similar to minimal but map 'A' -> 0
+        let mut cmap = Vec::new();
+        cmap.extend(&0u16.to_be_bytes()); // version
+        cmap.extend(&1u16.to_be_bytes()); // numSubtables
+        let subtable_record_pos = cmap.len();
+        cmap.extend(&3u16.to_be_bytes()); // platform
+        cmap.extend(&1u16.to_be_bytes()); // encoding
+        cmap.extend(&0u32.to_be_bytes()); // offset placeholder
+
+        let fmt_start = cmap.len();
+        cmap.extend(&4u16.to_be_bytes()); // format
+        cmap.extend(&0u16.to_be_bytes()); // length placeholder
+        cmap.extend(&0u16.to_be_bytes()); // language
+        cmap.extend(&2u16.to_be_bytes()); // segCountX2
+        cmap.extend(&0u16.to_be_bytes()); // searchRange
+        cmap.extend(&0u16.to_be_bytes()); // entrySelector
+        cmap.extend(&0u16.to_be_bytes()); // rangeShift
+        cmap.extend(&('A' as u16).to_be_bytes()); // endCodes
+        cmap.extend(&0u16.to_be_bytes()); // reservedPad
+        cmap.extend(&('A' as u16).to_be_bytes()); // startCodes
+        cmap.extend(&(-65i16).to_be_bytes()); // idDeltas: -65 to map 65->0
+        cmap.extend(&0u16.to_be_bytes()); // idRangeOffsets
+
+        let fmt_length = (cmap.len() - fmt_start) as u16;
+        cmap[fmt_start + 2..fmt_start + 4].copy_from_slice(&fmt_length.to_be_bytes());
+        let offset_val = fmt_start as u32;
+        cmap[subtable_record_pos + 4..subtable_record_pos + 8]
+            .copy_from_slice(&offset_val.to_be_bytes());
+
+        tables.push((*b"cmap", cmap));
+
+        // head table: indexToLocFormat = 1, unitsPerEm = 1000
+        let mut head = vec![0u8; 54];
+        head[18..20].copy_from_slice(&1000u16.to_be_bytes());
+        head[50..52].copy_from_slice(&1i16.to_be_bytes());
+        tables.push((*b"head", head));
+
+        // glyf: simple square with 4 points
+        let mut glyf = Vec::new();
+        glyf.extend(&1i16.to_be_bytes()); // numberOfContours
+        glyf.extend(&0i16.to_be_bytes()); // xMin
+        glyf.extend(&0i16.to_be_bytes()); // yMin
+        glyf.extend(&100i16.to_be_bytes()); // xMax
+        glyf.extend(&100i16.to_be_bytes()); // yMax
+        glyf.extend(&3u16.to_be_bytes()); // endPtsOfContours[0] = 3
+        glyf.extend(&0u16.to_be_bytes()); // instructionLength
+                                          // flags: four on-curve points, no shorts
+        for _ in 0..4 {
+            glyf.push(0x01);
+        }
+        // coords: deltas 0,0 ; 0,100 ;100,0 ;0,-100
+        glyf.extend(&0i16.to_be_bytes());
+        glyf.extend(&0i16.to_be_bytes());
+        glyf.extend(&0i16.to_be_bytes());
+        glyf.extend(&100i16.to_be_bytes());
+        glyf.extend(&100i16.to_be_bytes());
+        glyf.extend(&0i16.to_be_bytes());
+        glyf.extend(&0i16.to_be_bytes());
+        glyf.extend(&(-100i16).to_be_bytes());
+        tables.push((*b"glyf", glyf));
+
+        // loca table with two entries (start of glyph0 and end)
+        let mut loca = Vec::new();
+        loca.extend(&0u32.to_be_bytes());
+        let glyf_len = tables.iter().find(|(t, _)| t == b"glyf").unwrap().1.len() as u32;
+        loca.extend(&glyf_len.to_be_bytes());
+        tables.push((*b"loca", loca));
+
+        // assemble everything same as earlier
+        let mut data = Vec::new();
+        data.extend(&0u32.to_be_bytes());
+        let num_tables = tables.len() as u16;
+        data.extend(&num_tables.to_be_bytes());
+        data.extend(&0u16.to_be_bytes());
+        data.extend(&0u16.to_be_bytes());
+        data.extend(&0u16.to_be_bytes());
+
+        let mut offset = 12 + (16 * tables.len());
+        let mut positions = Vec::new();
+        for (_, tbl) in &tables {
+            positions.push(offset as u32);
+            offset += tbl.len();
+        }
+        for ((tag, tbl), &pos) in tables.iter().zip(&positions) {
+            data.extend(tag);
+            data.extend(&0u32.to_be_bytes());
+            data.extend(&pos.to_be_bytes());
+            data.extend(&(tbl.len() as u32).to_be_bytes());
+        }
+        for (_, tbl) in &tables {
+            data.extend(tbl);
+        }
+        data
+    }
+
+    #[test]
+    fn test_simple_glyph_outline() {
+        let font = build_font_with_simple_glyph();
+        let parser = FontParser::new(font).expect("parser must succeed");
+        let outline = parser.get_glyph_outline('A');
+        // must start with MoveTo and have at least one closing LineTo
+        assert!(matches!(outline.first(), Some(GlyphCommand::MoveTo(_, _))));
+        assert!(outline.len() >= 2);
+        if let Some(GlyphCommand::LineTo(x, y)) = outline.last() {
+            // last line should go back to origin (0,0) because our square
+            assert!((x - 0.0).abs() < 1e-6 && (y - 0.0).abs() < 1e-6);
+        } else {
+            panic!("outline did not close with a LineTo");
+        }
     }
 }
