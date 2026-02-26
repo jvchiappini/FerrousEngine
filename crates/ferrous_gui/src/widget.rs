@@ -34,13 +34,7 @@ pub trait Widget {
     /// can be used for handling non-text keys such as backspace. `pressed`
     /// indicates whether the key was pressed (true) or released (false).
     /// The default implementation is a no-op.
-    fn keyboard_input(
-        &mut self,
-        _text: Option<&str>,
-        _key: Option<KeyCode>,
-        _pressed: bool,
-    ) {
-    }
+    fn keyboard_input(&mut self, _text: Option<&str>, _key: Option<KeyCode>, _pressed: bool) {}
 }
 
 /// Contenedor genérico que alberga varios widgets y los dibuja por orden.
@@ -99,12 +93,7 @@ impl Canvas {
     }
 
     /// forward keyboard events to the currently focused widget (if any).
-    pub fn keyboard_input(
-        &mut self,
-        text: Option<&str>,
-        key: Option<KeyCode>,
-        pressed: bool,
-    ) {
+    pub fn keyboard_input(&mut self, text: Option<&str>, key: Option<KeyCode>, pressed: bool) {
         if let Some(idx) = self.focused {
             if let Some(child) = self.children.get_mut(idx) {
                 child.keyboard_input(text, key, pressed);

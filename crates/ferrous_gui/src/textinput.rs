@@ -118,12 +118,7 @@ impl Widget for TextInput {
         }
     }
 
-    fn keyboard_input(
-        &mut self,
-        text: Option<&str>,
-        key: Option<KeyCode>,
-        pressed: bool,
-    ) {
+    fn keyboard_input(&mut self, text: Option<&str>, key: Option<KeyCode>, pressed: bool) {
         if !self.focused {
             return;
         }

@@ -49,15 +49,15 @@ struct EditorApp {
 impl EditorApp {
     fn new() -> Self {
         // create the widgets wrapped in Rc<RefCell> so they can be shared
-        let ui_button = std::rc::Rc::new(std::cell::RefCell::new(
-            InteractiveButton::new(50.0, 50.0, 100.0, 100.0),
-        ));
-        let ui_slider = std::rc::Rc::new(std::cell::RefCell::new(
-            Slider::new(50.0, 200.0, 200.0, 20.0, 0.5),
-        ));
-        let ui_text_input = std::rc::Rc::new(std::cell::RefCell::new(
-            TextInput::new(50.0, 240.0, 200.0, 24.0),
-        ));
+        let ui_button = std::rc::Rc::new(std::cell::RefCell::new(InteractiveButton::new(
+            50.0, 50.0, 100.0, 100.0,
+        )));
+        let ui_slider = std::rc::Rc::new(std::cell::RefCell::new(Slider::new(
+            50.0, 200.0, 200.0, 20.0, 0.5,
+        )));
+        let ui_text_input = std::rc::Rc::new(std::cell::RefCell::new(TextInput::new(
+            50.0, 240.0, 200.0, 24.0,
+        )));
         let ui_viewport = std::rc::Rc::new(std::cell::RefCell::new(ViewportWidget::new(
             0.0, 0.0, 0.0, 0.0,
         )));
@@ -189,12 +189,8 @@ impl ApplicationHandler for EditorApp {
                     renderer.set_viewport(vp);
                     self.viewport = vp;
                     // keep the viewport widget in sync so it can receive focus
-                    self.ui_viewport.borrow_mut().rect = [
-                        vp.x as f32,
-                        vp.y as f32,
-                        vp.width as f32,
-                        vp.height as f32,
-                    ];
+                    self.ui_viewport.borrow_mut().rect =
+                        [vp.x as f32, vp.y as f32, vp.width as f32, vp.height as f32];
                     self.window_size = (w, h);
                     renderer.resize(w, h);
                 }
