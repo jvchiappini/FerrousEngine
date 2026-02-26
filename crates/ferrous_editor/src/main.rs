@@ -67,6 +67,7 @@ struct EditorApp {
     config: Option<wgpu::SurfaceConfiguration>,
     input: InputState,
     test_button: TestButton,
+    last_update: std::time::Instant,
 }
 
 impl EditorApp {
@@ -78,6 +79,7 @@ impl EditorApp {
             config: None,
             input: InputState::new(),
             test_button: TestButton::new(50.0, 50.0, 100.0, 100.0),
+            last_update: std::time::Instant::now(),
         }
     }
 }
@@ -151,10 +153,15 @@ impl ApplicationHandler for EditorApp {
                     renderer.resize(w, h);
                 }
             }
-            WindowEvent::KeyboardInput { .. } => {
-                // winit 0.30 exposes `physical_key` and `state` in the event
-                // structure. for now we don't translate these to our
-                // `KeyCode` type, so just ignore the event.
+            WindowEvent::KeyboardInput { event, .. } => {
+                // we prefer to use the physical key so WASD movement applies
+                // consistently regardless of keyboard layout. the `event`
+                // structure contains both `physical_key` and `state`.
+                let winit::event::KeyEvent { physical_key, state, .. } = event;
+                if let winit::keyboard::PhysicalKey::Code(code) = physical_key {
+                    self.input
+                        .update_key(code, state == winit::event::ElementState::Pressed);
+                }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.input.set_mouse_position(position.x, position.y);
@@ -183,6 +190,16 @@ impl ApplicationHandler for EditorApp {
         if let (Some(surface), Some(renderer), Some(config)) =
             (&mut self.surface, &mut self.renderer, &mut self.config)
         {
+            // compute delta time
+            let now = std::time::Instant::now();
+            let dt = (now - self.last_update).as_secs_f32();
+            self.last_update = now;
+
+            // update camera based on WASD if the UI isn't grabbing the mouse
+            if !self.test_button.hovered {
+                renderer.handle_input(&self.input, dt);
+            }
+
             let mut encoder = renderer.begin_frame();
 
             let mut batch = GuiBatch::new();

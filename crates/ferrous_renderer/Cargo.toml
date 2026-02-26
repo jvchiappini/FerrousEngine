@@ -10,6 +10,8 @@ thiserror = "1.0"
 ferrous_core = { path = "../ferrous_core" }
 winit = "0.30" # el renderer puede necesitar winit más adelante
 ferrous_gui = { path = "../ferrous_gui" }
+bytemuck = { version = "1.14", features = ["derive"] }
+glam = { workspace = true }
 
 [dev-dependencies]
 pollster = "0.3"

@@ -2,9 +2,12 @@
 
 pub mod pipeline;
 pub mod render_target;
+pub mod mesh;
+pub mod camera;
 
 use crate::pipeline::FerrousPipeline;
 use crate::render_target::RenderTarget;
+use wgpu::util::DeviceExt;
 use ferrous_core::context::EngineContext;
 // re-export UI types so callers de-referencing the renderer can use them
 pub use ferrous_gui::{GuiBatch, GuiQuad};
@@ -25,6 +28,13 @@ pub struct Renderer {
     /// dimensiones actuales del render target
     width: u32,
     height: u32,
+    /// camera state used for the 3D scene
+    pub camera: camera::Camera,
+    camera_uniform: camera::CameraUniform,
+    camera_buffer: wgpu::Buffer,
+    camera_bind_group: wgpu::BindGroup,
+    /// simple scene mesh (cube)
+    pub mesh: mesh::Mesh,
 }
 
 impl Renderer {
@@ -38,6 +48,37 @@ impl Renderer {
         let rt = RenderTarget::new(&context.device, width, height, format);
         let pipe = FerrousPipeline::new(&context.device, format);
         let ui = ferrous_gui::GuiRenderer::new(context.device.clone(), format, 1024, width, height);
+        
+        // create camera resources
+        let camera = camera::Camera {
+            eye: glam::Vec3::new(0.0, 0.0, 5.0),
+            target: glam::Vec3::ZERO,
+            up: glam::Vec3::Y,
+            fovy: 45.0f32.to_radians(),
+            aspect: width as f32 / height as f32,
+            znear: 0.1,
+            zfar: 100.0,
+        };
+        let mut camera_uniform = camera::CameraUniform::new();
+        camera_uniform.update_view_proj(&camera);
+
+        let camera_buffer = context.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Camera Uniform Buffer"),
+            contents: bytemuck::bytes_of(&camera_uniform),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let camera_bind_group = context.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Camera Bind Group"),
+            layout: &pipe.camera_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            }],
+        });
+
+        // simple cube mesh for testing
+        let mesh = mesh::Mesh::cube(&context.device);
         Self {
             context,
             render_target: rt,
@@ -45,6 +86,11 @@ impl Renderer {
             ui_renderer: ui,
             width,
             height,
+            camera,
+            camera_uniform,
+            camera_buffer,
+            camera_bind_group,
+            mesh,
         }
     }
 
@@ -72,8 +118,11 @@ impl Renderer {
         encoder: &mut wgpu::CommandEncoder,
         ui_batch: Option<&ferrous_gui::GuiBatch>,
     ) {
+        // update camera uniform prior to borrowing any fields
+        self.update_camera_buffer();
         let color_view = &self.render_target.color_view;
         let depth_view = &self.render_target.depth_view;
+
         let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Render Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -102,7 +151,12 @@ impl Renderer {
         });
 
         rpass.set_pipeline(&self.pipeline.pipeline);
-        rpass.draw(0..3, 0..1);
+        // bind camera uniform group at index 0
+        rpass.set_bind_group(0, &self.camera_bind_group, &[]);
+        // bind mesh buffers and issue indexed draw
+        rpass.set_vertex_buffer(0, self.mesh.vertex_buffer.slice(..));
+        rpass.set_index_buffer(self.mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+        rpass.draw_indexed(0..self.mesh.index_count, 0, 0..1);
 
         drop(rpass); // cerrar el pase 3D antes de iniciar el pase UI
 
@@ -128,7 +182,10 @@ impl Renderer {
         // directly into the provided view. we still supply a depth attachment
         // from our internal render target so that the pipeline's depth format
         // matches what it was created with.
+        // update camera before drawing, do this before borrowing depth_view
+        self.update_camera_buffer();
         let depth_view = &self.render_target.depth_view;
+
         let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Render Pass (swapchain)"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -157,7 +214,10 @@ impl Renderer {
         });
 
         rpass.set_pipeline(&self.pipeline.pipeline);
-        rpass.draw(0..3, 0..1);
+        rpass.set_bind_group(0, &self.camera_bind_group, &[]);
+        rpass.set_vertex_buffer(0, self.mesh.vertex_buffer.slice(..));
+        rpass.set_index_buffer(self.mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+        rpass.draw_indexed(0..self.mesh.index_count, 0, 0..1);
         drop(rpass);
 
         if let Some(batch) = ui_batch {
@@ -177,5 +237,38 @@ impl Renderer {
             .resize(&self.context.queue, new_width, new_height);
         self.width = new_width;
         self.height = new_height;
+    }
+
+    /// Write the current camera uniform values to the GPU buffer.
+    fn update_camera_buffer(&mut self) {
+        self.camera_uniform.update_view_proj(&self.camera);
+        self.context
+            .queue
+            .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&self.camera_uniform));
+    }
+
+    /// Handle user input to modify the camera position. `dt` is the elapsed
+    /// time since the last call in seconds.
+    pub fn handle_input(&mut self, input: &ferrous_core::input::InputState, dt: f32) {
+        let mut dir = glam::Vec3::ZERO;
+        use ferrous_core::input::KeyCode;
+        if input.is_key_pressed(KeyCode::KeyW) {
+            dir.z -= 1.0;
+        }
+        if input.is_key_pressed(KeyCode::KeyS) {
+            dir.z += 1.0;
+        }
+        if input.is_key_pressed(KeyCode::KeyA) {
+            dir.x -= 1.0;
+        }
+        if input.is_key_pressed(KeyCode::KeyD) {
+            dir.x += 1.0;
+        }
+        if dir.length_squared() > 0.0 {
+            let speed = 5.0;
+            let displacement = dir.normalize() * speed * dt;
+            self.camera.eye += displacement;
+            self.camera.target += displacement; // keep looking in same direction
+        }
     }
 }

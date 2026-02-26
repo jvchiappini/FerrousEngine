@@ -9,6 +9,8 @@
 /// de profundidad de 32 bits.
 pub struct FerrousPipeline {
     pub pipeline: wgpu::RenderPipeline,
+    /// layout for camera uniform bind group (binding 0)
+    pub camera_bind_group_layout: wgpu::BindGroupLayout,
 }
 
 impl FerrousPipeline {
@@ -23,9 +25,24 @@ impl FerrousPipeline {
         let shader =
             device.create_shader_module(wgpu::include_wgsl!("../../../assets/shaders/base.wgsl"));
 
+        // layout for the camera uniform that will be updated each frame
+        let camera_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Camera Bind Group Layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Base Pipeline Layout"),
-            bind_group_layouts: &[],
+            bind_group_layouts: &[&camera_bind_group_layout],
             push_constant_ranges: &[],
         });
 
@@ -35,7 +52,7 @@ impl FerrousPipeline {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[], // no vertex buffers; generamos triángulo por índice
+                buffers: &[crate::mesh::Vertex::desc()],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -69,6 +86,6 @@ impl FerrousPipeline {
             cache: None,
         });
 
-        Self { pipeline }
+        Self { pipeline, camera_bind_group_layout }
     }
 }
