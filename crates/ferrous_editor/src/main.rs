@@ -1,6 +1,6 @@
 use ferrous_core::{context::EngineContext, InputState};
 use ferrous_gui::{GuiBatch, GuiQuad, Widget};
-use ferrous_renderer::Renderer;
+use ferrous_renderer::{Renderer, Viewport};
 
 use std::sync::Arc;
 
@@ -67,6 +67,8 @@ struct EditorApp {
     config: Option<wgpu::SurfaceConfiguration>,
     input: InputState,
     test_button: TestButton,
+    viewport: Viewport,
+    window_size: (u32, u32),
     last_update: std::time::Instant,
 }
 
@@ -79,6 +81,8 @@ impl EditorApp {
             config: None,
             input: InputState::new(),
             test_button: TestButton::new(50.0, 50.0, 100.0, 100.0),
+            viewport: Viewport { x: 0, y: 0, width: 0, height: 0 },
+            window_size: (0, 0),
             last_update: std::time::Instant::now(),
         }
     }
@@ -146,10 +150,20 @@ impl ApplicationHandler for EditorApp {
                 if let (Some(surface), Some(renderer), Some(config)) =
                     (&self.surface, &mut self.renderer, &mut self.config)
                 {
-                    let (w, h) = (new_size.width.max(1), new_size.height.max(1));
+                            let (w, h) = (new_size.width.max(1), new_size.height.max(1));
                     config.width = w;
                     config.height = h;
                     surface.configure(&renderer.context.device, &config);
+                            // compute viewport: leave 300px on left, 200px bottom
+                            let vp = Viewport {
+                                x: 300,
+                                y: 0,
+                                width: w.saturating_sub(300),
+                                height: h.saturating_sub(200),
+                            };
+                            renderer.set_viewport(vp);
+                            self.viewport = vp;
+                            self.window_size = (w, h);
                     renderer.resize(w, h);
                 }
             }
@@ -196,13 +210,32 @@ impl ApplicationHandler for EditorApp {
             self.last_update = now;
 
             // update camera based on WASD if the UI isn't grabbing the mouse
-            if !self.test_button.hovered {
+            // camera movement only when cursor inside viewport
+            let (mx, my) = self.input.mouse_position();
+            let inside = mx >= self.viewport.x as f64
+                && mx < (self.viewport.x + self.viewport.width) as f64
+                && my >= self.viewport.y as f64
+                && my < (self.viewport.y + self.viewport.height) as f64;
+            if inside && !self.test_button.hovered {
                 renderer.handle_input(&self.input, dt);
             }
 
             let mut encoder = renderer.begin_frame();
 
             let mut batch = GuiBatch::new();
+            // draw grey side panel
+            let (w, h) = self.window_size;
+            batch.push(GuiQuad {
+                pos: [0.0, 0.0],
+                size: [300.0, h as f32],
+                color: [0.2, 0.2, 0.2, 1.0],
+            });
+            // draw grey bottom panel
+            batch.push(GuiQuad {
+                pos: [0.0, (h.saturating_sub(200)) as f32],
+                size: [w as f32, 200.0],
+                color: [0.2, 0.2, 0.2, 1.0],
+            });
             self.test_button.draw(&mut batch);
 
             // acquire the swapchain frame before drawing; we will render

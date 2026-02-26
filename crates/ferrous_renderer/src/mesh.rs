@@ -54,49 +54,116 @@ impl Mesh {
     pub fn cube(device: &wgpu::Device) -> Self {
         let vertices: &[Vertex] = &[
             // front (z+)
-            Vertex { position: [-1.0, -1.0,  1.0], color: [1.0, 0.0, 0.0] },
-            Vertex { position: [ 1.0, -1.0,  1.0], color: [1.0, 0.0, 0.0] },
-            Vertex { position: [ 1.0,  1.0,  1.0], color: [1.0, 0.0, 0.0] },
-            Vertex { position: [-1.0,  1.0,  1.0], color: [1.0, 0.0, 0.0] },
+            Vertex {
+                position: [-1.0, -1.0, 1.0],
+                color: [1.0, 0.0, 0.0],
+            },
+            Vertex {
+                position: [1.0, -1.0, 1.0],
+                color: [1.0, 0.0, 0.0],
+            },
+            Vertex {
+                position: [1.0, 1.0, 1.0],
+                color: [1.0, 0.0, 0.0],
+            },
+            Vertex {
+                position: [-1.0, 1.0, 1.0],
+                color: [1.0, 0.0, 0.0],
+            },
             // back (z-)
-            Vertex { position: [-1.0, -1.0, -1.0], color: [0.0, 1.0, 0.0] },
-            Vertex { position: [ 1.0, -1.0, -1.0], color: [0.0, 1.0, 0.0] },
-            Vertex { position: [ 1.0,  1.0, -1.0], color: [0.0, 1.0, 0.0] },
-            Vertex { position: [-1.0,  1.0, -1.0], color: [0.0, 1.0, 0.0] },
+            Vertex {
+                position: [-1.0, -1.0, -1.0],
+                color: [0.0, 1.0, 0.0],
+            },
+            Vertex {
+                position: [1.0, -1.0, -1.0],
+                color: [0.0, 1.0, 0.0],
+            },
+            Vertex {
+                position: [1.0, 1.0, -1.0],
+                color: [0.0, 1.0, 0.0],
+            },
+            Vertex {
+                position: [-1.0, 1.0, -1.0],
+                color: [0.0, 1.0, 0.0],
+            },
             // left (x-)
-            Vertex { position: [-1.0, -1.0, -1.0], color: [0.0, 0.0, 1.0] },
-            Vertex { position: [-1.0, -1.0,  1.0], color: [0.0, 0.0, 1.0] },
-            Vertex { position: [-1.0,  1.0,  1.0], color: [0.0, 0.0, 1.0] },
-            Vertex { position: [-1.0,  1.0, -1.0], color: [0.0, 0.0, 1.0] },
+            Vertex {
+                position: [-1.0, -1.0, -1.0],
+                color: [0.0, 0.0, 1.0],
+            },
+            Vertex {
+                position: [-1.0, -1.0, 1.0],
+                color: [0.0, 0.0, 1.0],
+            },
+            Vertex {
+                position: [-1.0, 1.0, 1.0],
+                color: [0.0, 0.0, 1.0],
+            },
+            Vertex {
+                position: [-1.0, 1.0, -1.0],
+                color: [0.0, 0.0, 1.0],
+            },
             // right (x+)
-            Vertex { position: [ 1.0, -1.0, -1.0], color: [1.0, 1.0, 0.0] },
-            Vertex { position: [ 1.0, -1.0,  1.0], color: [1.0, 1.0, 0.0] },
-            Vertex { position: [ 1.0,  1.0,  1.0], color: [1.0, 1.0, 0.0] },
-            Vertex { position: [ 1.0,  1.0, -1.0], color: [1.0, 1.0, 0.0] },
+            Vertex {
+                position: [1.0, -1.0, -1.0],
+                color: [1.0, 1.0, 0.0],
+            },
+            Vertex {
+                position: [1.0, -1.0, 1.0],
+                color: [1.0, 1.0, 0.0],
+            },
+            Vertex {
+                position: [1.0, 1.0, 1.0],
+                color: [1.0, 1.0, 0.0],
+            },
+            Vertex {
+                position: [1.0, 1.0, -1.0],
+                color: [1.0, 1.0, 0.0],
+            },
             // top (y+)
-            Vertex { position: [-1.0,  1.0, -1.0], color: [1.0, 0.0, 1.0] },
-            Vertex { position: [-1.0,  1.0,  1.0], color: [1.0, 0.0, 1.0] },
-            Vertex { position: [ 1.0,  1.0,  1.0], color: [1.0, 0.0, 1.0] },
-            Vertex { position: [ 1.0,  1.0, -1.0], color: [1.0, 0.0, 1.0] },
+            Vertex {
+                position: [-1.0, 1.0, -1.0],
+                color: [1.0, 0.0, 1.0],
+            },
+            Vertex {
+                position: [-1.0, 1.0, 1.0],
+                color: [1.0, 0.0, 1.0],
+            },
+            Vertex {
+                position: [1.0, 1.0, 1.0],
+                color: [1.0, 0.0, 1.0],
+            },
+            Vertex {
+                position: [1.0, 1.0, -1.0],
+                color: [1.0, 0.0, 1.0],
+            },
             // bottom (y-)
-            Vertex { position: [-1.0, -1.0, -1.0], color: [0.0, 1.0, 1.0] },
-            Vertex { position: [-1.0, -1.0,  1.0], color: [0.0, 1.0, 1.0] },
-            Vertex { position: [ 1.0, -1.0,  1.0], color: [0.0, 1.0, 1.0] },
-            Vertex { position: [ 1.0, -1.0, -1.0], color: [0.0, 1.0, 1.0] },
+            Vertex {
+                position: [-1.0, -1.0, -1.0],
+                color: [0.0, 1.0, 1.0],
+            },
+            Vertex {
+                position: [-1.0, -1.0, 1.0],
+                color: [0.0, 1.0, 1.0],
+            },
+            Vertex {
+                position: [1.0, -1.0, 1.0],
+                color: [0.0, 1.0, 1.0],
+            },
+            Vertex {
+                position: [1.0, -1.0, -1.0],
+                color: [0.0, 1.0, 1.0],
+            },
         ];
 
         let indices: &[u16] = &[
             // front
-            0, 1, 2, 2, 3, 0,
-            // back
-            4, 5, 6, 6, 7, 4,
-            // left
-            8, 9, 10, 10, 11, 8,
-            // right
-            12, 13, 14, 14, 15, 12,
-            // top
-            16, 17, 18, 18, 19, 16,
-            // bottom
+            0, 1, 2, 2, 3, 0, // back
+            4, 5, 6, 6, 7, 4, // left
+            8, 9, 10, 10, 11, 8, // right
+            12, 13, 14, 14, 15, 12, // top
+            16, 17, 18, 18, 19, 16, // bottom
             20, 21, 22, 22, 23, 20,
         ];
 

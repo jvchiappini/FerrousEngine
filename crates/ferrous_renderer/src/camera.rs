@@ -21,6 +21,13 @@ impl Camera {
         let proj = Mat4::perspective_rh(self.fovy, self.aspect, self.znear, self.zfar);
         proj * view
     }
+
+    /// Update aspect ratio and recalc projection when viewport dimensions
+    /// change. The caller should call this any time the viewport width/height
+    /// are modified to keep the projection aspect correct.
+    pub fn set_aspect(&mut self, aspect: f32) {
+        self.aspect = aspect;
+    }
 }
 
 /// Uniform data that will be uploaded to the GPU. The shader only needs the

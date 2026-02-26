@@ -1,16 +1,25 @@
 // ferrous_renderer: biblioteca principal de renderizado
 
+pub mod camera;
+pub mod mesh;
 pub mod pipeline;
 pub mod render_target;
-pub mod mesh;
-pub mod camera;
 
 use crate::pipeline::FerrousPipeline;
 use crate::render_target::RenderTarget;
-use wgpu::util::DeviceExt;
 use ferrous_core::context::EngineContext;
+use wgpu::util::DeviceExt;
 // re-export UI types so callers de-referencing the renderer can use them
 pub use ferrous_gui::{GuiBatch, GuiQuad};
+
+/// Rectangle region used for 3D rendering and input checks.
+#[derive(Copy, Clone, Debug)]
+pub struct Viewport {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
 
 /// Estructura de más alto nivel que orquesta el renderizado.
 ///
@@ -35,6 +44,8 @@ pub struct Renderer {
     camera_bind_group: wgpu::BindGroup,
     /// simple scene mesh (cube)
     pub mesh: mesh::Mesh,
+    /// region within the window where 3D content is drawn
+    pub viewport: Viewport,
 }
 
 impl Renderer {
@@ -48,7 +59,7 @@ impl Renderer {
         let rt = RenderTarget::new(&context.device, width, height, format);
         let pipe = FerrousPipeline::new(&context.device, format);
         let ui = ferrous_gui::GuiRenderer::new(context.device.clone(), format, 1024, width, height);
-        
+
         // create camera resources
         let camera = camera::Camera {
             eye: glam::Vec3::new(0.0, 0.0, 5.0),
@@ -62,23 +73,29 @@ impl Renderer {
         let mut camera_uniform = camera::CameraUniform::new();
         camera_uniform.update_view_proj(&camera);
 
-        let camera_buffer = context.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Camera Uniform Buffer"),
-            contents: bytemuck::bytes_of(&camera_uniform),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        let camera_buffer = context
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Camera Uniform Buffer"),
+                contents: bytemuck::bytes_of(&camera_uniform),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
 
-        let camera_bind_group = context.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Camera Bind Group"),
-            layout: &pipe.camera_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: camera_buffer.as_entire_binding(),
-            }],
-        });
+        let camera_bind_group = context
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Camera Bind Group"),
+                layout: &pipe.camera_bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_buffer.as_entire_binding(),
+                }],
+            });
 
         // simple cube mesh for testing
         let mesh = mesh::Mesh::cube(&context.device);
+        // default viewport is full render target
+        let viewport = Viewport { x: 0, y: 0, width, height };
         Self {
             context,
             render_target: rt,
@@ -91,6 +108,7 @@ impl Renderer {
             camera_buffer,
             camera_bind_group,
             mesh,
+            viewport,
         }
     }
 
@@ -215,6 +233,9 @@ impl Renderer {
 
         rpass.set_pipeline(&self.pipeline.pipeline);
         rpass.set_bind_group(0, &self.camera_bind_group, &[]);
+        // restrict 3D drawing to viewport area
+        let vp = self.viewport;
+        rpass.set_scissor_rect(vp.x, vp.y, vp.width, vp.height);
         rpass.set_vertex_buffer(0, self.mesh.vertex_buffer.slice(..));
         rpass.set_index_buffer(self.mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
         rpass.draw_indexed(0..self.mesh.index_count, 0, 0..1);
@@ -237,14 +258,31 @@ impl Renderer {
             .resize(&self.context.queue, new_width, new_height);
         self.width = new_width;
         self.height = new_height;
+        // if the viewport covered the full previous window, stretch it too
+        if self.viewport.width == self.width && self.viewport.height == self.height {
+            self.viewport.width = new_width;
+            self.viewport.height = new_height;
+            self.camera.set_aspect(new_width as f32 / new_height as f32);
+        }
+    }
+
+    /// Explicitly set the 3D viewport rectangle. This will resize the internal
+    /// render target to match the viewport dimensions and adjust the camera
+    /// projection aspect accordingly.
+    pub fn set_viewport(&mut self, vp: Viewport) {
+        self.viewport = vp;
+        // camera projection should use viewport aspect ratio
+        self.camera.set_aspect(vp.width as f32 / vp.height as f32);
     }
 
     /// Write the current camera uniform values to the GPU buffer.
     fn update_camera_buffer(&mut self) {
         self.camera_uniform.update_view_proj(&self.camera);
-        self.context
-            .queue
-            .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&self.camera_uniform));
+        self.context.queue.write_buffer(
+            &self.camera_buffer,
+            0,
+            bytemuck::bytes_of(&self.camera_uniform),
+        );
     }
 
     /// Handle user input to modify the camera position. `dt` is the elapsed
