@@ -11,7 +11,7 @@
 ## 2. Off-screen Rendering & Framebuffer Architecture (The RTT Foundation)
 
 * [ ] **Multi-Target Render Pass:** Configuración de `ColorAttachments` múltiples para permitir arquitecturas de renderizado diferido (Deferred Rendering).
-* [ ] **Resolution Scaling Logic:** Implementación de texturas de destino desacopladas del tamaño de la ventana física para permitir *Super Sampling* o *Dynamic Resolution*.
+ * [x] **Resolution Scaling Logic:** Implementación de texturas de destino desacopladas del tamaño de la ventana física (viewport independiente) para permitir *Super Sampling* o *Dynamic Resolution*.
 * [ ] **Depth-Stencil State Management:** Implementación de buffers de profundidad de 32 bits (Z-Buffer) con soporte para *Stencil Masking*.
 * [ ] **MSAA Resolver:** Pipeline de resolución de antialiasing multimusestreo antes de pasar la textura al proceso de UI.
 
@@ -24,24 +24,24 @@
 
 ## 4. Geometric Data & Memory Layout
 
-* [ ] **Interleaved vs Non-Interleaved Buffers:** Soporte para diferentes layouts de memoria en Vertex Buffers (AOS vs SOA).
-* [ ] **Unified Mesh Representation:** Estructura de datos interna para mallas con soporte para normales, tangentes y múltiples juegos de UVs.
-* [ ] **AABB (Axis-Aligned Bounding Box) Generation:** Cálculo automático de cajas de colisión para cada malla cargada.
-* [ ] **Vertex Format Mapping:** Mapeo dinámico entre structs de Rust y `wgpu::VertexAttribute`.
+ * [x] **Interleaved vs Non-Interleaved Buffers:** Simple vertex struct con atributos interleaved; bytemuck casting funciona.
+ * [x] **Unified Mesh Representation:** `Mesh` struct encapsula vértices/índices y permite cubo de prueba. (todavía sin UV/normal)
+ * [ ] **AABB (Axis-Aligned Bounding Box) Generation:** Cálculo automático de cajas de colisión para cada malla cargada.
+ * [x] **Vertex Format Mapping:** `Vertex::desc()` devuelve layout compatible con pipeline.
 
 ## 5. Camera & Spatial Mathematics
 
-* [ ] **Frustum Culling:** Implementación de algoritmos de descarte de objetos fuera del campo de visión de la cámara.
-* [ ] **Camera Controller Abstraction:** Separación entre la proyección de cámara (Perspectiva/Ortográfica) y el controlador (FPS, Fly, Arcball).
-* [ ] **Global Uniform Buffer:** Estructura de datos alineada para Matrices de Vista y Proyección compartidas por todos los objetos.
-* [ ] **Coordinate System Normalization:** Gestión de la conversión de coordenadas entre espacio de mundo, espacio de cámara y espacio de clip.
+ * [ ] **Frustum Culling:** Implementación de algoritmos de descarte de objetos fuera del campo de visión de la cámara.
+ * [x] **Camera Controller Abstraction:** `Camera` struct + orbit controller mediante mouse/WASD.
+ * [x] **Global Uniform Buffer:** `CameraUniform` enviado a GPU cada frame.
+ * [ ] **Coordinate System Normalization:** Gestión de la conversión de coordenadas entre espacio de mundo, espacio de cámara y espacio de clip.
 
 ## 6. The Editor Core (UI/UX Integration)
 
-* [ ] **Egui Paint Callback:** Integración de comandos de dibujo personalizados de `wgpu` dentro del ciclo de renderizado de la UI.
-* [ ] **Texture ID Mapping:** Sistema para convertir `wgpu::TextureView` en `egui::TextureId` de manera dinámica.
-* [ ] **Input Propagation System:** Lógica para decidir si un clic pertenece a un widget de la UI o debe ser procesado por la escena 3D.
-* [ ] **Docking Workspace:** Implementación de un layout persistente con paneles flotantes y anclados (Hierarchy, Inspector, Viewport).
+ * [ ] **Egui Paint Callback:** Integración de comandos de dibujo personalizados de `wgpu` dentro del ciclo de renderizado de la UI.
+ * [ ] **Texture ID Mapping:** Sistema para convertir `wgpu::TextureView` en `egui::TextureId` de manera dinámica.
+ * [x] **Input Propagation System:** Lógica para decidir si un clic pertenece a un widget de la UI o debe ser procesado por la escena 3D (viewport checks & button hover).
+ * [ ] **Docking Workspace:** Implementación de un layout persistente con paneles flotantes y anclados (Hierarchy, Inspector, Viewport).
 
 ## 7. Entity Component System (Data-Oriented Design)
 
