@@ -1,7 +1,7 @@
 use ferrous_assets::Font;
 use ferrous_core::{context::EngineContext, InputState};
-use ferrous_gui::{GuiBatch, GuiQuad, InteractiveButton, Slider};
 use ferrous_gui::TextInput;
+use ferrous_gui::{GuiBatch, GuiQuad, InteractiveButton, Slider};
 use ferrous_renderer::{Renderer, Viewport};
 use std::sync::Arc;
 
@@ -35,6 +35,11 @@ struct EditorApp {
     last_update: std::time::Instant,
     // font used for text rendering; built once on resume
     font: Option<Font>,
+    // receiver for a background font loader thread. we spawn once on resume
+    // and then poll the channel during the update loop; this allows the
+    // heavy work (file I/O + atlas building) to happen off the winit event
+    // thread so the UI doesn't freeze while the font is being prepared.
+    font_rx: Option<std::sync::mpsc::Receiver<Font>>,
 }
 
 impl EditorApp {
@@ -57,6 +62,7 @@ impl EditorApp {
             window_size: (0, 0),
             last_update: std::time::Instant::now(),
             font: None,
+            font_rx: None,
         }
     }
 }
@@ -105,19 +111,24 @@ impl ApplicationHandler for EditorApp {
         };
         surface.configure(&device_for_surface, &config);
 
-        let mut renderer = Renderer::new(context, config.width, config.height, config.format);
+        let renderer = Renderer::new(context, config.width, config.height, config.format);
 
         // load a real font file using the new high-level loader.
-        let font = Font::load(
-            "assets/fonts/Roboto-Regular.ttf",
-            &renderer.context.device,
-            &renderer.context.queue,
-            ' '..'~',
-        );
-        // hand atlas to renderer which will forward to its GUI component
-        renderer.set_font_atlas(&font.atlas.view, &font.atlas.sampler);
-
-        self.font = Some(font);
+        // spawn a thread to do the actual loading. the device/queue are
+        // `Arc`'d inside `EngineContext` so we can safely clone them and
+        // move them across threads. Font::load does some GPU work; in
+        // practice wgpu devices are `Send`/`Sync` and allow this, but even
+        // if they didn’t we could split the work (parse+pixel gen on the
+        // thread, texture creation back on the main thread).
+        let device = renderer.context.device.clone();
+        let queue = renderer.context.queue.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let font = Font::load("assets/fonts/Roboto-Regular.ttf", &device, &queue, ' '..'~');
+            // ignore send error; receiver can be dropped if app exits early
+            let _ = tx.send(font);
+        });
+        self.font_rx = Some(rx);
 
         self.renderer = Some(renderer);
         self.surface = Some(surface);
@@ -216,9 +227,7 @@ impl ApplicationHandler for EditorApp {
                     // handle backspace key via KeyCode
                     if state == winit::event::ElementState::Pressed {
                         use winit::keyboard::KeyCode;
-                        if physical_key
-                            == winit::keyboard::PhysicalKey::Code(KeyCode::Backspace)
-                        {
+                        if physical_key == winit::keyboard::PhysicalKey::Code(KeyCode::Backspace) {
                             self.text_input.backspace();
                         }
                     }
@@ -233,6 +242,17 @@ impl ApplicationHandler for EditorApp {
         if let (Some(surface), Some(renderer), Some(config)) =
             (&mut self.surface, &mut self.renderer, &mut self.config)
         {
+            // poll the background loader; if a font has arrived we
+            // install it and hand the atlas off to the renderer.
+            if self.font.is_none() {
+                if let Some(rx) = &self.font_rx {
+                    if let Ok(font) = rx.try_recv() {
+                        renderer.set_font_atlas(&font.atlas.view, &font.atlas.sampler);
+                        self.font = Some(font);
+                        self.font_rx = None; // not needed anymore
+                    }
+                }
+            }
             // compute delta time
             let now = std::time::Instant::now();
             let dt = (now - self.last_update).as_secs_f32();
@@ -275,7 +295,8 @@ impl ApplicationHandler for EditorApp {
                 if self.text_input.placeholder.is_empty() {
                     self.text_input.placeholder = "Type here...".to_string();
                 }
-                self.text_input.draw(&mut batch, &mut text_batch, Some(font));
+                self.text_input
+                    .draw(&mut batch, &mut text_batch, Some(font));
             } else {
                 self.text_input.draw(&mut batch, &mut text_batch, None);
             }
