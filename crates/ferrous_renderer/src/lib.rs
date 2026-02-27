@@ -2,6 +2,7 @@
 
 pub mod camera;
 pub mod mesh;
+pub mod meshes; // contains specialised geometry helpers like cube
 pub mod pipeline;
 pub mod render_target;
 
@@ -44,7 +45,8 @@ pub struct Renderer {
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     /// simple scene mesh (cube)
-    pub mesh: mesh::Mesh,
+        /// colección de mallas que componen la escena 3D
+        pub meshes: Vec<mesh::Mesh>,
     /// region within the window where 3D content is drawn
     pub viewport: Viewport,
     /// orbital camera state
@@ -98,7 +100,9 @@ impl Renderer {
             });
 
         // simple cube mesh for testing
-        let mesh = mesh::Mesh::cube(&context.device);
+            // no añadimos ninguna malla por defecto; la aplicación decide qué
+            // dibujar mediante `add_mesh`.
+            let meshes = Vec::new();
         // default viewport is full render target
         let viewport = Viewport {
             x: 0,
@@ -120,7 +124,7 @@ impl Renderer {
             camera_uniform,
             camera_buffer,
             camera_bind_group,
-            mesh,
+            meshes,
             viewport,
             yaw,
             pitch,
@@ -188,10 +192,12 @@ impl Renderer {
         rpass.set_pipeline(&self.pipeline.pipeline);
         // bind camera uniform group at index 0
         rpass.set_bind_group(0, &self.camera_bind_group, &[]);
-        // bind mesh buffers and issue indexed draw
-        rpass.set_vertex_buffer(0, self.mesh.vertex_buffer.slice(..));
-        rpass.set_index_buffer(self.mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-        rpass.draw_indexed(0..self.mesh.index_count, 0, 0..1);
+        // draw each mesh submitted by the application
+        for mesh in &self.meshes {
+            rpass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+            rpass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            rpass.draw_indexed(0..mesh.index_count, 0, 0..1);
+        }
 
         drop(rpass); // cerrar el pase 3D antes de iniciar el pase UI
 
@@ -254,9 +260,11 @@ impl Renderer {
         // restrict 3D drawing to viewport area
         let vp = self.viewport;
         rpass.set_scissor_rect(vp.x, vp.y, vp.width, vp.height);
-        rpass.set_vertex_buffer(0, self.mesh.vertex_buffer.slice(..));
-        rpass.set_index_buffer(self.mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-        rpass.draw_indexed(0..self.mesh.index_count, 0, 0..1);
+        for mesh in &self.meshes {
+            rpass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+            rpass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            rpass.draw_indexed(0..mesh.index_count, 0, 0..1);
+        }
         drop(rpass);
 
         if let Some(batch) = ui_batch {
@@ -296,6 +304,16 @@ impl Renderer {
         self.viewport = vp;
         // camera projection should use viewport aspect ratio
         self.camera.set_aspect(vp.width as f32 / vp.height as f32);
+    }
+
+    /// Añade una malla a la lista que se dibuja cada frame.
+    pub fn add_mesh(&mut self, mesh: mesh::Mesh) {
+        self.meshes.push(mesh);
+    }
+
+    /// Elimina todas las mallas de la escena.
+    pub fn clear_meshes(&mut self) {
+        self.meshes.clear();
     }
 
     /// Write the current camera uniform values to the GPU buffer.

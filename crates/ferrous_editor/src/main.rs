@@ -17,6 +17,10 @@ struct EditorApp {
     // Tamaños de paneles dinámicos
     panel_left_w: u32,
     panel_bottom_h: u32,
+    // estado auxiliar para detectar clics en el botón
+    button_was_pressed: bool,
+    // petición de agregar cubo, consumida en draw_3d
+    add_cube: bool,
 }
 
 impl Default for EditorApp {
@@ -30,6 +34,8 @@ impl Default for EditorApp {
             ui_viewport: Rc::new(RefCell::new(ViewportWidget::new(0.0, 0.0, 0.0, 0.0))),
             panel_left_w: 300,
             panel_bottom_h: 200,
+            button_was_pressed: false,
+            add_cube: false,
         }
     }
 }
@@ -53,6 +59,14 @@ impl FerrousApp for EditorApp {
             width: win_w.saturating_sub(self.panel_left_w),
             height: win_h.saturating_sub(self.panel_bottom_h),
         };
+
+        // detectamos un clic completo en el botón (pressed -> released)
+        let pressed = self.ui_button.borrow().pressed;
+        if !pressed && self.button_was_pressed {
+            // el botón fue soltado, generamos la solicitud de cubo
+            self.add_cube = true;
+        }
+        self.button_was_pressed = pressed;
     }
 
     fn draw_ui(
@@ -90,6 +104,14 @@ impl FerrousApp for EditorApp {
                 24.0,
                 [1.0, 1.0, 1.0, 1.0],
             );
+            // dibujo del texto del botón
+            text.draw_text(
+                font,
+                "Add cube",
+                [55.0, 80.0],
+                18.0,
+                [1.0, 1.0, 1.0, 1.0],
+            );
             let slider_val = self.ui_slider.borrow().value;
             text.draw_text(
                 font,
@@ -101,10 +123,16 @@ impl FerrousApp for EditorApp {
         }
     }
 
-    fn draw_3d(&mut self, _renderer: &mut Renderer, _ctx: &mut AppContext) {
-        // Como el Renderer ya sabe el tamaño del Viewport,
-        // aquí solo mandarías a dibujar tus modelos 3D, luces, etc.
-        // renderer.draw_mesh(...);
+    fn draw_3d(&mut self, renderer: &mut Renderer, _ctx: &mut AppContext) {
+        // Cuando se haya solicitado mediante el botón, añadimos un cubo
+        if self.add_cube {
+            // el cubo se crea usando el dispositivo que tiene el renderer
+            let mesh = ferrous_renderer::mesh::Mesh::cube(&renderer.context.device);
+            renderer.add_mesh(mesh);
+            self.add_cube = false;
+        }
+
+        // otras cargas 3D irían aquí
     }
 }
 

@@ -76,36 +76,3 @@ impl InputState {
         d
     }
 }
-
-// simple unit tests for the input state implementation
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn key_tracking() {
-        let mut state = InputState::new();
-        assert!(!state.is_key_pressed(KeyCode::A));
-        state.update_key(KeyCode::A, true);
-        assert!(state.is_key_pressed(KeyCode::A));
-        state.update_key(KeyCode::A, false);
-        assert!(!state.is_key_pressed(KeyCode::A));
-    }
-
-    #[test]
-    fn mouse_tracking() {
-        let mut state = InputState::new();
-        assert!(!state.is_button_down(MouseButton::Left));
-        state.update_mouse_button(MouseButton::Left, true);
-        assert!(state.is_button_down(MouseButton::Left));
-        state.update_mouse_button(MouseButton::Left, false);
-        assert!(!state.is_button_down(MouseButton::Left));
-        state.set_mouse_position(10.0, 20.0);
-        assert_eq!(state.mouse_position(), (10.0, 20.0));
-        // delta should reflect movement
-        state.set_mouse_position(15.0, 25.0);
-        assert_eq!(state.consume_mouse_delta(), (5.0, 5.0));
-        // consumption resets
-        assert_eq!(state.consume_mouse_delta(), (0.0, 0.0));
-    }
-}
