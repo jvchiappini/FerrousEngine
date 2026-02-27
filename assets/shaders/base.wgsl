@@ -13,6 +13,13 @@ struct Camera {
 @group(0) @binding(0)
 var<uniform> camera : Camera;
 
+struct Model {
+    model : mat4x4<f32>,
+};
+
+@group(1) @binding(0)
+var<uniform> model : Model;
+
 struct VsIn {
     @location(0) position : vec3<f32>,
     @location(1) color : vec3<f32>,
@@ -21,7 +28,9 @@ struct VsIn {
 @vertex
 fn vs_main(in: VsIn) -> VsOut {
     var out : VsOut;
-    out.clip_pos = camera.view_proj * vec4<f32>(in.position, 1.0);
+    // apply model transform before camera
+    let world_pos = model.model * vec4<f32>(in.position, 1.0);
+    out.clip_pos = camera.view_proj * world_pos;
     out.color = in.color;
     return out;
 }

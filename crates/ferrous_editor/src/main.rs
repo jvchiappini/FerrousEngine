@@ -1,17 +1,19 @@
+// header imports
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use ferrous_app::{App, AppContext, FerrousApp};
 use ferrous_assets::font::Font;
 use ferrous_gui::{
-    GuiBatch, GuiQuad, InteractiveButton, Slider, TextBatch, TextInput, Ui, ViewportWidget,
+    GuiBatch, GuiQuad, InteractiveButton, Slider, TextBatch, Ui, ViewportWidget,
 };
+use ferrous_gui::Widget;
 use ferrous_renderer::{Renderer, Viewport};
 
+// application state
 struct EditorApp {
     ui_button: Rc<RefCell<InteractiveButton>>,
-    ui_slider: Rc<RefCell<Slider>>,
-    ui_text_input: Rc<RefCell<TextInput>>,
+    // sliders and text input removed (legacy)
     ui_viewport: Rc<RefCell<ViewportWidget>>,
 
     // Tamaños de paneles dinámicos
@@ -21,6 +23,10 @@ struct EditorApp {
     button_was_pressed: bool,
     // petición de agregar cubo, consumida en draw_3d
     add_cube: bool,
+    // informacion de objetos añadidos
+    objects: Vec<(String, usize)>, // (name, renderer index)
+    // sliders for each objects' x,y,z position
+    object_sliders: Vec<[Slider; 3]>,
 }
 
 impl Default for EditorApp {
@@ -29,13 +35,14 @@ impl Default for EditorApp {
             ui_button: Rc::new(RefCell::new(InteractiveButton::new(
                 50.0, 50.0, 100.0, 100.0,
             ))),
-            ui_slider: Rc::new(RefCell::new(Slider::new(50.0, 200.0, 200.0, 20.0, 0.5))),
-            ui_text_input: Rc::new(RefCell::new(TextInput::new(50.0, 240.0, 200.0, 24.0))),
+            // sliders/text input not used anymore
             ui_viewport: Rc::new(RefCell::new(ViewportWidget::new(0.0, 0.0, 0.0, 0.0))),
             panel_left_w: 300,
             panel_bottom_h: 200,
             button_was_pressed: false,
             add_cube: false,
+            objects: Vec::new(),
+            object_sliders: Vec::new(),
         }
     }
 }
@@ -43,8 +50,6 @@ impl Default for EditorApp {
 impl FerrousApp for EditorApp {
     fn configure_ui(&mut self, ui: &mut Ui) {
         ui.add(self.ui_button.clone());
-        ui.add(self.ui_slider.clone());
-        ui.add(self.ui_text_input.clone());
         ui.register_viewport(self.ui_viewport.clone());
     }
 
@@ -63,10 +68,19 @@ impl FerrousApp for EditorApp {
         // detectamos un clic completo en el botón (pressed -> released)
         let pressed = self.ui_button.borrow().pressed;
         if !pressed && self.button_was_pressed {
-            // el botón fue soltado, generamos la solicitud de cubo
             self.add_cube = true;
         }
         self.button_was_pressed = pressed;
+
+        // process slider input manually for each object slider
+        let (mx, my) = ctx.input.mouse_position();
+        let down = ctx.input.is_button_down(ferrous_core::input::MouseButton::Left);
+        for sliders in &mut self.object_sliders {
+            for s in sliders.iter_mut() {
+                s.mouse_move(mx, my);
+                s.mouse_input(mx, my, down);
+            }
+        }
     }
 
     fn draw_ui(
@@ -104,7 +118,8 @@ impl FerrousApp for EditorApp {
                 24.0,
                 [1.0, 1.0, 1.0, 1.0],
             );
-            // dibujo del texto del botón
+
+            // texto del botón
             text.draw_text(
                 font,
                 "Add cube",
@@ -112,27 +127,62 @@ impl FerrousApp for EditorApp {
                 18.0,
                 [1.0, 1.0, 1.0, 1.0],
             );
-            let slider_val = self.ui_slider.borrow().value;
-            text.draw_text(
-                font,
-                &format!("Slider: {:.2}", slider_val),
-                [10.0, 90.0],
-                18.0,
-                [0.8, 0.8, 0.8, 1.0],
-            );
+
+            // ahora dibujamos el panel de objetos con sus sliders
+            let mut y_offset = 140.0;
+            for (i, (name, _idx)) in self.objects.iter().enumerate() {
+                text.draw_text(
+                    font,
+                    name,
+                    [10.0, y_offset],
+                    16.0,
+                    [1.0, 1.0, 0.0, 1.0],
+                );
+                y_offset += 20.0;
+                if let Some(sliders) = self.object_sliders.get_mut(i) {
+                    // update slider positions before drawing
+                    sliders[0].rect[0] = 10.0;
+                    sliders[0].rect[1] = y_offset;
+                    sliders[1].rect[0] = 10.0;
+                    sliders[1].rect[1] = y_offset + 20.0;
+                    sliders[2].rect[0] = 10.0;
+                    sliders[2].rect[1] = y_offset + 40.0;
+                    sliders[0].draw(gui);
+                    sliders[1].draw(gui);
+                    sliders[2].draw(gui);
+                }
+                y_offset += 30.0;
+            }
         }
     }
 
     fn draw_3d(&mut self, renderer: &mut Renderer, _ctx: &mut AppContext) {
         // Cuando se haya solicitado mediante el botón, añadimos un cubo
         if self.add_cube {
-            // el cubo se crea usando el dispositivo que tiene el renderer
             let mesh = ferrous_renderer::mesh::Mesh::cube(&renderer.context.device);
-            renderer.add_mesh(mesh);
+            let idx = renderer.add_object(mesh, ferrous_renderer::glam::Vec3::ZERO);
+            let name = format!("Cube {}", self.objects.len() + 1);
+            self.objects.push((name, idx));
+            // crear sliders con valores iniciales basados en la posición (0)
+            let zero = 0.5; // (0 +10)/20
+            self.object_sliders.push([
+                Slider::new(10.0, 0.0, 150.0, 16.0, zero),
+                Slider::new(10.0, 0.0, 150.0, 16.0, zero),
+                Slider::new(10.0, 0.0, 150.0, 16.0, zero),
+            ]);
             self.add_cube = false;
         }
 
-        // otras cargas 3D irían aquí
+        // sincronizamos posiciones de sliders con el renderer
+        for (i, sliders) in self.object_sliders.iter().enumerate() {
+            if i < self.objects.len() {
+                let idx = self.objects[i].1;
+                let x = sliders[0].value * 20.0 - 10.0;
+                let y = sliders[1].value * 20.0 - 10.0;
+                let z = sliders[2].value * 20.0 - 10.0;
+                renderer.set_object_position(idx, ferrous_renderer::glam::Vec3::new(x, y, z));
+            }
+        }
     }
 }
 

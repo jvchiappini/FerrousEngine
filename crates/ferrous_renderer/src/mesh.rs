@@ -1,4 +1,3 @@
-
 /// Simple vertex type for the renderer.
 ///
 /// Position and color are packed as vec3<f32> each so that they fit nicely in

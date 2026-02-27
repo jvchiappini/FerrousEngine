@@ -7,6 +7,9 @@ pub mod pipeline;
 pub mod render_target;
 
 use crate::pipeline::FerrousPipeline;
+// expose glam to downstream crates so they don't need to depend on a
+// specific version separately (avoids duplicate versions in workspace)
+pub use glam;
 use crate::render_target::RenderTarget;
 use ferrous_core::context::EngineContext;
 use ferrous_gui::TextBatch;
@@ -45,14 +48,63 @@ pub struct Renderer {
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     /// simple scene mesh (cube)
-        /// colección de mallas que componen la escena 3D
-        pub meshes: Vec<mesh::Mesh>,
+    /// colección de mallas que componen la escena 3D
+        /// objetos renderizables en la escena
+        pub objects: Vec<RenderObject>,
     /// region within the window where 3D content is drawn
     pub viewport: Viewport,
     /// orbital camera state
     yaw: f32,
     pitch: f32,
     distance: f32,
+}
+
+/// A mesh instance with its own transform data.
+pub struct RenderObject {
+    pub mesh: mesh::Mesh,
+    /// world-space translation only for now
+    pub position: glam::Vec3,
+    model_buffer: wgpu::Buffer,
+    model_bind_group: wgpu::BindGroup,
+}
+
+impl RenderObject {
+    /// create a new render object from a mesh and initial position.
+    fn new(
+        mesh: mesh::Mesh,
+        position: glam::Vec3,
+        device: &wgpu::Device,
+        model_layout: &wgpu::BindGroupLayout,
+    ) -> Self {
+        // create buffer holding the model matrix
+        let mat: glam::Mat4 = glam::Mat4::from_translation(position);
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Model Matrix Buffer"),
+            contents: bytemuck::cast_slice(&[mat.to_cols_array()]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Model Bind Group"),
+            layout: model_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        });
+        Self {
+            mesh,
+            position,
+            model_buffer: buffer,
+            model_bind_group: bind_group,
+        }
+    }
+
+    /// update the position and write new matrix to GPU buffer
+    fn set_position(&mut self, queue: &wgpu::Queue, pos: glam::Vec3) {
+        self.position = pos;
+        let mat: glam::Mat4 = glam::Mat4::from_translation(pos);
+        queue.write_buffer(&self.model_buffer, 0, bytemuck::cast_slice(&[mat.to_cols_array()]));
+    }
 }
 
 impl Renderer {
@@ -100,9 +152,11 @@ impl Renderer {
             });
 
         // simple cube mesh for testing
-            // no añadimos ninguna malla por defecto; la aplicación decide qué
-            // dibujar mediante `add_mesh`.
-            let meshes = Vec::new();
+        // no añadimos ninguna malla por defecto; la aplicación decide qué
+        // dibujar mediante `add_mesh`.
+            // no añadimos ningún objeto por defecto; la aplicación decide qué
+            // instanciar mediante `add_object`.
+            let objects = Vec::new();
         // default viewport is full render target
         let viewport = Viewport {
             x: 0,
@@ -124,7 +178,7 @@ impl Renderer {
             camera_uniform,
             camera_buffer,
             camera_bind_group,
-            meshes,
+            objects,
             viewport,
             yaw,
             pitch,
@@ -192,11 +246,13 @@ impl Renderer {
         rpass.set_pipeline(&self.pipeline.pipeline);
         // bind camera uniform group at index 0
         rpass.set_bind_group(0, &self.camera_bind_group, &[]);
-        // draw each mesh submitted by the application
-        for mesh in &self.meshes {
-            rpass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-            rpass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            rpass.draw_indexed(0..mesh.index_count, 0, 0..1);
+        // draw each object submitted by the application (camera already bound)
+        for obj in &self.objects {
+            // bind this object's model transform
+            rpass.set_bind_group(1, &obj.model_bind_group, &[]);
+            rpass.set_vertex_buffer(0, obj.mesh.vertex_buffer.slice(..));
+            rpass.set_index_buffer(obj.mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            rpass.draw_indexed(0..obj.mesh.index_count, 0, 0..1);
         }
 
         drop(rpass); // cerrar el pase 3D antes de iniciar el pase UI
@@ -260,10 +316,11 @@ impl Renderer {
         // restrict 3D drawing to viewport area
         let vp = self.viewport;
         rpass.set_scissor_rect(vp.x, vp.y, vp.width, vp.height);
-        for mesh in &self.meshes {
-            rpass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-            rpass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            rpass.draw_indexed(0..mesh.index_count, 0, 0..1);
+        for obj in &self.objects {
+            rpass.set_bind_group(1, &obj.model_bind_group, &[]);
+            rpass.set_vertex_buffer(0, obj.mesh.vertex_buffer.slice(..));
+            rpass.set_index_buffer(obj.mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            rpass.draw_indexed(0..obj.mesh.index_count, 0, 0..1);
         }
         drop(rpass);
 
@@ -306,14 +363,33 @@ impl Renderer {
         self.camera.set_aspect(vp.width as f32 / vp.height as f32);
     }
 
-    /// Añade una malla a la lista que se dibuja cada frame.
-    pub fn add_mesh(&mut self, mesh: mesh::Mesh) {
-        self.meshes.push(mesh);
+
+    /// Adds a mesh instance positioned at `pos`.
+    ///
+    /// Returns the index of the new object, which the caller can later use to
+    /// modify its transform.
+    pub fn add_object(&mut self, mesh: mesh::Mesh, pos: glam::Vec3) -> usize {
+        let obj = RenderObject::new(
+            mesh,
+            pos,
+            &self.context.device,
+            &self.pipeline.model_bind_group_layout,
+        );
+        self.objects.push(obj);
+        self.objects.len() - 1
     }
 
-    /// Elimina todas las mallas de la escena.
-    pub fn clear_meshes(&mut self) {
-        self.meshes.clear();
+    /// Update the position of an existing object.
+    pub fn set_object_position(&mut self, idx: usize, pos: glam::Vec3) {
+        if let Some(obj) = self.objects.get_mut(idx) {
+            obj.set_position(&self.context.queue, pos);
+        }
+    }
+
+    /// Query the current position of an object; returns `None` if index is
+    /// out of range.
+    pub fn get_object_position(&self, idx: usize) -> Option<glam::Vec3> {
+        self.objects.get(idx).map(|o| o.position)
     }
 
     /// Write the current camera uniform values to the GPU buffer.

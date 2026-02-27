@@ -11,6 +11,8 @@ pub struct FerrousPipeline {
     pub pipeline: wgpu::RenderPipeline,
     /// layout for camera uniform bind group (binding 0)
     pub camera_bind_group_layout: wgpu::BindGroupLayout,
+    /// layout for model transform uniform (binding 0 in group 1)
+    pub model_bind_group_layout: wgpu::BindGroupLayout,
 }
 
 impl FerrousPipeline {
@@ -40,9 +42,26 @@ impl FerrousPipeline {
             }],
         });
 
+        // layout for per-object model matrix; callers will create one bind
+        // group per mesh that supplies this uniform. we keep it separate so
+        // we can bind group 0 (camera) and then 1 (model) when drawing.
+        let model_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Model Bind Group Layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Base Pipeline Layout"),
-            bind_group_layouts: &[&camera_bind_group_layout],
+            bind_group_layouts: &[&camera_bind_group_layout, &model_bind_group_layout],
             push_constant_ranges: &[],
         });
 
@@ -86,6 +105,6 @@ impl FerrousPipeline {
             cache: None,
         });
 
-        Self { pipeline, camera_bind_group_layout }
+        Self { pipeline, camera_bind_group_layout, model_bind_group_layout }
     }
 }

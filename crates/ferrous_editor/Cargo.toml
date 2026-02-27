@@ -14,6 +14,7 @@ ferrous_app = { path = "../ferrous_app" }
 # direct GPU types for configuration
 wgpu = "23.0"
 
+
 # windowing and event loop
 winit = "0.30"
 # helper to block on async initialization
