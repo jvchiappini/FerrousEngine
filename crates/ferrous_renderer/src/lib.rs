@@ -7,14 +7,14 @@ pub mod render_target;
 
 use crate::pipeline::FerrousPipeline;
 use crate::render_target::RenderTarget;
-use ferrous_gui::TextBatch;
 use ferrous_core::context::EngineContext;
+use ferrous_gui::TextBatch;
 use wgpu::util::DeviceExt;
 // re-export UI types so callers de-referencing the renderer can use them
 pub use ferrous_gui::{GuiBatch, GuiQuad};
 
 /// Rectangle region used for 3D rendering and input checks.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Viewport {
     pub x: u32,
     pub y: u32,

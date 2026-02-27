@@ -5,6 +5,7 @@ members = [
     "crates/ferrous_editor",
     "crates/ferrous_gui",
     "crates/ferrous_assets",
+    "crates/ferrous_app",
 ]
 resolver = "2"
 

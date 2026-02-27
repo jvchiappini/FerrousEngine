@@ -14,6 +14,9 @@ glam = "0.29"
 # font atlas generator lives in the assets crate
 ferrous_assets = { path = "../ferrous_assets" }
 
+# the UI library uses `InputState` type when routing events; pull in core so
+# users don't need to import it separately.
+ferrous_core = { path = "../ferrous_core" }
 # we expose some input-related helpers that rely on winit key codes;
 # adding a dependency here keeps the types available for users of the
 # GUI library. This is a lightweight crate and is already used by the

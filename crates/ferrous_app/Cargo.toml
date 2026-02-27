@@ -1,0 +1,15 @@
+[package]
+name = "ferrous_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ferrous_renderer = { path = "../ferrous_renderer" }
+ferrous_core = { path = "../ferrous_core" }
+winit = "0.30"
+ferrous_gui = { path = "../ferrous_gui" }
+wgpu = "23.0"
+pollster = "0.3"
+fern = "0.6" # maybe used for logging or we can omit
+ferrous_assets = { path = "../ferrous_assets" }
+

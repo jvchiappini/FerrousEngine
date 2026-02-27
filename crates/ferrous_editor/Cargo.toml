@@ -9,6 +9,8 @@ ferrous_renderer = { path = "../ferrous_renderer" }
 ferrous_gui = { path = "../ferrous_gui" }
 ferrous_assets = { path = "../ferrous_assets" }
 
+ferrous_app = { path = "../ferrous_app" }
+
 # direct GPU types for configuration
 wgpu = "23.0"
 

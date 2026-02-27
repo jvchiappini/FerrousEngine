@@ -13,7 +13,7 @@ pub use winit::keyboard::KeyCode;
 /// driving this structure by feeding it the events coming from `winit`.
 /// Once populated, the rest of the engine can query the state using the
 /// convenience helpers defined below.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct InputState {
     keys_down: HashSet<KeyCode>,
     mouse_buttons: HashSet<MouseButton>,
