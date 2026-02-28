@@ -4,17 +4,19 @@ use std::rc::Rc;
 
 use ferrous_app::{App, AppContext, FerrousApp};
 use ferrous_assets::font::Font;
-use ferrous_gui::{
-    GuiBatch, GuiQuad, InteractiveButton, Slider, TextBatch, Ui, ViewportWidget,
-};
 use ferrous_gui::Widget;
+use ferrous_gui::{GuiBatch, GuiQuad, InteractiveButton, Slider, TextBatch, Ui, ViewportWidget};
 use ferrous_renderer::{Renderer, Viewport};
 
 // application state
 struct EditorApp {
-    ui_button: Rc<RefCell<InteractiveButton>>,
+    /// four helper buttons used to verify corner rounding; ordered
+    /// [top-left, top-right, bottom-left, bottom-right]
+    corner_buttons: [Rc<RefCell<InteractiveButton>>; 4],
     // sliders and text input removed (legacy)
     ui_viewport: Rc<RefCell<ViewportWidget>>,
+        /// example button that rounds multiple corners at once
+        combo_button: Rc<RefCell<InteractiveButton>>,
 
     // Tamaños de paneles dinámicos
     panel_left_w: u32,
@@ -32,9 +34,28 @@ struct EditorApp {
 impl Default for EditorApp {
     fn default() -> Self {
         Self {
-            ui_button: Rc::new(RefCell::new(InteractiveButton::new(
-                50.0, 50.0, 100.0, 100.0,
-            ))),
+                        corner_buttons: [
+                            // top-left
+                            Rc::new(RefCell::new(
+                                InteractiveButton::new(50.0, 50.0, 80.0, 80.0).round_tl(20.0),
+                            )),
+                            // top-right
+                            Rc::new(RefCell::new(
+                                InteractiveButton::new(150.0, 50.0, 80.0, 80.0).round_tr(20.0),
+                            )),
+                            // bottom-left
+                            Rc::new(RefCell::new(
+                                InteractiveButton::new(50.0, 150.0, 80.0, 80.0).round_bl(20.0),
+                            )),
+                            // bottom-right
+                            Rc::new(RefCell::new(
+                                InteractiveButton::new(150.0, 150.0, 80.0, 80.0).round_br(20.0),
+                            )),
+                        ],
+                combo_button: Rc::new(RefCell::new(
+                    // round both top-left and bottom-right simultaneously
+                    InteractiveButton::new(250.0, 100.0, 80.0, 80.0).with_radii([20.0, 0.0, 0.0, 20.0]),
+                )),
             // sliders/text input not used anymore
             ui_viewport: Rc::new(RefCell::new(ViewportWidget::new(0.0, 0.0, 0.0, 0.0))),
             panel_left_w: 300,
@@ -49,7 +70,10 @@ impl Default for EditorApp {
 
 impl FerrousApp for EditorApp {
     fn configure_ui(&mut self, ui: &mut Ui) {
-        ui.add(self.ui_button.clone());
+        for btn in &self.corner_buttons {
+            ui.add(btn.clone());
+        }
+        ui.add(self.combo_button.clone());
         ui.register_viewport(self.ui_viewport.clone());
     }
 
@@ -65,8 +89,9 @@ impl FerrousApp for EditorApp {
             height: win_h.saturating_sub(self.panel_bottom_h),
         };
 
-        // detectamos un clic completo en el botón (pressed -> released)
-        let pressed = self.ui_button.borrow().pressed;
+        // detect clicks on any of the corner buttons; if the top-left
+        // button was released we add a cube (rest are just for testing).
+        let pressed = self.corner_buttons[0].borrow().pressed;
         if !pressed && self.button_was_pressed {
             self.add_cube = true;
         }
@@ -74,7 +99,9 @@ impl FerrousApp for EditorApp {
 
         // process slider input manually for each object slider
         let (mx, my) = ctx.input.mouse_position();
-        let down = ctx.input.is_button_down(ferrous_core::input::MouseButton::Left);
+        let down = ctx
+            .input
+            .is_button_down(ferrous_core::input::MouseButton::Left);
         for sliders in &mut self.object_sliders {
             for s in sliders.iter_mut() {
                 s.mouse_move(mx, my);
@@ -97,6 +124,7 @@ impl FerrousApp for EditorApp {
             pos: [0.0, 0.0],
             size: [self.panel_left_w as f32, win_h as f32],
             color: [0.12, 0.12, 0.12, 1.0],
+            radii: [0.0; 4],
         });
 
         // Panel Inferior
@@ -107,6 +135,7 @@ impl FerrousApp for EditorApp {
             ],
             size: [win_w as f32, self.panel_bottom_h as f32],
             color: [0.15, 0.15, 0.15, 1.0],
+            radii: [0.0; 4],
         });
 
         // Textos
@@ -119,25 +148,18 @@ impl FerrousApp for EditorApp {
                 [1.0, 1.0, 1.0, 1.0],
             );
 
-            // texto del botón
-            text.draw_text(
-                font,
-                "Add cube",
-                [55.0, 80.0],
-                18.0,
-                [1.0, 1.0, 1.0, 1.0],
-            );
+            // etiquetas de los cuatro botones de esquina para facilitar las pruebas
+            text.draw_text(font, "TL", [60.0, 70.0], 16.0, [1.0, 1.0, 1.0, 1.0]);
+            text.draw_text(font, "TR", [160.0, 70.0], 16.0, [1.0, 1.0, 1.0, 1.0]);
+            text.draw_text(font, "BL", [60.0, 170.0], 16.0, [1.0, 1.0, 1.0, 1.0]);
+            text.draw_text(font, "BR", [160.0, 170.0], 16.0, [1.0, 1.0, 1.0, 1.0]);
 
             // ahora dibujamos el panel de objetos con sus sliders
+                // label for combined button
+                text.draw_text(font, "TL+BR", [250.0, 90.0], 12.0, [1.0, 1.0, 1.0, 1.0]);
             let mut y_offset = 140.0;
             for (i, (name, _idx)) in self.objects.iter().enumerate() {
-                text.draw_text(
-                    font,
-                    name,
-                    [10.0, y_offset],
-                    16.0,
-                    [1.0, 1.0, 0.0, 1.0],
-                );
+                text.draw_text(font, name, [10.0, y_offset], 16.0, [1.0, 1.0, 0.0, 1.0]);
                 y_offset += 20.0;
                 if let Some(sliders) = self.object_sliders.get_mut(i) {
                     // update slider positions before drawing

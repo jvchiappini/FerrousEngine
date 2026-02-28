@@ -26,6 +26,7 @@ fn main() {
             pos: [50.0, 50.0],
             size: [200.0, 100.0],
             color: [0.0, 1.0, 0.0, 0.5],
+            radii: [0.0; 4],
         });
         renderer.render_to_target(&mut encoder, Some(&ui_batch), None);
 

@@ -49,6 +49,7 @@ impl Slider {
             pos: [self.rect[0], self.rect[1]],
             size: [self.rect[2], self.rect[3]],
             color: self.track_color,
+            radii: [0.0; 4],
         });
         // thumb
         let thumb_w = self.rect[2] * 0.1;
@@ -57,6 +58,7 @@ impl Slider {
             pos: [tx, self.rect[1]],
             size: [thumb_w, self.rect[3]],
             color: self.thumb_color,
+            radii: [0.0; 4],
         });
     }
 }
@@ -67,6 +69,7 @@ impl Widget for Slider {
         cmds.push(RenderCommand::Quad {
             rect: Rect { x: self.rect[0], y: self.rect[1], width: self.rect[2], height: self.rect[3] },
             color: self.track_color,
+            radii: [0.0; 4],
         });
         // thumb
         let thumb_w = self.rect[2] * 0.1;
@@ -74,6 +77,7 @@ impl Widget for Slider {
         cmds.push(RenderCommand::Quad {
             rect: Rect { x: tx, y: self.rect[1], width: thumb_w, height: self.rect[3] },
             color: self.thumb_color,
+            radii: [0.0; 4],
         });
     }
 

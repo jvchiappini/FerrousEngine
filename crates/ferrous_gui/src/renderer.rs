@@ -8,12 +8,21 @@ use wgpu::util::DeviceExt;
 /// Todos los campos están en coordenadas de píxeles: `pos` es la esquina
 /// superior izquierda, `size` el ancho/alto y `color` es un RGBA con componentes
 /// en el rango 0.0..1.0.
+///
+/// El campo `radius` permite dibujar esquinas redondeadas; su valor se
+/// interpreta en píxeles y se recorta automáticamente si es mayor que la
+/// mitad de la dimensión más pequeña del rectángulo. Un `radius` de 0 deja
+/// las esquinas afiladas (comportamiento original).
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable, Debug)]
 pub struct GuiQuad {
     pub pos: [f32; 2],
     pub size: [f32; 2],
     pub color: [f32; 4],
+    /// per-corner radii in pixels: [top-left, top-right, bottom-left, bottom-right].
+    /// a value of 0 means the corner is sharp. providing distinct values
+    /// allows fine-grained control over each corner's curvature.
+    pub radii: [f32; 4],
 }
 
 /// Lote de `GuiQuad` que será enviado al GPU en un draw call único.
@@ -398,6 +407,12 @@ impl GuiRenderer {
                                 format: wgpu::VertexFormat::Float32x4,
                                 offset: 16,
                                 shader_location: 3,
+                            },
+                            // radii array (4 floats)
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x4,
+                                offset: 32,
+                                shader_location: 4,
                             },
                         ],
                     },

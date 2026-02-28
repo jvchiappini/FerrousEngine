@@ -62,6 +62,7 @@ impl TextInput {
             pos: [self.rect[0], self.rect[1]],
             size: [self.rect[2], self.rect[3]],
             color: self.bg_color,
+            radii: [0.0; 4],
         });
         if let Some(f) = font {
             let ty = self.rect[1] + (self.rect[3] - 16.0) / 2.0;
@@ -87,6 +88,7 @@ impl Widget for TextInput {
                 height: self.rect[3],
             },
             color: self.bg_color,
+            radii: [0.0; 4],
         });
         // text command
         let display = if self.text.is_empty() {

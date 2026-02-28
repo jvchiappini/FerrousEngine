@@ -9,10 +9,10 @@ pub mod render_target;
 use crate::pipeline::FerrousPipeline;
 // expose glam to downstream crates so they don't need to depend on a
 // specific version separately (avoids duplicate versions in workspace)
-pub use glam;
 use crate::render_target::RenderTarget;
 use ferrous_core::context::EngineContext;
 use ferrous_gui::TextBatch;
+pub use glam;
 use wgpu::util::DeviceExt;
 // re-export UI types so callers de-referencing the renderer can use them
 pub use ferrous_gui::{GuiBatch, GuiQuad};
@@ -49,8 +49,8 @@ pub struct Renderer {
     camera_bind_group: wgpu::BindGroup,
     /// simple scene mesh (cube)
     /// colección de mallas que componen la escena 3D
-        /// objetos renderizables en la escena
-        pub objects: Vec<RenderObject>,
+    /// objetos renderizables en la escena
+    pub objects: Vec<RenderObject>,
     /// region within the window where 3D content is drawn
     pub viewport: Viewport,
     /// orbital camera state
@@ -103,7 +103,11 @@ impl RenderObject {
     fn set_position(&mut self, queue: &wgpu::Queue, pos: glam::Vec3) {
         self.position = pos;
         let mat: glam::Mat4 = glam::Mat4::from_translation(pos);
-        queue.write_buffer(&self.model_buffer, 0, bytemuck::cast_slice(&[mat.to_cols_array()]));
+        queue.write_buffer(
+            &self.model_buffer,
+            0,
+            bytemuck::cast_slice(&[mat.to_cols_array()]),
+        );
     }
 }
 
@@ -154,9 +158,9 @@ impl Renderer {
         // simple cube mesh for testing
         // no añadimos ninguna malla por defecto; la aplicación decide qué
         // dibujar mediante `add_mesh`.
-            // no añadimos ningún objeto por defecto; la aplicación decide qué
-            // instanciar mediante `add_object`.
-            let objects = Vec::new();
+        // no añadimos ningún objeto por defecto; la aplicación decide qué
+        // instanciar mediante `add_object`.
+        let objects = Vec::new();
         // default viewport is full render target
         let viewport = Viewport {
             x: 0,
@@ -362,7 +366,6 @@ impl Renderer {
         // camera projection should use viewport aspect ratio
         self.camera.set_aspect(vp.width as f32 / vp.height as f32);
     }
-
 
     /// Adds a mesh instance positioned at `pos`.
     ///

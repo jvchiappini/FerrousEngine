@@ -385,10 +385,12 @@ impl Node {
     /// Recorre el árbol y genera "render commands" genéricos.
     pub fn collect_render_commands(&self, cmds: &mut Vec<RenderCommand>) {
         if let Some(bg) = self.background {
-            cmds.push(RenderCommand::Quad {
-                rect: self.rect.clone(),
-                color: bg,
-            });
+            // default background has no rounding
+                cmds.push(RenderCommand::Quad {
+                    rect: self.rect.clone(),
+                    color: bg,
+                    radii: [0.0; 4],
+                });
         }
         if let Some(text) = &self.text {
             cmds.push(RenderCommand::Text {
@@ -411,6 +413,8 @@ pub enum RenderCommand {
     Quad {
         rect: Rect,
         color: [f32; 4],
+        /// per-corner radii in pixels: [top-left, top-right, bottom-left, bottom-right]
+        radii: [f32; 4],
     },
     Text {
         rect: Rect,
@@ -430,11 +434,12 @@ impl RenderCommand {
         font: Option<&ferrous_assets::font::Font>,
     ) {
         match self {
-            RenderCommand::Quad { rect, color } => {
+            RenderCommand::Quad { rect, color, radii } => {
                 quad_batch.push(crate::renderer::GuiQuad {
                     pos: [rect.x, rect.y],
                     size: [rect.width, rect.height],
                     color: *color,
+                    radii: *radii,
                 });
             }
             RenderCommand::Text {
@@ -480,6 +485,7 @@ mod tests {
                 height: 4.0,
             },
             color: [0.1, 0.2, 0.3, 0.4],
+            radii: [0.0; 4],
         };
         let mut qb = GuiBatch::new();
         let mut tb = TextBatch::new();

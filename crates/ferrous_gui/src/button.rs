@@ -3,6 +3,10 @@ use crate::{layout::Rect, RenderCommand, Widget};
 /// Simple rectangular button widget used for interactive UIs.
 ///
 /// Tracks hover/press state and produces a coloured quad when collected.
+///
+/// The `radius` field added to the struct can be used to request rounded
+/// corners; the value is interpreted in pixels. Use `with_radius` helper or
+/// set the field directly before drawing.
 #[derive(Debug, Clone)]
 pub struct Button {
     pub rect: [f32; 4], // x, y, width, height
@@ -10,6 +14,9 @@ pub struct Button {
     pub pressed: bool,
     /// base colour (will be tinted when hovered/pressed)
     pub color: [f32; 4],
+    /// corner radius in pixels; zero means sharp corners
+    /// radii for each corner ([top-left, top-right, bottom-left, bottom-right]).
+    pub radii: [f32; 4],
 }
 
 impl Button {
@@ -20,7 +27,51 @@ impl Button {
             hovered: false,
             pressed: false,
             color: [0.2, 0.2, 0.8, 1.0],
+            radii: [0.0; 4],
         }
+    }
+
+    /// Set a uniform radius for all four corners.
+    pub fn with_radius(mut self, r: f32) -> Self {
+        self.radii = [r; 4];
+        self
+    }
+
+    /// Set individual radii for the corners. Order is
+    /// `[top-left, top-right, bottom-left, bottom-right]`.
+    pub fn with_radii(mut self, radii: [f32; 4]) -> Self {
+        self.radii = radii;
+        self
+    }
+
+    /// Shorter alias for `with_radii`. Accepts four values directly.
+    pub fn round(mut self, tl: f32, tr: f32, bl: f32, br: f32) -> Self {
+        self.radii = [tl, tr, bl, br];
+        self
+    }
+
+    /// Round only the top-left corner.
+    pub fn round_tl(mut self, r: f32) -> Self {
+        self.radii[0] = r;
+        self
+    }
+
+    /// Round only the top-right corner.
+    pub fn round_tr(mut self, r: f32) -> Self {
+        self.radii[1] = r;
+        self
+    }
+
+    /// Round only the bottom-left corner.
+    pub fn round_bl(mut self, r: f32) -> Self {
+        self.radii[2] = r;
+        self
+    }
+
+    /// Round only the bottom-right corner.
+    pub fn round_br(mut self, r: f32) -> Self {
+        self.radii[3] = r;
+        self
     }
 
     /// Hit test against mouse coordinates (window space).
@@ -46,6 +97,7 @@ impl Button {
             pos: [self.rect[0], self.rect[1]],
             size: [self.rect[2], self.rect[3]],
             color,
+            radii: self.radii,
         });
     }
 }
@@ -65,7 +117,11 @@ impl Widget for Button {
             width: self.rect[2],
             height: self.rect[3],
         };
-        cmds.push(RenderCommand::Quad { rect, color });
+        cmds.push(RenderCommand::Quad {
+            rect,
+            color,
+            radii: self.radii,
+        });
     }
 
     fn hit(&self, mx: f64, my: f64) -> bool {
