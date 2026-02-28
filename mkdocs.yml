@@ -5,6 +5,9 @@ site_url: https://jvchiappini.github.io/FerrousEngine
 theme:
   name: material
 
+# navigation block is carefully indented; keep this comment here to
+# force a rebuild of the docs when the file changes slightly.
+
 ## navigation is automatically generated from the docs/ folder structure
 ## entries here give us control over ordering and grouping.  update
 ## this list whenever you add new markdown files under `crates/*/docs`.
