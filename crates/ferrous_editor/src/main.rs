@@ -29,10 +29,10 @@ struct EditorApp {
     objects: Vec<(String, usize)>, // (name, renderer index)
     // sliders for each objects' x,y,z position
     object_sliders: Vec<[Slider; 3]>,
-        // colour picker widget used for demonstration
-        color_picker: Rc<RefCell<ferrous_gui::ColorPicker>>,
-            color_picker_rect: Rc<RefCell<ferrous_gui::ColorPicker>>,
-            color_picker_tri: Rc<RefCell<ferrous_gui::ColorPicker>>,
+    // colour picker widget used for demonstration
+    color_picker: Rc<RefCell<ferrous_gui::ColorPicker>>,
+    color_picker_rect: Rc<RefCell<ferrous_gui::ColorPicker>>,
+    color_picker_tri: Rc<RefCell<ferrous_gui::ColorPicker>>,
 }
 
 impl Default for EditorApp {
@@ -68,19 +68,19 @@ impl Default for EditorApp {
             add_cube: false,
             objects: Vec::new(),
             object_sliders: Vec::new(),
-                // place colour picker below the corner buttons
-                color_picker: Rc::new(RefCell::new(
-                    ferrous_gui::ColorPicker::new(50.0, 250.0, 100.0, 100.0)
-                        .with_colour([1.0, 0.0, 0.0, 1.0]),
-                )),
-                color_picker_rect: Rc::new(RefCell::new(
-                    ferrous_gui::ColorPicker::new(160.0, 250.0, 100.0, 100.0)
-                        .with_shape(ferrous_gui::PickerShape::Rect),
-                )),
-                color_picker_tri: Rc::new(RefCell::new(
-                    ferrous_gui::ColorPicker::new(270.0, 250.0, 100.0, 100.0)
-                        .with_shape(ferrous_gui::PickerShape::Triangle),
-                )),
+            // place colour picker below the corner buttons
+            color_picker: Rc::new(RefCell::new(
+                ferrous_gui::ColorPicker::new(50.0, 250.0, 100.0, 100.0)
+                    .with_colour([1.0, 0.0, 0.0, 1.0]),
+            )),
+            color_picker_rect: Rc::new(RefCell::new(
+                ferrous_gui::ColorPicker::new(160.0, 250.0, 100.0, 100.0)
+                    .with_shape(ferrous_gui::PickerShape::Rect),
+            )),
+            color_picker_tri: Rc::new(RefCell::new(
+                ferrous_gui::ColorPicker::new(270.0, 250.0, 100.0, 100.0)
+                    .with_shape(ferrous_gui::PickerShape::Triangle),
+            )),
         }
     }
 }
@@ -270,16 +270,16 @@ impl FerrousApp for EditorApp {
                 [0.8, 0.8, 0.8, 1.0],
             );
         }
-                // show current colour selected by picker
-                let cp = self.color_picker.borrow();
-                let col_rect = GuiQuad {
-                    pos: [50.0, 250.0],
-                    size: [100.0, 20.0],
-                    color: cp.colour,
-                    radii: [2.0; 4],
-                    flags: 0,
-                };
-                gui.push(col_rect);
+        // show current colour selected by picker
+        let cp = self.color_picker.borrow();
+        let col_rect = GuiQuad {
+            pos: [50.0, 250.0],
+            size: [100.0, 20.0],
+            color: cp.colour,
+            radii: [2.0; 4],
+            flags: 0,
+        };
+        gui.push(col_rect);
     }
 
     fn draw_3d(&mut self, renderer: &mut Renderer, _ctx: &mut AppContext) {

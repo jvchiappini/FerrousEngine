@@ -97,44 +97,44 @@ impl ColorPicker {
     /// interprets the widget as a hue/saturation wheel: the angle from the
     /// centre gives the hue, the distance from the centre gives the
     /// saturation, value is kept at 1.0 and alpha is unchanged.
-        fn default_pick(&mut self, nx: f32, ny: f32) {
-            match self.shape {
-                PickerShape::Circle => {
-                    let dx = nx - 0.5;
-                    let dy = ny - 0.5;
-                    let dist = (dx * dx + dy * dy).sqrt();
-                    if dist > 0.5 {
-                        return; // outside circle
-                    }
-                    let angle = dy.atan2(dx);
-                    let hue = (angle / (2.0 * std::f32::consts::PI) + 1.0) % 1.0;
-                    let sat = dist / 0.5;
-                    self.colour = hsv_to_rgba(hue, sat, 1.0, self.colour[3]);
-                    self.pick_pos = Some([nx, ny]);
+    fn default_pick(&mut self, nx: f32, ny: f32) {
+        match self.shape {
+            PickerShape::Circle => {
+                let dx = nx - 0.5;
+                let dy = ny - 0.5;
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dist > 0.5 {
+                    return; // outside circle
                 }
-                PickerShape::Rect => {
-                    // ignore outside bounds
-                    if nx < 0.0 || nx > 1.0 || ny < 0.0 || ny > 1.0 {
-                        return;
-                    }
-                    let hue = nx;
-                    let sat = 1.0 - ny;
-                    self.colour = hsv_to_rgba(hue, sat, 1.0, self.colour[3]);
-                    self.pick_pos = Some([nx, ny]);
-                }
-                PickerShape::Triangle => {
-                    if nx < 0.0 || ny < 0.0 || nx + ny > 1.0 {
-                        return;
-                    }
-                    let sat = 1.0 - ny;
-                    let hue = if sat == 0.0 { 0.0 } else { nx / (1.0 - ny) };
-                    self.colour = hsv_to_rgba(hue, sat, 1.0, self.colour[3]);
-                    self.pick_pos = Some([nx, ny]);
-                }
-                PickerShape::Custom(_) => {
-                    // leave unchanged
-                }
+                let angle = dy.atan2(dx);
+                let hue = (angle / (2.0 * std::f32::consts::PI) + 1.0) % 1.0;
+                let sat = dist / 0.5;
+                self.colour = hsv_to_rgba(hue, sat, 1.0, self.colour[3]);
+                self.pick_pos = Some([nx, ny]);
             }
+            PickerShape::Rect => {
+                // ignore outside bounds
+                if nx < 0.0 || nx > 1.0 || ny < 0.0 || ny > 1.0 {
+                    return;
+                }
+                let hue = nx;
+                let sat = 1.0 - ny;
+                self.colour = hsv_to_rgba(hue, sat, 1.0, self.colour[3]);
+                self.pick_pos = Some([nx, ny]);
+            }
+            PickerShape::Triangle => {
+                if nx < 0.0 || ny < 0.0 || nx + ny > 1.0 {
+                    return;
+                }
+                let sat = 1.0 - ny;
+                let hue = if sat == 0.0 { 0.0 } else { nx / (1.0 - ny) };
+                self.colour = hsv_to_rgba(hue, sat, 1.0, self.colour[3]);
+                self.pick_pos = Some([nx, ny]);
+            }
+            PickerShape::Custom(_) => {
+                // leave unchanged
+            }
+        }
     }
 
     /// Hit test using either the shape or a simple bounding-box fallback.
@@ -189,7 +189,10 @@ impl ColorPicker {
                 });
                 // draw selection indicator at computed position
                 let (px, py) = if let Some([nx, ny]) = self.pick_pos {
-                    (self.rect[0] + nx * self.rect[2], self.rect[1] + ny * self.rect[3])
+                    (
+                        self.rect[0] + nx * self.rect[2],
+                        self.rect[1] + ny * self.rect[3],
+                    )
                 } else {
                     color_to_point(self.colour, self.rect, &self.shape)
                 };
@@ -213,7 +216,10 @@ impl ColorPicker {
                     flags: 2,
                 });
                 let (px, py) = if let Some([nx, ny]) = self.pick_pos {
-                    (self.rect[0] + nx * self.rect[2], self.rect[1] + ny * self.rect[3])
+                    (
+                        self.rect[0] + nx * self.rect[2],
+                        self.rect[1] + ny * self.rect[3],
+                    )
                 } else {
                     color_to_point(self.colour, self.rect, &self.shape)
                 };
@@ -235,7 +241,10 @@ impl ColorPicker {
                     flags: 3,
                 });
                 let (px, py) = if let Some([nx, ny]) = self.pick_pos {
-                    (self.rect[0] + nx * self.rect[2], self.rect[1] + ny * self.rect[3])
+                    (
+                        self.rect[0] + nx * self.rect[2],
+                        self.rect[1] + ny * self.rect[3],
+                    )
                 } else {
                     color_to_point(self.colour, self.rect, &self.shape)
                 };
@@ -282,7 +291,10 @@ impl Widget for ColorPicker {
                 });
                 // draw indicator as extra quad
                 let (px, py) = if let Some([nx, ny]) = self.pick_pos {
-                    (self.rect[0] + nx * self.rect[2], self.rect[1] + ny * self.rect[3])
+                    (
+                        self.rect[0] + nx * self.rect[2],
+                        self.rect[1] + ny * self.rect[3],
+                    )
                 } else {
                     color_to_point(self.colour, self.rect, &self.shape)
                 };
@@ -314,7 +326,10 @@ impl Widget for ColorPicker {
                     flags: 2,
                 });
                 let (px, py) = if let Some([nx, ny]) = self.pick_pos {
-                    (self.rect[0] + nx * self.rect[2], self.rect[1] + ny * self.rect[3])
+                    (
+                        self.rect[0] + nx * self.rect[2],
+                        self.rect[1] + ny * self.rect[3],
+                    )
                 } else {
                     color_to_point(self.colour, self.rect, &self.shape)
                 };
@@ -343,7 +358,10 @@ impl Widget for ColorPicker {
                     flags: 3,
                 });
                 let (px, py) = if let Some([nx, ny]) = self.pick_pos {
-                    (self.rect[0] + nx * self.rect[2], self.rect[1] + ny * self.rect[3])
+                    (
+                        self.rect[0] + nx * self.rect[2],
+                        self.rect[1] + ny * self.rect[3],
+                    )
                 } else {
                     color_to_point(self.colour, self.rect, &self.shape)
                 };
@@ -586,7 +604,7 @@ mod tests {
         let mut cp = ColorPicker::new(0.0, 0.0, 100.0, 100.0);
         cp.shape = PickerShape::Triangle;
         // sample a few barycentric points inside the triangle
-        for &(nx, ny) in &[ (0.1, 0.1), (0.3, 0.2), (0.0, 0.0), (0.5, 0.4) ] {
+        for &(nx, ny) in &[(0.1, 0.1), (0.3, 0.2), (0.0, 0.0), (0.5, 0.4)] {
             assert!(nx + ny <= 1.0);
             let mut t = cp.clone();
             t.default_pick(nx, ny);
@@ -594,8 +612,10 @@ mod tests {
             let rx = (px - t.rect[0]) / t.rect[2];
             let ry = (py - t.rect[1]) / t.rect[3];
             if (rx - nx).abs() >= 0.02 || (ry - ny).abs() >= 0.02 {
-                eprintln!("round-trip failed for ({},{}) -> ({},{}) colour={:?}",
-                    nx, ny, rx, ry, t.colour);
+                eprintln!(
+                    "round-trip failed for ({},{}) -> ({},{}) colour={:?}",
+                    nx, ny, rx, ry, t.colour
+                );
             }
             assert!((rx - nx).abs() < 0.02, "nx {} -> {}", nx, rx);
             assert!((ry - ny).abs() < 0.02, "ny {} -> {}", ny, ry);
@@ -606,7 +626,11 @@ mod tests {
     fn rect_round_trip() {
         let mut cp = ColorPicker::new(0.0, 0.0, 100.0, 100.0);
         cp.shape = PickerShape::Rect;
-        for &(nx, ny) in &[ (0.0,0.0), (0.25,0.5), (0.75,0.2) /*skip boundary hue=1*/ ] {
+        for &(nx, ny) in &[
+            (0.0, 0.0),
+            (0.25, 0.5),
+            (0.75, 0.2), /*skip boundary hue=1*/
+        ] {
             let mut t = cp.clone();
             t.default_pick(nx, ny);
             let (px, py) = color_to_point(t.colour, t.rect, &t.shape);
