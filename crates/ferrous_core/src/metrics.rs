@@ -41,9 +41,7 @@ pub fn get_cpu_usage() -> f32 {
     with_system(|sys| {
         let pid = sysinfo::Pid::from(std::process::id() as usize);
         sys.refresh_process(pid);
-        sys.process(pid)
-            .map(|p| p.cpu_usage())
-            .unwrap_or(0.0)
+        sys.process(pid).map(|p| p.cpu_usage()).unwrap_or(0.0)
     })
 }
 
@@ -60,9 +58,7 @@ pub fn get_ram_usage_bytes() -> u64 {
         // produced values in the hundreds of gigabytes.  simply return
         // the raw value here and convert to MB in the caller if
         // desired.
-        sys.process(pid)
-            .map(|p| p.memory())
-            .unwrap_or(0)
+        sys.process(pid).map(|p| p.memory()).unwrap_or(0)
     })
 }
 
@@ -86,8 +82,6 @@ pub fn get_virtual_memory_bytes() -> u64 {
         let pid = sysinfo::Pid::from(std::process::id() as usize);
         sys.refresh_process(pid);
         // same as above: `virtual_memory()` is already in bytes.
-        sys.process(pid)
-            .map(|p| p.virtual_memory())
-            .unwrap_or(0)
+        sys.process(pid).map(|p| p.virtual_memory()).unwrap_or(0)
     })
 }
