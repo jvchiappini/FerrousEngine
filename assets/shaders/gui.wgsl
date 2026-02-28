@@ -90,7 +90,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let hue = select(0.0, nx / (1.0 - ny), sat != 0.0);
         base_rgb = hsv2rgb(hue, sat, 1.0);
         // compute anti-aliasing for diagonal border
-        let aa_diag: f32 = 1.0;
+        let aa_diag: f32 = 1.414 / in.size.x;
         let ddiag = nx + ny - 1.0;
         diag_alpha = 1.0 - smoothstep(0.0, aa_diag, ddiag);
     }

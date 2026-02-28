@@ -12,9 +12,9 @@ pub enum PickerShape {
     Circle,
     /// Hue/saturation rectangle.  Hue varies left→right, saturation top→bottom.
     Rect,
-    /// Triangular picker; usable area is the lower-left right triangle of
-    /// the bounding rect.  Hue runs along the base, saturation decreases
-    /// towards the top corner.
+    /// Triangular picker; usable area is the upper-left right triangle of
+    /// the bounding rect (nx + ny <= 1.0).  Hue runs along the hypotenuse
+    /// fan originating from the bottom-left corner.
     Triangle,
     /// Custom drawing routine.  The closure receives a reference to the
     /// picker and a mutable command list; it may push one or more
@@ -103,31 +103,36 @@ impl ColorPicker {
                 let dx = nx - 0.5;
                 let dy = ny - 0.5;
                 let dist = (dx * dx + dy * dy).sqrt();
-                if dist > 0.5 {
-                    return; // outside circle
-                }
-                let angle = dy.atan2(dx);
-                let hue = (angle / (2.0 * std::f32::consts::PI) + 1.0) % 1.0;
-                let sat = dist / 0.5;
+                let hue = (dy.atan2(dx) / (2.0 * std::f32::consts::PI) + 1.0) % 1.0;
+                let sat = (dist / 0.5).min(1.0);
+                // for the selection indicator, we want the clamped normalized pos
+                let (cnx, cny) = if dist > 0.5 {
+                    (0.5 + 0.5 * dx / dist, 0.5 + 0.5 * dy / dist)
+                } else {
+                    (nx, ny)
+                };
                 self.colour = hsv_to_rgba(hue, sat, 1.0, self.colour[3]);
-                self.pick_pos = Some([nx, ny]);
+                self.pick_pos = Some([cnx, cny]);
             }
             PickerShape::Rect => {
-                // ignore outside bounds
-                if nx < 0.0 || nx > 1.0 || ny < 0.0 || ny > 1.0 {
-                    return;
-                }
+                let nx = nx.clamp(0.0, 1.0);
+                let ny = ny.clamp(0.0, 1.0);
                 let hue = nx;
                 let sat = 1.0 - ny;
                 self.colour = hsv_to_rgba(hue, sat, 1.0, self.colour[3]);
                 self.pick_pos = Some([nx, ny]);
             }
             PickerShape::Triangle => {
-                if nx < 0.0 || ny < 0.0 || nx + ny > 1.0 {
-                    return;
+                let mut nx = nx.clamp(0.0, 1.0);
+                let mut ny = ny.clamp(0.0, 1.0);
+                // clamp to triangle nx + ny <= 1.0
+                if nx + ny > 1.0 {
+                    let over = (nx + ny - 1.0) * 0.5;
+                    nx -= over;
+                    ny -= over;
                 }
                 let sat = 1.0 - ny;
-                let hue = if sat == 0.0 { 0.0 } else { nx / (1.0 - ny) };
+                let hue = if sat <= 0.0 { 0.0 } else { (nx / (1.0 - ny)).clamp(0.0, 1.0) };
                 self.colour = hsv_to_rgba(hue, sat, 1.0, self.colour[3]);
                 self.pick_pos = Some([nx, ny]);
             }
@@ -386,7 +391,7 @@ impl Widget for ColorPicker {
 
     fn mouse_move(&mut self, mx: f64, my: f64) {
         self.hovered = self.hit(mx, my);
-        if self.pressed && self.hit(mx, my) {
+        if self.pressed {
             let nx = ((mx as f32) - self.rect[0]) / self.rect[2];
             let ny = ((my as f32) - self.rect[1]) / self.rect[3];
             if let Some(cb_arc) = &self.on_pick {
@@ -454,7 +459,7 @@ fn rgb_to_hs(col: [f32; 4]) -> (f32, f32) {
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
     let d = max - min;
-    let mut hue = if d == 0.0 {
+    let hue = if d == 0.0 {
         0.0
     } else {
         let mut h = if max == r {
