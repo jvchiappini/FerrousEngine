@@ -79,6 +79,11 @@ impl World {
         self.elements.iter().map(|e| &e.element)
     }
 
+    /// Access a single element by its handle.
+    pub fn element(&self, handle: Handle) -> Option<&Element> {
+        self.elements.get(handle).map(|e| &e.element)
+    }
+
     /// Iterate over elements together with their handles.
     pub fn elements_with_handles(&self) -> impl Iterator<Item = (Handle, &Element)> {
         self.elements
