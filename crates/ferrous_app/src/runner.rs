@@ -92,19 +92,23 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
             self.font_rx = Some(rx);
         }
 
-        self.window = Some(window.clone());
-        self.graphics = Some(gfx);
-
+        // prepare context with mutable borrow into gfx.renderer; this borrow
+        // must end before we move gfx into `self.graphics` below.
         let mut ctx = AppContext {
             input: &self.input,
             dt: 0.0,
             window_size: self.window_size,
             window: &window,
             viewport: self.viewport,
+            renderer: Some(&mut gfx.renderer),
             exit_requested: false,
         };
         self.app.setup(&mut ctx);
         self.viewport = ctx.viewport;
+
+        // now that setup is done and no borrows remain, store gfx
+        self.window = Some(window.clone());
+        self.graphics = Some(gfx);
     }
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {}
@@ -119,6 +123,7 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                 window_size: self.window_size,
                 window,
                 viewport: self.viewport,
+                renderer: self.graphics.as_mut().map(|g| &mut g.renderer),
                 exit_requested: false,
             };
             self.app.on_window_event(&event, &mut ctx);
@@ -167,6 +172,7 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                 window_size: self.window_size,
                 window,
                 viewport: self.viewport,
+                renderer: Some(&mut gfx.renderer),
                 exit_requested: false,
             };
 
@@ -210,6 +216,10 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
             window_size: self.window_size,
             window,
             viewport: self.viewport,
+            // we don't need a renderer borrow here since draw_3d already
+            // receives it explicitly; avoiding the borrow prevents a
+            // double-mutable-borrow error below.
+            renderer: None,
             exit_requested: false,
         };
 

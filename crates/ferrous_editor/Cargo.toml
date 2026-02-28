@@ -26,3 +26,6 @@ pollster = "0.3"
 # the winit integration in the editor binary later when it's needed.
 # Eguis removed; tendremos nuestro propio motor UI en ferrous_gui
 # egui = "0.29"
+
+# random helper for positioning cubes
+rand = "0.8"

@@ -7,7 +7,9 @@ use ferrous_assets::font::Font;
 use ferrous_core::scene::World;
 // `Widget` not needed in minimal UI
 use ferrous_gui::{GuiBatch, InteractiveButton, TextBatch, Ui, ViewportWidget};
+// random positioning
 use ferrous_renderer::{Renderer, Viewport};
+use rand::Rng;
 
 // application state
 struct EditorApp {
@@ -27,7 +29,9 @@ impl Default for EditorApp {
     fn default() -> Self {
         Self {
             // simple rectangular button placed near top-left
-            add_button: Rc::new(RefCell::new(InteractiveButton::new(10.0, 10.0, 100.0, 30.0))),
+            add_button: Rc::new(RefCell::new(InteractiveButton::new(
+                10.0, 10.0, 100.0, 30.0,
+            ))),
             ui_viewport: Rc::new(RefCell::new(ViewportWidget::new(0.0, 0.0, 0.0, 0.0))),
             button_was_pressed: false,
             add_cube: false,
@@ -61,7 +65,6 @@ impl FerrousApp for EditorApp {
             self.add_cube = true;
         }
         self.button_was_pressed = pressed;
-
     }
 
     fn draw_ui(
@@ -82,14 +85,30 @@ impl FerrousApp for EditorApp {
         if self.add_cube {
             // create element (cube) in the scene world; renderer will be
             // updated below via `sync_world`.
-            self.world
+            let handle = self
+                .world
                 .add_cube(ferrous_core::elements::cube::Cube::default());
+            // place it randomly within a small region in front of the camera
+            let mut rng = rand::thread_rng();
+            let offset_x = (rng.gen::<f32>() - 0.5) * 2.0; // +/-1
+            let offset_y = (rng.gen::<f32>() - 0.5) * 2.0; // +/-1
+                                                           // assume camera looks down -Z; place cubes roughly 4..6 units ahead
+            let offset_z = -5.0 + (rng.gen::<f32>() - 0.5) * 1.0;
+            // use renderer's camera if available; otherwise default to origin
+            let base = renderer.camera.eye;
+            self.world.set_position(
+                handle,
+                ferrous_renderer::glam::Vec3::new(
+                    base.x + offset_x,
+                    base.y + offset_y,
+                    base.z + offset_z,
+                ),
+            );
             self.add_cube = false;
         }
 
         // make sure the renderer knows about new/changed cubes
         renderer.sync_world(&mut self.world);
-
     }
 }
 

@@ -1,12 +1,12 @@
 // ferrous_renderer: biblioteca principal de renderizado
 
-pub mod camera;
 pub mod mesh;
 pub mod meshes; // contains specialised geometry helpers like cube
 pub mod pipeline;
 pub mod render_target;
 
 use crate::pipeline::FerrousPipeline;
+use ferrous_core::scene::Controller;
 // expose glam to downstream crates so they don't need to depend on a
 // specific version separately (avoids duplicate versions in workspace)
 use crate::render_target::RenderTarget;
@@ -43,8 +43,8 @@ pub struct Renderer {
     width: u32,
     height: u32,
     /// camera state used for the 3D scene
-    pub camera: camera::Camera,
-    camera_uniform: camera::CameraUniform,
+    pub camera: ferrous_core::scene::Camera,
+    camera_uniform: ferrous_core::scene::CameraUniform,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     /// simple scene mesh (cube)
@@ -137,7 +137,7 @@ impl Renderer {
         );
 
         // create camera resources
-        let camera = camera::Camera {
+        let camera = ferrous_core::scene::Camera {
             eye: glam::Vec3::new(0.0, 0.0, 5.0),
             target: glam::Vec3::ZERO,
             up: glam::Vec3::Y,
@@ -145,8 +145,9 @@ impl Renderer {
             aspect: width as f32 / height as f32,
             znear: 0.1,
             zfar: 100.0,
+            controller: Controller::with_default_wasd(),
         };
-        let mut camera_uniform = camera::CameraUniform::new();
+        let mut camera_uniform = ferrous_core::scene::CameraUniform::new();
         camera_uniform.update_view_proj(&camera);
 
         let camera_buffer = context
@@ -504,22 +505,11 @@ impl Renderer {
     /// Handle user input to modify the camera position. `dt` is the elapsed
     /// time since the last call in seconds.
     pub fn handle_input(&mut self, input: &mut ferrous_core::input::InputState, dt: f32) {
-        use ferrous_core::input::KeyCode;
-        // translate along camera-relative axes
-        let mut move_dir = glam::Vec3::ZERO;
-        if input.is_key_pressed(KeyCode::KeyW) {
-            move_dir.z += 1.0; // forward along view direction
-        }
-        if input.is_key_pressed(KeyCode::KeyS) {
-            move_dir.z -= 1.0;
-        }
-        if input.is_key_pressed(KeyCode::KeyA) {
-            move_dir.x -= 1.0;
-        }
-        if input.is_key_pressed(KeyCode::KeyD) {
-            move_dir.x += 1.0;
-        }
+        // compute desired direction from the camera's controller mapping
+        let move_dir = self.camera.controller.direction(input);
         if move_dir.length_squared() > 0.0 {
+            // translate along camera-relative axes using the same logic as
+            // before; `move_dir` components are assumed to be in camera space
             let forward = (self.camera.target - self.camera.eye).normalize();
             let right = forward.cross(self.camera.up).normalize();
             let world_disp = (forward * move_dir.z + right * move_dir.x).normalize();
