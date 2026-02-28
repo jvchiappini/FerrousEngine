@@ -1,10 +1,10 @@
 pub mod button;
+pub mod color_picker;
 pub mod layout;
 pub mod renderer;
 pub mod slider;
 pub mod textinput;
 pub mod widget;
-pub mod color_picker;
 
 pub use layout::{Alignment, DisplayMode, Node, Rect, RenderCommand, Style, Units};
 pub use renderer::{GuiBatch, GuiQuad, GuiRenderer, TextBatch};
