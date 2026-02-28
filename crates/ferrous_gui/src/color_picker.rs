@@ -123,12 +123,68 @@ impl ColorPicker {
     pub fn draw(&self, batch: &mut crate::renderer::GuiBatch) {
         match &self.shape {
             PickerShape::Circle => {
-                let radius = self.rect[2].min(self.rect[3]) * 0.5;
+                // draw a simple hue/sat wheel by stamping a grid of coloured
+                // quads inside the circle.  this gives a basic gradient that
+                // makes the control usable without requiring a texture.
+                let steps = 32; // resolution of the grid; adjust for quality vs cost
+                let cw = self.rect[2] / steps as f32;
+                let ch = self.rect[3] / steps as f32;
+                let cx = self.rect[0] + self.rect[2] * 0.5;
+                let cy = self.rect[1] + self.rect[3] * 0.5;
+                for i in 0..steps {
+                    for j in 0..steps {
+                        let x = self.rect[0] + i as f32 * cw + cw * 0.5;
+                        let y = self.rect[1] + j as f32 * ch + ch * 0.5;
+                        let nx = (x - self.rect[0]) / self.rect[2];
+                        let ny = (y - self.rect[1]) / self.rect[3];
+                        let dx = nx - 0.5;
+                        let dy = ny - 0.5;
+                        if dx * dx + dy * dy <= 0.25 {
+                            let dist = (dx * dx + dy * dy).sqrt();
+                            let angle = dy.atan2(dx);
+                            let hue = (angle / (2.0 * std::f32::consts::PI) + 1.0) % 1.0;
+                            let sat = dist / 0.5;
+                            let color = hsv_to_rgba(hue, sat, 1.0, self.colour[3]);
+                            batch.push(crate::renderer::GuiQuad {
+                                pos: [x - cw * 0.5, y - ch * 0.5],
+                                size: [cw, ch],
+                                color,
+                                radii: [0.0; 4],
+                            });
+                        }
+                    }
+                }
+                // draw a small indicator at the current selection point
+                let (px, py) = {
+                    // reverse approximate mapping from current colour back to
+                    // hue/saturation so that we can place the indicator.
+                    let r = self.colour[0];
+                    let g = self.colour[1];
+                    let b = self.colour[2];
+                    let max = r.max(g).max(b);
+                    let min = r.min(g).min(b);
+                    let d = max - min;
+                    let hue = if d == 0.0 {
+                        0.0
+                    } else if max == r {
+                        ((g - b) / d) % 6.0
+                    } else if max == g {
+                        (b - r) / d + 2.0
+                    } else {
+                        (r - g) / d + 4.0
+                    } / 6.0;
+                    let sat = if max == 0.0 { 0.0 } else { d / max };
+                    let angle = hue * 2.0 * std::f32::consts::PI;
+                    let dist = sat * 0.5;
+                    let px = cx + dist * angle.cos() * self.rect[2];
+                    let py = cy + dist * angle.sin() * self.rect[3];
+                    (px, py)
+                };
                 batch.push(crate::renderer::GuiQuad {
-                    pos: [self.rect[0], self.rect[1]],
-                    size: [self.rect[2], self.rect[3]],
-                    color: self.colour,
-                    radii: [radius; 4],
+                    pos: [px - 4.0, py - 4.0],
+                    size: [8.0, 8.0],
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    radii: [4.0; 4],
                 });
             }
             PickerShape::Custom(f) => {
@@ -151,16 +207,74 @@ impl Widget for ColorPicker {
     fn collect(&self, cmds: &mut Vec<RenderCommand>) {
         match &self.shape {
             PickerShape::Circle => {
-                let radius = self.rect[2].min(self.rect[3]) * 0.5;
+                // replicate same gradient logic as draw(); since collect is
+                // used for the generic `Widget` path we need to emit
+                // RenderCommands here.
+                let steps = 32;
+                let cw = self.rect[2] / steps as f32;
+                let ch = self.rect[3] / steps as f32;
+                let cx = self.rect[0] + self.rect[2] * 0.5;
+                let cy = self.rect[1] + self.rect[3] * 0.5;
+                for i in 0..steps {
+                    for j in 0..steps {
+                        let x = self.rect[0] + i as f32 * cw + cw * 0.5;
+                        let y = self.rect[1] + j as f32 * ch + ch * 0.5;
+                        let nx = (x - self.rect[0]) / self.rect[2];
+                        let ny = (y - self.rect[1]) / self.rect[3];
+                        let dx = nx - 0.5;
+                        let dy = ny - 0.5;
+                        if dx * dx + dy * dy <= 0.25 {
+                            let dist = (dx * dx + dy * dy).sqrt();
+                            let angle = dy.atan2(dx);
+                            let hue = (angle / (2.0 * std::f32::consts::PI) + 1.0) % 1.0;
+                            let sat = dist / 0.5;
+                            let color = hsv_to_rgba(hue, sat, 1.0, self.colour[3]);
+                            cmds.push(RenderCommand::Quad {
+                                rect: Rect {
+                                    x: x - cw * 0.5,
+                                    y: y - ch * 0.5,
+                                    width: cw,
+                                    height: ch,
+                                },
+                                color,
+                                radii: [0.0; 4],
+                            });
+                        }
+                    }
+                }
+                // indicator
+                let (px, py) = {
+                    let r = self.colour[0];
+                    let g = self.colour[1];
+                    let b = self.colour[2];
+                    let max = r.max(g).max(b);
+                    let min = r.min(g).min(b);
+                    let d = max - min;
+                    let hue = if d == 0.0 {
+                        0.0
+                    } else if max == r {
+                        ((g - b) / d) % 6.0
+                    } else if max == g {
+                        (b - r) / d + 2.0
+                    } else {
+                        (r - g) / d + 4.0
+                    } / 6.0;
+                    let sat = if max == 0.0 { 0.0 } else { d / max };
+                    let angle = hue * 2.0 * std::f32::consts::PI;
+                    let dist = sat * 0.5;
+                    let px = cx + dist * angle.cos() * self.rect[2];
+                    let py = cy + dist * angle.sin() * self.rect[3];
+                    (px, py)
+                };
                 cmds.push(RenderCommand::Quad {
                     rect: Rect {
-                        x: self.rect[0],
-                        y: self.rect[1],
-                        width: self.rect[2],
-                        height: self.rect[3],
+                        x: px - 4.0,
+                        y: py - 4.0,
+                        width: 8.0,
+                        height: 8.0,
                     },
-                    color: self.colour,
-                    radii: [radius; 4],
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    radii: [4.0; 4],
                 });
             }
             PickerShape::Custom(f) => {

@@ -24,9 +24,14 @@ for crate in crates/*; do
         # no dedicated documentation directory; fall back to the crate's
         # top‑level README if one exists.  this ensures each crate shows up
         # in the generated site with at least a placeholder page.
+        mkdir -p "$dest"
         if [ -f "$crate/README.md" ]; then
-            mkdir -p "$dest"
             cp "$crate/README.md" "$dest/"
+        else
+            echo "# $name" > "$dest/README.md"
+            echo "Documentation for \`$name\` is currently under construction." >> "$dest/README.md"
+            echo "" >> "$dest/README.md"
+            echo "> This crate does not currently provide its own \`README.md\`." >> "$dest/README.md"
         fi
     fi
 done

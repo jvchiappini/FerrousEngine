@@ -85,16 +85,20 @@ single rounded quad for the circle variant or whatever commands the custom
 closure emits.  The `draw` helper can be used in isolation in the same way
 as other controls.
 
-By default the picker behaves like a hue/saturation wheel: clicking or
 dragging inside the circle updates the colour based on the polar coordinates
-of the cursor relative to the centre.  Applications can override this logic
-by providing an `on_pick` callback.
+By default the picker behaves like a hue/saturation wheel.  The circular
+area is rendered as a simple gradient by stamping a grid of small quads; the
+colour at each point corresponds to the hue (angle) and saturation (distance
+from centre).  A white indicator dot marks the currently selected colour.
+Clicking or dragging anywhere inside the circle updates `colour` using the
+same polar-coordinate mapping.  Applications can override this logic by
+providing an `on_pick` callback.
 
-### Example default draw
+### Example default draw and selection marker
 
 ```rust
 let mut batch = GuiBatch::new();
-color_picker.draw(&mut batch);
+color_picker.draw(&mut batch); // renders a wheel with current hue/sat indicator
 ```
 
 ## Example integration
