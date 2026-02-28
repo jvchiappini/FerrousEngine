@@ -25,6 +25,7 @@ Thumbs.db
 
 # Ignore generated documentation site (built by CI)
 /site/
+/docs/
 
 
 # Ignore compiled binaries

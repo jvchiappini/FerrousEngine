@@ -1,56 +1,56 @@
-name: "Build and Commit Documentation"
+name: "Build and Deploy Documentation"
 
-# grant the workflow permission to push to the repository and to use
-# the Pages API; these scopes are not granted by default for security.
+# Grant the workflow permissions to deploy to GitHub Pages
 permissions:
-  contents: write
+  contents: read
   pages: write
   id-token: write
-
-# This workflow runs on every push to `main` (and can be triggered
-# manually) and is responsible for generating the MkDocs site and
-# publishing it to GitHub Pages.  Because the build happens in CI,
-# Windows users no longer need to run the shell script locally.
 
 on:
   push:
     branches: [ main ]
-    # do not rebuild when only the generated docs change;
-    # avoids a push loop when we commit `docs/`
-    paths-ignore:
-      - 'docs/**'
   workflow_dispatch:
 
+# Allow only one concurrent deployment
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
 jobs:
-  docs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0      # we need full history for gh-pages deploy
 
-      - name: Set up Rust toolchain
-        uses: actions-rs/toolchain@v1
+      # Set up Python to install MkDocs
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          toolchain: stable
-          override: true
+          python-version: '3.x'
+
+      - name: Install MkDocs & Material theme
+        run: |
+          python -m pip install --upgrade pip
+          pip install mkdocs mkdocs-material
 
       - name: Build documentation
         run: |
           chmod +x scripts/build_docs.sh
           ./scripts/build_docs.sh
 
-      # commit the freshly generated `docs/` tree back to the same
-      # branch.  the `permissions` block above ensures the token has
-      # write access; `paths-ignore` prevents re‑triggering this job.
-      - name: Commit generated docs
-        run: |
-          # commit using the repo owner's identity so the bot does not
-          # appear as a contributor.
-          git config user.name "jvchiappini"
-          git config user.email "jvchiappini@users.noreply.github.com"
-          git add docs
-          git diff --quiet || git commit --author="jvchiappini <jvchiappini@users.noreply.github.com>" -m "Update generated docs [skip ci]"
-          git push origin HEAD:main
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './site'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
