@@ -15,7 +15,8 @@ fi
 # aggregate documentation from each crate
 for crate in crates/*; do
     if [ -d "$crate/docs" ]; then
-        dest="docs/$(basename \"$crate\")"
+        # strip any trailing slash and then basename; avoid embedding quotes
+        dest="docs/$(basename "$crate")"
         mkdir -p "$dest"
         cp -R "$crate/docs/"* "$dest/"
     fi

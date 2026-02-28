@@ -23,6 +23,10 @@ Thumbs.db
 # Ignore logs
 *.log
 
+# Ignore generated documentation site (built by CI)
+/site/
+
+
 # Ignore compiled binaries
 *.exe
 *.dll
