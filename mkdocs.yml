@@ -5,8 +5,6 @@ site_url: https://jvchiappini.github.io/FerrousEngine
 theme:
   name: material
   features:
-    - navigation.tabs
-    - navigation.sections
     - navigation.expand
 
 # navigation block is carefully indented; keep this comment here to
