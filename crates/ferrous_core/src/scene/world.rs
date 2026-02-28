@@ -32,7 +32,9 @@ struct ElementEntry {
 impl World {
     /// Create an empty world ready to accept elements.
     pub fn new() -> Self {
-        Self { elements: Vec::new() }
+        Self {
+            elements: Vec::new(),
+        }
     }
 
     /// Add a new element to the scene.  the element is taken by value and
@@ -79,7 +81,10 @@ impl World {
 
     /// Iterate over elements together with their handles.
     pub fn elements_with_handles(&self) -> impl Iterator<Item = (Handle, &Element)> {
-        self.elements.iter().enumerate().map(|(i, e)| (i, &e.element))
+        self.elements
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (i, &e.element))
     }
 
     /// Store the renderer's handle associated with the given element.  this
@@ -93,9 +98,7 @@ impl World {
 
     /// Retrieve a previously stored renderer handle, if any.
     pub fn render_handle(&self, handle: Handle) -> Option<usize> {
-        self.elements
-            .get(handle)
-            .and_then(|e| e.render_handle)
+        self.elements.get(handle).and_then(|e| e.render_handle)
     }
 }
 
