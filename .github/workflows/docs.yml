@@ -1,0 +1,43 @@
+name: Build & publish docs
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      # install Python and mkdocs for generating a styled site
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Install mkdocs & theme
+        run: |
+          python -m pip install --upgrade pip
+          pip install mkdocs mkdocs-material
+
+      # make the helper script executable
+      - name: Prepare build script
+        run: |
+          chmod +x scripts/build_docs.sh
+
+      - name: Assemble documentation
+        run: |
+          scripts/build_docs.sh
+
+      # if you were building mdbook/mkdocs, add those steps here
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
+          # you can also set a custom branch if desired
+          # publish_branch: gh-pages

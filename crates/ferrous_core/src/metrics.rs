@@ -4,6 +4,7 @@
 //! without needing to bring a dependency into every crate.
 
 use once_cell::sync::Lazy;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use sysinfo::{ProcessExt, System, SystemExt};
 
@@ -15,6 +16,7 @@ use sysinfo::{ProcessExt, System, SystemExt};
 // the API is thread‑safe regardless.
 
 static GLOBAL_SYS: Lazy<Mutex<System>> = Lazy::new(|| Mutex::new(System::new()));
+static LAST_REFRESH: AtomicU64 = AtomicU64::new(0);
 
 /// Helper to lock and refresh the process info before invoking the
 /// closure.
@@ -23,14 +25,21 @@ where
     F: FnOnce(&mut System) -> R,
 {
     let mut sys = GLOBAL_SYS.lock().unwrap();
-    // refresh cpu and memory globally; without this `cpu_usage`
-    // remains stuck at 0 because `sysinfo` needs to see two samples.
-    sys.refresh_cpu();
-    sys.refresh_memory();
-    // refresh process list (or a specific pid) before querying.
-    // a real engine might call this less frequently to reduce the
-    // cost of iterating all processes.
-    sys.refresh_processes();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let last = LAST_REFRESH.load(Ordering::Relaxed);
+
+    // limit refresh to 500ms to avoid thrashing OS calls 3x per frame
+    if now.saturating_sub(last) > 500 {
+        sys.refresh_cpu();
+        sys.refresh_memory();
+        let pid = sysinfo::Pid::from(std::process::id() as usize);
+        sys.refresh_process(pid);
+        LAST_REFRESH.store(now, Ordering::Relaxed);
+    }
+    // we avoid iterating over all system processes which consumes huge RAM and CPU.
     f(&mut sys)
 }
 
@@ -40,7 +49,6 @@ where
 pub fn get_cpu_usage() -> f32 {
     with_system(|sys| {
         let pid = sysinfo::Pid::from(std::process::id() as usize);
-        sys.refresh_process(pid);
         sys.process(pid).map(|p| p.cpu_usage()).unwrap_or(0.0)
     })
 }
@@ -51,7 +59,6 @@ pub fn get_cpu_usage() -> f32 {
 pub fn get_ram_usage_bytes() -> u64 {
     with_system(|sys| {
         let pid = sysinfo::Pid::from(std::process::id() as usize);
-        sys.refresh_process(pid);
         // `sysinfo` returns the resident memory size in **bytes** on
         // Windows (and on most other platforms).  earlier versions of
         // this code assumed kilobytes and multiplied by 1024, which
@@ -80,7 +87,6 @@ pub fn get_virtual_memory_mb() -> f32 {
 pub fn get_virtual_memory_bytes() -> u64 {
     with_system(|sys| {
         let pid = sysinfo::Pid::from(std::process::id() as usize);
-        sys.refresh_process(pid);
         // same as above: `virtual_memory()` is already in bytes.
         sys.process(pid).map(|p| p.virtual_memory()).unwrap_or(0)
     })

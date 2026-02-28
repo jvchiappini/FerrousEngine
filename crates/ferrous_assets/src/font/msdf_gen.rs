@@ -48,10 +48,20 @@ pub fn generate_msdf(commands: &[GlyphCommand], size: u32) -> Vec<u8> {
         match cmd {
             GlyphCommand::MoveTo(x, y) => cursor = (*x, *y),
             GlyphCommand::LineTo(x, y) => {
-                segments.push(Segment { x0: cursor.0, y0: cursor.1, x1: *x, y1: *y });
+                segments.push(Segment {
+                    x0: cursor.0,
+                    y0: cursor.1,
+                    x1: *x,
+                    y1: *y,
+                });
                 cursor = (*x, *y);
             }
-            GlyphCommand::QuadTo { ctrl_x, ctrl_y, to_x, to_y } => {
+            GlyphCommand::QuadTo {
+                ctrl_x,
+                ctrl_y,
+                to_x,
+                to_y,
+            } => {
                 let steps = 16;
                 let mut prev_x = cursor.0;
                 let mut prev_y = cursor.1;
@@ -60,7 +70,12 @@ pub fn generate_msdf(commands: &[GlyphCommand], size: u32) -> Vec<u8> {
                     let mt = 1.0 - t;
                     let nx = mt * mt * cursor.0 + 2.0 * mt * t * ctrl_x + t * t * to_x;
                     let ny = mt * mt * cursor.1 + 2.0 * mt * t * ctrl_y + t * t * to_y;
-                    segments.push(Segment { x0: prev_x, y0: prev_y, x1: nx, y1: ny });
+                    segments.push(Segment {
+                        x0: prev_x,
+                        y0: prev_y,
+                        x1: nx,
+                        y1: ny,
+                    });
                     prev_x = nx;
                     prev_y = ny;
                 }
@@ -69,16 +84,16 @@ pub fn generate_msdf(commands: &[GlyphCommand], size: u32) -> Vec<u8> {
         }
     }
 
-   if segments.is_empty() {
+    if segments.is_empty() {
         return vec![255u8; (size * size * 4) as usize]; // ¡Cambiado a 255!
     }
 
     // CORRECCIÓN DE ESCALA: Usamos una caja global de EM (EM Box) en lugar de una individual
     // La mayoría de las fuentes existen entre Y = -0.3 (descendentes) y 1.3 (ascendentes)
     let cell_minx = -0.3;
-    let cell_maxx =  1.3;
+    let cell_maxx = 1.3;
     let cell_miny = -0.3;
-    let cell_maxy =  1.3;
+    let cell_maxy = 1.3;
 
     let pixel_range = 4.0;
     let inv_size = 1.0 / size as f32;
@@ -98,20 +113,22 @@ pub fn generate_msdf(commands: &[GlyphCommand], size: u32) -> Vec<u8> {
 
             for s in &segments {
                 let d = point_seg_dist(gx, gy, s);
-                if d < min_dist { min_dist = d; }
+                if d < min_dist {
+                    min_dist = d;
+                }
                 winding += line_winding(gx, gy, s);
             }
 
             let inside = winding != 0;
             // CORRECCIÓN SIGNO SDF: Adentro es Negativo, Afuera es Positivo
             let sign = if inside { -1.0 } else { 1.0 };
-            
+
             let sd = sign * min_dist * dist_scale;
             let encoded = (0.5 + sd).clamp(0.0, 1.0);
             let val = (encoded * 255.0) as u8;
-            
+
             let offset = ((iy * size + ix) * 4) as usize;
-            out[offset] = val;     // R
+            out[offset] = val; // R
             out[offset + 1] = val; // G
             out[offset + 2] = val; // B
             out[offset + 3] = 255; // A

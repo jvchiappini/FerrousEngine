@@ -1,0 +1,19 @@
+site_name: FerrousEngine Documentation
+site_url: https://jvchiappini.github.io/FerrousEngine
+
+# use the Material theme for a polished look
+theme:
+  name: material
+
+# navigation is automatically generated from the docs/ folder structure
+# you can override entries here if you want custom titles or ordering
+nav:
+  - Home: index.md
+  - ferrous_gui:
+      - Overview: ferrous_gui/README.md
+      - Button: ferrous_gui/widgets/button.md
+      - Slider: ferrous_gui/widgets/slider.md
+      - TextInput: ferrous_gui/widgets/textinput.md
+
+# extras or plugins could be added if desired
+

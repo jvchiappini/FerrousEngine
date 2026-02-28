@@ -23,19 +23,26 @@ impl Font {
         chars: impl IntoIterator<Item = char>,
     ) -> Self {
         let char_list: Vec<char> = chars.into_iter().collect();
-        
+
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
             Err(e) => {
-                eprintln!("Warning: Font not found at {}: {}. Using fallback.", path, e);
+                eprintln!(
+                    "Warning: Font not found at {}: {}. Using fallback.",
+                    path, e
+                );
                 Self::build_fallback_font()
             }
         };
 
         let parser = FontParser::new(bytes).expect("Failed to parse font data");
-        
+
         // Si usamos la fuente de respaldo, solo tiene el glifo 'A'
-        let final_chars = if char_list.is_empty() { vec!['A'] } else { char_list };
+        let final_chars = if char_list.is_empty() {
+            vec!['A']
+        } else {
+            char_list
+        };
 
         let atlas = FontAtlas::new(device, queue, &parser, final_chars)
             .expect("Failed to build font atlas");
@@ -69,9 +76,9 @@ impl Font {
         cmap.extend(&(-65i16).to_be_bytes()); // idDeltas
         cmap.extend(&0u16.to_be_bytes()); // idRangeOffsets
         let len = (cmap.len() - fmt_start) as u16;
-        cmap[fmt_start+2..fmt_start+4].copy_from_slice(&len.to_be_bytes());
+        cmap[fmt_start + 2..fmt_start + 4].copy_from_slice(&len.to_be_bytes());
         let off = fmt_start as u32;
-        cmap[subtable_pos+4..subtable_pos+8].copy_from_slice(&off.to_be_bytes());
+        cmap[subtable_pos + 4..subtable_pos + 8].copy_from_slice(&off.to_be_bytes());
         tables.push((*b"cmap", cmap));
 
         // head
@@ -86,14 +93,18 @@ impl Font {
         glyf.extend(&[0; 8]); // bbox
         glyf.extend(&3u16.to_be_bytes()); // endPt
         glyf.extend(&0u16.to_be_bytes()); // instLen
-        for _ in 0..4 { glyf.push(0x01); } // flags
-        for v in &[0, 0, 0, 100, 100, 0, 0, -100] { glyf.extend(&((*v as i16).to_be_bytes())); }
+        for _ in 0..4 {
+            glyf.push(0x01);
+        } // flags
+        for v in &[0, 0, 0, 100, 100, 0, 0, -100] {
+            glyf.extend(&((*v as i16).to_be_bytes()));
+        }
         tables.push((*b"glyf", glyf));
 
         // loca
         let mut loca = Vec::new();
         loca.extend(&0u32.to_be_bytes());
-        let glen = tables.iter().find(|(t,_)| t==b"glyf").unwrap().1.len() as u32;
+        let glen = tables.iter().find(|(t, _)| t == b"glyf").unwrap().1.len() as u32;
         loca.extend(&glen.to_be_bytes());
         tables.push((*b"loca", loca));
 
@@ -106,7 +117,7 @@ impl Font {
         hmtx.extend(&0u16.to_be_bytes()); // lsb
         tables.push((*b"hmtx", hmtx));
 
-        let mut data = vec![0,0,1,0]; // scaler type
+        let mut data = vec![0, 0, 1, 0]; // scaler type
         data.extend(&(tables.len() as u16).to_be_bytes());
         data.extend(&[0; 6]); // search info
 
@@ -118,7 +129,9 @@ impl Font {
             data.extend(&(tbl.len() as u32).to_be_bytes());
             offset += tbl.len();
         }
-        for (_, tbl) in &tables { data.extend(tbl); }
+        for (_, tbl) in &tables {
+            data.extend(tbl);
+        }
         data
     }
 }

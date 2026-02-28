@@ -10,12 +10,8 @@ fn main() {
             .await
             .expect("failed to create context");
 
-        let mut renderer = ferrous_renderer::Renderer::new(
-            context,
-            800,
-            600,
-            wgpu::TextureFormat::Bgra8UnormSrgb,
-        );
+        let mut renderer =
+            ferrous_renderer::Renderer::new(context, 800, 600, wgpu::TextureFormat::Bgra8UnormSrgb);
 
         let mut encoder = renderer.begin_frame();
         // generamos un rectángulo de UI sobre la escena para demostrar
@@ -79,18 +75,12 @@ fn main() {
             .context
             .queue
             .submit(std::iter::once(encoder.finish()));
-        renderer
-            .context
-            .device
-            .poll(wgpu::Maintain::Wait);
+        renderer.context.device.poll(wgpu::Maintain::Wait);
 
         // map the buffer and save PNG
         let buffer_slice = output_buffer.slice(..);
         buffer_slice.map_async(wgpu::MapMode::Read, |_| {});
-        renderer
-            .context
-            .device
-            .poll(wgpu::Maintain::Wait);
+        renderer.context.device.poll(wgpu::Maintain::Wait);
         let data = buffer_slice.get_mapped_range();
 
         // the texture format is BGRA; convert to RGBA for the PNG library
@@ -107,14 +97,8 @@ fn main() {
             }
         }
 
-        image::save_buffer(
-            "frame.png",
-            &png_data,
-            800,
-            600,
-            image::ColorType::Rgba8,
-        )
-        .expect("failed to save image");
+        image::save_buffer("frame.png", &png_data, 800, 600, image::ColorType::Rgba8)
+            .expect("failed to save image");
 
         println!("Rendered a single triangle frame, output written to frame.png");
     });

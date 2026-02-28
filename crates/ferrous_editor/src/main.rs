@@ -15,8 +15,8 @@ struct EditorApp {
     corner_buttons: [Rc<RefCell<InteractiveButton>>; 4],
     // sliders and text input removed (legacy)
     ui_viewport: Rc<RefCell<ViewportWidget>>,
-        /// example button that rounds multiple corners at once
-        combo_button: Rc<RefCell<InteractiveButton>>,
+    /// example button that rounds multiple corners at once
+    combo_button: Rc<RefCell<InteractiveButton>>,
 
     // Tamaños de paneles dinámicos
     panel_left_w: u32,
@@ -34,28 +34,28 @@ struct EditorApp {
 impl Default for EditorApp {
     fn default() -> Self {
         Self {
-                        corner_buttons: [
-                            // top-left
-                            Rc::new(RefCell::new(
-                                InteractiveButton::new(50.0, 50.0, 80.0, 80.0).round_tl(20.0),
-                            )),
-                            // top-right
-                            Rc::new(RefCell::new(
-                                InteractiveButton::new(150.0, 50.0, 80.0, 80.0).round_tr(20.0),
-                            )),
-                            // bottom-left
-                            Rc::new(RefCell::new(
-                                InteractiveButton::new(50.0, 150.0, 80.0, 80.0).round_bl(20.0),
-                            )),
-                            // bottom-right
-                            Rc::new(RefCell::new(
-                                InteractiveButton::new(150.0, 150.0, 80.0, 80.0).round_br(20.0),
-                            )),
-                        ],
-                combo_button: Rc::new(RefCell::new(
-                    // round both top-left and bottom-right simultaneously
-                    InteractiveButton::new(250.0, 100.0, 80.0, 80.0).with_radii([20.0, 0.0, 0.0, 20.0]),
+            corner_buttons: [
+                // top-left
+                Rc::new(RefCell::new(
+                    InteractiveButton::new(50.0, 50.0, 80.0, 80.0).round_tl(20.0),
                 )),
+                // top-right
+                Rc::new(RefCell::new(
+                    InteractiveButton::new(150.0, 50.0, 80.0, 80.0).round_tr(20.0),
+                )),
+                // bottom-left
+                Rc::new(RefCell::new(
+                    InteractiveButton::new(50.0, 150.0, 80.0, 80.0).round_bl(20.0),
+                )),
+                // bottom-right
+                Rc::new(RefCell::new(
+                    InteractiveButton::new(150.0, 150.0, 80.0, 80.0).round_br(20.0),
+                )),
+            ],
+            combo_button: Rc::new(RefCell::new(
+                // round both top-left and bottom-right simultaneously
+                InteractiveButton::new(250.0, 100.0, 80.0, 80.0).with_radii([20.0, 0.0, 0.0, 20.0]),
+            )),
             // sliders/text input not used anymore
             ui_viewport: Rc::new(RefCell::new(ViewportWidget::new(0.0, 0.0, 0.0, 0.0))),
             panel_left_w: 300,
@@ -155,8 +155,8 @@ impl FerrousApp for EditorApp {
             text.draw_text(font, "BR", [160.0, 170.0], 16.0, [1.0, 1.0, 1.0, 1.0]);
 
             // ahora dibujamos el panel de objetos con sus sliders
-                // label for combined button
-                text.draw_text(font, "TL+BR", [250.0, 90.0], 12.0, [1.0, 1.0, 1.0, 1.0]);
+            // label for combined button
+            text.draw_text(font, "TL+BR", [250.0, 90.0], 12.0, [1.0, 1.0, 1.0, 1.0]);
             let mut y_offset = 140.0;
             for (i, (name, _idx)) in self.objects.iter().enumerate() {
                 text.draw_text(font, name, [10.0, y_offset], 16.0, [1.0, 1.0, 0.0, 1.0]);
@@ -175,43 +175,49 @@ impl FerrousApp for EditorApp {
                 }
                 y_offset += 30.0;
             }
-                // diagnostics: show CPU / memory usage of the editor process.
-                // we draw a semi‑opaque box first so the text doesn't leave
-                // behind artifacts when it changes length.
-                let box_width = 300.0;
-                let box_height = 22.0;
-                gui.push(ferrous_gui::GuiQuad {
-                    pos: [10.0, (win_h as f32 - box_height)],
-                    size: [box_width, box_height],
-                    color: [0.0, 0.0, 0.0, 0.6],
-                    radii: [0.0; 4],
-                });
+            // diagnostics: show CPU / memory usage of the editor process.
+            // we draw a semi‑opaque box first so the text doesn't leave
+            // behind artifacts when it changes length.
+            let box_width = 300.0;
+            let box_height = 22.0;
+            gui.push(ferrous_gui::GuiQuad {
+                pos: [10.0, (win_h as f32 - box_height)],
+                size: [box_width, box_height],
+                color: [0.0, 0.0, 0.0, 0.6],
+                radii: [0.0; 4],
+            });
 
-                let cpu = ferrous_core::get_cpu_usage();
-                let ram_mb = ferrous_core::get_ram_usage_mb();
-                let virt_mb = ferrous_core::get_virtual_memory_mb();
-                // log to console periodically for debugging.
-                static mut LAST_LOG: Option<std::time::Instant> = None;
-                let now = std::time::Instant::now();
-                let should_log = unsafe {
-                    if let Some(prev) = LAST_LOG {
-                        now.duration_since(prev) > std::time::Duration::from_secs(1)
-                    } else {
-                        true
-                    }
-                };
-                if should_log {
-                    unsafe { LAST_LOG = Some(now); }
-                    println!(
-                        "[metrics] cpu={}%, ram={}MB, virt={}MB",
-                        cpu, ram_mb, virt_mb
-                    );
+            let cpu = ferrous_core::get_cpu_usage();
+            let ram_mb = ferrous_core::get_ram_usage_mb();
+            let virt_mb = ferrous_core::get_virtual_memory_mb();
+            // log to console periodically for debugging.
+            static mut LAST_LOG: Option<std::time::Instant> = None;
+            let now = std::time::Instant::now();
+            let should_log = unsafe {
+                if let Some(prev) = LAST_LOG {
+                    now.duration_since(prev) > std::time::Duration::from_secs(1)
+                } else {
+                    true
                 }
-
-                let info = format!(
-                    "cpu: {cpu:.1}%   ram: {ram_mb:.1} MB   virt: {virt_mb:.1} MB",
+            };
+            if should_log {
+                unsafe {
+                    LAST_LOG = Some(now);
+                }
+                println!(
+                    "[metrics] cpu={}%, ram={}MB, virt={}MB",
+                    cpu, ram_mb, virt_mb
                 );
-                text.draw_text(font, &info, [10.0, (win_h - 20) as f32], 12.0, [0.8, 0.8, 0.8, 1.0]);
+            }
+
+            let info = format!("cpu: {cpu:.1}%   ram: {ram_mb:.1} MB   virt: {virt_mb:.1} MB",);
+            text.draw_text(
+                font,
+                &info,
+                [10.0, (win_h - 20) as f32],
+                12.0,
+                [0.8, 0.8, 0.8, 1.0],
+            );
         }
     }
 

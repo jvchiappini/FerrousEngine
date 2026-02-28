@@ -49,6 +49,12 @@ impl EngineContext {
             .await
             .context(ContextError::AdapterUnavailable)?;
 
+        println!(
+            "[WGPU] Selected Adapter: {} ({:?})",
+            adapter.get_info().name,
+            adapter.get_info().backend
+        );
+
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {

@@ -67,7 +67,12 @@ impl Widget for Slider {
     fn collect(&self, cmds: &mut Vec<RenderCommand>) {
         // track
         cmds.push(RenderCommand::Quad {
-            rect: Rect { x: self.rect[0], y: self.rect[1], width: self.rect[2], height: self.rect[3] },
+            rect: Rect {
+                x: self.rect[0],
+                y: self.rect[1],
+                width: self.rect[2],
+                height: self.rect[3],
+            },
             color: self.track_color,
             radii: [0.0; 4],
         });
@@ -75,7 +80,12 @@ impl Widget for Slider {
         let thumb_w = self.rect[2] * 0.1;
         let tx = self.rect[0] + (self.rect[2] - thumb_w) * self.value;
         cmds.push(RenderCommand::Quad {
-            rect: Rect { x: tx, y: self.rect[1], width: thumb_w, height: self.rect[3] },
+            rect: Rect {
+                x: tx,
+                y: self.rect[1],
+                width: thumb_w,
+                height: self.rect[3],
+            },
             color: self.thumb_color,
             radii: [0.0; 4],
         });

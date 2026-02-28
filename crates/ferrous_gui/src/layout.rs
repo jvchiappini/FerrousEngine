@@ -386,11 +386,11 @@ impl Node {
     pub fn collect_render_commands(&self, cmds: &mut Vec<RenderCommand>) {
         if let Some(bg) = self.background {
             // default background has no rounding
-                cmds.push(RenderCommand::Quad {
-                    rect: self.rect.clone(),
-                    color: bg,
-                    radii: [0.0; 4],
-                });
+            cmds.push(RenderCommand::Quad {
+                rect: self.rect.clone(),
+                color: bg,
+                radii: [0.0; 4],
+            });
         }
         if let Some(text) = &self.text {
             cmds.push(RenderCommand::Text {
