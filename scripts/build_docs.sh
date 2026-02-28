@@ -14,11 +14,20 @@ fi
 
 # aggregate documentation from each crate
 for crate in crates/*; do
+    name=$(basename "$crate")
+    dest="docs/$name"
+
     if [ -d "$crate/docs" ]; then
-        # strip any trailing slash and then basename; avoid embedding quotes
-        dest="docs/$(basename "$crate")"
         mkdir -p "$dest"
         cp -R "$crate/docs/"* "$dest/"
+    else
+        # no dedicated documentation directory; fall back to the crate's
+        # top‑level README if one exists.  this ensures each crate shows up
+        # in the generated site with at least a placeholder page.
+        if [ -f "$crate/README.md" ]; then
+            mkdir -p "$dest"
+            cp "$crate/README.md" "$dest/"
+        fi
     fi
 done
 

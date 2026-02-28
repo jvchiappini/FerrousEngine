@@ -10,15 +10,21 @@ theme:
 ## this list whenever you add new markdown files under `crates/*/docs`.
 nav:
   - Home: index.md
-  - ferrous_gui:
-    - Overview: ferrous_gui/README.md
-    - API:
-      - Core: ferrous_gui/api/core.md
-      - Layout: ferrous_gui/layout.md
-    - Widgets:
-      - Button: ferrous_gui/widgets/button.md
-      - Slider: ferrous_gui/widgets/slider.md
-      - TextInput: ferrous_gui/widgets/textinput.md
+    - Crates:
+      - ferrous_app: ferrous_app/README.md
+      - ferrous_assets: ferrous_assets/README.md
+      - ferrous_core: ferrous_core/README.md
+      - ferrous_editor: ferrous_editor/README.md
+      - ferrous_gui:
+        - Overview: ferrous_gui/README.md
+        - API:
+          - Core: ferrous_gui/api/core.md
+          - Layout: ferrous_gui/layout.md
+        - Widgets:
+          - Button: ferrous_gui/widgets/button.md
+          - Slider: ferrous_gui/widgets/slider.md
+          - TextInput: ferrous_gui/widgets/textinput.md
+      - ferrous_renderer: ferrous_renderer/README.md
 
 # extras or plugins could be added if desired
 

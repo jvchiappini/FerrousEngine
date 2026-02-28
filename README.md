@@ -33,15 +33,21 @@ will include them automatically.
 ### GitHub Pages configuration
 
 By default the project has historically deployed the generated website
-to a dedicated `gh-pages` branch.  It's perfectly fine to continue
-doing that, but if you prefer to serve directly from `main` you can
-change the repository settings on GitHub to publish from the `main`
-branch and the `docs/` folder.  After doing so you no longer need to
-push the `gh-pages` branch; `scripts/build_docs.sh` will still create
-the `docs/` tree which GitHub Pages will serve.
+to a dedicated `gh-pages` branch.  It’s no longer necessary to keep a
+second branch – the CI workflow now regenerates `docs/` on every push
+and commits those files back to `main`, and the Pages source is set to
+**main / docs**.  You can verify or change the setting under
+Settings → Pages; the “Branch” dropdown should read `main` and the
+folder `/docs`.
 
-> ⚠️ Remember to run the build script and commit the resulting
-> `docs/` files before pushing to `main` when using that configuration.
+When Pages is pointed at `main/docs`, you no longer need to run the
+build script locally unless you want to preview the site.  The GitHub
+Actions job will pick up any changes in the crate markdown and
+update the published site automatically.
+
+> ⚠️ The workflow ignores pushes that only modify files under `docs/`,
+> which prevents an infinite update loop when the action commits its
+> own changes.
 
 For development or local preview you can run `mkdocs serve` from the
 workspace root once the prerequisites are installed.
