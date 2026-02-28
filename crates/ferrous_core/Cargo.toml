@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
  # core types depend on simple math utilities; use the workspace version of glam
- [dependencies]
+[dependencies]
 glam = { workspace = true }
 wgpu = "23.0"
 anyhow = "1.0"

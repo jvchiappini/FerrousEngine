@@ -290,7 +290,14 @@ impl Renderer {
             // al igual que el pase 3D, podemos dibujar en el mismo
             // colour_view y resolver hacia el mismo resolve_target (si lo
             // hay) para que la interfaz también reciba antialiasing.
-            self.ui_renderer.render(encoder, color_view, resolve_target, batch, &self.context.queue, text_batch);
+            self.ui_renderer.render(
+                encoder,
+                color_view,
+                resolve_target,
+                batch,
+                &self.context.queue,
+                text_batch,
+            );
         }
     }
 
@@ -374,7 +381,14 @@ impl Renderer {
             // the 3D pass above may have rendered into `color_view` and
             // resolved into `view`. make sure the GUI pass uses the same
             // configuration so that it too is multisampled if requested.
-            self.ui_renderer.render(encoder, color_view, resolve_target, batch, &self.context.queue, text_batch);
+            self.ui_renderer.render(
+                encoder,
+                color_view,
+                resolve_target,
+                batch,
+                &self.context.queue,
+                text_batch,
+            );
         }
     }
 
@@ -430,6 +444,44 @@ impl Renderer {
     pub fn set_object_position(&mut self, idx: usize, pos: glam::Vec3) {
         if let Some(obj) = self.objects.get_mut(idx) {
             obj.set_position(&self.context.queue, pos);
+        }
+    }
+
+    /// Synchronise a `ferrous_core::scene::World` with the renderer's
+    /// internal object list.  For each element that is a cube the renderer
+    /// will ensure an object exists.  New elements are added using
+    /// `add_object`, and existing ones have their position updated if the
+    /// element's transform has changed.  The world is also updated with the
+    /// renderer index so that subsequent syncs are cheap.
+    pub fn sync_world(&mut self, world: &mut ferrous_core::scene::World) {
+        // iterate over elements along with their handles; we collect into a
+        // vector first so that we don't hold a borrow on `world` while
+        // mutating it below.
+            // iterate over elements along with their handles; we collect a copy of
+            // the element enum so that the borrow on `world` is dropped before we
+            // start mutating it.
+            let entries: Vec<(usize, ferrous_core::scene::Element)> =
+                world.elements_with_handles()
+                    .map(|(h, e)| (h, e.clone()))
+                    .collect();
+
+        for (handle, elem) in entries {
+            // currently only cubes exist, so we just handle that case. the
+            // cube struct now owns its position field, so we pull it directly
+            // out of the element rather than asking `world` for a transform.
+            #[allow(irrefutable_let_patterns)]
+            if let ferrous_core::scene::Element::Cube(cube) = elem {
+                let pos = cube.position;
+                if let Some(idx) = world.render_handle(handle) {
+                    // update existing instance
+                    self.set_object_position(idx, pos);
+                } else {
+                    // spawn new mesh at the element's position
+                    let mesh = mesh::Mesh::cube(&self.context.device);
+                    let idx = self.add_object(mesh, pos);
+                    world.set_render_handle(handle, idx);
+                }
+            }
         }
     }
 

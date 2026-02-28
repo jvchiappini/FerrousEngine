@@ -4,6 +4,7 @@ use std::rc::Rc;
 
 use ferrous_app::{App, AppContext, FerrousApp};
 use ferrous_assets::font::Font;
+use ferrous_core::scene::{Handle as Entity, World};
 use ferrous_gui::Widget;
 use ferrous_gui::{GuiBatch, GuiQuad, InteractiveButton, Slider, TextBatch, Ui, ViewportWidget};
 use ferrous_renderer::{Renderer, Viewport};
@@ -25,14 +26,16 @@ struct EditorApp {
     button_was_pressed: bool,
     // petición de agregar cubo, consumida en draw_3d
     add_cube: bool,
-    // informacion de objetos añadidos
-    objects: Vec<(String, usize)>, // (name, renderer index)
+    // informacion de objetos añadidos: guardamos el manejador y un nombre.
+    objects: Vec<(Entity, String)>,
     // sliders for each objects' x,y,z position
     object_sliders: Vec<[Slider; 3]>,
     // colour picker widget used for demonstration
     color_picker: Rc<RefCell<ferrous_gui::ColorPicker>>,
     color_picker_rect: Rc<RefCell<ferrous_gui::ColorPicker>>,
     color_picker_tri: Rc<RefCell<ferrous_gui::ColorPicker>>,
+    // the ECS world; entities that have a cube component live here
+    world: World,
 }
 
 impl Default for EditorApp {
@@ -81,6 +84,7 @@ impl Default for EditorApp {
                 ferrous_gui::ColorPicker::new(270.0, 250.0, 100.0, 100.0)
                     .with_shape(ferrous_gui::PickerShape::Triangle),
             )),
+            world: World::new(),
         }
     }
 }
@@ -208,7 +212,7 @@ impl FerrousApp for EditorApp {
             });
 
             let mut y_offset = 140.0;
-            for (i, (name, _idx)) in self.objects.iter().enumerate() {
+            for (i, (_entity, name)) in self.objects.iter().enumerate() {
                 text.draw_text(font, name, [10.0, y_offset], 16.0, [1.0, 1.0, 0.0, 1.0]);
                 y_offset += 20.0;
                 if let Some(sliders) = self.object_sliders.get_mut(i) {
@@ -285,10 +289,11 @@ impl FerrousApp for EditorApp {
     fn draw_3d(&mut self, renderer: &mut Renderer, _ctx: &mut AppContext) {
         // Cuando se haya solicitado mediante el botón, añadimos un cubo
         if self.add_cube {
-            let mesh = ferrous_renderer::mesh::Mesh::cube(&renderer.context.device);
-            let idx = renderer.add_object(mesh, ferrous_renderer::glam::Vec3::ZERO);
+            // create element (cube) in the scene world; renderer will be
+            // updated below via `sync_world`.
+            let entity = self.world.add_cube(ferrous_core::elements::cube::Cube::default());
             let name = format!("Cube {}", self.objects.len() + 1);
-            self.objects.push((name, idx));
+            self.objects.push((entity, name));
             // crear sliders con valores iniciales basados en la posición (0)
             let zero = 0.5; // (0 +10)/20
             self.object_sliders.push([
@@ -299,14 +304,19 @@ impl FerrousApp for EditorApp {
             self.add_cube = false;
         }
 
-        // sincronizamos posiciones de sliders con el renderer
+        // make sure the renderer knows about new/changed cubes
+        renderer.sync_world(&mut self.world);
+
+        // sincronizamos posiciones de sliders actualizando el mundo; the
+        // renderer will pick up the new transforms on the next frame when
+        // `sync_world` is called above.
         for (i, sliders) in self.object_sliders.iter().enumerate() {
-            if i < self.objects.len() {
-                let idx = self.objects[i].1;
+            if let Some((entity, _name)) = self.objects.get(i) {
                 let x = sliders[0].value * 20.0 - 10.0;
                 let y = sliders[1].value * 20.0 - 10.0;
                 let z = sliders[2].value * 20.0 - 10.0;
-                renderer.set_object_position(idx, ferrous_renderer::glam::Vec3::new(x, y, z));
+                let new_pos = ferrous_renderer::glam::Vec3::new(x, y, z);
+                self.world.set_position(*entity, new_pos);
             }
         }
     }

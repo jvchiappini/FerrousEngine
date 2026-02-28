@@ -1,5 +1,6 @@
 // ferrous_core: tipos básicos y utilidades
 
+#[derive(Copy, Clone, Debug)]
 pub struct Transform {
     pub position: glam::Vec3,
     pub rotation: glam::Vec3,
@@ -33,3 +34,19 @@ pub mod metrics;
 pub use metrics::{get_cpu_usage, get_ram_usage_bytes, get_virtual_memory_bytes};
 // also expose the convenience megabyte variants
 pub use metrics::{get_ram_usage_mb, get_virtual_memory_mb};
+
+// simple component definitions for game/editor objects. the `elements`
+// namespace lives inside the core crate because it represents abstract data
+// that is independent of any particular renderer or platform. earlier
+// versions of the engine contained a full `World` type here, but that
+// functionality has since been moved to `scene`. at the moment the module
+// only contains a `cube` component; more types can be added later.
+
+pub mod elements;
+
+// simple scene wrapper that holds high‑level elements and exposes a very
+// small API for adding them.  the existing `elements::World` is a full
+// entity/component container; this module lives alongside it and provides an
+// even easier entry point for demos or tests where the caller just wants to
+// treat a scene as "a bunch of cubes".
+pub mod scene;

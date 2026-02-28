@@ -10,10 +10,17 @@ fn main() {
             .await
             .expect("failed to create context");
 
+        // create a scene world and add a single cube element; this demonstrates
+        // the new scene API and allows us to exercise `sync_world` below.
+        let mut world = ferrous_core::scene::World::new();
+        let _cube_handle = world.add_cube(ferrous_core::elements::cube::Cube::default());
+
         let mut renderer =
             ferrous_renderer::Renderer::new(context, 800, 600, wgpu::TextureFormat::Bgra8UnormSrgb);
 
         let mut encoder = renderer.begin_frame();
+        // make sure the renderer is aware of the cube we just inserted
+        renderer.sync_world(&mut world);
         // generamos un rectángulo de UI sobre la escena para demostrar
         // la composición de capas. La coordenada (50,50) es la esquina
         // superior izquierda en píxeles y el tamaño es 200x100.
