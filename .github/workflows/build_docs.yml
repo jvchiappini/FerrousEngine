@@ -1,4 +1,11 @@
-name: "Build and Deploy Documentation"
+name: "Build and Commit Documentation"
+
+# grant the workflow permission to push to the repository and to use
+# the Pages API; these scopes are not granted by default for security.
+permissions:
+  contents: write
+  pages: write
+  id-token: write
 
 # This workflow runs on every push to `main` (and can be triggered
 # manually) and is responsible for generating the MkDocs site and
@@ -35,17 +42,13 @@ jobs:
           chmod +x scripts/build_docs.sh
           ./scripts/build_docs.sh
 
-      # publish the generated site directly into `main/docs` using
-      # actions-gh-pages.  this avoids manual git pushes and handles
-      # authentication automatically.  the `paths-ignore` above prevents
-      # the workflow from retriggering when the branch is updated.
-      - name: Deploy generated site into main/docs
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./site
-          publish_branch: main
-          # directory *within* the target branch where files will land
-          destination_dir: docs
-          user_name: github-actions[bot]
-          user_email: github-actions[bot]@users.noreply.github.com
+      # commit the freshly generated `docs/` tree back to the same
+      # branch.  the `permissions` block above ensures the token has
+      # write access; `paths-ignore` prevents re‑triggering this job.
+      - name: Commit generated docs
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs
+          git diff --quiet || git commit -m "Update generated docs [skip ci]"
+          git push origin HEAD:main

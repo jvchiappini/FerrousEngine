@@ -10,11 +10,12 @@ using the Material theme.  Markdown from each crate is aggregated into
 
 All generation and publishing is handled by GitHub Actions – the
 `build_docs.yml` workflow executes the script, builds the site, and
-places the output into `main/docs` every time you push to `main`.
-You no longer have to run anything locally; the workflow picks up
-changes to any crate’s markdown and keeps the published site in sync.
-Local invocation of `scripts/build_docs.sh` is purely for previewing
-how the docs look before you push changes.
+commits the resulting `docs/` tree back to `main`.  Pushes that only
+modify `docs/` itself are ignored so the workflow doesn’t loop.
+You never need to run the script locally; the action will pick up
+changes to any crate’s markdown and keep the published site in sync.
+Local invocation of `scripts/build_docs.sh` is only useful for
+previewing the output before pushing.
 
 ```sh
 cd c:\Users\jvchi\CARPETAS\FerrousEngine
@@ -34,13 +35,13 @@ will include them automatically.
 
 ### GitHub Pages configuration
 
-By default the project has historically deployed the generated website
-to a dedicated `gh-pages` branch.  It’s no longer necessary to keep a
-second branch – the CI workflow now regenerates `docs/` on every push
-and commits those files back to `main`, and the Pages source is set to
-**main / docs**.  You can verify or change the setting under
-Settings → Pages; the “Branch” dropdown should read `main` and the
-folder `/docs`.
+By default the project had historically deployed the generated website
+to a dedicated `gh-pages` branch.  That workflow (`.github/workflows/docs.yml`)
+has been removed, since the current job handles everything and writes
+into `main/docs` directly.  The Pages source should be configured to
+“Branch: `main`” and “Folder: `/docs`”.  (GitHub also shows an
+auto‑generated `pages-build-deployment` workflow, which is managed by
+GitHub itself and can be ignored.)
 
 When Pages is pointed at `main/docs`, you no longer need to run the
 build script locally unless you want to preview the site.  The GitHub
