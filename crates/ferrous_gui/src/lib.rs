@@ -5,6 +5,11 @@ pub mod renderer;
 pub mod slider;
 pub mod textinput;
 pub mod widget;
+pub mod container;
+pub mod canvas;
+pub mod ui;
+pub mod viewport_widget;
+pub mod builders;
 
 pub use layout::{Alignment, DisplayMode, Node, Rect, RenderCommand, Style, Units};
 pub use renderer::{GuiBatch, GuiQuad, GuiRenderer, TextBatch};
@@ -14,6 +19,12 @@ pub use crate::color_picker::{ColorPicker, PickerShape};
 pub use button::Button as InteractiveButton;
 pub use slider::Slider;
 pub use textinput::TextInput;
-pub use widget::Ui;
-pub use widget::{Canvas, ViewportWidget, Widget};
-pub use widget::{Column, Row, Text, UiButton};
+pub use widget::Widget;
+// container/grouping widget
+pub use container::Container;
+// core UI helpers
+pub use canvas::Canvas as Canvas; // re-export for convenience
+pub use ui::Ui;
+pub use viewport_widget::ViewportWidget;
+// declarative builders
+pub use builders::{Column, Row, Text, UiButton};

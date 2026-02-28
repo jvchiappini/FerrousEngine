@@ -73,6 +73,20 @@ Key behaviour:
 - **Rendering:** `collect(&mut cmds)` simply invokes `collect` on each
   child, aggregating their `RenderCommand`s.
 
+## `Container`
+
+`Container` builds on `Canvas` by adding an explicit bounding rectangle and
+an optional background colour.  It is itself a `Widget`, so it may be
+inserted anywhere a widget is expected (including inside another
+container).  Mouse events are only forwarded to the contained `Canvas`
+when the cursor lies within `rect`, providing a simple way to group widgets
+and treat them collectively.  The container does **not** clip its children
+– drawing commands outside the rect will still be visible – it merely
+affords an easy visual frame and hit‑test boundary.
+
+The public API mirrors `Canvas` (add/mouse_move/mouse_input/keyboard_input)
+and adds `new` and `with_background` constructors for convenience.
+
 ## High‑level `Ui` helper
 
 Most applications work with a `Ui` instance rather than interacting
