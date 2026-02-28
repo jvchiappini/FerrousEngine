@@ -1,5 +1,11 @@
 name: Build & publish docs
 
+# grant explicit permissions so the gh-pages action can push
+permissions:
+  contents: write   # for committing files
+  pages: write      # for GitHub Pages deployment
+  id-token: write   # if future steps need OIDC
+
 on:
   push:
     branches: [ main ]
@@ -40,4 +46,4 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./site
           # you can also set a custom branch if desired
-          # publish_branch: gh-pages
+          publish_branch: gh-pages
