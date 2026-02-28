@@ -175,6 +175,43 @@ impl FerrousApp for EditorApp {
                 }
                 y_offset += 30.0;
             }
+                // diagnostics: show CPU / memory usage of the editor process.
+                // we draw a semi‑opaque box first so the text doesn't leave
+                // behind artifacts when it changes length.
+                let box_width = 300.0;
+                let box_height = 22.0;
+                gui.push(ferrous_gui::GuiQuad {
+                    pos: [10.0, (win_h as f32 - box_height)],
+                    size: [box_width, box_height],
+                    color: [0.0, 0.0, 0.0, 0.6],
+                    radii: [0.0; 4],
+                });
+
+                let cpu = ferrous_core::get_cpu_usage();
+                let ram_mb = ferrous_core::get_ram_usage_mb();
+                let virt_mb = ferrous_core::get_virtual_memory_mb();
+                // log to console periodically for debugging.
+                static mut LAST_LOG: Option<std::time::Instant> = None;
+                let now = std::time::Instant::now();
+                let should_log = unsafe {
+                    if let Some(prev) = LAST_LOG {
+                        now.duration_since(prev) > std::time::Duration::from_secs(1)
+                    } else {
+                        true
+                    }
+                };
+                if should_log {
+                    unsafe { LAST_LOG = Some(now); }
+                    println!(
+                        "[metrics] cpu={}%, ram={}MB, virt={}MB",
+                        cpu, ram_mb, virt_mb
+                    );
+                }
+
+                let info = format!(
+                    "cpu: {cpu:.1}%   ram: {ram_mb:.1} MB   virt: {virt_mb:.1} MB",
+                );
+                text.draw_text(font, &info, [10.0, (win_h - 20) as f32], 12.0, [0.8, 0.8, 0.8, 1.0]);
         }
     }
 

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
  # core types depend on simple math utilities; use the workspace version of glam
-[dependencies]
+ [dependencies]
 glam = { workspace = true }
 wgpu = "23.0"
 anyhow = "1.0"
@@ -12,3 +12,7 @@ thiserror = "1.0"
 # needed for input types and later editor/event loop
 # (winit comments must use '#', not '//')
 winit = "0.30"
+
+# utility for lazy static initialization of the system handle
+once_cell = "1.18"
+sysinfo = "0.28"
