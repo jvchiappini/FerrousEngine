@@ -10,26 +10,9 @@ theme:
 # navigation block is carefully indented; keep this comment here to
 # force a rebuild of the docs when the file changes slightly.
 
-## navigation is automatically generated from the docs/ folder structure
-## entries here give us control over ordering and grouping.  update
-## this list whenever you add new markdown files under `crates/*/docs`.
-nav:
-  - Home: index.md
-  - Crates:
-      - ferrous_app: ferrous_app/README.md
-      - ferrous_assets: ferrous_assets/README.md
-      - ferrous_core: ferrous_core/README.md
-      - ferrous_editor: ferrous_editor/README.md
-      - ferrous_gui:
-          - Overview: ferrous_gui/README.md
-          - API:
-              - Core: ferrous_gui/api/core.md
-              - Layout: ferrous_gui/layout.md
-          - Widgets:
-              - Button: ferrous_gui/widgets/button.md
-              - Slider: ferrous_gui/widgets/slider.md
-              - TextInput: ferrous_gui/widgets/textinput.md
-      - ferrous_renderer: ferrous_renderer/README.md
+## navigation is automatically generated from the docs/ folder structure.
+## no manual nav list is needed here, mkdocs will automatically find
+## any new files added to the crates (like widgets/color_picker.md)
 
 # extras or plugins could be added if desired
 
