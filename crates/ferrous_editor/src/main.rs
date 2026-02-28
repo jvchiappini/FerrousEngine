@@ -29,6 +29,8 @@ struct EditorApp {
     objects: Vec<(String, usize)>, // (name, renderer index)
     // sliders for each objects' x,y,z position
     object_sliders: Vec<[Slider; 3]>,
+        // colour picker widget used for demonstration
+        color_picker: Rc<RefCell<ferrous_gui::ColorPicker>>,
 }
 
 impl Default for EditorApp {
@@ -64,6 +66,11 @@ impl Default for EditorApp {
             add_cube: false,
             objects: Vec::new(),
             object_sliders: Vec::new(),
+                // place colour picker below the corner buttons
+                color_picker: Rc::new(RefCell::new(
+                    ferrous_gui::ColorPicker::new(50.0, 250.0, 100.0, 100.0)
+                        .with_colour([1.0, 0.0, 0.0, 1.0]),
+                )),
         }
     }
 }
@@ -74,6 +81,7 @@ impl FerrousApp for EditorApp {
             ui.add(btn.clone());
         }
         ui.add(self.combo_button.clone());
+            ui.add(self.color_picker.clone());
         ui.register_viewport(self.ui_viewport.clone());
     }
 
@@ -157,6 +165,15 @@ impl FerrousApp for EditorApp {
             // ahora dibujamos el panel de objetos con sus sliders
             // label for combined button
             text.draw_text(font, "TL+BR", [250.0, 90.0], 12.0, [1.0, 1.0, 1.0, 1.0]);
+            // also show current colour chosen by the picker just below its square
+            let cp = self.color_picker.borrow();
+            gui.push(GuiQuad {
+                pos: [50.0, 360.0], // place below the circular picker area
+                size: [100.0, 20.0],
+                color: cp.colour,
+                radii: [2.0; 4],
+            });
+
             let mut y_offset = 140.0;
             for (i, (name, _idx)) in self.objects.iter().enumerate() {
                 text.draw_text(font, name, [10.0, y_offset], 16.0, [1.0, 1.0, 0.0, 1.0]);
@@ -219,6 +236,15 @@ impl FerrousApp for EditorApp {
                 [0.8, 0.8, 0.8, 1.0],
             );
         }
+                // show current colour selected by picker
+                let cp = self.color_picker.borrow();
+                let col_rect = GuiQuad {
+                    pos: [50.0, 250.0],
+                    size: [100.0, 20.0],
+                    color: cp.colour,
+                    radii: [2.0; 4],
+                };
+                gui.push(col_rect);
     }
 
     fn draw_3d(&mut self, renderer: &mut Renderer, _ctx: &mut AppContext) {
