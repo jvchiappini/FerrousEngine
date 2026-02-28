@@ -118,12 +118,12 @@ impl Widget for Button {
             width: self.rect[2],
             height: self.rect[3],
         };
-            cmds.push(RenderCommand::Quad {
-                rect,
-                color,
-                radii: self.radii,
-                flags: 0,
-            });
+        cmds.push(RenderCommand::Quad {
+            rect,
+            color,
+            radii: self.radii,
+            flags: 0,
+        });
     }
 
     fn hit(&self, mx: f64, my: f64) -> bool {
@@ -142,5 +142,9 @@ impl Widget for Button {
             // release on any mouse-up
             self.pressed = false;
         }
+    }
+
+    fn bounding_rect(&self) -> Option<[f32; 4]> {
+        Some(self.rect)
     }
 }

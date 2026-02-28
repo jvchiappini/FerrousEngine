@@ -7,9 +7,12 @@ Documentation for the `Container` widget.
 
 `Container` is a simple grouping widget that holds a collection of other
 `Widget` objects.  It does not impose any automatic layout; child widgets
-are expected to manage their own positions.  The primary purpose is to treat
-multiple widgets as a single unit for input handling and optional
-background rendering.
+are expected to manage their own positions.  The container itself **may**
+expose a fixed width and/or height, but if either dimension is set to
+`0.0` the container will size itself to enclose its children (using their
+`bounding_rect()` values, when available).  This makes it easy to create
+frames or panels that grow with their contents while still providing a
+minimum size for hit testing and background drawing.
 
 Because `Container` itself implements the `Widget` trait it can be added
 directly to a `Ui` or another container.  Events and draw commands are
@@ -47,7 +50,7 @@ pub struct Container {
 
 ```rust
 impl Container {
-    pub fn new(x: f32, y: f32, w: f32, h: f32) -> Self;
+    pub fn new(x: f32, y: f32, w: f32, h: f32) -> Self; // pass 0.0 for auto
     pub fn with_background(mut self, color: [f32;4]) -> Self;
     pub fn add(&mut self, widget: impl Widget + 'static);
     pub fn mouse_move(&mut self, mx: f64, my: f64);
@@ -66,7 +69,8 @@ impl Container {
 
 ```rust
 let mut ui = ferrous_gui::Ui::new();
-let mut group = ferrous_gui::Container::new(10.0, 10.0, 200.0, 150.0)
+// width fixed, height auto
+let mut group = ferrous_gui::Container::new(10.0, 10.0, 200.0, 0.0)
     .with_background([0.1, 0.1, 0.1, 0.8]);
 
 let btn = ferrous_gui::Button::new(20.0, 20.0, 80.0, 30.0);
@@ -78,9 +82,11 @@ group.add(slider);
 ui.add(group);
 ```
 
-The rectangle supplied to `Container::new` is used for hit tests; the
-children are free to use any coordinates (typically they will lie inside the
-box, but this is not strictly required).
+The rectangle supplied to `Container::new` provides the container's origin
+and a minimum width/height.  If either dimension is zero it will expand to
+fit its child widgets.  Hit tests use the *effective* rectangle, taking
+auto-sizing into account; children may be arbitrarily positioned relative to
+that rectangle.
 
 ## Notes
 

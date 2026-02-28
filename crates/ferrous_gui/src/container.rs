@@ -34,6 +34,36 @@ impl Container {
         }
     }
 
+    /// Compute the actual rectangle used for hit-testing and drawing.
+    ///
+    /// If the stored width or height is non-positive the container will
+    /// expand to enclose all children that report a `bounding_rect()`.
+    fn effective_rect(&self) -> [f32; 4] {
+        let mut r = self.rect;
+        // auto-size width
+        if r[2] <= 0.0 {
+            let mut maxw: f32 = 0.0;
+            for child in self.canvas.children() {
+                if let Some(cr) = child.bounding_rect() {
+                    // right edge relative to container origin
+                    maxw = maxw.max(cr[0] + cr[2] - r[0]);
+                }
+            }
+            r[2] = maxw;
+        }
+        // auto-size height
+        if r[3] <= 0.0 {
+            let mut maxh: f32 = 0.0;
+            for child in self.canvas.children() {
+                if let Some(cr) = child.bounding_rect() {
+                    maxh = maxh.max(cr[1] + cr[3] - r[1]);
+                }
+            }
+            r[3] = maxh;
+        }
+        r
+    }
+
     /// Set a solid background colour for the container.
     pub fn with_background(mut self, color: [f32; 4]) -> Self {
         self.bg_color = Some(color);
@@ -49,7 +79,10 @@ impl Container {
     /// our rect.  This preserves behaviour such as slider dragging while
     /// allowing the container to block events outside its bounds.
     pub fn mouse_move(&mut self, mx: f64, my: f64) {
-        if self.hit(mx, my) {
+        let r = self.effective_rect();
+        let x = mx as f32;
+        let y = my as f32;
+        if x >= r[0] && x <= r[0] + r[2] && y >= r[1] && y <= r[1] + r[3] {
             self.canvas.mouse_move(mx, my);
         }
     }
@@ -58,7 +91,10 @@ impl Container {
     /// releases are forwarded only when the pointer is inside so that
     /// children don't continue reacting after the cursor leaves the group.
     pub fn mouse_input(&mut self, mx: f64, my: f64, pressed: bool) {
-        if self.hit(mx, my) {
+        let r = self.effective_rect();
+        let x = mx as f32;
+        let y = my as f32;
+        if x >= r[0] && x <= r[0] + r[2] && y >= r[1] && y <= r[1] + r[3] {
             self.canvas.mouse_input(mx, my, pressed);
         }
     }
@@ -72,13 +108,14 @@ impl Container {
 
 impl Widget for Container {
     fn collect(&self, cmds: &mut Vec<RenderCommand>) {
+        let r = self.effective_rect();
         if let Some(col) = self.bg_color {
             cmds.push(RenderCommand::Quad {
                 rect: Rect {
-                    x: self.rect[0],
-                    y: self.rect[1],
-                    width: self.rect[2],
-                    height: self.rect[3],
+                    x: r[0],
+                    y: r[1],
+                    width: r[2],
+                    height: r[3],
                 },
                 color: col,
                 radii: [0.0; 4],
@@ -89,12 +126,10 @@ impl Widget for Container {
     }
 
     fn hit(&self, mx: f64, my: f64) -> bool {
+        let r = self.effective_rect();
         let x = mx as f32;
         let y = my as f32;
-        x >= self.rect[0]
-            && x <= self.rect[0] + self.rect[2]
-            && y >= self.rect[1]
-            && y <= self.rect[1] + self.rect[3]
+        x >= r[0] && x <= r[0] + r[2] && y >= r[1] && y <= r[1] + r[3]
     }
 
     fn mouse_move(&mut self, mx: f64, my: f64) {

@@ -132,7 +132,11 @@ impl ColorPicker {
                     ny -= over;
                 }
                 let sat = 1.0 - ny;
-                let hue = if sat <= 0.0 { 0.0 } else { (nx / (1.0 - ny)).clamp(0.0, 1.0) };
+                let hue = if sat <= 0.0 {
+                    0.0
+                } else {
+                    (nx / (1.0 - ny)).clamp(0.0, 1.0)
+                };
                 self.colour = hsv_to_rgba(hue, sat, 1.0, self.colour[3]);
                 self.pick_pos = Some([nx, ny]);
             }
@@ -420,6 +424,10 @@ impl Widget for ColorPicker {
         } else {
             self.pressed = false;
         }
+    }
+
+    fn bounding_rect(&self) -> Option<[f32; 4]> {
+        Some(self.rect)
     }
 }
 

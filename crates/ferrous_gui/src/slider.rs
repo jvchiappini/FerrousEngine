@@ -120,4 +120,8 @@ impl Widget for Slider {
             self.dragging = false;
         }
     }
+
+    fn bounding_rect(&self) -> Option<[f32; 4]> {
+        Some(self.rect)
+    }
 }

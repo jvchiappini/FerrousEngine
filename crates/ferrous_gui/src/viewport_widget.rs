@@ -44,6 +44,10 @@ impl Widget for ViewportWidget {
             self.focused = self.hit(mx, my);
         }
     }
+
+    fn bounding_rect(&self) -> Option<[f32; 4]> {
+        Some(self.rect)
+    }
 }
 
 #[cfg(test)]

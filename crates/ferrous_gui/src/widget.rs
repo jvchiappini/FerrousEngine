@@ -35,12 +35,26 @@ pub trait Widget {
     /// indicates whether the key was pressed (true) or released (false).
     /// The default implementation is a no-op.
     fn keyboard_input(&mut self, _text: Option<&str>, _key: Option<KeyCode>, _pressed: bool) {}
+
+    /// Optional rectangle occupied by the widget in window coordinates.  The
+    /// default implementation returns `None`, meaning the container cannot
+    /// infer any size from this widget.  Widgets that maintain a `rect`
+    /// field (e.g. `Button`, `Slider`, `Node` wrappers) should override
+    /// this and return `Some(rect)` so that parent containers can perform
+    /// auto-sizing.
+    fn bounding_rect(&self) -> Option<[f32; 4]> {
+        None
+    }
 }
 
 // make Node itself a widget so containers composed of nodes can be used as widgets
 impl Widget for Node {
     fn collect(&self, cmds: &mut Vec<RenderCommand>) {
         self.collect_render_commands(cmds);
+    }
+
+    fn bounding_rect(&self) -> Option<[f32; 4]> {
+        Some([self.rect.x, self.rect.y, self.rect.width, self.rect.height])
     }
 }
 

@@ -30,6 +30,13 @@ impl Canvas {
         }
     }
 
+    /// Returns a slice of child widgets.  This is primarily used by
+    /// containers that need to inspect their children (for example to compute
+    /// an adaptive bounding box).
+    pub fn children(&self) -> &[Box<dyn Widget>] {
+        &self.children
+    }
+
     /// route a mouse-move event to all children; this is important for
     /// things like slider dragging or hover state. It does **not** change
     /// focus.
@@ -80,7 +87,9 @@ mod tests {
 
     impl Dummy {
         fn new() -> Self {
-            Self { called: Cell::new(false) }
+            Self {
+                called: Cell::new(false),
+            }
         }
     }
 
@@ -88,7 +97,12 @@ mod tests {
         fn collect(&self, cmds: &mut Vec<RenderCommand>) {
             self.called.set(true);
             cmds.push(RenderCommand::Quad {
-                rect: crate::layout::Rect { x: 0.0, y: 0.0, width: 1.0, height: 1.0 },
+                rect: crate::layout::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 1.0,
+                    height: 1.0,
+                },
                 color: [1.0, 1.0, 1.0, 1.0],
                 radii: [0.0; 4],
                 flags: 0,
