@@ -1,0 +1,40 @@
+name: "Build and Deploy Documentation"
+
+# This workflow runs on every push to `main` (and can be triggered
+# manually) and is responsible for generating the MkDocs site and
+# publishing it to GitHub Pages.  Because the build happens in CI,
+# Windows users no longer need to run the shell script locally.
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0      # we need full history for gh-pages deploy
+
+      - name: Set up Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Build documentation
+        run: |
+          chmod +x scripts/build_docs.sh
+          ./scripts/build_docs.sh
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
+          # you can change 'publish_branch' to 'main' and use the
+          # docs/ folder instead if you prefer publishing from main
