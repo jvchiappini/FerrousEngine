@@ -59,6 +59,12 @@ pub struct Renderer {
     distance: f32,
 }
 
+/// Destination for a render call; used internally by `Renderer::do_render`.
+enum RenderDest<'a> {
+    Target,
+    View(&'a wgpu::TextureView),
+}
+
 /// A mesh instance with its own transform data.
 pub struct RenderObject {
     pub mesh: mesh::Mesh,
@@ -229,77 +235,8 @@ impl Renderer {
         ui_batch: Option<&ferrous_gui::GuiBatch>,
         text_batch: Option<&TextBatch>,
     ) {
-        // update camera uniform prior to borrowing any fields
-        self.update_camera_buffer();
-        // choose between MSAA buffer or direct color target depending on
-        // configured sample count.  use explicit sample_count check rather
-        // than the option flag to avoid accidental mismatches.
-        let (color_view, resolve_target) = if self.render_target.sample_count > 1 {
-            (
-                // msaa_view should exist when sample_count>1
-                self.render_target.msaa_view.as_ref().unwrap(),
-                Some(&self.render_target.color_view),
-            )
-        } else {
-            (&self.render_target.color_view, None)
-        };
-        let depth_view = &self.render_target.depth_view;
-
-        let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Render Pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: color_view,
-                resolve_target,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.1,
-                        g: 0.2,
-                        b: 0.3,
-                        a: 1.0,
-                    }),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: depth_view,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: None,
-            }),
-            occlusion_query_set: None,
-            timestamp_writes: None,
-        });
-
-        rpass.set_pipeline(&self.pipeline.pipeline);
-        // bind camera uniform group at index 0
-        rpass.set_bind_group(0, &self.camera_bind_group, &[]);
-        // draw each object submitted by the application (camera already bound)
-        for obj in &self.objects {
-            // bind this object's model transform
-            rpass.set_bind_group(1, &obj.model_bind_group, &[]);
-            rpass.set_vertex_buffer(0, obj.mesh.vertex_buffer.slice(..));
-            rpass.set_index_buffer(obj.mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            rpass.draw_indexed(0..obj.mesh.index_count, 0, 0..1);
-        }
-
-        drop(rpass); // cerrar el pase 3D antes de iniciar el pase UI
-
-        if let Some(batch) = ui_batch {
-            // renderizamos la UI en un pase separado que no limpia nada
-            // al igual que el pase 3D, podemos dibujar en el mismo
-            // colour_view y resolver hacia el mismo resolve_target (si lo
-            // hay) para que la interfaz también reciba antialiasing.
-            self.ui_renderer.render(
-                encoder,
-                color_view,
-                resolve_target,
-                batch,
-                &self.context.queue,
-                text_batch,
-            );
-        }
+        // simply invoke shared renderer with internal target
+        self.do_render(encoder, RenderDest::Target, None, ui_batch, text_batch);
     }
 
     /// Renders the scene directly into an arbitrary texture view (typically
@@ -314,83 +251,15 @@ impl Renderer {
         ui_batch: Option<&ferrous_gui::GuiBatch>,
         text_batch: Option<&TextBatch>,
     ) {
-        // reuse most of the same logic as `render_to_target`, but render
-        // directly into the provided swapchain view. when MSAA is enabled we
-        // don't draw straight into the view (which is single‑sampled); instead
-        // we render into our multisampled buffer and resolve into the
-        // supplied `view` afterwards.  the depth attachment always comes from
-        // our internal render target so that it matches the pipeline's format
-        // and sample count.
-
-        // update camera before drawing, do this before borrowing depth_view
-        self.update_camera_buffer();
-        let depth_view = &self.render_target.depth_view;
-
-        // choose colour attachment based on MSAA configuration
-        let (color_view, resolve_target): (&wgpu::TextureView, Option<&wgpu::TextureView>) =
-            if self.render_target.sample_count > 1 {
-                (
-                    // msaa_view must exist when sample_count > 1
-                    self.render_target.msaa_view.as_ref().unwrap(),
-                    Some(view),
-                )
-            } else {
-                (view, None)
-            };
-
-        let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Render Pass (swapchain)"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: color_view,
-                resolve_target,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.1,
-                        g: 0.2,
-                        b: 0.3,
-                        a: 1.0,
-                    }),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: depth_view,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: None,
-            }),
-            occlusion_query_set: None,
-            timestamp_writes: None,
-        });
-
-        rpass.set_pipeline(&self.pipeline.pipeline);
-        rpass.set_bind_group(0, &self.camera_bind_group, &[]);
-        // restrict 3D drawing to viewport area
-        let vp = self.viewport;
-        rpass.set_scissor_rect(vp.x, vp.y, vp.width, vp.height);
-        for obj in &self.objects {
-            rpass.set_bind_group(1, &obj.model_bind_group, &[]);
-            rpass.set_vertex_buffer(0, obj.mesh.vertex_buffer.slice(..));
-            rpass.set_index_buffer(obj.mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            rpass.draw_indexed(0..obj.mesh.index_count, 0, 0..1);
-        }
-        drop(rpass);
-
-        if let Some(batch) = ui_batch {
-            // the 3D pass above may have rendered into `color_view` and
-            // resolved into `view`. make sure the GUI pass uses the same
-            // configuration so that it too is multisampled if requested.
-            self.ui_renderer.render(
-                encoder,
-                color_view,
-                resolve_target,
-                batch,
-                &self.context.queue,
-                text_batch,
-            );
-        }
+        // use shared implementation, supplying the external view and an
+        // explicit scissor corresponding to the configured viewport.
+        self.do_render(
+            encoder,
+            RenderDest::View(view),
+            Some(self.viewport),
+            ui_batch,
+            text_batch,
+        );
     }
 
     /// Provide font atlas data to the internal GUI renderer.
@@ -458,13 +327,13 @@ impl Renderer {
         // iterate over elements along with their handles; we collect into a
         // vector first so that we don't hold a borrow on `world` while
         // mutating it below.
-            // iterate over elements along with their handles; we collect a copy of
-            // the element enum so that the borrow on `world` is dropped before we
-            // start mutating it.
-            let entries: Vec<(usize, ferrous_core::scene::Element)> =
-                world.elements_with_handles()
-                    .map(|(h, e)| (h, e.clone()))
-                    .collect();
+        // iterate over elements along with their handles; we collect a copy of
+        // the element enum so that the borrow on `world` is dropped before we
+        // start mutating it.
+        let entries: Vec<(usize, ferrous_core::scene::Element)> = world
+            .elements_with_handles()
+            .map(|(h, e)| (h, e.clone()))
+            .collect();
 
         for (handle, elem) in entries {
             // currently only cubes exist, so we just handle that case. the
@@ -500,6 +369,99 @@ impl Renderer {
             0,
             bytemuck::bytes_of(&self.camera_uniform),
         );
+    }
+
+    /// Internal helper used by both public render methods.
+    ///
+    /// The destination enum encapsulates whether we're drawing into the
+    /// internal `RenderTarget` or straight into an external swapchain view.
+
+    fn do_render(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        dest: RenderDest<'_>,
+        scissor: Option<Viewport>,
+        ui_batch: Option<&ferrous_gui::GuiBatch>,
+        text_batch: Option<&TextBatch>,
+    ) {
+        // update camera uniform before we start rendering
+        self.update_camera_buffer();
+
+        // determine color/resolve attachments depending on destination
+        let (color_view, resolve_target) = match dest {
+            RenderDest::Target => {
+                if self.render_target.sample_count > 1 {
+                    (
+                        self.render_target.msaa_view.as_ref().unwrap(),
+                        Some(&self.render_target.color_view),
+                    )
+                } else {
+                    (&self.render_target.color_view, None)
+                }
+            }
+            RenderDest::View(view) => {
+                if self.render_target.sample_count > 1 {
+                    // when MSAA active we render into our own msaa buffer
+                    // and resolve into the provided view.
+                    (self.render_target.msaa_view.as_ref().unwrap(), Some(view))
+                } else {
+                    (view, None)
+                }
+            }
+        };
+
+        let depth_view = &self.render_target.depth_view;
+
+        let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Render Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: color_view,
+                resolve_target,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.1,
+                        g: 0.2,
+                        b: 0.3,
+                        a: 1.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            occlusion_query_set: None,
+            timestamp_writes: None,
+        });
+
+        rpass.set_pipeline(&self.pipeline.pipeline);
+        rpass.set_bind_group(0, &self.camera_bind_group, &[]);
+        if let Some(vp) = scissor {
+            rpass.set_scissor_rect(vp.x, vp.y, vp.width, vp.height);
+        }
+        for obj in &self.objects {
+            rpass.set_bind_group(1, &obj.model_bind_group, &[]);
+            rpass.set_vertex_buffer(0, obj.mesh.vertex_buffer.slice(..));
+            rpass.set_index_buffer(obj.mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            rpass.draw_indexed(0..obj.mesh.index_count, 0, 0..1);
+        }
+        drop(rpass);
+
+        if let Some(batch) = ui_batch {
+            self.ui_renderer.render(
+                encoder,
+                color_view,
+                resolve_target,
+                batch,
+                &self.context.queue,
+                text_batch,
+            );
+        }
     }
 
     /// Handle user input to modify the camera position. `dt` is the elapsed
