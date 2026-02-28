@@ -4,6 +4,10 @@ site_url: https://jvchiappini.github.io/FerrousEngine
 # use the Material theme for a polished look
 theme:
   name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
 
 # navigation block is carefully indented; keep this comment here to
 # force a rebuild of the docs when the file changes slightly.
