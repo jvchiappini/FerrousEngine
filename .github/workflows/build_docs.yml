@@ -35,15 +35,17 @@ jobs:
           chmod +x scripts/build_docs.sh
           ./scripts/build_docs.sh
 
-      - name: Commit generated docs
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add docs
-          # create a commit only if something changed
-          git diff --quiet || git commit -m "Update generated docs [skip ci]"
-          git push origin HEAD:main
-
-      # (optional) if you still want to deploy to a separate branch,
-      # you could enable the peaceiris step here.  with Pages pointed at
-      # `main/docs` it is not necessary.
+      # publish the generated site directly into `main/docs` using
+      # actions-gh-pages.  this avoids manual git pushes and handles
+      # authentication automatically.  the `paths-ignore` above prevents
+      # the workflow from retriggering when the branch is updated.
+      - name: Deploy generated site into main/docs
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
+          publish_branch: main
+          # directory *within* the target branch where files will land
+          destination_dir: docs
+          user_name: github-actions[bot]
+          user_email: github-actions[bot]@users.noreply.github.com

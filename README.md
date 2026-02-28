@@ -8,11 +8,13 @@ The documentation website is generated with [MkDocs](https://www.mkdocs.org/)
 using the Material theme.  Markdown from each crate is aggregated into
 `docs/` by `scripts/build_docs.sh` and then rendered into `site/`.
 
-On the public repository a GitHub Actions workflow (see
-`.github/workflows/build_docs.yml`) automatically runs the build and
-publishes the resulting `site/` contents to GitHub Pages.  You don't
-need to run the script locally unless you want to preview changes on
-your own machine.
+All generation and publishing is handled by GitHub Actions – the
+`build_docs.yml` workflow executes the script, builds the site, and
+places the output into `main/docs` every time you push to `main`.
+You no longer have to run anything locally; the workflow picks up
+changes to any crate’s markdown and keeps the published site in sync.
+Local invocation of `scripts/build_docs.sh` is purely for previewing
+how the docs look before you push changes.
 
 ```sh
 cd c:\Users\jvchi\CARPETAS\FerrousEngine
