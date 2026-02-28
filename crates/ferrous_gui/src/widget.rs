@@ -1,4 +1,4 @@
-use crate::layout::{RenderCommand, Node};
+use crate::layout::{Node, RenderCommand};
 use winit::keyboard::KeyCode;
 
 /// Cualquier elemento de la interfaz que pueda "dibujarse".
@@ -36,11 +36,6 @@ pub trait Widget {
     /// The default implementation is a no-op.
     fn keyboard_input(&mut self, _text: Option<&str>, _key: Option<KeyCode>, _pressed: bool) {}
 }
-
-
-
-
-
 
 // make Node itself a widget so containers composed of nodes can be used as widgets
 impl Widget for Node {

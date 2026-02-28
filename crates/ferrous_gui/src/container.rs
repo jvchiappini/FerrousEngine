@@ -1,5 +1,5 @@
-use crate::layout::{Rect, RenderCommand};
 use crate::canvas::Canvas;
+use crate::layout::{Rect, RenderCommand};
 use crate::widget::Widget;
 use winit::keyboard::KeyCode;
 
@@ -147,8 +147,7 @@ mod tests {
     #[test]
     fn container_background_and_event_forwarding() {
         // container at origin with size 100x100 and a solid background
-        let mut cont = Container::new(0.0, 0.0, 100.0, 100.0)
-            .with_background([0.2, 0.4, 0.6, 1.0]);
+        let mut cont = Container::new(0.0, 0.0, 100.0, 100.0).with_background([0.2, 0.4, 0.6, 1.0]);
         // add a dummy widget that records when its collect is called
         let dummy = Dummy::new();
         cont.add(dummy);

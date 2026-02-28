@@ -1,15 +1,15 @@
+pub mod builders;
 pub mod button;
+pub mod canvas;
 pub mod color_picker;
+pub mod container;
 pub mod layout;
 pub mod renderer;
 pub mod slider;
 pub mod textinput;
-pub mod widget;
-pub mod container;
-pub mod canvas;
 pub mod ui;
 pub mod viewport_widget;
-pub mod builders;
+pub mod widget;
 
 pub use layout::{Alignment, DisplayMode, Node, Rect, RenderCommand, Style, Units};
 pub use renderer::{GuiBatch, GuiQuad, GuiRenderer, TextBatch};
@@ -23,7 +23,7 @@ pub use widget::Widget;
 // container/grouping widget
 pub use container::Container;
 // core UI helpers
-pub use canvas::Canvas as Canvas; // re-export for convenience
+pub use canvas::Canvas; // re-export for convenience
 pub use ui::Ui;
 pub use viewport_widget::ViewportWidget;
 // declarative builders
