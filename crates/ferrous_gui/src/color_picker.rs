@@ -10,6 +10,12 @@ pub enum PickerShape {
     /// A circle inscribed in the widget's bounding rect.  The radius is
     /// computed as half of the smaller of width/height.
     Circle,
+    /// Hue/saturation rectangle.  Hue varies left→right, saturation top→bottom.
+    Rect,
+    /// Triangular picker; usable area is the lower-left right triangle of
+    /// the bounding rect.  Hue runs along the base, saturation decreases
+    /// towards the top corner.
+    Triangle,
     /// Custom drawing routine.  The closure receives a reference to the
     /// picker and a mutable command list; it may push one or more
     /// `RenderCommand` values describing the desired appearance.  The
@@ -40,6 +46,11 @@ pub struct ColorPicker {
     /// (0.0..1.0).  the closure may mutate `self.colour` however it
     /// wants.
     pub on_pick: Option<Arc<dyn Fn(&mut ColorPicker, f32, f32)>>,
+    /// If the user has performed a pick interaction, store the last
+    /// normalized coordinates.  This allows accurate placement of the
+    /// selection indicator even when the colour value alone is
+    /// ambiguous (e.g. hue==0/1 at the edges of the rectangle).
+    pub pick_pos: Option<[f32; 2]>,
 }
 
 impl ColorPicker {
@@ -53,12 +64,15 @@ impl ColorPicker {
             pressed: false,
             shape: PickerShape::Circle,
             on_pick: None,
+            pick_pos: None,
         }
     }
 
     /// Set the picker's colour explicitly.
     pub fn with_colour(mut self, c: [f32; 4]) -> Self {
         self.colour = c;
+        // colour was overridden externally, forget previous pick coords
+        self.pick_pos = None;
         self
     }
 
@@ -83,17 +97,44 @@ impl ColorPicker {
     /// interprets the widget as a hue/saturation wheel: the angle from the
     /// centre gives the hue, the distance from the centre gives the
     /// saturation, value is kept at 1.0 and alpha is unchanged.
-    fn default_pick(&mut self, nx: f32, ny: f32) {
-        let dx = nx - 0.5;
-        let dy = ny - 0.5;
-        let dist = (dx * dx + dy * dy).sqrt();
-        if dist > 0.5 {
-            return; // outside the circle
-        }
-        let angle = dy.atan2(dx);
-        let hue = (angle / (2.0 * std::f32::consts::PI) + 1.0) % 1.0;
-        let sat = dist / 0.5;
-        self.colour = hsv_to_rgba(hue, sat, 1.0, self.colour[3]);
+        fn default_pick(&mut self, nx: f32, ny: f32) {
+            match self.shape {
+                PickerShape::Circle => {
+                    let dx = nx - 0.5;
+                    let dy = ny - 0.5;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    if dist > 0.5 {
+                        return; // outside circle
+                    }
+                    let angle = dy.atan2(dx);
+                    let hue = (angle / (2.0 * std::f32::consts::PI) + 1.0) % 1.0;
+                    let sat = dist / 0.5;
+                    self.colour = hsv_to_rgba(hue, sat, 1.0, self.colour[3]);
+                    self.pick_pos = Some([nx, ny]);
+                }
+                PickerShape::Rect => {
+                    // ignore outside bounds
+                    if nx < 0.0 || nx > 1.0 || ny < 0.0 || ny > 1.0 {
+                        return;
+                    }
+                    let hue = nx;
+                    let sat = 1.0 - ny;
+                    self.colour = hsv_to_rgba(hue, sat, 1.0, self.colour[3]);
+                    self.pick_pos = Some([nx, ny]);
+                }
+                PickerShape::Triangle => {
+                    if nx < 0.0 || ny < 0.0 || nx + ny > 1.0 {
+                        return;
+                    }
+                    let sat = 1.0 - ny;
+                    let hue = if sat == 0.0 { 0.0 } else { nx / (1.0 - ny) };
+                    self.colour = hsv_to_rgba(hue, sat, 1.0, self.colour[3]);
+                    self.pick_pos = Some([nx, ny]);
+                }
+                PickerShape::Custom(_) => {
+                    // leave unchanged
+                }
+            }
     }
 
     /// Hit test using either the shape or a simple bounding-box fallback.
@@ -109,6 +150,17 @@ impl ColorPicker {
                 let dx = (x - cx) / rx;
                 let dy = (y - cy) / ry;
                 dx * dx + dy * dy <= 1.0
+            }
+            PickerShape::Rect => {
+                x >= self.rect[0]
+                    && x <= self.rect[0] + self.rect[2]
+                    && y >= self.rect[1]
+                    && y <= self.rect[1] + self.rect[3]
+            }
+            PickerShape::Triangle => {
+                let u = (x - self.rect[0]) / self.rect[2];
+                let v = (y - self.rect[1]) / self.rect[3];
+                u >= 0.0 && v >= 0.0 && u + v <= 1.0
             }
             PickerShape::Custom(_) => {
                 x >= self.rect[0]
@@ -126,65 +178,73 @@ impl ColorPicker {
                 // draw a simple hue/sat wheel by stamping a grid of coloured
                 // quads inside the circle.  this gives a basic gradient that
                 // makes the control usable without requiring a texture.
-                let steps = 32; // resolution of the grid; adjust for quality vs cost
-                let cw = self.rect[2] / steps as f32;
-                let ch = self.rect[3] / steps as f32;
-                let cx = self.rect[0] + self.rect[2] * 0.5;
-                let cy = self.rect[1] + self.rect[3] * 0.5;
-                for i in 0..steps {
-                    for j in 0..steps {
-                        let x = self.rect[0] + i as f32 * cw + cw * 0.5;
-                        let y = self.rect[1] + j as f32 * ch + ch * 0.5;
-                        let nx = (x - self.rect[0]) / self.rect[2];
-                        let ny = (y - self.rect[1]) / self.rect[3];
-                        let dx = nx - 0.5;
-                        let dy = ny - 0.5;
-                        if dx * dx + dy * dy <= 0.25 {
-                            let dist = (dx * dx + dy * dy).sqrt();
-                            let angle = dy.atan2(dx);
-                            let hue = (angle / (2.0 * std::f32::consts::PI) + 1.0) % 1.0;
-                            let sat = dist / 0.5;
-                            let color = hsv_to_rgba(hue, sat, 1.0, self.colour[3]);
-                            batch.push(crate::renderer::GuiQuad {
-                                pos: [x - cw * 0.5, y - ch * 0.5],
-                                size: [cw, ch],
-                                color,
-                                radii: [0.0; 4],
-                            });
-                        }
-                    }
-                }
-                // draw a small indicator at the current selection point
-                let (px, py) = {
-                    // reverse approximate mapping from current colour back to
-                    // hue/saturation so that we can place the indicator.
-                    let r = self.colour[0];
-                    let g = self.colour[1];
-                    let b = self.colour[2];
-                    let max = r.max(g).max(b);
-                    let min = r.min(g).min(b);
-                    let d = max - min;
-                    let hue = if d == 0.0 {
-                        0.0
-                    } else if max == r {
-                        ((g - b) / d) % 6.0
-                    } else if max == g {
-                        (b - r) / d + 2.0
-                    } else {
-                        (r - g) / d + 4.0
-                    } / 6.0;
-                    let sat = if max == 0.0 { 0.0 } else { d / max };
-                    let angle = hue * 2.0 * std::f32::consts::PI;
-                    let dist = sat * 0.5;
-                    let px = cx + dist * angle.cos() * self.rect[2];
-                    let py = cy + dist * angle.sin() * self.rect[3];
-                    (px, py)
+                // push a single quad flagged as a colour wheel; the GPU
+                // shader will render the full gradient smoothly.
+                batch.push(crate::renderer::GuiQuad {
+                    pos: [self.rect[0], self.rect[1]],
+                    size: [self.rect[2], self.rect[3]],
+                    color: self.colour,
+                    radii: [self.rect[2].min(self.rect[3]) * 0.5; 4],
+                    flags: 1,
+                });
+                // draw selection indicator at computed position
+                let (px, py) = if let Some([nx, ny]) = self.pick_pos {
+                    (self.rect[0] + nx * self.rect[2], self.rect[1] + ny * self.rect[3])
+                } else {
+                    color_to_point(self.colour, self.rect, &self.shape)
                 };
                 batch.push(crate::renderer::GuiQuad {
                     pos: [px - 4.0, py - 4.0],
                     size: [8.0, 8.0],
                     color: [1.0, 1.0, 1.0, 1.0],
                     radii: [4.0; 4],
+                    flags: 0,
+                });
+            }
+            PickerShape::Rect => {
+                // rectangular hue/sat swatch; flag bit1 distinguishes from
+                // circular wheel.  The shader will interpret the flags and
+                // generate the appropriate gradient.
+                batch.push(crate::renderer::GuiQuad {
+                    pos: [self.rect[0], self.rect[1]],
+                    size: [self.rect[2], self.rect[3]],
+                    color: self.colour,
+                    radii: [0.0; 4],
+                    flags: 2,
+                });
+                let (px, py) = if let Some([nx, ny]) = self.pick_pos {
+                    (self.rect[0] + nx * self.rect[2], self.rect[1] + ny * self.rect[3])
+                } else {
+                    color_to_point(self.colour, self.rect, &self.shape)
+                };
+                batch.push(crate::renderer::GuiQuad {
+                    pos: [px - 4.0, py - 4.0],
+                    size: [8.0, 8.0],
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    radii: [4.0; 4],
+                    flags: 0,
+                });
+            }
+            PickerShape::Triangle => {
+                // triangular hue/sat region; use flag bit2.
+                batch.push(crate::renderer::GuiQuad {
+                    pos: [self.rect[0], self.rect[1]],
+                    size: [self.rect[2], self.rect[3]],
+                    color: self.colour,
+                    radii: [0.0; 4],
+                    flags: 3,
+                });
+                let (px, py) = if let Some([nx, ny]) = self.pick_pos {
+                    (self.rect[0] + nx * self.rect[2], self.rect[1] + ny * self.rect[3])
+                } else {
+                    color_to_point(self.colour, self.rect, &self.shape)
+                };
+                batch.push(crate::renderer::GuiQuad {
+                    pos: [px - 4.0, py - 4.0],
+                    size: [8.0, 8.0],
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    radii: [4.0; 4],
+                    flags: 0,
                 });
             }
             PickerShape::Custom(f) => {
@@ -207,64 +267,24 @@ impl Widget for ColorPicker {
     fn collect(&self, cmds: &mut Vec<RenderCommand>) {
         match &self.shape {
             PickerShape::Circle => {
-                // replicate same gradient logic as draw(); since collect is
-                // used for the generic `Widget` path we need to emit
-                // RenderCommands here.
-                let steps = 32;
-                let cw = self.rect[2] / steps as f32;
-                let ch = self.rect[3] / steps as f32;
-                let cx = self.rect[0] + self.rect[2] * 0.5;
-                let cy = self.rect[1] + self.rect[3] * 0.5;
-                for i in 0..steps {
-                    for j in 0..steps {
-                        let x = self.rect[0] + i as f32 * cw + cw * 0.5;
-                        let y = self.rect[1] + j as f32 * ch + ch * 0.5;
-                        let nx = (x - self.rect[0]) / self.rect[2];
-                        let ny = (y - self.rect[1]) / self.rect[3];
-                        let dx = nx - 0.5;
-                        let dy = ny - 0.5;
-                        if dx * dx + dy * dy <= 0.25 {
-                            let dist = (dx * dx + dy * dy).sqrt();
-                            let angle = dy.atan2(dx);
-                            let hue = (angle / (2.0 * std::f32::consts::PI) + 1.0) % 1.0;
-                            let sat = dist / 0.5;
-                            let color = hsv_to_rgba(hue, sat, 1.0, self.colour[3]);
-                            cmds.push(RenderCommand::Quad {
-                                rect: Rect {
-                                    x: x - cw * 0.5,
-                                    y: y - ch * 0.5,
-                                    width: cw,
-                                    height: ch,
-                                },
-                                color,
-                                radii: [0.0; 4],
-                            });
-                        }
-                    }
-                }
-                // indicator
-                let (px, py) = {
-                    let r = self.colour[0];
-                    let g = self.colour[1];
-                    let b = self.colour[2];
-                    let max = r.max(g).max(b);
-                    let min = r.min(g).min(b);
-                    let d = max - min;
-                    let hue = if d == 0.0 {
-                        0.0
-                    } else if max == r {
-                        ((g - b) / d) % 6.0
-                    } else if max == g {
-                        (b - r) / d + 2.0
-                    } else {
-                        (r - g) / d + 4.0
-                    } / 6.0;
-                    let sat = if max == 0.0 { 0.0 } else { d / max };
-                    let angle = hue * 2.0 * std::f32::consts::PI;
-                    let dist = sat * 0.5;
-                    let px = cx + dist * angle.cos() * self.rect[2];
-                    let py = cy + dist * angle.sin() * self.rect[3];
-                    (px, py)
+                // push a single command requesting a colour wheel; the
+                // renderer will handle the actual gradient in the shader.
+                cmds.push(RenderCommand::Quad {
+                    rect: Rect {
+                        x: self.rect[0],
+                        y: self.rect[1],
+                        width: self.rect[2],
+                        height: self.rect[3],
+                    },
+                    color: self.colour, // alpha may be used by shader
+                    radii: [self.rect[2].min(self.rect[3]) * 0.5; 4],
+                    flags: 1, // bit0 = colour wheel
+                });
+                // draw indicator as extra quad
+                let (px, py) = if let Some([nx, ny]) = self.pick_pos {
+                    (self.rect[0] + nx * self.rect[2], self.rect[1] + ny * self.rect[3])
+                } else {
+                    color_to_point(self.colour, self.rect, &self.shape)
                 };
                 cmds.push(RenderCommand::Quad {
                     rect: Rect {
@@ -275,10 +295,69 @@ impl Widget for ColorPicker {
                     },
                     color: [1.0, 1.0, 1.0, 1.0],
                     radii: [4.0; 4],
+                    flags: 0,
                 });
             }
             PickerShape::Custom(f) => {
                 f(self, cmds);
+            }
+            PickerShape::Rect => {
+                cmds.push(RenderCommand::Quad {
+                    rect: Rect {
+                        x: self.rect[0],
+                        y: self.rect[1],
+                        width: self.rect[2],
+                        height: self.rect[3],
+                    },
+                    color: self.colour,
+                    radii: [0.0; 4],
+                    flags: 2,
+                });
+                let (px, py) = if let Some([nx, ny]) = self.pick_pos {
+                    (self.rect[0] + nx * self.rect[2], self.rect[1] + ny * self.rect[3])
+                } else {
+                    color_to_point(self.colour, self.rect, &self.shape)
+                };
+                cmds.push(RenderCommand::Quad {
+                    rect: Rect {
+                        x: px - 4.0,
+                        y: py - 4.0,
+                        width: 8.0,
+                        height: 8.0,
+                    },
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    radii: [4.0; 4],
+                    flags: 0,
+                });
+            }
+            PickerShape::Triangle => {
+                cmds.push(RenderCommand::Quad {
+                    rect: Rect {
+                        x: self.rect[0],
+                        y: self.rect[1],
+                        width: self.rect[2],
+                        height: self.rect[3],
+                    },
+                    color: self.colour,
+                    radii: [0.0; 4],
+                    flags: 3,
+                });
+                let (px, py) = if let Some([nx, ny]) = self.pick_pos {
+                    (self.rect[0] + nx * self.rect[2], self.rect[1] + ny * self.rect[3])
+                } else {
+                    color_to_point(self.colour, self.rect, &self.shape)
+                };
+                cmds.push(RenderCommand::Quad {
+                    rect: Rect {
+                        x: px - 4.0,
+                        y: py - 4.0,
+                        width: 8.0,
+                        height: 8.0,
+                    },
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    radii: [4.0; 4],
+                    flags: 0,
+                });
             }
         }
     }
@@ -340,6 +419,79 @@ fn hsv_to_rgba(h: f32, s: f32, v: f32, a: f32) -> [f32; 4] {
     [r, g, b, a]
 }
 
+/// Convert an RGBA colour (assumed to originate from the default wheel
+/// shader) back into a point in window space where the selection indicator
+/// should be drawn.  This mirrors the HSV conversion used by the shader.
+/// Given a colour value produced by the default `on_pick`/shader logic,
+/// return the corresponding indicator position in window space.  The
+/// behaviour must match `default_pick` for each supported shape.
+// helper: extract hue (0..1) and saturation (0..1) from an RGB colour
+// produced by our wheel/rect/triangle shader.  The algorithm is the
+// same as the one used in `default_pick`, allowing the inverse mapping
+// to remain consistent across shapes.
+fn rgb_to_hs(col: [f32; 4]) -> (f32, f32) {
+    let r = col[0];
+    let g = col[1];
+    let b = col[2];
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let d = max - min;
+    let mut hue = if d == 0.0 {
+        0.0
+    } else {
+        let mut h = if max == r {
+            (g - b) / d
+        } else if max == g {
+            (b - r) / d + 2.0
+        } else {
+            (r - g) / d + 4.0
+        };
+        if h < 0.0 {
+            h += 6.0;
+        }
+        (h / 6.0).fract()
+    };
+    let mut sat = if max == 0.0 { 0.0 } else { d / max };
+    sat = sat.clamp(0.0, 1.0);
+    (hue, sat)
+}
+
+fn color_to_point(col: [f32; 4], rect: [f32; 4], shape: &PickerShape) -> (f32, f32) {
+    let (hue, sat) = rgb_to_hs(col);
+    match shape {
+        PickerShape::Circle => {
+            let angle = hue * 2.0 * std::f32::consts::PI;
+            let dist = sat * 0.5;
+            let cx = rect[0] + rect[2] * 0.5;
+            let cy = rect[1] + rect[3] * 0.5;
+            let px = cx + dist * angle.cos() * rect[2];
+            let py = cy + dist * angle.sin() * rect[3];
+            (px, py)
+        }
+        PickerShape::Rect => {
+            // mapping used by default_pick: hue = nx, sat = 1 - ny
+            let nx = hue;
+            let ny = 1.0 - sat;
+            let x = rect[0] + nx * rect[2];
+            let y = rect[1] + ny * rect[3];
+            (x, y)
+        }
+        PickerShape::Triangle => {
+            // same base formula as earlier, but using hsv extraction helper
+            let ny = 1.0 - sat;
+            let nx = if (1.0 - ny).abs() < std::f32::EPSILON {
+                0.0
+            } else {
+                hue * (1.0 - ny)
+            };
+            let x = rect[0] + nx * rect[2];
+            let y = rect[1] + ny * rect[3];
+            (x, y)
+        }
+        PickerShape::Custom(_) => (rect[0], rect[1]),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -353,11 +505,115 @@ mod tests {
     }
 
     #[test]
+    fn default_pick_rect() {
+        let mut cp = ColorPicker::new(0.0, 0.0, 100.0, 100.0);
+        cp.shape = PickerShape::Rect;
+        // top-left corner corresponds to hue=0, sat=1 -> red
+        cp.default_pick(0.0, 0.0);
+        assert!(cp.colour[0] > 0.9 && cp.colour[1] < 0.1 && cp.colour[2] < 0.1);
+        // bottom-right corner should be hue=1, sat=0 -> white
+        cp.default_pick(1.0, 1.0);
+        assert_eq!(cp.colour, [1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn default_pick_triangle() {
+        let mut cp = ColorPicker::new(0.0, 0.0, 100.0, 100.0);
+        cp.shape = PickerShape::Triangle;
+        // base middle should give hue=0.5, sat=1 (cyanish)
+        cp.default_pick(0.5, 0.0);
+        assert!(cp.colour[1] > 0.5, "expected green component to be large");
+        // picking at the top corner (nx=0, ny=1) yields zero saturation,
+        // which produces white; verify we actually compute that case.
+        cp.default_pick(0.0, 1.0);
+        assert_eq!(cp.colour, [1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
     fn hit_circle() {
         let cp = ColorPicker::new(10.0, 10.0, 80.0, 80.0);
         // point at centre should hit
         assert!(cp.hit(50.0, 50.0));
         // outside bounding box
         assert!(!cp.hit(0.0, 0.0));
+    }
+
+    #[test]
+    fn hit_rect() {
+        let mut cp = ColorPicker::new(0.0, 0.0, 100.0, 50.0);
+        cp.shape = PickerShape::Rect;
+        // centre should hit
+        assert!(cp.hit(50.0, 25.0));
+        // outside on the left
+        assert!(!cp.hit(-1.0, 25.0));
+    }
+
+    #[test]
+    fn hit_triangle() {
+        let mut cp = ColorPicker::new(0.0, 0.0, 100.0, 100.0);
+        cp.shape = PickerShape::Triangle;
+        // point in lower-left half should hit
+        assert!(cp.hit(25.0, 25.0));
+        // point near top-right outside the triangular region
+        assert!(!cp.hit(90.0, 90.0));
+    }
+
+    #[test]
+    fn color_to_point_rect_and_triangle() {
+        let rect = [0.0, 0.0, 100.0, 100.0];
+        // for rect we actually generate a colour via default_pick to
+        // ensure it's realistic.  pick at normalized coords (0.25,0.3).
+        let mut cp = ColorPicker::new(0.0, 0.0, 100.0, 100.0);
+        cp.shape = PickerShape::Rect;
+        cp.default_pick(0.25, 0.3);
+        let p = color_to_point(cp.colour, rect, &PickerShape::Rect);
+        assert!((p.0 - 0.25 * rect[2]).abs() < 0.5);
+        // for triangle with hue=.5 sat=1 we expect point near base middle
+        // triangle case: sample at (nx,ny)=(0.5,0.1)
+        let mut cp2 = ColorPicker::new(0.0, 0.0, 100.0, 100.0);
+        cp2.shape = PickerShape::Triangle;
+        cp2.default_pick(0.5, 0.1);
+        let p2 = color_to_point(cp2.colour, rect, &PickerShape::Triangle);
+        // expected roughly at nx=0.5, ny=0.1
+        assert!((p2.0 - 50.0).abs() < 5.0);
+        assert!((p2.1 - 10.0).abs() < 5.0);
+    }
+
+    // round‑trip test for triangle mapping: pick some sample points and
+    // verify the indicator computation returns the original coordinates.
+    #[test]
+    fn triangle_round_trip() {
+        let mut cp = ColorPicker::new(0.0, 0.0, 100.0, 100.0);
+        cp.shape = PickerShape::Triangle;
+        // sample a few barycentric points inside the triangle
+        for &(nx, ny) in &[ (0.1, 0.1), (0.3, 0.2), (0.0, 0.0), (0.5, 0.4) ] {
+            assert!(nx + ny <= 1.0);
+            let mut t = cp.clone();
+            t.default_pick(nx, ny);
+            let (px, py) = color_to_point(t.colour, t.rect, &t.shape);
+            let rx = (px - t.rect[0]) / t.rect[2];
+            let ry = (py - t.rect[1]) / t.rect[3];
+            if (rx - nx).abs() >= 0.02 || (ry - ny).abs() >= 0.02 {
+                eprintln!("round-trip failed for ({},{}) -> ({},{}) colour={:?}",
+                    nx, ny, rx, ry, t.colour);
+            }
+            assert!((rx - nx).abs() < 0.02, "nx {} -> {}", nx, rx);
+            assert!((ry - ny).abs() < 0.02, "ny {} -> {}", ny, ry);
+        }
+    }
+
+    #[test]
+    fn rect_round_trip() {
+        let mut cp = ColorPicker::new(0.0, 0.0, 100.0, 100.0);
+        cp.shape = PickerShape::Rect;
+        for &(nx, ny) in &[ (0.0,0.0), (0.25,0.5), (0.75,0.2) /*skip boundary hue=1*/ ] {
+            let mut t = cp.clone();
+            t.default_pick(nx, ny);
+            let (px, py) = color_to_point(t.colour, t.rect, &t.shape);
+            let rx = (px - t.rect[0]) / t.rect[2];
+            let ry = (py - t.rect[1]) / t.rect[3];
+            assert!((rx - nx).abs() < 0.02, "{} -> {}", nx, rx);
+            assert!((ry - ny).abs() < 0.02, "{} -> {}", ny, ry);
+        }
     }
 }

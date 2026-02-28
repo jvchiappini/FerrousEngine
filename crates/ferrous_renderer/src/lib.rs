@@ -119,9 +119,22 @@ impl Renderer {
         height: u32,
         format: wgpu::TextureFormat,
     ) -> Self {
-        let rt = RenderTarget::new(&context.device, width, height, format);
-        let pipe = FerrousPipeline::new(&context.device, format);
-        let ui = ferrous_gui::GuiRenderer::new(context.device.clone(), format, 1024, width, height);
+        // create render target with modest MSAA; UI can now be rendered
+        // into a multisampled buffer for smoother edges.  the swapchain
+        // itself remains single-sampled and will be resolved automatically.
+        // choose a modest sample count for nicer edges; this value is also
+        // threaded through to the pipeline so it can be created with the
+        // matching sample count.
+        let rt = RenderTarget::new(&context.device, width, height, format, 4);
+        let pipe = FerrousPipeline::new(&context.device, format, rt.sample_count);
+        let ui = ferrous_gui::GuiRenderer::new(
+            context.device.clone(),
+            format,
+            1024,
+            width,
+            height,
+            rt.sample_count,
+        );
 
         // create camera resources
         let camera = camera::Camera {
@@ -217,14 +230,25 @@ impl Renderer {
     ) {
         // update camera uniform prior to borrowing any fields
         self.update_camera_buffer();
-        let color_view = &self.render_target.color_view;
+        // choose between MSAA buffer or direct color target depending on
+        // configured sample count.  use explicit sample_count check rather
+        // than the option flag to avoid accidental mismatches.
+        let (color_view, resolve_target) = if self.render_target.sample_count > 1 {
+            (
+                // msaa_view should exist when sample_count>1
+                self.render_target.msaa_view.as_ref().unwrap(),
+                Some(&self.render_target.color_view),
+            )
+        } else {
+            (&self.render_target.color_view, None)
+        };
         let depth_view = &self.render_target.depth_view;
 
         let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Render Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: color_view,
-                resolve_target: None,
+                resolve_target,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color {
                         r: 0.1,
@@ -263,8 +287,10 @@ impl Renderer {
 
         if let Some(batch) = ui_batch {
             // renderizamos la UI en un pase separado que no limpia nada
-            self.ui_renderer
-                .render(encoder, color_view, batch, &self.context.queue, text_batch);
+            // al igual que el pase 3D, podemos dibujar en el mismo
+            // colour_view y resolver hacia el mismo resolve_target (si lo
+            // hay) para que la interfaz también reciba antialiasing.
+            self.ui_renderer.render(encoder, color_view, resolve_target, batch, &self.context.queue, text_batch);
         }
     }
 
@@ -281,18 +307,34 @@ impl Renderer {
         text_batch: Option<&TextBatch>,
     ) {
         // reuse most of the same logic as `render_to_target`, but render
-        // directly into the provided view. we still supply a depth attachment
-        // from our internal render target so that the pipeline's depth format
-        // matches what it was created with.
+        // directly into the provided swapchain view. when MSAA is enabled we
+        // don't draw straight into the view (which is single‑sampled); instead
+        // we render into our multisampled buffer and resolve into the
+        // supplied `view` afterwards.  the depth attachment always comes from
+        // our internal render target so that it matches the pipeline's format
+        // and sample count.
+
         // update camera before drawing, do this before borrowing depth_view
         self.update_camera_buffer();
         let depth_view = &self.render_target.depth_view;
 
+        // choose colour attachment based on MSAA configuration
+        let (color_view, resolve_target): (&wgpu::TextureView, Option<&wgpu::TextureView>) =
+            if self.render_target.sample_count > 1 {
+                (
+                    // msaa_view must exist when sample_count > 1
+                    self.render_target.msaa_view.as_ref().unwrap(),
+                    Some(view),
+                )
+            } else {
+                (view, None)
+            };
+
         let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Render Pass (swapchain)"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view,
-                resolve_target: None,
+                view: color_view,
+                resolve_target,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color {
                         r: 0.1,
@@ -329,8 +371,10 @@ impl Renderer {
         drop(rpass);
 
         if let Some(batch) = ui_batch {
-            self.ui_renderer
-                .render(encoder, view, batch, &self.context.queue, text_batch);
+            // the 3D pass above may have rendered into `color_view` and
+            // resolved into `view`. make sure the GUI pass uses the same
+            // configuration so that it too is multisampled if requested.
+            self.ui_renderer.render(encoder, color_view, resolve_target, batch, &self.context.queue, text_batch);
         }
     }
 

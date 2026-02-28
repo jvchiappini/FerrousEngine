@@ -23,6 +23,8 @@ pub struct GuiQuad {
     /// a value of 0 means the corner is sharp. providing distinct values
     /// allows fine-grained control over each corner's curvature.
     pub radii: [f32; 4],
+    /// bitflags controlling special rendering behaviour. bit 0=colour wheel.
+    pub flags: u32,
 }
 
 /// Lote de `GuiQuad` que será enviado al GPU en un draw call único.
@@ -172,6 +174,7 @@ impl GuiRenderer {
         max_instances: u32,
         width: u32,
         height: u32,
+        sample_count: u32,
     ) -> Self {
         // buffers de vértice/índice para un quad unitario (0..1 en UV)
         let vertices: &[f32] = &[
@@ -351,7 +354,11 @@ impl GuiRenderer {
             }),
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: sample_count,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             multiview: None,
             cache: None,
         });
@@ -414,6 +421,12 @@ impl GuiRenderer {
                                 offset: 32,
                                 shader_location: 4,
                             },
+                            // flags field (u32)
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Uint32,
+                                offset: 48,
+                                shader_location: 5,
+                            },
                         ],
                     },
                 ],
@@ -431,7 +444,11 @@ impl GuiRenderer {
             }),
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: sample_count,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             multiview: None,
             cache: None,
         });
@@ -490,10 +507,16 @@ impl GuiRenderer {
 
     /// Emite los comandos necesarios para dibujar el contenido del
     /// `GuiBatch` sobre la vista indicada.
+    /// Render a batch of GUI quads (and optional text) into the provided
+    /// texture view.  When MSAA is in use the caller should pass the
+    /// multisampled view here and also supply `resolve_target` so that the
+    /// contents of the pass are resolved into the single‑sampled "presentable"
+    /// texture afterwards.  When not using MSAA the caller can pass `None`.
     pub fn render(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
+        resolve_target: Option<&wgpu::TextureView>,
         batch: &GuiBatch,
         queue: &wgpu::Queue,
         text_batch: Option<&TextBatch>,
@@ -528,7 +551,7 @@ impl GuiRenderer {
             label: Some("GUI Render Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view,
-                resolve_target: None,
+                resolve_target,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,

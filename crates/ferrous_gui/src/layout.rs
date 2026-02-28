@@ -390,6 +390,7 @@ impl Node {
                 rect: self.rect.clone(),
                 color: bg,
                 radii: [0.0; 4],
+                flags: 0,
             });
         }
         if let Some(text) = &self.text {
@@ -415,6 +416,10 @@ pub enum RenderCommand {
         color: [f32; 4],
         /// per-corner radii in pixels: [top-left, top-right, bottom-left, bottom-right]
         radii: [f32; 4],
+        /// miscellaneous flags, currently only bit 0 indicates the
+        /// quad should be rendered as a colour wheel gradient instead of a
+        /// flat colour.  Other bits are reserved for future enhancements.
+        flags: u32,
     },
     Text {
         rect: Rect,
@@ -434,12 +439,13 @@ impl RenderCommand {
         font: Option<&ferrous_assets::font::Font>,
     ) {
         match self {
-            RenderCommand::Quad { rect, color, radii } => {
+            RenderCommand::Quad { rect, color, radii, flags } => {
                 quad_batch.push(crate::renderer::GuiQuad {
                     pos: [rect.x, rect.y],
                     size: [rect.width, rect.height],
                     color: *color,
                     radii: *radii,
+                    flags: *flags,
                 });
             }
             RenderCommand::Text {
@@ -486,6 +492,7 @@ mod tests {
             },
             color: [0.1, 0.2, 0.3, 0.4],
             radii: [0.0; 4],
+            flags: 0,
         };
         let mut qb = GuiBatch::new();
         let mut tb = TextBatch::new();

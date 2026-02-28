@@ -98,6 +98,7 @@ impl Button {
             size: [self.rect[2], self.rect[3]],
             color,
             radii: self.radii,
+            flags: 0,
         });
     }
 }
@@ -117,11 +118,12 @@ impl Widget for Button {
             width: self.rect[2],
             height: self.rect[3],
         };
-        cmds.push(RenderCommand::Quad {
-            rect,
-            color,
-            radii: self.radii,
-        });
+            cmds.push(RenderCommand::Quad {
+                rect,
+                color,
+                radii: self.radii,
+                flags: 0,
+            });
     }
 
     fn hit(&self, mx: f64, my: f64) -> bool {

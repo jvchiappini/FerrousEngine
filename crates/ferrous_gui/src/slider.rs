@@ -50,6 +50,7 @@ impl Slider {
             size: [self.rect[2], self.rect[3]],
             color: self.track_color,
             radii: [0.0; 4],
+            flags: 0,
         });
         // thumb
         let thumb_w = self.rect[2] * 0.1;
@@ -59,6 +60,7 @@ impl Slider {
             size: [thumb_w, self.rect[3]],
             color: self.thumb_color,
             radii: [0.0; 4],
+            flags: 0,
         });
     }
 }
@@ -75,6 +77,7 @@ impl Widget for Slider {
             },
             color: self.track_color,
             radii: [0.0; 4],
+            flags: 0,
         });
         // thumb
         let thumb_w = self.rect[2] * 0.1;
@@ -88,6 +91,7 @@ impl Widget for Slider {
             },
             color: self.thumb_color,
             radii: [0.0; 4],
+            flags: 0,
         });
     }
 

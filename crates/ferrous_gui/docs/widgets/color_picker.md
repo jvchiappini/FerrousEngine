@@ -41,22 +41,26 @@ pub struct ColorPicker {
 #[derive(Clone)]
 pub enum PickerShape {
     Circle,
+    Rect,
+    Triangle,
     Custom(std::sync::Arc<dyn Fn(&ColorPicker, &mut Vec<RenderCommand>)>),
 }
 ```
 `Custom` allows arbitrary drawing logic.  The supplied `Arc`‑wrapped closure
-  receives a reference to the picker and a mutable command list; it may push
-  one or more `RenderCommand` instances describing the appearance.  When
-  using `Custom` you are responsible for whatever hit‑testing semantics make
-  sense (the default `hit` falls back to a simple bounding box).
+receives a reference to the picker and a mutable command list; it may push
+one or more `RenderCommand` instances describing the appearance.  When using
+`Custom` you are responsible for whatever hit‑testing semantics make sense
+(the default `hit` falls back to a simple bounding box).
 
 - `Circle` renders a circular swatch inscribed in the bounding rect; hit
   testing respects the circular boundary.
-- `Custom` allows arbitrary drawing logic.  The supplied closure receives a
-  reference to the picker and a mutable command list; it may push one or more
-  `RenderCommand` instances describing the appearance.  When using `Custom`
-  you are responsible for whatever hit‑testing semantics make sense (the
-  default `hit` falls back to a simple bounding box).
+- `Rect` produces a linear hue/saturation rectangle (hue left→right,
+  saturation top→bottom).  The gradient is generated in the shader and
+  selection coordinates are mapped directly to HSV space.
+- `Triangle` fills the lower‑left right triangle of the bounding box with a
+  hue/saturation gradient; hue runs along the base, saturation decreases
+  towards the apex.  Points outside the triangle are ignored by the default
+  hit test.
 
 ## API
 
@@ -86,10 +90,15 @@ closure emits.  The `draw` helper can be used in isolation in the same way
 as other controls.
 
 dragging inside the circle updates the colour based on the polar coordinates
-By default the picker behaves like a hue/saturation wheel.  The circular
-area is rendered as a simple gradient by stamping a grid of small quads; the
-colour at each point corresponds to the hue (angle) and saturation (distance
-from centre).  A white indicator dot marks the currently selected colour.
+By default the picker behaves like a hue/saturation wheel.  Rather than
+creating a mesh of individual coloured squares (which led to a blocky
+"pixelated" look), the renderer now draws the wheel entirely in the GPU
+fragment shader; the widget simply pushes a single `GuiQuad` with a flag
+indicating it should be treated as a colour wheel.  The shader computes hue
+and saturation from the fragment's UV coordinates on the fly, producing a
+smooth, resolution-independent gradient.  A small white indicator dot is
+still drawn by the widget code to show the current selection.
+
 Clicking or dragging anywhere inside the circle updates `colour` using the
 same polar-coordinate mapping.  Applications can override this logic by
 providing an `on_pick` callback.

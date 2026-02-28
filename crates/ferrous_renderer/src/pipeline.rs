@@ -21,7 +21,11 @@ impl FerrousPipeline {
     /// `device` se utiliza para construir todos los objetos de GPU y
     /// `render_format` debe coincidir con el formato de la textura de color
     /// del `RenderTarget` al que se dibujará (generalmente un SRGB).
-    pub fn new(device: &wgpu::Device, render_format: wgpu::TextureFormat) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        render_format: wgpu::TextureFormat,
+        sample_count: u32,
+    ) -> Self {
         // cargamos el shader WGSL en tiempo de compilación; el macro ya devuelve
         // un `ShaderModuleDescriptor` listo para usar.
         let shader =
@@ -102,7 +106,11 @@ impl FerrousPipeline {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: sample_count,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             multiview: None,
             cache: None,
         });

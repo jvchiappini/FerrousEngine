@@ -31,6 +31,8 @@ struct EditorApp {
     object_sliders: Vec<[Slider; 3]>,
         // colour picker widget used for demonstration
         color_picker: Rc<RefCell<ferrous_gui::ColorPicker>>,
+            color_picker_rect: Rc<RefCell<ferrous_gui::ColorPicker>>,
+            color_picker_tri: Rc<RefCell<ferrous_gui::ColorPicker>>,
 }
 
 impl Default for EditorApp {
@@ -71,6 +73,14 @@ impl Default for EditorApp {
                     ferrous_gui::ColorPicker::new(50.0, 250.0, 100.0, 100.0)
                         .with_colour([1.0, 0.0, 0.0, 1.0]),
                 )),
+                color_picker_rect: Rc::new(RefCell::new(
+                    ferrous_gui::ColorPicker::new(160.0, 250.0, 100.0, 100.0)
+                        .with_shape(ferrous_gui::PickerShape::Rect),
+                )),
+                color_picker_tri: Rc::new(RefCell::new(
+                    ferrous_gui::ColorPicker::new(270.0, 250.0, 100.0, 100.0)
+                        .with_shape(ferrous_gui::PickerShape::Triangle),
+                )),
         }
     }
 }
@@ -81,7 +91,9 @@ impl FerrousApp for EditorApp {
             ui.add(btn.clone());
         }
         ui.add(self.combo_button.clone());
-            ui.add(self.color_picker.clone());
+        ui.add(self.color_picker.clone());
+        ui.add(self.color_picker_rect.clone());
+        ui.add(self.color_picker_tri.clone());
         ui.register_viewport(self.ui_viewport.clone());
     }
 
@@ -133,6 +145,7 @@ impl FerrousApp for EditorApp {
             size: [self.panel_left_w as f32, win_h as f32],
             color: [0.12, 0.12, 0.12, 1.0],
             radii: [0.0; 4],
+            flags: 0,
         });
 
         // Panel Inferior
@@ -144,6 +157,7 @@ impl FerrousApp for EditorApp {
             size: [win_w as f32, self.panel_bottom_h as f32],
             color: [0.15, 0.15, 0.15, 1.0],
             radii: [0.0; 4],
+            flags: 0,
         });
 
         // Textos
@@ -172,6 +186,25 @@ impl FerrousApp for EditorApp {
                 size: [100.0, 20.0],
                 color: cp.colour,
                 radii: [2.0; 4],
+                flags: 0,
+            });
+
+            let cp_rect = self.color_picker_rect.borrow();
+            gui.push(GuiQuad {
+                pos: [160.0, 360.0],
+                size: [100.0, 20.0],
+                color: cp_rect.colour,
+                radii: [2.0; 4],
+                flags: 0,
+            });
+
+            let cp_tri = self.color_picker_tri.borrow();
+            gui.push(GuiQuad {
+                pos: [270.0, 360.0],
+                size: [100.0, 20.0],
+                color: cp_tri.colour,
+                radii: [2.0; 4],
+                flags: 0,
             });
 
             let mut y_offset = 140.0;
@@ -202,6 +235,7 @@ impl FerrousApp for EditorApp {
                 size: [box_width, box_height],
                 color: [0.0, 0.0, 0.0, 0.6],
                 radii: [0.0; 4],
+                flags: 0,
             });
 
             let cpu = ferrous_core::get_cpu_usage();
@@ -243,6 +277,7 @@ impl FerrousApp for EditorApp {
                     size: [100.0, 20.0],
                     color: cp.colour,
                     radii: [2.0; 4],
+                    flags: 0,
                 };
                 gui.push(col_rect);
     }
