@@ -7,15 +7,18 @@ use crate::geometry::{Mesh, Vertex};
 use crate::resources::buffer;
 
 pub fn cube(device: &wgpu::Device) -> Mesh {
-    let v = |pos: [f32; 3], col: [f32; 3]| Vertex { position: pos, color: col };
+    let v = |pos: [f32; 3], col: [f32; 3]| Vertex {
+        position: pos,
+        color: col,
+    };
 
     // one constant per face color for readability
-    const RED:     [f32; 3] = [1.0, 0.0, 0.0];
-    const GREEN:   [f32; 3] = [0.0, 1.0, 0.0];
-    const BLUE:    [f32; 3] = [0.0, 0.0, 1.0];
-    const YELLOW:  [f32; 3] = [1.0, 1.0, 0.0];
+    const RED: [f32; 3] = [1.0, 0.0, 0.0];
+    const GREEN: [f32; 3] = [0.0, 1.0, 0.0];
+    const BLUE: [f32; 3] = [0.0, 0.0, 1.0];
+    const YELLOW: [f32; 3] = [1.0, 1.0, 0.0];
     const MAGENTA: [f32; 3] = [1.0, 0.0, 1.0];
-    const CYAN:    [f32; 3] = [0.0, 1.0, 1.0];
+    const CYAN: [f32; 3] = [0.0, 1.0, 1.0];
 
     #[rustfmt::skip]
     let vertices: &[Vertex] = &[
@@ -51,9 +54,9 @@ pub fn cube(device: &wgpu::Device) -> Mesh {
 
     Mesh {
         vertex_buffer: buffer::create_vertex(device, "Cube VB", vertices),
-        index_buffer:  buffer::create_index(device, "Cube IB", indices),
-        index_count:   indices.len() as u32,
-        vertex_count:  vertices.len() as u32,
-        index_format:  wgpu::IndexFormat::Uint16,
+        index_buffer: buffer::create_index(device, "Cube IB", indices),
+        index_count: indices.len() as u32,
+        vertex_count: vertices.len() as u32,
+        index_format: wgpu::IndexFormat::Uint16,
     }
 }

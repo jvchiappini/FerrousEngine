@@ -1,5 +1,5 @@
-use ferrous_core::{InputState, Time, World};
-use ferrous_renderer::Viewport;
+use ferrous_core::{InputState, RenderStats, Time, Viewport, World};
+use ferrous_core::glam::Vec3;
 use winit::window::Window;
 
 /// Per-frame context passed to every [`FerrousApp`] callback.
@@ -29,6 +29,14 @@ pub struct AppContext<'a> {
     /// The native window handle (for creating surfaces, grabbing cursor, etc.)
     pub window: &'a Window,
 
+    /// Per-frame renderer statistics (vertices, triangles, draw calls).
+    /// Populated at the start of every `draw_3d` call; zero before the first frame.
+    pub render_stats: RenderStats,
+
+    /// World-space position of the camera eye this frame.
+    /// Populated at the start of every `draw_3d` call; `Vec3::ZERO` until then.
+    pub camera_eye: Vec3,
+
     // ── Read-write ─────────────────────────────────────────────────────────
     /// The scene graph.  Modify this in `update()` and `ferrous_app` will
     /// automatically call `renderer.sync_world` at the right moment.
@@ -39,10 +47,6 @@ pub struct AppContext<'a> {
     /// the renderer and UI viewport.
     pub viewport: Viewport,
 
-    /// Optional mutable renderer access.  Available in `setup`, `update`, and
-    /// `draw_3d`; may be `None` in early lifecycle callbacks.
-    pub renderer: Option<&'a mut ferrous_renderer::Renderer>,
-
     /// Set to `true` via [`request_exit`] to stop the event loop gracefully.
     pub(crate) exit_requested: bool,
 }
@@ -51,12 +55,6 @@ impl<'a> AppContext<'a> {
     /// Signal the event loop to shut down after the current frame.
     pub fn request_exit(&mut self) {
         self.exit_requested = true;
-    }
-
-    /// Convenience accessor returning a mutable reference to the renderer if
-    /// available.
-    pub fn renderer(&mut self) -> Option<&mut ferrous_renderer::Renderer> {
-        self.renderer.as_deref_mut()
     }
 
     /// Shortcut: window width in physical pixels.

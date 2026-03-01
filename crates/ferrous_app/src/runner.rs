@@ -1,7 +1,6 @@
 use ferrous_assets::Font;
-use ferrous_core::{InputState, TimeClock, World};
+use ferrous_core::{glam::Vec3, InputState, TimeClock, Viewport, World};
 use ferrous_gui::{GuiBatch, TextBatch, Ui};
-use ferrous_renderer::Viewport;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::{
@@ -99,8 +98,9 @@ impl<A: FerrousApp> Runner<A> {
                 window_size: self.window_size,
                 window,
                 viewport: self.viewport,
+                render_stats: Default::default(),
+                camera_eye: Vec3::ZERO,
                 world: &mut self.world,
-                renderer: Some(&mut gfx.renderer),
                 exit_requested: false,
             };
 
@@ -142,19 +142,22 @@ impl<A: FerrousApp> Runner<A> {
         // ── 2. DRAW 3D + DRAW UI ─────────────────────────────────────────────
         let mut encoder = gfx.renderer.begin_frame();
         {
+            let render_stats = gfx.renderer.render_stats;
+            let camera_eye = gfx.renderer.camera.eye;
             let mut ctx = AppContext {
                 input: &self.input,
                 time,
                 window_size: self.window_size,
                 window,
                 viewport: self.viewport,
+                render_stats,
+                camera_eye,
                 world: &mut self.world,
-                renderer: None,
                 exit_requested: false,
             };
 
             if self.viewport.width > 0 {
-                self.app.draw_3d(&mut gfx.renderer, &mut ctx);
+                self.app.draw_3d(&mut ctx);
             }
 
             let mut gui_batch = GuiBatch::new();
@@ -248,8 +251,9 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                 window_size: self.window_size,
                 window: &window,
                 viewport: self.viewport,
+                render_stats: Default::default(),
+                camera_eye: Vec3::ZERO,
                 world: &mut self.world,
-                renderer: Some(&mut gfx.renderer),
                 exit_requested: false,
             };
             self.app.setup(&mut ctx);
@@ -289,8 +293,9 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                 window_size: self.window_size,
                 window: &window,
                 viewport: self.viewport,
+                render_stats: Default::default(),
+                camera_eye: Vec3::ZERO,
                 world: &mut self.world,
-                renderer: self.graphics.as_mut().map(|g| &mut g.renderer),
                 exit_requested: false,
             };
             self.app.on_window_event(&event, &mut ctx);
@@ -310,7 +315,7 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                 }
                 // Notify the user app
                 if let Some(window) = self.window.clone() {
-                    if let Some(gfx) = &mut self.graphics {
+                    if self.graphics.is_some() {
                         let time = self.clock.peek();
                         let mut ctx = AppContext {
                             input: &self.input,
@@ -318,8 +323,9 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                             window_size: new_size,
                             window: &window,
                             viewport: self.viewport,
+                            render_stats: Default::default(),
+                            camera_eye: Vec3::ZERO,
                             world: &mut self.world,
-                            renderer: Some(&mut gfx.renderer),
                             exit_requested: false,
                         };
                         self.app.on_resize(new_size, &mut ctx);

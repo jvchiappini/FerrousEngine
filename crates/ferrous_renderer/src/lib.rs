@@ -35,11 +35,11 @@ pub use geometry::{Mesh, Vertex};
 pub use graph::frame_packet::Viewport;
 pub use graph::{FramePacket, InstancedDrawCommand, RenderPass};
 pub use pipeline::InstancingPipeline;
+use rayon::prelude::*;
 pub use render_stats::RenderStats;
 pub use render_target::RenderTarget;
 pub use resources::InstanceBuffer;
 pub use scene::{Aabb, Frustum, RenderObject};
-use rayon::prelude::*;
 
 // -- Internal imports ---------------------------------------------------------
 
@@ -123,7 +123,7 @@ pub struct Renderer {
     instanced_commands_cache: Vec<InstancedDrawCommand>,
     /// Scratch buffer for matrices written to the instance buffer each frame.
     instance_matrix_scratch: Vec<glam::Mat4>,
-    
+
     // -- Caching optimization flags -------------------------------------------
     prev_view_proj: Option<glam::Mat4>,
     scene_dirty: bool,
@@ -329,7 +329,7 @@ impl Renderer {
         if mutated {
             self.scene_dirty = true;
         }
-    }    // -- Pass management ------------------------------------------------------
+    } // -- Pass management ------------------------------------------------------
 
     /// Appends a custom pass after the built-in ones.
     /// `on_attach` is called immediately with the current surface format.
@@ -500,7 +500,10 @@ impl Renderer {
         if !self.scene_dirty && self.prev_view_proj == Some(camera_packet.view_proj) {
             let mut packet = FramePacket::new(Some(self.viewport), camera_packet);
             std::mem::swap(&mut packet.scene_objects, &mut self.draw_commands_cache);
-            std::mem::swap(&mut packet.instanced_objects, &mut self.instanced_commands_cache);
+            std::mem::swap(
+                &mut packet.instanced_objects,
+                &mut self.instanced_commands_cache,
+            );
             return packet;
         }
 
@@ -531,7 +534,10 @@ impl Renderer {
         // We use fold & reduce to aggregate matrices by mesh vertex_buffer pointer.
         use std::collections::HashMap;
 
-        let visible_mesh_groups = self.world_objects.par_iter().flatten()
+        let visible_mesh_groups = self
+            .world_objects
+            .par_iter()
+            .flatten()
             .filter(|obj| frustum.intersects_aabb(&obj.world_aabb()))
             .fold(
                 || HashMap::new(),
@@ -539,9 +545,10 @@ impl Renderer {
                     let key = Arc::as_ptr(&obj.mesh.vertex_buffer) as usize;
                     map.entry(key)
                         .or_insert_with(|| (obj.mesh.clone(), Vec::with_capacity(128)))
-                        .1.push(obj.matrix);
+                        .1
+                        .push(obj.matrix);
                     map
-                }
+                },
             )
             .reduce(
                 || HashMap::new(),
@@ -549,10 +556,11 @@ impl Renderer {
                     for (k, (mesh, mut mats)) in map2 {
                         map1.entry(k)
                             .or_insert_with(|| (mesh, Vec::with_capacity(mats.len())))
-                            .1.append(&mut mats);
+                            .1
+                            .append(&mut mats);
                     }
                     map1
-                }
+                },
             );
 
         let mut total_visible = 0;
@@ -573,11 +581,11 @@ impl Renderer {
             // Flatten clustered matrices sequentially into scratch buffer
             let mut offset = 0;
             self.instance_matrix_scratch.reserve(total_visible);
-            
+
             for (_key, (mesh, mats)) in visible_mesh_groups {
                 let count = mats.len() as u32;
                 self.instance_matrix_scratch.extend_from_slice(&mats);
-                
+
                 self.instanced_commands_cache.push(InstancedDrawCommand {
                     vertex_buffer: mesh.vertex_buffer.clone(),
                     index_buffer: mesh.index_buffer.clone(),
@@ -587,7 +595,7 @@ impl Renderer {
                     first_instance: offset,
                     instance_count: count,
                 });
-                
+
                 offset += count;
             }
 
@@ -598,15 +606,15 @@ impl Renderer {
         // -- Compute render statistics ----------------------------------------
         let mut stats = RenderStats::default();
         for cmd in &self.draw_commands_cache {
-            stats.vertex_count   += cmd.vertex_count as u64;
+            stats.vertex_count += cmd.vertex_count as u64;
             stats.triangle_count += (cmd.index_count / 3) as u64;
-            stats.draw_calls     += 1;
+            stats.draw_calls += 1;
         }
         for cmd in &self.instanced_commands_cache {
             let inst = cmd.instance_count as u64;
-            stats.vertex_count   += cmd.vertex_count as u64 * inst;
+            stats.vertex_count += cmd.vertex_count as u64 * inst;
             stats.triangle_count += (cmd.index_count / 3) as u64 * inst;
-            stats.draw_calls     += 1;
+            stats.draw_calls += 1;
         }
         self.render_stats = stats;
 

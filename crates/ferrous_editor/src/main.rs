@@ -1,10 +1,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ferrous_app::{App, AppContext, Color, FerrousApp, Handle, Vec3};
+use ferrous_app::{App, AppContext, Color, FerrousApp, Handle, RenderStats, Vec3, Viewport};
 use ferrous_assets::font::Font;
-use ferrous_gui::{GuiBatch, InteractiveButton, TextBatch, Ui, ViewportWidget};
-use ferrous_renderer::{RenderStats, Renderer, Viewport};
+use ferrous_gui::{GuiBatch, InteractiveButton, Slider, TextBatch, Ui, ViewportWidget};
 use rand::Rng;
 
 /// How many cubos se spawnean por frame durante el benchmark.
@@ -13,6 +12,22 @@ const BENCHMARK_BATCH: u32 = 200;
 const BENCHMARK_MIN_FPS: f32 = 60.0;
 /// Número de frames sobre los que se calcula la media deslizante de FPS.
 const FPS_WINDOW: usize = 60;
+
+// ─── Slider helpers ────────────────────────────────────────────────────────
+
+/// Minimum and maximum cube dimension (world units) for the size sliders.
+const SLIDER_MIN: f32 = 0.1;
+const SLIDER_MAX: f32 = 5.0;
+
+/// Convert a world-unit size to a normalized slider value [0, 1].
+fn slider_norm(size: f32) -> f32 {
+    ((size - SLIDER_MIN) / (SLIDER_MAX - SLIDER_MIN)).clamp(0.0, 1.0)
+}
+
+/// Convert a normalized slider value [0, 1] to a world-unit size.
+fn slider_to_size(v: f32) -> f32 {
+    SLIDER_MIN + v * (SLIDER_MAX - SLIDER_MIN)
+}
 
 /// Estado del benchmark.
 #[derive(Debug, Clone, PartialEq)]
@@ -54,6 +69,14 @@ struct EditorApp {
 
     // --- render stats (captured in draw_3d, displayed in draw_ui) ---
     cached_render_stats: RenderStats,
+
+    // --- cube size sliders (W / H / D) ---
+    /// Width slider for the selected cube (normalized 0..1 → 0.1..5.0)
+    slider_w: Rc<RefCell<Slider>>,
+    /// Height slider for the selected cube.
+    slider_h: Rc<RefCell<Slider>>,
+    /// Depth slider for the selected cube.
+    slider_d: Rc<RefCell<Slider>>,
 }
 
 impl Default for EditorApp {
@@ -78,6 +101,10 @@ impl Default for EditorApp {
             fps_history_idx: 0,
             fps_avg: 0.0,
             cached_render_stats: RenderStats::default(),
+            // Start all three sliders at mid-range (maps to 1.0 world unit).
+            slider_w: Rc::new(RefCell::new(Slider::new(10.0, 220.0, 160.0, 16.0, slider_norm(1.0)))),
+            slider_h: Rc::new(RefCell::new(Slider::new(10.0, 248.0, 160.0, 16.0, slider_norm(1.0)))),
+            slider_d: Rc::new(RefCell::new(Slider::new(10.0, 276.0, 160.0, 16.0, slider_norm(1.0)))),
         }
     }
 }
@@ -87,6 +114,9 @@ impl FerrousApp for EditorApp {
         ui.add(self.add_button.clone());
         ui.add(self.bench_button.clone());
         ui.register_viewport(self.ui_viewport.clone());
+        ui.add(self.slider_w.clone());
+        ui.add(self.slider_h.clone());
+        ui.add(self.slider_d.clone());
     }
 
     fn setup(&mut self, ctx: &mut AppContext) {
@@ -178,8 +208,8 @@ impl FerrousApp for EditorApp {
             // Render stats panel.
             let stats = &self.cached_render_stats;
             let verts = stats.vertex_count;
-            let tris  = stats.triangle_count;
-            let dcs   = stats.draw_calls;
+            let tris = stats.triangle_count;
+            let dcs = stats.draw_calls;
             let verts_str = if verts >= 1_000_000 {
                 format!("Verts: {:.1}M", verts as f32 / 1_000_000.0)
             } else if verts >= 1_000 {
@@ -196,8 +226,8 @@ impl FerrousApp for EditorApp {
             };
             let dc_str = format!("Draw calls: {}", dcs);
             text.draw_text(font, &verts_str, [15.0, 112.0], 13.0, [0.5, 0.9, 1.0, 1.0]);
-            text.draw_text(font, &tris_str,  [15.0, 128.0], 13.0, [0.5, 0.9, 1.0, 1.0]);
-            text.draw_text(font, &dc_str,    [15.0, 144.0], 13.0, [0.5, 0.9, 1.0, 1.0]);
+            text.draw_text(font, &tris_str, [15.0, 128.0], 13.0, [0.5, 0.9, 1.0, 1.0]);
+            text.draw_text(font, &dc_str, [15.0, 144.0], 13.0, [0.5, 0.9, 1.0, 1.0]);
 
             // Benchmark status HUD.
             match self.bench_state {
@@ -218,18 +248,38 @@ impl FerrousApp for EditorApp {
                     text.draw_text(font, &fps_drop, [15.0, 182.0], 12.0, [1.0, 0.5, 0.3, 1.0]);
                 }
             }
+
+            // Cube size sliders — only displayed when a cube is selected.
+            if self.last_cube.map(|h| ctx.world.contains(h)).unwrap_or(false) {
+                let w = slider_to_size(self.slider_w.borrow().value);
+                let h = slider_to_size(self.slider_h.borrow().value);
+                let d = slider_to_size(self.slider_d.borrow().value);
+                text.draw_text(font, &format!("W: {:.2}", w), [15.0, 210.0], 13.0, [0.9, 0.9, 0.5, 1.0]);
+                text.draw_text(font, &format!("H: {:.2}", h), [15.0, 238.0], 13.0, [0.9, 0.9, 0.5, 1.0]);
+                text.draw_text(font, &format!("D: {:.2}", d), [15.0, 266.0], 13.0, [0.9, 0.9, 0.5, 1.0]);
+            }
         }
     }
 
-    fn draw_3d(&mut self, renderer: &mut Renderer, ctx: &mut AppContext) {
-        // Capture render stats from the previous frame (updated by build_base_packet).
-        self.cached_render_stats = renderer.render_stats;
+    fn draw_3d(&mut self, ctx: &mut AppContext) {
+        // Capture render stats from the previous frame.
+        self.cached_render_stats = ctx.render_stats;
+
+        // Apply size sliders to the selected cube.
+        if let Some(handle) = self.last_cube {
+            if ctx.world.contains(handle) {
+                let w = slider_to_size(self.slider_w.borrow().value);
+                let h = slider_to_size(self.slider_h.borrow().value);
+                let d = slider_to_size(self.slider_d.borrow().value);
+                ctx.world.set_cube_size(handle, Vec3::new(w, h, d));
+            }
+        }
 
         let mut rng = rand::thread_rng();
 
         // Manual "Add Cube" button.
         if self.add_cube {
-            let base = renderer.camera.eye;
+            let base = ctx.camera_eye;
             let pos = Vec3::new(
                 base.x + (rng.gen::<f32>() - 0.5) * 2.0,
                 base.y + (rng.gen::<f32>() - 0.5) * 2.0,

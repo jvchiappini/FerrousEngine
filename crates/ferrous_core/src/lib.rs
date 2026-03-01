@@ -54,6 +54,12 @@ pub mod scene;
 /// CPU / RAM usage helpers.
 pub mod metrics;
 
+/// Viewport rectangle (x, y, width, height) for 3-D rendering.
+pub mod viewport;
+
+/// Per-frame renderer statistics (vertices, triangles, draw calls).
+pub mod render_stats;
+
 // ─── Top-level re-exports ──────────────────────────────────────────────────
 //
 // These are the types a game author uses every day.  Import them from the
@@ -79,3 +85,7 @@ pub use context::EngineContext;
 
 // Metrics shortcuts (the most common two)
 pub use metrics::{get_cpu_usage, get_ram_usage_mb};
+
+// Renderer-agnostic display types
+pub use viewport::Viewport;
+pub use render_stats::RenderStats;

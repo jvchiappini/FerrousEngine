@@ -56,8 +56,9 @@ pub struct Handle(pub u64);
 /// systems rather than inside `World` itself.
 #[derive(Debug, Clone)]
 pub enum ElementKind {
-    /// A solid box defined by a half-extent in world units.
-    Cube { half_extent: f32 },
+    /// A solid box defined by per-axis half-extents in world units.
+    /// The full dimensions are `half_extents * 2` (width, height, depth).
+    Cube { half_extents: Vec3 },
     /// An arbitrary triangle mesh identified by an asset path or key.
     Mesh { asset_key: String },
     /// A point light that illuminates the scene.
@@ -204,7 +205,7 @@ impl World {
     ///
     /// ```rust,ignore
     /// let h = world.spawn("Crate")
-    ///     .with_kind(ElementKind::Cube { half_extent: 0.5 })
+    ///     .with_kind(ElementKind::Cube { half_extents: glam::Vec3::splat(0.5) })
     ///     .with_color(Color::rgb(0.8, 0.5, 0.2))
     ///     .build();
     /// ```
@@ -216,11 +217,29 @@ impl World {
         }
     }
 
-    /// Convenience: spawn a unit cube at the given position and return its handle.
+    /// Convenience: spawn a 1×1×1 cube at the given position and return its handle.
     pub fn spawn_cube(&mut self, name: impl Into<String>, position: Vec3) -> Handle {
+        let he = Vec3::splat(0.5);
         self.spawn(name)
-            .with_kind(ElementKind::Cube { half_extent: 0.5 })
+            .with_kind(ElementKind::Cube { half_extents: he })
             .with_position(position)
+            .with_scale(he)
+            .build()
+    }
+
+    /// Convenience: spawn a box with explicit dimensions (width, height, depth)
+    /// at the given position and return its handle.
+    pub fn spawn_box(
+        &mut self,
+        name: impl Into<String>,
+        position: Vec3,
+        size: Vec3,
+    ) -> Handle {
+        let he = size * 0.5;
+        self.spawn(name)
+            .with_kind(ElementKind::Cube { half_extents: he })
+            .with_position(position)
+            .with_scale(he)
             .build()
     }
 
@@ -271,6 +290,29 @@ impl World {
         if let Some(Some(e)) = self.entities.get_mut(handle.0 as usize) {
             e.transform.scale = Vec3::splat(s);
         }
+    }
+
+    /// Set non-uniform scale (x, y, z).
+    pub fn set_scale(&mut self, handle: Handle, scale: Vec3) {
+        if let Some(Some(e)) = self.entities.get_mut(handle.0 as usize) {
+            e.transform.scale = scale;
+        }
+    }
+
+    /// Resize a `Cube` entity by changing its half-extents (and updating scale).
+    /// `half_extents` = half of (width, height, depth).
+    pub fn set_cube_half_extents(&mut self, handle: Handle, half_extents: Vec3) {
+        if let Some(Some(e)) = self.entities.get_mut(handle.0 as usize) {
+            if let ElementKind::Cube { half_extents: ref mut he } = e.kind {
+                *he = half_extents;
+            }
+            e.transform.scale = half_extents;
+        }
+    }
+
+    /// Resize a `Cube` entity by specifying its full size (width, height, depth).
+    pub fn set_cube_size(&mut self, handle: Handle, size: Vec3) {
+        self.set_cube_half_extents(handle, size * 0.5);
     }
 
     // ── Color ───────────────────────────────────────────────────────────────

@@ -65,14 +65,9 @@ pub struct InstancedDrawCommand {
 
 // ── Viewport ──────────────────────────────────────────────────────────────────
 
-/// Rectangular region within the render target used for 3-D / 2-D content.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct Viewport {
-    pub x: u32,
-    pub y: u32,
-    pub width: u32,
-    pub height: u32,
-}
+/// Re-exported from `ferrous_core` — kept here so existing renderer-internal
+/// code that imports `crate::graph::frame_packet::Viewport` still compiles.
+pub use ferrous_core::Viewport;
 
 // ── Frame packet ──────────────────────────────────────────────────────────────
 

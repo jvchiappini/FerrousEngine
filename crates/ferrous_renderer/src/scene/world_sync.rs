@@ -67,7 +67,13 @@ pub fn sync_world(
                     .clone(),
                 _ => unreachable!(),
             };
-            let obj = RenderObject::new(device, element.id, mesh, matrix, 0);
+            let mut obj = RenderObject::new(device, element.id, mesh, matrix, 0);
+            // Override AABB with per-axis half_extents when available.
+            if let ElementKind::Cube { half_extents } = element.kind {
+                use crate::scene::culling::Aabb;
+                obj.local_aabb = Aabb::new(-half_extents, half_extents);
+                obj.cached_world_aabb = obj.local_aabb.transform(&matrix);
+            }
             objects[idx] = Some(obj);
             mutated = true;
         }

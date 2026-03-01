@@ -1,7 +1,6 @@
 use crate::context::AppContext;
 use ferrous_assets::font::Font;
 use ferrous_gui::{GuiBatch, TextBatch, Ui};
-use ferrous_renderer::Renderer;
 
 /// The core trait that every FerrousApp application or game implements.
 ///
@@ -60,10 +59,12 @@ pub trait FerrousApp {
     /// Emit 3-D draw commands for this frame.
     ///
     /// This is called before `draw_ui`, so the 3-D scene is rendered beneath
-    /// all 2-D overlays.  The `world` is synced to the renderer automatically
-    /// by the runner; you can use this method for additional imperative draw
-    /// calls (particles, debug lines, etc.).
-    fn draw_3d(&mut self, renderer: &mut Renderer, ctx: &mut AppContext) {}
+    /// all 2-D overlays.  The world is synced to the renderer automatically
+    /// by the runner before this call.
+    ///
+    /// `ctx.render_stats` contains statistics from the previous frame.
+    /// `ctx.camera_eye` contains the world-space camera position this frame.
+    fn draw_3d(&mut self, ctx: &mut AppContext) {}
 
     /// Called whenever the window is resized.
     ///

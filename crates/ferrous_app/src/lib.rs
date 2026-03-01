@@ -54,3 +54,6 @@ pub use ferrous_core::{
 
 // glam math types — re-exported for convenience
 pub use ferrous_core::glam::{Mat4, Quat, Vec2, Vec3, Vec4};
+
+// Renderer-agnostic display types
+pub use ferrous_core::{RenderStats, Viewport};
