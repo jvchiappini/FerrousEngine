@@ -5,6 +5,9 @@ pub mod meshes; // contains specialised geometry helpers like cube
 pub mod pipeline;
 pub mod render_target;
 
+mod render_object;
+use render_object::RenderObject;
+
 use crate::pipeline::FerrousPipeline;
 use ferrous_core::scene::Controller;
 // expose glam to downstream crates so they don't need to depend on a
@@ -50,7 +53,7 @@ pub struct Renderer {
     /// simple scene mesh (cube)
     /// colección de mallas que componen la escena 3D
     /// objetos renderizables en la escena
-    pub objects: Vec<RenderObject>,
+    objects: Vec<RenderObject>,
     /// region within the window where 3D content is drawn
     pub viewport: Viewport,
     /// orbital camera state
@@ -65,57 +68,6 @@ enum RenderDest<'a> {
     View(&'a wgpu::TextureView),
 }
 
-/// A mesh instance with its own transform data.
-pub struct RenderObject {
-    pub mesh: mesh::Mesh,
-    /// world-space translation only for now
-    pub position: glam::Vec3,
-    model_buffer: wgpu::Buffer,
-    model_bind_group: wgpu::BindGroup,
-}
-
-impl RenderObject {
-    /// create a new render object from a mesh and initial position.
-    fn new(
-        mesh: mesh::Mesh,
-        position: glam::Vec3,
-        device: &wgpu::Device,
-        model_layout: &wgpu::BindGroupLayout,
-    ) -> Self {
-        // create buffer holding the model matrix
-        let mat: glam::Mat4 = glam::Mat4::from_translation(position);
-        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Model Matrix Buffer"),
-            contents: bytemuck::cast_slice(&[mat.to_cols_array()]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Model Bind Group"),
-            layout: model_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: buffer.as_entire_binding(),
-            }],
-        });
-        Self {
-            mesh,
-            position,
-            model_buffer: buffer,
-            model_bind_group: bind_group,
-        }
-    }
-
-    /// update the position and write new matrix to GPU buffer
-    fn set_position(&mut self, queue: &wgpu::Queue, pos: glam::Vec3) {
-        self.position = pos;
-        let mat: glam::Mat4 = glam::Mat4::from_translation(pos);
-        queue.write_buffer(
-            &self.model_buffer,
-            0,
-            bytemuck::cast_slice(&[mat.to_cols_array()]),
-        );
-    }
-}
 
 impl Renderer {
     /// Crea un `Renderer` inicializando el render target y el pipeline.
