@@ -9,6 +9,8 @@ pub struct Mesh {
     pub vertex_buffer: Arc<wgpu::Buffer>,
     pub index_buffer: Arc<wgpu::Buffer>,
     pub index_count: u32,
+    /// Number of vertices in the vertex buffer.
+    pub vertex_count: u32,
     /// Index format used when binding this mesh.
     pub index_format: wgpu::IndexFormat,
 }

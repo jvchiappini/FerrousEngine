@@ -53,6 +53,7 @@ pub fn cube(device: &wgpu::Device) -> Mesh {
         vertex_buffer: buffer::create_vertex(device, "Cube VB", vertices),
         index_buffer:  buffer::create_index(device, "Cube IB", indices),
         index_count:   indices.len() as u32,
+        vertex_count:  vertices.len() as u32,
         index_format:  wgpu::IndexFormat::Uint16,
     }
 }

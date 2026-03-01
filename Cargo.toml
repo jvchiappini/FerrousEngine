@@ -11,7 +11,7 @@ resolver = "2"
 
 [workspace.dependencies]
 wgpu = "23.0" # O la versión más estable actual
-glam = "0.29"
+glam = { version = "0.29", features = ["bytemuck"] }
 # el motor tendrá su propio sistema de UI; ya no dependemos de egui
 winit = "0.30"
 log = "0.4"

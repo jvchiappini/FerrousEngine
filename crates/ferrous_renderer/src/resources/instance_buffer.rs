@@ -49,7 +49,11 @@ impl InstanceBuffer {
         let capacity = initial_capacity.max(MIN_CAPACITY);
         let buffer = Self::create_buffer(device, capacity);
         let bind_group = Arc::new(Self::create_bind_group(device, layout, &buffer));
-        Self { buffer, bind_group, capacity }
+        Self {
+            buffer,
+            bind_group,
+            capacity,
+        }
     }
 
     /// Ensures the buffer can hold at least `needed` slots.
@@ -77,13 +81,10 @@ impl InstanceBuffer {
 
     /// Writes a contiguous slice of matrices starting at `base_slot`.
     ///
-    /// Panics (debug) if `base_slot + matrices.len() > capacity`.
-    pub fn write_slice(
-        &self,
-        queue: &wgpu::Queue,
-        base_slot: usize,
-        matrices: &[glam::Mat4],
-    ) {
+    /// Zero heap allocation — uses `bytemuck::cast_slice` to reinterpret
+    /// `&[Mat4]` as `&[u8]` in place.  This avoids the previous `Vec<f32>`
+    /// that was allocated and dropped every frame.
+    pub fn write_slice(&self, queue: &wgpu::Queue, base_slot: usize, matrices: &[glam::Mat4]) {
         if matrices.is_empty() {
             return;
         }
@@ -92,12 +93,7 @@ impl InstanceBuffer {
             "InstanceBuffer: write would exceed capacity"
         );
         let offset = base_slot as u64 * MAT4_BYTES;
-        // Flatten to [f32; 16] per matrix and write in one call.
-        let flat: Vec<f32> = matrices
-            .iter()
-            .flat_map(|m| m.to_cols_array())
-            .collect();
-        queue.write_buffer(&self.buffer, offset, bytemuck::cast_slice(&flat));
+        queue.write_buffer(&self.buffer, offset, bytemuck::cast_slice(matrices));
     }
 
     // ── Private helpers ──────────────────────────────────────────────────────

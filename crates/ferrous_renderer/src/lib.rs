@@ -19,6 +19,7 @@ pub mod geometry;
 pub mod graph;
 pub mod passes;
 pub mod pipeline;
+pub mod render_stats;
 pub mod render_target;
 pub mod resources;
 pub mod scene;
@@ -34,9 +35,11 @@ pub use geometry::{Mesh, Vertex};
 pub use graph::frame_packet::Viewport;
 pub use graph::{FramePacket, InstancedDrawCommand, RenderPass};
 pub use pipeline::InstancingPipeline;
+pub use render_stats::RenderStats;
 pub use render_target::RenderTarget;
 pub use resources::InstanceBuffer;
 pub use scene::{Aabb, Frustum, RenderObject};
+use rayon::prelude::*;
 
 // -- Internal imports ---------------------------------------------------------
 
@@ -92,7 +95,10 @@ pub struct Renderer {
     gpu_camera: GpuCamera,
 
     // -- Scene (O(1) lookup by id) --------------------------------------------
-    objects: HashMap<u64, RenderObject>,
+    /// Legacy manual objects (started at u64::MAX and descending)
+    legacy_objects: HashMap<u64, RenderObject>,
+    /// World objects mirrored from `ferrous_core::scene::World` (indices match World IDs)
+    world_objects: Vec<Option<RenderObject>>,
     next_manual_id: u64,
     /// Shared dynamic uniform buffer for all model matrices (legacy/manual objects).
     model_buf: ModelBuffer,
@@ -117,6 +123,10 @@ pub struct Renderer {
     instanced_commands_cache: Vec<InstancedDrawCommand>,
     /// Scratch buffer for matrices written to the instance buffer each frame.
     instance_matrix_scratch: Vec<glam::Mat4>,
+    
+    // -- Caching optimization flags -------------------------------------------
+    prev_view_proj: Option<glam::Mat4>,
+    scene_dirty: bool,
 
     // -- Surface info (for registering passes post-construction) --------------
     format: wgpu::TextureFormat,
@@ -126,6 +136,11 @@ pub struct Renderer {
     pub viewport: Viewport,
     width: u32,
     height: u32,
+
+    // -- Per-frame render statistics ------------------------------------------
+    /// Statistics from the most recently completed frame (vertices, triangles,
+    /// draw calls).  Updated by `build_base_packet` every frame.
+    pub render_stats: RenderStats,
 }
 
 impl Renderer {
@@ -145,7 +160,8 @@ impl Renderer {
 
         let layouts = PipelineLayouts::new(device);
         let world_pipeline = WorldPipeline::new(device, format, rt.sample_count(), layouts.clone());
-        let instancing_pipeline = InstancingPipeline::new(device, format, rt.sample_count(), layouts.clone());
+        let instancing_pipeline =
+            InstancingPipeline::new(device, format, rt.sample_count(), layouts.clone());
 
         let camera = Camera {
             eye: glam::Vec3::new(0.0, 0.0, 5.0),
@@ -154,12 +170,16 @@ impl Renderer {
             fovy: 45.0f32.to_radians(),
             aspect: width as f32 / height as f32,
             znear: 0.1,
-            zfar: 100.0,
+            zfar: 2000.0,
             controller: Controller::with_default_wasd(),
         };
         let gpu_camera = GpuCamera::new(device, &camera, &layouts.camera);
 
-        let world_pass = WorldPass::new(world_pipeline, instancing_pipeline, gpu_camera.bind_group.clone());
+        let world_pass = WorldPass::new(
+            world_pipeline,
+            instancing_pipeline,
+            gpu_camera.bind_group.clone(),
+        );
         let ui_renderer = ferrous_gui::GuiRenderer::new(
             context.device.clone(),
             format,
@@ -186,7 +206,8 @@ impl Renderer {
             camera,
             orbit: OrbitState::default(),
             gpu_camera,
-            objects: HashMap::new(),
+            legacy_objects: HashMap::new(),
+            world_objects: Vec::new(),
             next_manual_id: u64::MAX,
             model_buf,
             next_slot: 0,
@@ -197,6 +218,8 @@ impl Renderer {
             draw_commands_cache: Vec::new(),
             instanced_commands_cache: Vec::new(),
             instance_matrix_scratch: Vec::new(),
+            prev_view_proj: None,
+            scene_dirty: true,
             format,
             sample_count,
             viewport: Viewport {
@@ -207,6 +230,7 @@ impl Renderer {
             },
             width,
             height,
+            render_stats: RenderStats::default(),
         }
     }
 
@@ -264,22 +288,24 @@ impl Renderer {
         self.model_buf.write(&self.context.queue, slot, &matrix);
 
         let obj = RenderObject::new(&self.context.device, id, mesh, matrix, slot);
-        self.objects.insert(id, obj);
+        self.legacy_objects.insert(id, obj);
+        self.scene_dirty = true;
         id
     }
 
     /// Moves an existing object (GPU write). No-op if id is unknown.
     pub fn set_object_position(&mut self, id: u64, pos: glam::Vec3) {
-        if let Some(obj) = self.objects.get_mut(&id) {
+        if let Some(obj) = self.legacy_objects.get_mut(&id) {
             let matrix = glam::Mat4::from_translation(pos);
             obj.set_matrix(matrix);
             self.model_buf.write(&self.context.queue, obj.slot, &matrix);
+            self.scene_dirty = true;
         }
     }
 
     /// Returns the world-space position of an object, or `None`.
     pub fn get_object_position(&self, id: u64) -> Option<glam::Vec3> {
-        self.objects.get(&id).map(|o| {
+        self.legacy_objects.get(&id).map(|o| {
             let w = o.matrix.w_axis;
             glam::Vec3::new(w.x, w.y, w.z)
         })
@@ -287,30 +313,23 @@ impl Renderer {
 
     /// Removes a manually-spawned object. No-op if unknown.
     pub fn remove_object(&mut self, id: u64) {
-        self.objects.remove(&id);
+        if self.legacy_objects.remove(&id).is_some() {
+            self.scene_dirty = true;
+        }
     }
 
     /// Synchronises a `ferrous_core::scene::World` with the renderer's object map.
     pub fn sync_world(&mut self, world: &ferrous_core::scene::World) {
-        let prev_model_bg = self.model_buf.bind_group.clone();
-        scene::sync_world(
+        let mutated = scene::sync_world(
             world,
-            &mut self.objects,
-            &mut self.next_slot,
-            &mut self.model_buf,
+            &mut self.world_objects,
             &self.context.device,
-            &self.context.queue,
-            &self.model_layout,
             &mut self.shared_cube_mesh,
         );
-        // If the model buffer was reallocated, update WorldPass with the new bind group.
-        if !Arc::ptr_eq(&prev_model_bg, &self.model_buf.bind_group) {
-            self.world_pass
-                .set_model_buffer(self.model_buf.bind_group.clone(), self.model_buf.stride);
+        if mutated {
+            self.scene_dirty = true;
         }
-    }
-
-    // -- Pass management ------------------------------------------------------
+    }    // -- Pass management ------------------------------------------------------
 
     /// Appends a custom pass after the built-in ones.
     /// `on_attach` is called immediately with the current surface format.
@@ -477,94 +496,126 @@ impl Renderer {
             eye: self.camera.eye,
         };
 
-        // Reuse cached Vecs: clear keeps the allocated capacity.
+        // If the scene hasn't mutated and the camera hasn't moved, we can reuse the cached draw commands.
+        if !self.scene_dirty && self.prev_view_proj == Some(camera_packet.view_proj) {
+            let mut packet = FramePacket::new(Some(self.viewport), camera_packet);
+            std::mem::swap(&mut packet.scene_objects, &mut self.draw_commands_cache);
+            std::mem::swap(&mut packet.instanced_objects, &mut self.instanced_commands_cache);
+            return packet;
+        }
+
+        self.scene_dirty = false;
+        self.prev_view_proj = Some(camera_packet.view_proj);
+
         self.draw_commands_cache.clear();
         self.instanced_commands_cache.clear();
         self.instance_matrix_scratch.clear();
 
-        // Build frustum once from the current view-proj matrix.
         let frustum = scene::Frustum::from_view_proj(&camera_packet.view_proj);
 
-        // ── Separate World objects (instanced) from manual objects (legacy) ──
-        //
-        // We identify "World" objects as those whose id fits in the u64 range
-        // that sync_world uses (IDs from ferrous_core start at 0 and increment).
-        // Manual objects use IDs starting at u64::MAX going down.
-        // We use the vertex_buffer pointer as the grouping key for meshes.
-
-        // Collect visible objects grouped by raw vertex-buffer pointer.
-        // We want stable ordering across frames, so we use a Vec of (ptr, idx).
-        use std::collections::HashMap as HMap;
-        let mut mesh_groups: HMap<usize, Vec<usize>> = HMap::new(); // ptr -> [obj indices]
-        let objects_vec: Vec<&RenderObject> = self
-            .objects
-            .values()
-            .filter(|obj| frustum.intersects_aabb(&obj.world_aabb()))
-            .collect();
-
-        for (i, obj) in objects_vec.iter().enumerate() {
-            // Manual objects (id near u64::MAX) go to the legacy path.
-            if obj.id > u64::MAX / 2 {
+        for obj in self.legacy_objects.values() {
+            // Legacy manual object.
+            if frustum.intersects_aabb(&obj.world_aabb()) {
                 self.draw_commands_cache.push(DrawCommand {
                     vertex_buffer: obj.mesh.vertex_buffer.clone(),
                     index_buffer: obj.mesh.index_buffer.clone(),
                     index_count: obj.mesh.index_count,
+                    vertex_count: obj.mesh.vertex_count,
                     index_format: obj.mesh.index_format,
                     model_slot: obj.slot,
                 });
-            } else {
-                // World object — group by mesh (vertex buffer pointer).
-                let key = Arc::as_ptr(&obj.mesh.vertex_buffer) as usize;
-                mesh_groups.entry(key).or_default().push(i);
             }
         }
 
-        // Ensure the instance buffer is large enough for all World objects.
-        let total_instances: usize = mesh_groups.values().map(|v| v.len()).sum();
-        let prev_inst_bg = self.instance_buf.bind_group.clone();
-        self.instance_buf.reserve(
-            &self.context.device,
-            &self.instance_layout,
-            total_instances,
-        );
-        if !Arc::ptr_eq(&prev_inst_bg, &self.instance_buf.bind_group) {
-            self.world_pass
-                .set_instance_buffer(self.instance_buf.bind_group.clone());
-        }
+        // Multi-mesh DOD parallel frustum culling + grouping
+        // We use fold & reduce to aggregate matrices by mesh vertex_buffer pointer.
+        use std::collections::HashMap;
 
-        // Write matrices and emit one InstancedDrawCommand per mesh group.
-        let mut next_inst_slot: u32 = 0;
-        for (_key, indices) in &mesh_groups {
-            let first = next_inst_slot;
-            let count = indices.len() as u32;
-
-            self.instance_matrix_scratch.clear();
-            for &i in indices {
-                self.instance_matrix_scratch.push(objects_vec[i].matrix);
-            }
-            self.instance_buf.write_slice(
-                &self.context.queue,
-                first as usize,
-                &self.instance_matrix_scratch,
+        let visible_mesh_groups = self.world_objects.par_iter().flatten()
+            .filter(|obj| frustum.intersects_aabb(&obj.world_aabb()))
+            .fold(
+                || HashMap::new(),
+                |mut map: HashMap<usize, (geometry::Mesh, Vec<glam::Mat4>)>, obj| {
+                    let key = Arc::as_ptr(&obj.mesh.vertex_buffer) as usize;
+                    map.entry(key)
+                        .or_insert_with(|| (obj.mesh.clone(), Vec::with_capacity(128)))
+                        .1.push(obj.matrix);
+                    map
+                }
+            )
+            .reduce(
+                || HashMap::new(),
+                |mut map1, map2| {
+                    for (k, (mesh, mut mats)) in map2 {
+                        map1.entry(k)
+                            .or_insert_with(|| (mesh, Vec::with_capacity(mats.len())))
+                            .1.append(&mut mats);
+                    }
+                    map1
+                }
             );
 
-            let rep = objects_vec[indices[0]];
-            self.instanced_commands_cache.push(InstancedDrawCommand {
-                vertex_buffer: rep.mesh.vertex_buffer.clone(),
-                index_buffer: rep.mesh.index_buffer.clone(),
-                index_count: rep.mesh.index_count,
-                index_format: rep.mesh.index_format,
-                first_instance: first,
-                instance_count: count,
-            });
-            next_inst_slot += count;
+        let mut total_visible = 0;
+        for (_, (_, mats)) in &visible_mesh_groups {
+            total_visible += mats.len();
         }
 
-        // Hand the cached vecs to the packet by swapping.
+        // Upload visible matrices (single write_buffer call, zero heap alloc).
+        if total_visible > 0 {
+            let prev_bg = self.instance_buf.bind_group.clone();
+            self.instance_buf
+                .reserve(&self.context.device, &self.instance_layout, total_visible);
+            if !Arc::ptr_eq(&prev_bg, &self.instance_buf.bind_group) {
+                self.world_pass
+                    .set_instance_buffer(self.instance_buf.bind_group.clone());
+            }
+
+            // Flatten clustered matrices sequentially into scratch buffer
+            let mut offset = 0;
+            self.instance_matrix_scratch.reserve(total_visible);
+            
+            for (_key, (mesh, mats)) in visible_mesh_groups {
+                let count = mats.len() as u32;
+                self.instance_matrix_scratch.extend_from_slice(&mats);
+                
+                self.instanced_commands_cache.push(InstancedDrawCommand {
+                    vertex_buffer: mesh.vertex_buffer.clone(),
+                    index_buffer: mesh.index_buffer.clone(),
+                    index_count: mesh.index_count,
+                    vertex_count: mesh.vertex_count,
+                    index_format: mesh.index_format,
+                    first_instance: offset,
+                    instance_count: count,
+                });
+                
+                offset += count;
+            }
+
+            self.instance_buf
+                .write_slice(&self.context.queue, 0, &self.instance_matrix_scratch);
+        }
+
+        // -- Compute render statistics ----------------------------------------
+        let mut stats = RenderStats::default();
+        for cmd in &self.draw_commands_cache {
+            stats.vertex_count   += cmd.vertex_count as u64;
+            stats.triangle_count += (cmd.index_count / 3) as u64;
+            stats.draw_calls     += 1;
+        }
+        for cmd in &self.instanced_commands_cache {
+            let inst = cmd.instance_count as u64;
+            stats.vertex_count   += cmd.vertex_count as u64 * inst;
+            stats.triangle_count += (cmd.index_count / 3) as u64 * inst;
+            stats.draw_calls     += 1;
+        }
+        self.render_stats = stats;
+
         let mut packet = FramePacket::new(Some(self.viewport), camera_packet);
         std::mem::swap(&mut packet.scene_objects, &mut self.draw_commands_cache);
-        std::mem::swap(&mut packet.instanced_objects, &mut self.instanced_commands_cache);
-
+        std::mem::swap(
+            &mut packet.instanced_objects,
+            &mut self.instanced_commands_cache,
+        );
         packet
     }
 
@@ -574,7 +625,10 @@ impl Renderer {
     fn reclaim_packet_cache(&mut self, mut packet: FramePacket) {
         // Swap the (now-empty after execute) Vecs back into the caches.
         std::mem::swap(&mut self.draw_commands_cache, &mut packet.scene_objects);
-        std::mem::swap(&mut self.instanced_commands_cache, &mut packet.instanced_objects);
+        std::mem::swap(
+            &mut self.instanced_commands_cache,
+            &mut packet.instanced_objects,
+        );
         // `packet` is dropped here; Arc clones inside are cheap.
     }
 }

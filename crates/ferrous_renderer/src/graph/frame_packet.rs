@@ -36,6 +36,8 @@ pub struct DrawCommand {
     pub vertex_buffer: Arc<wgpu::Buffer>,
     pub index_buffer: Arc<wgpu::Buffer>,
     pub index_count: u32,
+    /// Number of vertices in the mesh (used for render statistics).
+    pub vertex_count: u32,
     pub index_format: wgpu::IndexFormat,
     /// Slot index inside the renderer-wide `ModelBuffer`.
     ///
@@ -52,6 +54,8 @@ pub struct InstancedDrawCommand {
     pub vertex_buffer: Arc<wgpu::Buffer>,
     pub index_buffer: Arc<wgpu::Buffer>,
     pub index_count: u32,
+    /// Number of vertices per mesh instance (used for render statistics).
+    pub vertex_count: u32,
     pub index_format: wgpu::IndexFormat,
     /// Index of the first matrix in the `InstanceBuffer` for this batch.
     pub first_instance: u32,

@@ -21,7 +21,7 @@
 //! world.despawn(h);
 //! ```
 
-use std::collections::HashMap;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use glam::{Quat, Vec3};
@@ -169,32 +169,37 @@ impl<'a> EntityBuilder<'a> {
     /// Finalise the builder, insert the entity, and return its handle.
     pub fn build(self) -> Handle {
         let id = self.element.id;
-        self.world.entities.insert(id, self.element);
+        let idx = id as usize;
+        if idx >= self.world.entities.len() {
+            self.world.entities.resize(idx + 1, None);
+        }
+        self.world.entities[idx] = Some(self.element);
+        self.world.count += 1;
         Handle(id)
     }
 }
 
-// ─── World ─────────────────────────────────────────────────────────────────
-
+// ─── World ──────────────────────────────────────────────────────────────────
 /// The primary scene container.
 ///
 /// Store one `World` on your application state, mutate it in `update()`,
 /// and pass it to `renderer.sync_world(&world)` once per frame.
 #[derive(Debug, Default)]
 pub struct World {
-    entities: HashMap<u64, Element>,
+    entities: Vec<Option<Element>>,
+    count: usize,
 }
 
 impl World {
     /// Creates an empty world.
     pub fn new() -> Self {
         Self {
-            entities: HashMap::new(),
+            entities: Vec::new(),
+            count: 0,
         }
     }
 
-    // ── Spawning ───────────────────────────────────────────────────────────
-
+    // ── Spawning ────────────────────────────────────────────────────────────
     /// Begin building a new entity with the given name.
     ///
     /// ```rust,ignore
@@ -219,74 +224,74 @@ impl World {
             .build()
     }
 
-    // ── Despawn ────────────────────────────────────────────────────────────
-
+    // ── Despawn ─────────────────────────────────────────────────────────────
     /// Remove the entity from the world.  Returns `true` if it existed.
     pub fn despawn(&mut self, handle: Handle) -> bool {
-        self.entities.remove(&handle.0).is_some()
+        let idx = handle.0 as usize;
+        if idx < self.entities.len() && self.entities[idx].is_some() {
+            self.entities[idx] = None;
+            self.count -= 1;
+            true
+        } else {
+            false
+        }
     }
 
-    // ── Position ───────────────────────────────────────────────────────────
-
+    // ── Position ────────────────────────────────────────────────────────────
     /// Overwrite the world-space position.
     pub fn set_position(&mut self, handle: Handle, pos: Vec3) {
-        if let Some(e) = self.entities.get_mut(&handle.0) {
+        if let Some(Some(e)) = self.entities.get_mut(handle.0 as usize) {
             e.transform.position = pos;
         }
     }
 
     /// Read the world-space position.
     pub fn position(&self, handle: Handle) -> Option<Vec3> {
-        self.entities.get(&handle.0).map(|e| e.transform.position)
+        self.entities.get(handle.0 as usize).and_then(|o| o.as_ref()).map(|e| e.transform.position)
     }
 
     /// Translate by an offset.
     pub fn translate(&mut self, handle: Handle, offset: Vec3) {
-        if let Some(e) = self.entities.get_mut(&handle.0) {
+        if let Some(Some(e)) = self.entities.get_mut(handle.0 as usize) {
             e.transform.position += offset;
         }
     }
 
-    // ── Rotation ───────────────────────────────────────────────────────────
-
+    // ── Rotation ────────────────────────────────────────────────────────────
     /// Set rotation (quaternion).
     pub fn set_rotation(&mut self, handle: Handle, rot: Quat) {
-        if let Some(e) = self.entities.get_mut(&handle.0) {
+        if let Some(Some(e)) = self.entities.get_mut(handle.0 as usize) {
             e.transform.rotation = rot;
         }
     }
 
-    // ── Scale ──────────────────────────────────────────────────────────────
-
+    // ── Scale ───────────────────────────────────────────────────────────────
     /// Set uniform scale.
     pub fn set_scale_uniform(&mut self, handle: Handle, s: f32) {
-        if let Some(e) = self.entities.get_mut(&handle.0) {
+        if let Some(Some(e)) = self.entities.get_mut(handle.0 as usize) {
             e.transform.scale = Vec3::splat(s);
         }
     }
 
-    // ── Color ──────────────────────────────────────────────────────────────
-
+    // ── Color ───────────────────────────────────────────────────────────────
     /// Change the visual tint of an entity.
     pub fn set_color(&mut self, handle: Handle, color: Color) {
-        if let Some(e) = self.entities.get_mut(&handle.0) {
+        if let Some(Some(e)) = self.entities.get_mut(handle.0 as usize) {
             e.color = color;
         }
     }
 
-    // ── Visibility ─────────────────────────────────────────────────────────
-
+    // ── Visibility ──────────────────────────────────────────────────────────
     pub fn set_visible(&mut self, handle: Handle, visible: bool) {
-        if let Some(e) = self.entities.get_mut(&handle.0) {
+        if let Some(Some(e)) = self.entities.get_mut(handle.0 as usize) {
             e.visible = visible;
         }
     }
 
-    // ── Tags ───────────────────────────────────────────────────────────────
-
+    // ── Tags ────────────────────────────────────────────────────────────────
     /// Add a string tag to an entity.
     pub fn add_tag(&mut self, handle: Handle, tag: impl Into<String>) {
-        if let Some(e) = self.entities.get_mut(&handle.0) {
+        if let Some(Some(e)) = self.entities.get_mut(handle.0 as usize) {
             let tag = tag.into();
             if !e.tags.contains(&tag) {
                 e.tags.push(tag);
@@ -297,75 +302,77 @@ impl World {
     /// Returns true if the entity has the given tag.
     pub fn has_tag(&self, handle: Handle, tag: &str) -> bool {
         self.entities
-            .get(&handle.0)
+            .get(handle.0 as usize)
+            .and_then(|o| o.as_ref())
             .map(|e| e.tags.iter().any(|t| t == tag))
             .unwrap_or(false)
     }
 
-    // ── Raw element access ─────────────────────────────────────────────────
-
+    // ── Raw element access ──────────────────────────────────────────────────
     /// Immutable reference to an entity.
     pub fn get(&self, handle: Handle) -> Option<&Element> {
-        self.entities.get(&handle.0)
+        self.entities.get(handle.0 as usize).and_then(|o| o.as_ref())
     }
 
     /// Mutable reference to an entity — use this for complex multi-field
     /// updates to avoid multiple individual method calls.
     pub fn get_mut(&mut self, handle: Handle) -> Option<&mut Element> {
-        self.entities.get_mut(&handle.0)
+        self.entities.get_mut(handle.0 as usize).and_then(|o| o.as_mut())
     }
 
     /// Returns `true` if the world contains this handle.
     pub fn contains(&self, handle: Handle) -> bool {
-        self.entities.contains_key(&handle.0)
+        let idx = handle.0 as usize;
+        idx < self.entities.len() && self.entities[idx].is_some()
     }
 
-    // ── Iteration ──────────────────────────────────────────────────────────
-
+    // ── Iteration ───────────────────────────────────────────────────────────
     /// Iterate over all entities.
     pub fn iter(&self) -> impl Iterator<Item = &Element> {
-        self.entities.values()
+        self.entities.iter().filter_map(|o| o.as_ref())
     }
 
     /// Mutably iterate over all entities.
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Element> {
-        self.entities.values_mut()
+        self.entities.iter_mut().filter_map(|o| o.as_mut())
     }
 
     /// Iterate over all entities that carry the given tag.
     pub fn iter_tagged<'a>(&'a self, tag: &'a str) -> impl Iterator<Item = &'a Element> {
-        self.entities
-            .values()
-            .filter(move |e| e.tags.iter().any(|t| t == tag))
+        self.iter().filter(move |e| e.tags.iter().any(|t| t == tag))
     }
 
     /// Iterate over `(Handle, &Element)` pairs.
     pub fn iter_with_handles(&self) -> impl Iterator<Item = (Handle, &Element)> {
-        self.entities.iter().map(|(&id, e)| (Handle(id), e))
+        self.entities.iter().enumerate().filter_map(|(id, o)| o.as_ref().map(|e| (Handle(id as u64), e)))
     }
 
     /// Total number of entities currently alive.
     pub fn len(&self) -> usize {
-        self.entities.len()
+        self.count
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entities.is_empty()
+        self.count == 0
     }
 
-    // ── Renderer bridge ────────────────────────────────────────────────────
+    /// Returns the capacity of the world.
+    pub fn capacity(&self) -> usize {
+        self.entities.len()
+    }
 
+    // ── Renderer bridge ─────────────────────────────────────────────────────
     /// Internal: set the renderer handle for an entity.  Used by
     /// `ferrous_renderer::scene::sync_world`.
     pub fn set_render_handle(&mut self, handle: Handle, rh: usize) {
-        if let Some(e) = self.entities.get_mut(&handle.0) {
+        if let Some(Some(e)) = self.entities.get_mut(handle.0 as usize) {
             e.render_handle = Some(rh);
         }
     }
 
     /// Internal: retrieve the renderer handle for an entity.
     pub fn render_handle(&self, handle: Handle) -> Option<usize> {
-        self.entities.get(&handle.0).and_then(|e| e.render_handle)
+        self.entities.get(handle.0 as usize).and_then(|o| o.as_ref()).and_then(|e| e.render_handle)
     }
 }
 

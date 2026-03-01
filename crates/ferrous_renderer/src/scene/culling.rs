@@ -20,21 +20,27 @@ use glam::{Mat4, Vec3, Vec4};
 /// World-space axis-aligned bounding box.
 #[derive(Copy, Clone, Debug)]
 pub struct Aabb {
-    pub min: Vec3,
-    pub max: Vec3,
+    pub center: Vec3,
+    pub half_extents: Vec3,
 }
 
 impl Aabb {
     /// Creates an AABB from `min`/`max` corners.
     #[inline]
     pub fn new(min: Vec3, max: Vec3) -> Self {
-        Self { min, max }
+        Self { 
+            center: (min + max) * 0.5, 
+            half_extents: (max - min) * 0.5 
+        }
     }
 
     /// Creates a unit-cube AABB centred at `origin` (fits the built-in cube mesh).
     #[inline]
     pub fn unit_cube() -> Self {
-        Self { min: Vec3::splat(-1.0), max: Vec3::splat(1.0) }
+        Self { 
+            center: Vec3::ZERO, 
+            half_extents: Vec3::splat(1.0) 
+        }
     }
 
     /// Returns a new AABB transformed by `transform` (world-space position/scale).
@@ -43,15 +49,13 @@ impl Aabb {
     /// non-uniform scale and arbitrary rotations, though we only use axis-aligned
     /// transforms for now.
     pub fn transform(&self, transform: &Mat4) -> Self {
-        // Fast AABB transform: transform centre + half-extents (avoids 8-corner loop).
+        // Fast AABB transform: transform centre + half-extents (avoids 8-corner loop).        
         // Source: Graphics Gems (Arvo 1990).
-        let centre = (self.min + self.max) * 0.5;
-        let half   = (self.max - self.min) * 0.5;
-
-        let new_centre = transform.transform_point3(centre);
+        let new_centre = transform.transform_point3(self.center);
 
         // Absolute-value of upper-left 3×3 rotates the half-extents.
         let m = transform.to_cols_array_2d();
+        let half = self.half_extents;
         let new_half = Vec3::new(
             half.x * m[0][0].abs() + half.y * m[1][0].abs() + half.z * m[2][0].abs(),
             half.x * m[0][1].abs() + half.y * m[1][1].abs() + half.z * m[2][1].abs(),
@@ -59,13 +63,11 @@ impl Aabb {
         );
 
         Self {
-            min: new_centre - new_half,
-            max: new_centre + new_half,
+            center: new_centre,
+            half_extents: new_half,
         }
     }
-}
-
-// ── Frustum ───────────────────────────────────────────────────────────────────
+}// ── Frustum ───────────────────────────────────────────────────────────────────
 
 /// Six clip planes extracted from a `view_proj` matrix.
 ///
@@ -122,12 +124,15 @@ impl Frustum {
     #[inline]
     pub fn intersects_aabb(&self, aabb: &Aabb) -> bool {
         for plane in &self.planes {
-            // Positive vertex: maximises dot(n, v) for this plane's normal.
-            let px = if plane.x >= 0.0 { aabb.max.x } else { aabb.min.x };
-            let py = if plane.y >= 0.0 { aabb.max.y } else { aabb.min.y };
-            let pz = if plane.z >= 0.0 { aabb.max.z } else { aabb.min.z };
+            // Branchless AABB / plane test:
+            // dot(center, normal) + dot(half_extents, abs(normal)) + d
+            let center_dist = plane.x * aabb.center.x + plane.y * aabb.center.y + plane.z * aabb.center.z + plane.w;
+            let extent_dist = plane.x.abs() * aabb.half_extents.x + plane.y.abs() * aabb.half_extents.y + plane.z.abs() * aabb.half_extents.z;
 
-            if plane.x * px + plane.y * py + plane.z * pz + plane.w < 0.0 {
+            // If the maximum inscribed sphere distance goes below 0, it's outside.
+            // Wait, more precisely, if the closest point is outside, the whole box is outside.
+            // closest_dist = center_dist + extent_dist. If that is < 0, it's outside.
+            if center_dist + extent_dist < 0.0 {
                 return false; // completely outside this plane
             }
         }

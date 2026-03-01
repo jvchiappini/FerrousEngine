@@ -29,6 +29,8 @@ pub struct RenderObject {
     pub matrix: Mat4,
     /// Object-space AABB used for frustum culling.
     pub local_aabb: Aabb,
+    /// Cached world-space AABB to avoid recomputing it every frame.
+    pub cached_world_aabb: Aabb,
     /// Slot index in the renderer-wide `ModelBuffer`.
     pub slot: usize,
 }
@@ -42,12 +44,14 @@ impl RenderObject {
     /// The caller is responsible for writing the initial matrix via
     /// `model_buf.write(queue, slot, &matrix)`.
     pub fn new(_device: &wgpu::Device, id: u64, mesh: Mesh, matrix: Mat4, slot: usize) -> Self {
+        let local_aabb = Aabb::unit_cube();
+        let cached_world_aabb = local_aabb.transform(&matrix);
         Self {
             id,
             mesh,
             matrix,
-            // Default to a unit cube AABB; callers can override for non-cube meshes.
-            local_aabb: Aabb::unit_cube(),
+            local_aabb,
+            cached_world_aabb,
             slot,
         }
     }
@@ -55,7 +59,7 @@ impl RenderObject {
     /// Returns the AABB transformed to world space by the current matrix.
     #[inline]
     pub fn world_aabb(&self) -> Aabb {
-        self.local_aabb.transform(&self.matrix)
+        self.cached_world_aabb
     }
 
     /// Returns the current matrix (no GPU read — CPU side only).
@@ -69,5 +73,6 @@ impl RenderObject {
     #[inline]
     pub fn set_matrix(&mut self, matrix: Mat4) {
         self.matrix = matrix;
+        self.cached_world_aabb = self.local_aabb.transform(&matrix);
     }
 }

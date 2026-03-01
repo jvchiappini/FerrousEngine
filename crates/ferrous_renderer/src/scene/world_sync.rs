@@ -1,5 +1,4 @@
-/// Synchronises a `ferrous_core::scene::World` with the renderer's internal
-/// `RenderObject` map.
+/// `RenderObject` list.
 ///
 /// ## Three-phase reconciliation (all O(n))
 ///
@@ -7,17 +6,10 @@
 /// 2. **Spawn** new `RenderObject`s for entities that don't have one yet.
 /// 3. **Update** the transform of all surviving objects.
 ///
-/// Uses a `HashMap<u64, RenderObject>` for O(1) lookup instead of the
-/// previous linear scan which was O(n²).
-///
-/// All GPU matrix writes go through the shared `ModelBuffer` so the entire
-/// scene uses a single wgpu bind group.
-use std::collections::HashMap;
-
+/// Uses a `Vec<Option<RenderObject>>` for guaranteed sequential access.
 use ferrous_core::scene::{ElementKind, World};
 
 use crate::geometry::primitives::cube::cube as create_cube;
-use crate::resources::ModelBuffer;
 use crate::scene::RenderObject;
 
 /// Update `objects` so that it mirrors the renderable entities in `world`.
@@ -29,22 +21,26 @@ use crate::scene::RenderObject;
 /// in `build_base_packet`.
 pub fn sync_world(
     world: &World,
-    objects: &mut HashMap<u64, RenderObject>,
-    next_slot: &mut usize,
-    model_buf: &mut ModelBuffer,
+    objects: &mut Vec<Option<RenderObject>>,
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    model_layout: &wgpu::BindGroupLayout,
     shared_cube_mesh: &mut Option<crate::geometry::Mesh>,
-) {
-    // ── Phase 1: remove stale objects ──────────────────────────────────────
-    objects.retain(|id, _| world.contains(ferrous_core::scene::Handle(*id)));
+) -> bool {
+    let mut mutated = false;
 
-    // Ensure the dynamic buffer is large enough for all existing + incoming.
-    let needed = world.iter().count();
-    model_buf.ensure_capacity(device, model_layout, needed);
+    if objects.len() != world.capacity() {
+        objects.resize_with(world.capacity(), || None);
+        mutated = true;
+    }
 
-    // ── Phase 2 & 3: spawn or update ──────────────────────────────────────
+    // ── Phase 1: remove stale objects ────────────────────────────────────────
+    for (id, opt_obj) in objects.iter_mut().enumerate() {
+        if opt_obj.is_some() && !world.contains(ferrous_core::scene::Handle(id as u64)) {
+            *opt_obj = None;
+            mutated = true;
+        }
+    }
+
+    // ── Phase 2 & 3: spawn or update ─────────────────────────────────────────
     for element in world.iter() {
         let is_renderable = matches!(
             element.kind,
@@ -55,31 +51,27 @@ pub fn sync_world(
         }
 
         let matrix = element.transform.matrix();
+        let idx = element.id as usize;
 
-        if let Some(obj) = objects.get_mut(&element.id) {
-            // Phase 3 — O(1) update: write matrix directly into the slot.
+        if let Some(ref mut obj) = objects[idx] {
+            // Phase 3 — O(1) update.
             if obj.matrix != matrix {
                 obj.set_matrix(matrix);
-                model_buf.write(queue, obj.slot, &matrix);
+                mutated = true;
             }
         } else {
-            // Phase 2 — spawn new object, assign next free slot.
-            let slot = *next_slot;
-            *next_slot += 1;
-
-            // Reuse (or lazily create) a single shared mesh so all cuboids
-            // share the same Arc<wgpu::Buffer> — required for instancing.
+            // Phase 2 — spawn new object.
             let mesh = match &element.kind {
-                ElementKind::Cube { .. } | ElementKind::Mesh { .. } => {
-                    shared_cube_mesh
-                        .get_or_insert_with(|| create_cube(device))
-                        .clone()
-                }
+                ElementKind::Cube { .. } | ElementKind::Mesh { .. } => shared_cube_mesh
+                    .get_or_insert_with(|| create_cube(device))
+                    .clone(),
                 _ => unreachable!(),
             };
-            model_buf.write(queue, slot, &matrix);
-            let obj = RenderObject::new(device, element.id, mesh, matrix, slot);
-            objects.insert(element.id, obj);
+            let obj = RenderObject::new(device, element.id, mesh, matrix, 0);
+            objects[idx] = Some(obj);
+            mutated = true;
         }
     }
+
+    mutated
 }
