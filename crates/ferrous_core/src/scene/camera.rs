@@ -38,6 +38,39 @@ impl Default for Camera {
 }
 
 impl Camera {
+    /// Create a camera with sensible defaults: positioned at `(0, 2, 5)`,
+    /// looking at the origin, 45° FoV, default controller (WASD).
+    pub fn new() -> Self {
+        Self {
+            eye:    glam::Vec3::new(0.0, 2.0, 5.0),
+            target: glam::Vec3::ZERO,
+            ..Default::default()
+        }
+    }
+
+    /// Alias for `eye` — whichever name feels more natural.
+    pub fn position(&self) -> Vec3 { self.eye }
+
+    /// Set the eye position.
+    pub fn set_position(&mut self, pos: Vec3) { self.eye = pos; }
+
+    /// Look from `eye` towards `target`.
+    pub fn look_at(&mut self, eye: Vec3, target: Vec3) {
+        self.eye    = eye;
+        self.target = target;
+    }
+
+    /// Set vertical field of view in degrees.
+    pub fn set_fov_degrees(&mut self, deg: f32) {
+        self.fovy = deg.to_radians();
+    }
+
+    /// Set near / far clipping planes.
+    pub fn set_near_far(&mut self, near: f32, far: f32) {
+        self.znear = near;
+        self.zfar  = far;
+    }
+
     /// Build the combined view-projection matrix from the current parameters.
     pub fn build_view_projection_matrix(&self) -> Mat4 {
         let view = Mat4::look_at_rh(self.eye, self.target, self.up);

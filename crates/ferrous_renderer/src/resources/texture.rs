@@ -13,10 +13,7 @@ pub struct RenderTextureDesc<'a> {
 }
 
 /// Creates a 2-D texture from a [`RenderTextureDesc`].
-pub fn create_render_texture(
-    device: &wgpu::Device,
-    desc: &RenderTextureDesc<'_>,
-) -> wgpu::Texture {
+pub fn create_render_texture(device: &wgpu::Device, desc: &RenderTextureDesc<'_>) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some(desc.label),
         size: wgpu::Extent3d {

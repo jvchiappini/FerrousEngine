@@ -191,7 +191,13 @@ impl Renderer {
 
     /// Spawns a mesh instance at `pos`; returns its stable handle index.
     pub fn add_object(&mut self, mesh: Mesh, pos: glam::Vec3) -> usize {
-        let obj = RenderObject::new(&self.context.device, mesh, pos, &self.model_layout);
+        let obj = RenderObject::new(
+            &self.context.device,
+            0, // manual objects use id=0 (not tracked by World)
+            mesh,
+            glam::Mat4::from_translation(pos),
+            &self.model_layout,
+        );
         self.objects.push(obj);
         self.objects.len() - 1
     }
@@ -209,7 +215,7 @@ impl Renderer {
     }
 
     /// Synchronises a `ferrous_core::scene::World` with the renderer's object list.
-    pub fn sync_world(&mut self, world: &mut ferrous_core::scene::World) {
+    pub fn sync_world(&mut self, world: &ferrous_core::scene::World) {
         scene::sync_world(
             world,
             &mut self.objects,
@@ -267,6 +273,17 @@ impl Renderer {
     // ── Font atlas ────────────────────────────────────────────────────────────
 
     /// Uploads font atlas data to the `UiPass`.  Call once after font loading.
+    /// Set the sky / background colour used to clear the 3-D viewport each frame.
+    pub fn set_clear_color(&mut self, color: wgpu::Color) {
+        use crate::passes::WorldPass;
+        for pass in &mut self.passes {
+            if let Some(wp) = pass.as_any_mut().downcast_mut::<WorldPass>() {
+                wp.clear_color = color;
+                return;
+            }
+        }
+    }
+
     pub fn set_font_atlas(&mut self, view: &wgpu::TextureView, sampler: &wgpu::Sampler) {
         for pass in &mut self.passes {
             if let Some(ui) = pass.as_any_mut().downcast_mut::<UiPass>() {

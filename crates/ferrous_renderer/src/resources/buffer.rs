@@ -14,11 +14,13 @@ pub fn create_uniform<T: bytemuck::Pod>(
     label: &str,
     data: &T,
 ) -> Arc<wgpu::Buffer> {
-    Arc::new(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some(label),
-        contents: bytemuck::bytes_of(data),
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-    }))
+    Arc::new(
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(label),
+            contents: bytemuck::bytes_of(data),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        }),
+    )
 }
 
 /// Creates a GPU vertex buffer from a slice of `Pod` data.
@@ -27,11 +29,13 @@ pub fn create_vertex<T: bytemuck::Pod>(
     label: &str,
     data: &[T],
 ) -> Arc<wgpu::Buffer> {
-    Arc::new(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some(label),
-        contents: bytemuck::cast_slice(data),
-        usage: wgpu::BufferUsages::VERTEX,
-    }))
+    Arc::new(
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(label),
+            contents: bytemuck::cast_slice(data),
+            usage: wgpu::BufferUsages::VERTEX,
+        }),
+    )
 }
 
 /// Creates a GPU index buffer from a slice of `Pod` data (typically `u16` or `u32`).
@@ -40,11 +44,13 @@ pub fn create_index<T: bytemuck::Pod>(
     label: &str,
     data: &[T],
 ) -> Arc<wgpu::Buffer> {
-    Arc::new(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some(label),
-        contents: bytemuck::cast_slice(data),
-        usage: wgpu::BufferUsages::INDEX,
-    }))
+    Arc::new(
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(label),
+            contents: bytemuck::cast_slice(data),
+            usage: wgpu::BufferUsages::INDEX,
+        }),
+    )
 }
 
 /// Writes `data` to an existing uniform buffer.

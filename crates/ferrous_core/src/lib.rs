@@ -1,52 +1,83 @@
-// ferrous_core: tipos básicos y utilidades
+//! # ferrous_core
+//!
+//! Foundational types shared by every layer of FerrousEngine.  This crate
+//! has **zero renderer dependencies** — it is safe to use in headless tests,
+//! tools, and server-side game logic.
+//!
+//! ## What lives here
+//!
+//! | Module | Purpose |
+//! |--------|---------|
+//! [`transform`] | `Transform` — position / rotation / scale + `matrix()` |
+//! [`color`]     | `Color` — RGBA f32 with a large palette of constants |
+//! [`time`]      | `Time` / `TimeClock` — frame delta, elapsed, FPS |
+//! [`input`]     | `InputState` — keyboard, mouse, scroll; `just_pressed` / `just_released` |
+//! [`scene`]     | `World`, `Element`, `Handle`, `Camera`, `Controller` |
+//! [`context`]   | `EngineContext` — wgpu device + queue |
+//! [`metrics`]   | CPU / RAM usage helpers |
+//!
+//! ## Quick start
+//!
+//! ```rust,ignore
+//! use ferrous_core::{World, Handle, Transform, Color, Time};
+//! use ferrous_core::input::{InputState, KeyCode};
+//! use glam::Vec3;
+//!
+//! let mut world = World::new();
+//! let cube = world.spawn("Player")
+//!     .with_position(Vec3::new(0.0, 0.5, 0.0))
+//!     .with_color(Color::CYAN)
+//!     .build();
+//! ```
 
-#[derive(Copy, Clone, Debug)]
-pub struct Transform {
-    pub position: glam::Vec3,
-    pub rotation: glam::Vec3,
-    pub scale: glam::Vec3,
-}
+// ─── Module declarations ───────────────────────────────────────────────────
 
-impl Default for Transform {
-    fn default() -> Self {
-        Self {
-            position: glam::Vec3::ZERO,
-            rotation: glam::Vec3::ZERO,
-            scale: glam::Vec3::ONE,
-        }
-    }
-}
+/// World-space transform (position, rotation, scale).
+pub mod transform;
 
-// expose context module
-pub mod context;
+/// RGBA colour type with a large palette of constants.
+pub mod color;
 
-// input helper for keyboard / mouse state
+/// Frame timing: delta, elapsed, FPS.
+pub mod time;
+
+/// Keyboard and mouse input state.
 pub mod input;
 
-// re-export common input types so callers don't need to depend on winit
-pub use input::{InputState, KeyCode, MouseButton};
+/// wgpu device + queue container.
+pub mod context;
 
-// process / system metrics helpers; see `metrics.rs` for details.
-pub mod metrics;
+/// Scene graph: World, Element, Handle, Camera, Controller.
+pub mod scene;
 
-// re-export the most common helpers so consumers don't need to type
-// `metrics::` if they just want the convenience functions.
-pub use metrics::{get_cpu_usage, get_ram_usage_bytes, get_virtual_memory_bytes};
-// also expose the convenience megabyte variants
-pub use metrics::{get_ram_usage_mb, get_virtual_memory_mb};
-
-// simple component definitions for game/editor objects. the `elements`
-// namespace lives inside the core crate because it represents abstract data
-// that is independent of any particular renderer or platform. earlier
-// versions of the engine contained a full `World` type here, but that
-// functionality has since been moved to `scene`. at the moment the module
-// only contains a `cube` component; more types can be added later.
-
+/// Geometry element definitions (Cube, etc.).
 pub mod elements;
 
-// simple scene wrapper that holds high‑level elements and exposes a very
-// small API for adding them.  the existing `elements::World` is a full
-// entity/component container; this module lives alongside it and provides an
-// even easier entry point for demos or tests where the caller just wants to
-// treat a scene as "a bunch of cubes".
-pub mod scene;
+/// CPU / RAM usage helpers.
+pub mod metrics;
+
+// ─── Top-level re-exports ──────────────────────────────────────────────────
+//
+// These are the types a game author uses every day.  Import them from the
+// crate root so you don't have to care about which sub-module they live in.
+
+// Math
+pub use glam;
+
+// Core types
+pub use transform::Transform;
+pub use color::Color;
+pub use time::{Time, TimeClock};
+
+// Input
+pub use input::{InputState, KeyCode, MouseButton};
+
+// Scene
+pub use scene::{World, Element, Handle, ElementKind};
+pub use scene::{Camera, CameraUniform, Controller};
+
+// Context
+pub use context::EngineContext;
+
+// Metrics shortcuts (the most common two)
+pub use metrics::{get_cpu_usage, get_ram_usage_mb};

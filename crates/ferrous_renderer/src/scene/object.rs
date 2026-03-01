@@ -1,18 +1,22 @@
-/// A mesh instance placed in the scene at a given world-space position.
+/// A mesh instance placed in the scene with a full world-space transform.
 ///
 /// Owns the model-matrix GPU buffer and the corresponding bind group so that
 /// each object can be drawn with a unique transform without CPU↔GPU round
 /// trips on every draw call.
 use std::sync::Arc;
 
+use glam::{Mat4, Vec3};
 use wgpu::util::DeviceExt;
 
 use crate::geometry::Mesh;
 use crate::resources::buffer;
 
 pub struct RenderObject {
+    /// Stable ID matching `ferrous_core::scene::Handle`.
+    pub id: u64,
     pub mesh: Mesh,
-    pub position: glam::Vec3,
+    /// Current world-space position (kept in sync with the core World).
+    pub position: Vec3,
     /// GPU buffer containing the 4×4 model matrix (column-major `f32`).
     model_buffer: wgpu::Buffer,
     /// Bind group referencing `model_buffer` at binding 0 (group 1).
@@ -20,17 +24,18 @@ pub struct RenderObject {
 }
 
 impl RenderObject {
-    /// Allocates GPU resources and places the object at `position`.
+    /// Allocates GPU resources and sets the initial transform matrix.
     pub fn new(
         device: &wgpu::Device,
+        id: u64,
         mesh: Mesh,
-        position: glam::Vec3,
+        matrix: Mat4,
         model_layout: &wgpu::BindGroupLayout,
     ) -> Self {
-        let mat = glam::Mat4::from_translation(position);
+        let position = Vec3::new(matrix.w_axis.x, matrix.w_axis.y, matrix.w_axis.z);
         let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Model Matrix Buffer"),
-            contents: bytemuck::cast_slice(&[mat.to_cols_array()]),
+            contents: bytemuck::cast_slice(&[matrix.to_cols_array()]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let bind_group = Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -41,13 +46,23 @@ impl RenderObject {
                 resource: buf.as_entire_binding(),
             }],
         }));
-        Self { mesh, position, model_buffer: buf, model_bind_group: bind_group }
+        Self {
+            id,
+            mesh,
+            position,
+            model_buffer: buf,
+            model_bind_group: bind_group,
+        }
     }
 
-    /// Moves the object to `pos` and uploads the new matrix to the GPU.
-    pub fn set_position(&mut self, queue: &wgpu::Queue, pos: glam::Vec3) {
-        self.position = pos;
-        let mat = glam::Mat4::from_translation(pos);
-        buffer::update_uniform(queue, &self.model_buffer, &mat.to_cols_array());
+    /// Upload a new full transform matrix to the GPU.
+    pub fn update_transform(&mut self, queue: &wgpu::Queue, matrix: Mat4) {
+        self.position = Vec3::new(matrix.w_axis.x, matrix.w_axis.y, matrix.w_axis.z);
+        buffer::update_uniform(queue, &self.model_buffer, &matrix.to_cols_array());
+    }
+
+    /// Convenience: move to `pos` with identity rotation/scale.
+    pub fn set_position(&mut self, queue: &wgpu::Queue, pos: Vec3) {
+        self.update_transform(queue, Mat4::from_translation(pos));
     }
 }
