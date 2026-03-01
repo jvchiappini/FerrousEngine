@@ -1,5 +1,5 @@
-pub mod pass_trait;
 pub mod frame_packet;
+pub mod pass_trait;
 
-pub use pass_trait::RenderPass;
 pub use frame_packet::{CameraPacket, DrawCommand, FramePacket, Viewport};
+pub use pass_trait::RenderPass;

@@ -9,23 +9,33 @@
 ///
 /// Uses a `HashMap<u64, RenderObject>` for O(1) lookup instead of the
 /// previous linear scan which was O(n²).
+///
+/// All GPU matrix writes go through the shared `ModelBuffer` so the entire
+/// scene uses a single wgpu bind group.
 use std::collections::HashMap;
 
 use ferrous_core::scene::{ElementKind, World};
 
 use crate::geometry::primitives::cube::cube as create_cube;
+use crate::resources::ModelBuffer;
 use crate::scene::RenderObject;
 
 /// Update `objects` so that it mirrors the renderable entities in `world`.
 pub fn sync_world(
     world:        &World,
     objects:      &mut HashMap<u64, RenderObject>,
+    next_slot:    &mut usize,
+    model_buf:    &mut ModelBuffer,
     device:       &wgpu::Device,
     queue:        &wgpu::Queue,
     model_layout: &wgpu::BindGroupLayout,
 ) {
     // ── Phase 1: remove stale objects ──────────────────────────────────────
     objects.retain(|id, _| world.contains(ferrous_core::scene::Handle(*id)));
+
+    // Ensure the dynamic buffer is large enough for all existing + incoming.
+    let needed = world.iter().count();
+    model_buf.ensure_capacity(device, model_layout, needed);
 
     // ── Phase 2 & 3: spawn or update ──────────────────────────────────────
     for element in world.iter() {
@@ -40,18 +50,25 @@ pub fn sync_world(
         let matrix = element.transform.matrix();
 
         if let Some(obj) = objects.get_mut(&element.id) {
-            // Phase 3 — O(1) update
-            obj.update_transform(queue, matrix);
+            // Phase 3 — O(1) update: write matrix directly into the slot.
+            if obj.matrix != matrix {
+                obj.set_matrix(matrix);
+                model_buf.write(queue, obj.slot, &matrix);
+            }
         } else {
-            // Phase 2 — spawn new object
+            // Phase 2 — spawn new object, assign next free slot.
+            let slot = *next_slot;
+            *next_slot += 1;
+
             let mesh = match &element.kind {
                 ElementKind::Cube { .. } => create_cube(device),
-                // Future: resolve mesh from asset registry by key
                 ElementKind::Mesh { .. } => create_cube(device),
                 _ => unreachable!(),
             };
-            let obj = RenderObject::new(device, element.id, mesh, matrix, model_layout);
+            model_buf.write(queue, slot, &matrix);
+            let obj = RenderObject::new(device, element.id, mesh, matrix, slot);
             objects.insert(element.id, obj);
         }
     }
 }
+

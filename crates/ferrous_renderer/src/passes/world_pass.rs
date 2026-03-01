@@ -1,7 +1,15 @@
 /// 3-D / 2-D opaque geometry pass.
 ///
-/// Clears color + depth, binds the camera and per-object model matrices, and
-/// emits one indexed draw call per `DrawCommand` in the `FramePacket`.
+/// Clears color + depth, binds the camera and the shared model-matrix buffer,
+/// and emits one indexed draw call per `DrawCommand` in the `FramePacket`.
+///
+/// ## Dynamic model buffer
+///
+/// All per-object model matrices live in a single `ModelBuffer`.  This pass
+/// receives a reference to the current bind group + stride via
+/// [`WorldPass::set_model_buffer`].  Each draw call sets only the dynamic
+/// offset (4 bytes on the CPU), so the total CPU overhead for model matrix
+/// binding is O(1) GPU-API calls instead of O(N).
 ///
 /// Supports both 3-D (perspective) and 2-D (orthographic) cameras — the
 /// distinction is entirely in the camera's view-projection matrix.
@@ -19,6 +27,10 @@ use crate::pipeline::WorldPipeline;
 pub struct WorldPass {
     pipeline:          WorldPipeline,
     camera_bind_group: Arc<wgpu::BindGroup>,
+    /// Shared dynamic model-matrix bind group (one for the whole scene).
+    model_bind_group:  Option<Arc<wgpu::BindGroup>>,
+    /// Byte stride between matrix slots in the model buffer.
+    model_stride:      u32,
     /// Sky / clear color.
     pub clear_color: Color,
 }
@@ -28,8 +40,16 @@ impl WorldPass {
         Self {
             pipeline,
             camera_bind_group,
+            model_bind_group: None,
+            model_stride: 256, // safe default; overwritten by set_model_buffer
             clear_color: Color { r: 0.1, g: 0.2, b: 0.3, a: 1.0 },
         }
+    }
+
+    /// Called by `Renderer` whenever the `ModelBuffer` is created or reallocated.
+    pub fn set_model_buffer(&mut self, bind_group: Arc<wgpu::BindGroup>, stride: u32) {
+        self.model_bind_group = Some(bind_group);
+        self.model_stride = stride;
     }
 }
 
@@ -82,11 +102,16 @@ impl RenderPass for WorldPass {
         rpass.set_pipeline(&self.pipeline.inner);
         rpass.set_bind_group(0, &*self.camera_bind_group, &[]);
 
-        for cmd in &packet.scene_objects {
-            rpass.set_bind_group(1, &*cmd.model_bind_group, &[]);
-            rpass.set_vertex_buffer(0, cmd.vertex_buffer.slice(..));
-            rpass.set_index_buffer(cmd.index_buffer.slice(..), cmd.index_format);
-            rpass.draw_indexed(0..cmd.index_count, 0, 0..1);
+        if let Some(model_bg) = &self.model_bind_group {
+            for cmd in &packet.scene_objects {
+                // Dynamic offset: move the shader's view of the buffer to slot N.
+                let offset = (cmd.model_slot as u32).wrapping_mul(self.model_stride);
+                rpass.set_bind_group(1, model_bg.as_ref(), &[offset]);
+                rpass.set_vertex_buffer(0, cmd.vertex_buffer.slice(..));
+                rpass.set_index_buffer(cmd.index_buffer.slice(..), cmd.index_format);
+                rpass.draw_indexed(0..cmd.index_count, 0, 0..1);
+            }
         }
     }
 }
+

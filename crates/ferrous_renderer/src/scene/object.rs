@@ -1,15 +1,23 @@
 /// A mesh instance placed in the scene with a full world-space transform.
 ///
-/// Owns the model-matrix GPU buffer and the corresponding bind group so that
-/// each object can be drawn with a unique transform without CPU↔GPU round
-/// trips on every draw call.
-use std::sync::Arc;
-
+/// ## Dynamic uniform buffer model
+///
+/// Instead of owning its own `wgpu::Buffer` and `wgpu::BindGroup`, each
+/// `RenderObject` stores only its **slot index** in the renderer-wide
+/// [`ModelBuffer`].  The `WorldPass` binds the single shared buffer once and
+/// supplies `model_buf.offset(slot)` as the dynamic offset for each draw
+/// call — reducing N bind-group switches to O(1) per frame.
+///
+/// ## Frustum culling
+///
+/// Each object carries a `local_aabb` (object-space bounding box).  Before
+/// building `DrawCommand`s, `Renderer::build_base_packet` transforms it to
+/// world space and tests it against the camera frustum — objects outside the
+/// frustum produce no `DrawCommand` at all.
 use glam::{Mat4, Vec3};
-use wgpu::util::DeviceExt;
 
 use crate::geometry::Mesh;
-use crate::resources::buffer;
+use crate::scene::culling::Aabb;
 
 pub struct RenderObject {
     /// Stable ID matching `ferrous_core::scene::Handle`.
@@ -17,52 +25,60 @@ pub struct RenderObject {
     pub mesh: Mesh,
     /// Current world-space position (kept in sync with the core World).
     pub position: Vec3,
-    /// GPU buffer containing the 4×4 model matrix (column-major `f32`).
-    model_buffer: wgpu::Buffer,
-    /// Bind group referencing `model_buffer` at binding 0 (group 1).
-    pub model_bind_group: Arc<wgpu::BindGroup>,
+    /// Current model matrix (column-major).
+    pub matrix: Mat4,
+    /// Object-space AABB used for frustum culling.
+    pub local_aabb: Aabb,
+    /// Slot index in the renderer-wide `ModelBuffer`.
+    pub slot: usize,
 }
 
 impl RenderObject {
-    /// Allocates GPU resources and sets the initial transform matrix.
+    /// Creates a `RenderObject` assigned to `slot` in the `ModelBuffer`.
+    ///
+    /// `local_aabb` should tightly enclose the mesh in object space.
+    /// Pass [`Aabb::unit_cube()`] for the built-in cube primitive.
+    ///
+    /// The caller is responsible for writing the initial matrix via
+    /// `model_buf.write(queue, slot, &matrix)`.
     pub fn new(
-        device: &wgpu::Device,
+        _device: &wgpu::Device,
         id: u64,
         mesh: Mesh,
         matrix: Mat4,
-        model_layout: &wgpu::BindGroupLayout,
+        slot: usize,
     ) -> Self {
         let position = Vec3::new(matrix.w_axis.x, matrix.w_axis.y, matrix.w_axis.z);
-        let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Model Matrix Buffer"),
-            contents: bytemuck::cast_slice(&[matrix.to_cols_array()]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-        let bind_group = Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Model Bind Group"),
-            layout: model_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: buf.as_entire_binding(),
-            }],
-        }));
         Self {
             id,
             mesh,
             position,
-            model_buffer: buf,
-            model_bind_group: bind_group,
+            matrix,
+            // Default to a unit cube AABB; callers can override for non-cube meshes.
+            local_aabb: Aabb::unit_cube(),
+            slot,
         }
     }
 
-    /// Upload a new full transform matrix to the GPU.
-    pub fn update_transform(&mut self, queue: &wgpu::Queue, matrix: Mat4) {
-        self.position = Vec3::new(matrix.w_axis.x, matrix.w_axis.y, matrix.w_axis.z);
-        buffer::update_uniform(queue, &self.model_buffer, &matrix.to_cols_array());
+    /// Returns the AABB transformed to world space by the current matrix.
+    #[inline]
+    pub fn world_aabb(&self) -> Aabb {
+        self.local_aabb.transform(&self.matrix)
     }
 
-    /// Convenience: move to `pos` with identity rotation/scale.
-    pub fn set_position(&mut self, queue: &wgpu::Queue, pos: Vec3) {
-        self.update_transform(queue, Mat4::from_translation(pos));
+    /// Returns the current matrix (no GPU read — CPU side only).
+    #[inline]
+    pub fn current_matrix(&self) -> &Mat4 {
+        &self.matrix
+    }
+
+    /// Updates the CPU-side matrix. The caller must also call
+    /// `model_buf.write(queue, self.slot, &matrix)` to push it to the GPU.
+    #[inline]
+    pub fn set_matrix(&mut self, matrix: Mat4) {
+        self.position = Vec3::new(matrix.w_axis.x, matrix.w_axis.y, matrix.w_axis.z);
+        self.matrix = matrix;
     }
 }
+
+

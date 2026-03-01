@@ -33,11 +33,14 @@ pub struct CameraPacket {
 /// A single mesh draw call, fully resolved to GPU handles.
 pub struct DrawCommand {
     pub vertex_buffer: Arc<wgpu::Buffer>,
-    pub index_buffer:  Arc<wgpu::Buffer>,
-    pub index_count:   u32,
-    pub index_format:  wgpu::IndexFormat,
-    /// Per-object model matrix bind group (group 1).
-    pub model_bind_group: Arc<wgpu::BindGroup>,
+    pub index_buffer: Arc<wgpu::Buffer>,
+    pub index_count: u32,
+    pub index_format: wgpu::IndexFormat,
+    /// Slot index inside the renderer-wide `ModelBuffer`.
+    ///
+    /// `WorldPass` converts this to a byte offset via `model_buf.offset(slot)`
+    /// and supplies it as the dynamic offset to `set_bind_group(1, ...)`.
+    pub model_slot: usize,
 }
 
 // ── Viewport ──────────────────────────────────────────────────────────────────
@@ -55,8 +58,8 @@ pub struct Viewport {
 
 /// All data a `RenderPass` may need for one frame.
 pub struct FramePacket {
-    pub viewport:      Option<Viewport>,
-    pub camera:        CameraPacket,
+    pub viewport: Option<Viewport>,
+    pub camera: CameraPacket,
     pub scene_objects: Vec<DrawCommand>,
     /// Open-ended per-frame data keyed by `TypeId`.
     ///

@@ -33,7 +33,7 @@ pub use geometry::{Mesh, Vertex};
 pub use graph::frame_packet::Viewport;
 pub use graph::{FramePacket, RenderPass};
 pub use render_target::RenderTarget;
-pub use scene::RenderObject;
+pub use scene::{Aabb, Frustum, RenderObject};
 pub use ferrous_core::input::{KeyCode, MouseButton};
 
 // -- Internal imports ---------------------------------------------------------
@@ -47,6 +47,7 @@ use camera::controller::OrbitState;
 use graph::frame_packet::{CameraPacket, DrawCommand};
 use passes::{UiPass, WorldPass};
 use pipeline::{PipelineLayouts, WorldPipeline};
+use resources::ModelBuffer;
 
 // -- RenderDest ---------------------------------------------------------------
 
@@ -91,7 +92,16 @@ pub struct Renderer {
     // -- Scene (O(1) lookup by id) --------------------------------------------
     objects: HashMap<u64, RenderObject>,
     next_manual_id: u64,
+    /// Shared dynamic uniform buffer for all model matrices.
+    model_buf: ModelBuffer,
+    /// Next free slot in `model_buf` for manually-spawned objects.
+    next_slot: usize,
+    /// Layout kept for `model_buf.ensure_capacity` reallocation.
     model_layout: Arc<wgpu::BindGroupLayout>,
+
+    // -- Per-frame caches (reused across frames, zero heap alloc/frame) -------
+    /// Reusable `DrawCommand` list — cleared and filled each frame.
+    draw_commands_cache: Vec<DrawCommand>,
 
     // -- Surface info (for registering passes post-construction) --------------
     format: wgpu::TextureFormat,
@@ -145,10 +155,15 @@ impl Renderer {
         );
         let ui_pass = UiPass::new(ui_renderer);
 
+        // Create the shared dynamic model buffer and register it with WorldPass.
+        let model_buf = ModelBuffer::new(&context.device, &layouts.model, 64);
+        let mut world_pass_init = world_pass;
+        world_pass_init.set_model_buffer(model_buf.bind_group.clone(), model_buf.stride);
+
         Self {
             context,
             render_target: rt,
-            world_pass,
+            world_pass: world_pass_init,
             ui_pass,
             extra_passes: Vec::new(),
             camera,
@@ -156,7 +171,10 @@ impl Renderer {
             gpu_camera,
             objects: HashMap::new(),
             next_manual_id: u64::MAX,
+            model_buf,
+            next_slot: 0,
             model_layout: layouts.model,
+            draw_commands_cache: Vec::new(),
             format,
             sample_count,
             viewport: Viewport { x: 0, y: 0, width, height },
@@ -203,13 +221,20 @@ impl Renderer {
     pub fn add_object(&mut self, mesh: Mesh, pos: glam::Vec3) -> u64 {
         let id = self.next_manual_id;
         self.next_manual_id = self.next_manual_id.wrapping_sub(1);
-        let obj = RenderObject::new(
-            &self.context.device,
-            id,
-            mesh,
-            glam::Mat4::from_translation(pos),
-            &self.model_layout,
-        );
+
+        let slot = self.next_slot;
+        self.next_slot += 1;
+        let matrix = glam::Mat4::from_translation(pos);
+
+        // Grow the buffer if needed, then update WorldPass bind group.
+        let prev_bg = self.model_buf.bind_group.clone();
+        self.model_buf.ensure_capacity(&self.context.device, &self.model_layout, slot + 1);
+        if !Arc::ptr_eq(&prev_bg, &self.model_buf.bind_group) {
+            self.world_pass.set_model_buffer(self.model_buf.bind_group.clone(), self.model_buf.stride);
+        }
+        self.model_buf.write(&self.context.queue, slot, &matrix);
+
+        let obj = RenderObject::new(&self.context.device, id, mesh, matrix, slot);
         self.objects.insert(id, obj);
         id
     }
@@ -217,7 +242,9 @@ impl Renderer {
     /// Moves an existing object (GPU write). No-op if id is unknown.
     pub fn set_object_position(&mut self, id: u64, pos: glam::Vec3) {
         if let Some(obj) = self.objects.get_mut(&id) {
-            obj.set_position(&self.context.queue, pos);
+            let matrix = glam::Mat4::from_translation(pos);
+            obj.set_matrix(matrix);
+            self.model_buf.write(&self.context.queue, obj.slot, &matrix);
         }
     }
 
@@ -233,13 +260,20 @@ impl Renderer {
 
     /// Synchronises a `ferrous_core::scene::World` with the renderer's object map.
     pub fn sync_world(&mut self, world: &ferrous_core::scene::World) {
+        let prev_bg = self.model_buf.bind_group.clone();
         scene::sync_world(
             world,
             &mut self.objects,
+            &mut self.next_slot,
+            &mut self.model_buf,
             &self.context.device,
             &self.context.queue,
             &self.model_layout,
         );
+        // If the buffer was reallocated, update WorldPass with the new bind group.
+        if !Arc::ptr_eq(&prev_bg, &self.model_buf.bind_group) {
+            self.world_pass.set_model_buffer(self.model_buf.bind_group.clone(), self.model_buf.stride);
+        }
     }
 
     // -- Pass management ------------------------------------------------------
@@ -359,28 +393,51 @@ impl Renderer {
             pass.prepare(dev, q, &packet);
             pass.execute(dev, q, encoder, color_view, resolve_target, Some(depth_view), &packet);
         }
+
+        // Reclaim the Vec<DrawCommand> allocation back into cache for next frame.
+        self.reclaim_packet_cache(packet);
     }
 
-    fn build_base_packet(&self) -> FramePacket {
+    fn build_base_packet(&mut self) -> FramePacket {
         let camera_packet = CameraPacket {
             view_proj: glam::Mat4::from_cols_array_2d(&self.gpu_camera.uniform.view_proj),
             eye: self.camera.eye,
         };
 
-        let mut packet = FramePacket::new(Some(self.viewport), camera_packet);
+        // Reuse the cached Vec: clear keeps the allocated capacity.
+        self.draw_commands_cache.clear();
 
-        packet.scene_objects = self
-            .objects
-            .values()
-            .map(|obj| DrawCommand {
-                vertex_buffer:    obj.mesh.vertex_buffer.clone(),
-                index_buffer:     obj.mesh.index_buffer.clone(),
-                index_count:      obj.mesh.index_count,
-                index_format:     obj.mesh.index_format,
-                model_bind_group: obj.model_bind_group.clone(),
-            })
-            .collect();
+        // Build frustum once from the current view-proj matrix.
+        let frustum = scene::Frustum::from_view_proj(&camera_packet.view_proj);
+
+        self.draw_commands_cache.extend(
+            self.objects.values()
+                .filter(|obj| frustum.intersects_aabb(&obj.world_aabb()))
+                .map(|obj| DrawCommand {
+                    vertex_buffer: obj.mesh.vertex_buffer.clone(),
+                    index_buffer:  obj.mesh.index_buffer.clone(),
+                    index_count:   obj.mesh.index_count,
+                    index_format:  obj.mesh.index_format,
+                    model_slot:    obj.slot,
+                }),
+        );
+
+        // Hand the cached vec to the packet by taking its contents.
+        // We swap with an empty Vec so `draw_commands_cache` stays allocated
+        // and will be returned to us in next frame via `take_draw_commands`.
+        let mut packet = FramePacket::new(Some(self.viewport), camera_packet);
+        std::mem::swap(&mut packet.scene_objects, &mut self.draw_commands_cache);
 
         packet
+    }
+
+    /// Called at end of `do_render` to reclaim the Vec allocation back into
+    /// `draw_commands_cache` so it is reused next frame.
+    #[inline]
+    fn reclaim_packet_cache(&mut self, mut packet: FramePacket) {
+        // Swap the (now-empty after execute) scene_objects Vec back into cache.
+        std::mem::swap(&mut self.draw_commands_cache, &mut packet.scene_objects);
+        // `packet` is dropped here; extras are dropped but they are cheap
+        // (Arc clones for GUI batches).
     }
 }

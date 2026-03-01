@@ -11,13 +11,17 @@ use std::sync::Arc;
 pub struct PipelineLayouts {
     /// group(0) — camera view-projection matrix (one `UNIFORM` buffer at binding 0)
     pub camera: Arc<wgpu::BindGroupLayout>,
-    /// group(1) — per-object model matrix (one `UNIFORM` buffer at binding 0)
+    /// group(1) — per-object model matrix via a **dynamic** uniform buffer.
+    ///
+    /// `has_dynamic_offset: true` lets us bind a single large buffer once and
+    /// supply a different byte offset per draw call — eliminating N bind-group
+    /// switches and reducing CPU-side wgpu overhead from O(N) to O(1).
     pub model: Arc<wgpu::BindGroupLayout>,
 }
 
 impl PipelineLayouts {
     pub fn new(device: &wgpu::Device) -> Self {
-        let uniform_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
+        let static_uniform_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::VERTEX,
             ty: wgpu::BindingType::Buffer {
@@ -31,14 +35,26 @@ impl PipelineLayouts {
         let camera = Arc::new(device.create_bind_group_layout(
             &wgpu::BindGroupLayoutDescriptor {
                 label: Some("Layout: Camera"),
-                entries: &[uniform_entry(0)],
+                entries: &[static_uniform_entry(0)],
             },
         ));
 
+        // Model layout uses a dynamic offset so all per-object matrices live
+        // in one buffer and we only switch the offset, not the bind group.
         let model = Arc::new(device.create_bind_group_layout(
             &wgpu::BindGroupLayoutDescriptor {
-                label: Some("Layout: Model"),
-                entries: &[uniform_entry(0)],
+                label: Some("Layout: Model (dynamic)"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        // Each element is a mat4x4<f32> = 64 bytes.
+                        min_binding_size: wgpu::BufferSize::new(64),
+                    },
+                    count: None,
+                }],
             },
         ));
 
