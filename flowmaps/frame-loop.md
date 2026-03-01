@@ -33,10 +33,10 @@ sequenceDiagram
     REND->>REND: Phase 1 — remove stale RenderObjects (id not in World)
     REND->>REND: Phase 2 — insert new RenderObjects (id in World, not in objects map)
     REND->>REND:   ElementKind::Cube → primitives::cube(device) → Mesh
-    REND->>GPU:   ModelBuffer.write(queue, slot, &element.transform.matrix())
+    REND->>GPU:   InstanceBuffer.write_slice(queue, base_slot, &matrices) [World entities]
     REND->>REND:   RenderObject::new(id, mesh, matrix, aabb, slot)
     REND->>REND: Phase 3 — update matrices (element.transform changed)
-    REND->>GPU:   ModelBuffer.write(queue, slot, &new_matrix)
+    REND->>GPU:   InstanceBuffer.write_slice(queue, base_slot, &updated_matrices)
 
     Note over RUN: --- 3D Draw Phase ---
     RUN->>APP: app.draw_3d(&mut renderer, &mut ctx)
@@ -56,7 +56,7 @@ sequenceDiagram
     REND->>GPU: WorldPass.execute(encoder, &packet)
     REND->>GPU:   set_pipeline(base_pipeline)
     REND->>GPU:   set_bind_group(0, &camera_bind_group)
-    REND->>GPU:   per DrawCommand: set_bind_group(1, model_slot_offset), draw_indexed()
+    REND->>GPU:   [instanced] set_bind_group(1, instance_storage_bg), draw_indexed(0..N, first..first+count)\n    REND->>GPU:   [legacy]    per DrawCommand: set_bind_group(1, model_slot_offset), draw_indexed(0..N, 0..1)
     REND->>GPU: UiPass.execute(encoder, &gui_batch, &text_batch)
     REND->>GPU:   set_pipeline(gui_pipeline)
     REND->>GPU:   upload quads, draw rects + glyphs
@@ -88,22 +88,26 @@ flowchart TD
 
     subgraph "Sync Stage — sync_world(&world)"
         SS["world_sync::sync_world\n  removed: ids in objects but not world\n  added: ids in world but not objects\n  updated: ids in both, matrix changed"]
-        MB["ModelBuffer\n  wgpu::Buffer (dynamic uniform)\n  slot → byte_offset = slot * 256\n  write(queue, slot, &mat4)"]
+        IB["InstanceBuffer\n  wgpu::Buffer (storage)\n  64 bytes/slot, no padding\n  write_slice(queue, base, matrices)"]
         RO["RenderObject\n  id: u64\n  mesh: Mesh (Arc buffers)\n  matrix: Mat4 (current snapshot)\n  local_aabb: Aabb\n  slot: usize"]
         TF -->|"transform.matrix() → Mat4"| SS
         SS --> RO
-        SS --> MB
+        SS --> IB
     end
 
     subgraph "Render Stage — begin_frame → present"
-        FP["FramePacket\n  draw_commands: Vec&lt;DrawCommand&gt;\n  (frustum culled)"]
-        DC["DrawCommand\n  slot: usize → dynamic offset\n  index_count: u32\n  base_vertex: i32"]
+        FP["FramePacket\n  scene_objects: Vec<DrawCommand> (legacy)\n  instanced_objects: Vec<InstancedDrawCommand>\n  (all frustum culled)"]
+        IDC["InstancedDrawCommand\n  first_instance: u32\n  instance_count: u32\n  (shared mesh buffers)"]
+        DC["DrawCommand (legacy)\n  slot: usize → dynamic offset\n  index_count: u32"]
         CAM["GpuCamera\n  buffer: wgpu::Buffer (64 bytes)\n  bind_group: BindGroup\n  view_proj: Mat4"]
-        WP["WorldPass\n  pipeline: RenderPipeline\n  per cmd: bind model slot → draw"]
+        WP["WorldPass\n  instancing_pipeline: draw_indexed(first..first+N)\n  world_pipeline: per DrawCommand, bind slot → draw"]
         UP["UiPass\n  pipeline: RenderPipeline\n  quads + glyphs"]
         SC["SurfaceTexture\n  → present()"]
         RO --> FP
+        IB --> IDC
+        FP --> IDC
         FP --> DC
+        IDC --> WP
         DC --> WP
         CAM --> WP
         WP --> UP
@@ -122,7 +126,7 @@ flowchart LR
         T2["app.update()\nuser-defined\ntypically < 1 ms"]
         T3["sync_world()\nO(n) — n = dirty objects\ntypically < 0.5 ms"]
         T4["begin_frame()\nget swapchain texture\n~0.1 ms"]
-        T5["build_base_packet()\nfrustum cull O(n)\n~0.1 ms per 1000 objects"]
+        T5["build_base_packet()\ngroup by mesh (instanced) O(n)\nfrustum cull O(n)\n~0.1 ms per 1000 objects"]
         T6["GpuCamera.sync()\n1 queue.write_buffer\n~1 µs"]
         T7["WorldPass + UiPass\nGPU-side\n~1–5 ms at 60fps"]
         T8["queue.submit + present\n~0.1 ms CPU"]

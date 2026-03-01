@@ -11,7 +11,7 @@ graph TD
     subgraph "ferrous_core — CPU-only Logic Layer"
         CORE["ferrous_core
         ─────────────────────────────
-        Scene Graph:
+        Pipelines:\n          WorldPipeline (base.wgsl, dynamic uniform)\n          InstancingPipeline (instanced.wgsl, storage buffer)\n        Graph:
           World · Element · Handle
           ElementKind (Cube, Mesh, PointLight, Empty)
         Spatial:
@@ -71,12 +71,12 @@ graph TD
         Camera GPU:
           GpuCamera (wgpu::Buffer + BindGroup)
         Buffers:
-          ModelBuffer (dynamic uniform, one slot/object)
+          ModelBuffer (dynamic uniform, legacy manual objects)\n          InstanceBuffer (storage buffer, instanced World entities)
         Passes:
-          WorldPass (3D geometry pass)
+          WorldPass (3D geometry pass — instanced + legacy)
           UiPass (2D overlay pass)
         Graph:
-          FramePacket · DrawCommand
+          FramePacket · DrawCommand · InstancedDrawCommand
           RenderGraph (pass ordering)
         Targets:
           RenderTarget · SwapchainTarget"]
@@ -155,4 +155,5 @@ graph TD
     INV5["✅ Transform is the ONLY position source\nDerive matrix on-demand, never store separately"]
     INV6["✅ Mesh buffers are Arc-wrapped\nShared geometry = zero GPU copies per instance"]
     INV7["✅ world_sync is O(n) per frame\nInsert/remove/update separated into 3 phases"]
+    INV8[" ✅ World entities use instanced rendering\nOne draw_indexed per unique mesh — O 1 GPU calls\]
 ```

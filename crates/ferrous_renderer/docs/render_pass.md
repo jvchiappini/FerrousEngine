@@ -141,6 +141,37 @@ pub struct UiPass {
   `GuiRenderer::render`.  The pass is a no-op if there is nothing to
   draw.
 
+### `ComputePass`
+
+Located in `passes/compute_pass.rs`.
+
+```rust
+pub struct ComputePass {
+    name:            String,
+    pipeline:        ComputePipeline,
+    workgroup_count: (u32, u32, u32),
+    bind_groups:     Vec<wgpu::BindGroup>,
+}
+```
+
+Unlike `WorldPass` and `UiPass`, this pass opens a `wgpu::ComputePass`
+instead of a render pass, so it ignores the `color_view`, `resolve_target`,
+and `depth_view` arguments.
+
+- **`prepare`** — no-op by default; override the struct or call
+  `set_bind_groups` / `set_workgroup_count` before the frame to update
+  state dynamically.
+- **`execute`** — sets the compute pipeline, binds every `BindGroup` in
+  order (index = group slot), and dispatches
+  `(workgroup_count.0, workgroup_count.1, workgroup_count.2)` workgroups.
+
+**Ordering note:** Register the `ComputePass` *before* `WorldPass` if its
+output (e.g. a storage texture or buffer) is consumed by the raster
+passes in the same frame.  Register it *after* `UiPass` for effects that
+read the finished colour buffer.
+
+See `extending/compute_pipeline.md` for a complete worked example.
+
 ## Minimal custom pass example
 
 ```rust

@@ -17,6 +17,11 @@ pub struct PipelineLayouts {
     /// supply a different byte offset per draw call — eliminating N bind-group
     /// switches and reducing CPU-side wgpu overhead from O(N) to O(1).
     pub model: Arc<wgpu::BindGroupLayout>,
+    /// group(1) — instanced model matrices via a **storage** buffer.
+    ///
+    /// The shader indexes this array by `@builtin(instance_index)`, so a
+    /// single `draw_indexed` with `instance_count > 1` renders all instances.
+    pub instance: Arc<wgpu::BindGroupLayout>,
 }
 
 impl PipelineLayouts {
@@ -58,6 +63,24 @@ impl PipelineLayouts {
             },
         ));
 
-        Self { camera, model }
+        // Instance layout: read-only storage buffer holding array<mat4x4<f32>>.
+        // Indexed by instance_index in the vertex shader.
+        let instance = Arc::new(device.create_bind_group_layout(
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("Layout: Instances (storage)"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            },
+        ));
+
+        Self { camera, model, instance }
     }
 }

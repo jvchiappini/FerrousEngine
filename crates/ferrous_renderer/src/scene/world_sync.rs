@@ -21,6 +21,12 @@ use crate::resources::ModelBuffer;
 use crate::scene::RenderObject;
 
 /// Update `objects` so that it mirrors the renderable entities in `world`.
+///
+/// `shared_cube_mesh` should be a persistent `Option<Mesh>` owned by the
+/// caller (typically `Renderer`).  It is initialised on the first spawn and
+/// reused thereafter so that every cube `RenderObject` shares the same
+/// `Arc<wgpu::Buffer>` pointers — a prerequisite for the instancing grouping
+/// in `build_base_packet`.
 pub fn sync_world(
     world: &World,
     objects: &mut HashMap<u64, RenderObject>,
@@ -29,6 +35,7 @@ pub fn sync_world(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     model_layout: &wgpu::BindGroupLayout,
+    shared_cube_mesh: &mut Option<crate::geometry::Mesh>,
 ) {
     // ── Phase 1: remove stale objects ──────────────────────────────────────
     objects.retain(|id, _| world.contains(ferrous_core::scene::Handle(*id)));
@@ -60,9 +67,14 @@ pub fn sync_world(
             let slot = *next_slot;
             *next_slot += 1;
 
+            // Reuse (or lazily create) a single shared mesh so all cuboids
+            // share the same Arc<wgpu::Buffer> — required for instancing.
             let mesh = match &element.kind {
-                ElementKind::Cube { .. } => create_cube(device),
-                ElementKind::Mesh { .. } => create_cube(device),
+                ElementKind::Cube { .. } | ElementKind::Mesh { .. } => {
+                    shared_cube_mesh
+                        .get_or_insert_with(|| create_cube(device))
+                        .clone()
+                }
                 _ => unreachable!(),
             };
             model_buf.write(queue, slot, &matrix);

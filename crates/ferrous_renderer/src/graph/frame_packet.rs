@@ -31,6 +31,7 @@ pub struct CameraPacket {
 // ── 3-D scene ─────────────────────────────────────────────────────────────────
 
 /// A single mesh draw call, fully resolved to GPU handles.
+/// Used for manually-spawned objects with the legacy dynamic-uniform path.
 pub struct DrawCommand {
     pub vertex_buffer: Arc<wgpu::Buffer>,
     pub index_buffer: Arc<wgpu::Buffer>,
@@ -41,6 +42,21 @@ pub struct DrawCommand {
     /// `WorldPass` converts this to a byte offset via `model_buf.offset(slot)`
     /// and supplies it as the dynamic offset to `set_bind_group(1, ...)`.
     pub model_slot: usize,
+}
+
+/// One instanced draw call: all instances share the same mesh buffers and
+/// their matrices are packed contiguously in the `InstanceBuffer`.
+///
+/// The shader reads `instances[instance_index]` from the storage buffer.
+pub struct InstancedDrawCommand {
+    pub vertex_buffer: Arc<wgpu::Buffer>,
+    pub index_buffer: Arc<wgpu::Buffer>,
+    pub index_count: u32,
+    pub index_format: wgpu::IndexFormat,
+    /// Index of the first matrix in the `InstanceBuffer` for this batch.
+    pub first_instance: u32,
+    /// Number of instances in this batch.
+    pub instance_count: u32,
 }
 
 // ── Viewport ──────────────────────────────────────────────────────────────────
@@ -60,7 +76,10 @@ pub struct Viewport {
 pub struct FramePacket {
     pub viewport: Option<Viewport>,
     pub camera: CameraPacket,
+    /// Legacy per-object draw calls (manually-spawned objects, dynamic-uniform path).
     pub scene_objects: Vec<DrawCommand>,
+    /// Instanced draw calls assembled from World entities (one per unique mesh).
+    pub instanced_objects: Vec<InstancedDrawCommand>,
     /// Open-ended per-frame data keyed by `TypeId`.
     ///
     /// Any system inserts its batch/data here; any pass retrieves it by type.
@@ -75,6 +94,7 @@ impl FramePacket {
             viewport,
             camera,
             scene_objects: Vec::new(),
+            instanced_objects: Vec::new(),
             extras: HashMap::new(),
         }
     }

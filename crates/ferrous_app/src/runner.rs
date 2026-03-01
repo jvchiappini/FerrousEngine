@@ -71,7 +71,12 @@ impl<A: FerrousApp> Runner<A> {
         };
 
         // Stamp the frame start for the next deadline calculation.
-        self.last_frame = Instant::now();
+        let now = Instant::now();
+        self.last_frame = now;
+        // A rendered frame counts as "activity" so that continuous simulations
+        // (games, animations) never trigger the idle timeout just because the
+        // mouse cursor happens to be outside the window.
+        self.last_action_time = now;
 
         // Check for async font completion
         if self.font.is_none() {

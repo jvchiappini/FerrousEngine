@@ -25,9 +25,10 @@ docs/
 ├── geometry.md            # Vertex, Mesh, built-in primitives, custom geometry
 ├── render_target.md       # off-screen rendering, MSAA, pixel readback
 └── extending/
-    ├── custom_pass.md     # step-by-step guide to writing a custom pass
-    ├── new_pipeline.md    # adding a new wgpu render pipeline
-    └── world_sync.md      # hooking new scene element types into sync_world
+    ├── custom_pass.md         # step-by-step guide to writing a custom raster pass
+    ├── new_pipeline.md        # adding a new wgpu render pipeline
+    ├── compute_pipeline.md    # adding a compute shader pass (raymarching, particles, …)
+    └── world_sync.md          # hooking new scene element types into sync_world
 ```
 
 ## Quick start
@@ -81,15 +82,19 @@ The default pass list is:
 | 0 | `WorldPass` | clears the frame, draws 3-D scene objects |
 | 1 | `UiPass` | composites the GUI and text layers on top |
 
+Compute workloads are added manually via `Renderer::add_pass` using
+`ComputePass`.  Register them before `WorldPass` when their output is
+consumed by raster passes in the same frame.
+
 You can replace or extend this list with `Renderer::add_pass` /
 `Renderer::clear_passes`.  See `render_pass.md` for full details.
 
 ## Key public types
 
 | Type | Where defined | Purpose |
-|------|---------------|---------|
+|------|---------------|--------|
 | `Renderer` | `lib.rs` | top-level entry point |
-| `RenderPass` | `graph/pass_trait.rs` | trait for custom passes |
+| `RenderPass` | `graph/pass_trait.rs` | trait for custom passes (raster and compute) |
 | `FramePacket` | `graph/frame_packet.rs` | per-frame CPU data bundle |
 | `Viewport` | `graph/frame_packet.rs` | scissor/viewport rectangle |
 | `Mesh` | `geometry/mesh.rs` | GPU vertex + index buffers |
@@ -98,6 +103,8 @@ You can replace or extend this list with `Renderer::add_pass` /
 | `Controller` | *(re-export from ferrous_core)* | key bindings + motion config |
 | `GpuCamera` | `camera/uniform.rs` | GPU-side camera uniform |
 | `RenderTarget` | `render_target/target.rs` | colour + depth target, MSAA-aware |
+| `ComputePipeline` | `pipeline/compute.rs` | generic wgpu compute pipeline wrapper |
+| `ComputePass` | `passes/compute_pass.rs` | compute shader dispatch via the render graph |
 | `RenderObject` | `scene/object.rs` | per-instance GPU data |
 
 ## Feature highlights
