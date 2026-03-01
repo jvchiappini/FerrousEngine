@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 /// A generic wrapper for a WGPU Compute Pipeline.
 ///
-/// This provides a common abstraction for running compute shaders (e.g. for raymarching, 
+/// This provides a common abstraction for running compute shaders (e.g. for raymarching,
 /// particle simulations, or voxel grids) independently from the traditional vertex/fragment graph.
 #[derive(Clone)]
 pub struct ComputePipeline {

@@ -12,7 +12,7 @@
 //! [`color`]     | `Color` — RGBA f32 with a large palette of constants |
 //! [`time`]      | `Time` / `TimeClock` — frame delta, elapsed, FPS |
 //! [`input`]     | `InputState` — keyboard, mouse, scroll; `just_pressed` / `just_released` |
-//! [`scene`]     | `World`, `Element`, `Handle`, `Camera`, `Controller` |
+//! [`scene`]     | `World`, `Element`, `Handle`, `ElementKind`, `Camera`, `Controller` |
 //! [`context`]   | `EngineContext` — wgpu device + queue |
 //! [`metrics`]   | CPU / RAM usage helpers |
 //!
@@ -47,11 +47,9 @@ pub mod input;
 /// wgpu device + queue container.
 pub mod context;
 
-/// Scene graph: World, Element, Handle, Camera, Controller.
+/// Scene graph: World, Element, Handle, ElementKind, Camera, Controller.
+/// Shape kinds (Cube, Sphere, Mesh, etc.) are defined as `ElementKind` variants.
 pub mod scene;
-
-/// Geometry element definitions (Cube, etc.).
-pub mod elements;
 
 /// CPU / RAM usage helpers.
 pub mod metrics;

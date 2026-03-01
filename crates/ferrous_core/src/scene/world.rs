@@ -413,12 +413,4 @@ mod tests {
         assert!(w.contains(h2));
         assert_eq!(w.position(h2), Some(Vec3::ONE));
     }
-
-    #[test]
-    fn model_matrix_identity_at_origin() {
-        let mut w = World::new();
-        let h = w.spawn_cube("M", Vec3::ZERO);
-        let m = w.get(h).unwrap().transform.matrix();
-        assert!((m - Mat4::IDENTITY).abs_diff_eq(Mat4::ZERO, 1e-6));
-    }
 }

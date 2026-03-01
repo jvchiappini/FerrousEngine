@@ -250,7 +250,10 @@ impl Renderer {
 
     /// Returns the world-space position of an object, or `None`.
     pub fn get_object_position(&self, id: u64) -> Option<glam::Vec3> {
-        self.objects.get(&id).map(|o| o.position)
+        self.objects.get(&id).map(|o| {
+            let w = o.matrix.w_axis;
+            glam::Vec3::new(w.x, w.y, w.z)
+        })
     }
 
     /// Removes a manually-spawned object. No-op if unknown.

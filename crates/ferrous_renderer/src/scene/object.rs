@@ -14,7 +14,7 @@
 /// building `DrawCommand`s, `Renderer::build_base_packet` transforms it to
 /// world space and tests it against the camera frustum — objects outside the
 /// frustum produce no `DrawCommand` at all.
-use glam::{Mat4, Vec3};
+use glam::Mat4;
 
 use crate::geometry::Mesh;
 use crate::scene::culling::Aabb;
@@ -23,9 +23,9 @@ pub struct RenderObject {
     /// Stable ID matching `ferrous_core::scene::Handle`.
     pub id: u64,
     pub mesh: Mesh,
-    /// Current world-space position (kept in sync with the core World).
-    pub position: Vec3,
-    /// Current model matrix (column-major).
+    /// Current model matrix (column-major). The world-space position is
+    /// always `matrix.w_axis.xyz` — there is no separate `position` field
+    /// to avoid storing the same data twice.
     pub matrix: Mat4,
     /// Object-space AABB used for frustum culling.
     pub local_aabb: Aabb,
@@ -48,11 +48,9 @@ impl RenderObject {
         matrix: Mat4,
         slot: usize,
     ) -> Self {
-        let position = Vec3::new(matrix.w_axis.x, matrix.w_axis.y, matrix.w_axis.z);
         Self {
             id,
             mesh,
-            position,
             matrix,
             // Default to a unit cube AABB; callers can override for non-cube meshes.
             local_aabb: Aabb::unit_cube(),
@@ -76,7 +74,6 @@ impl RenderObject {
     /// `model_buf.write(queue, self.slot, &matrix)` to push it to the GPU.
     #[inline]
     pub fn set_matrix(&mut self, matrix: Mat4) {
-        self.position = Vec3::new(matrix.w_axis.x, matrix.w_axis.y, matrix.w_axis.z);
         self.matrix = matrix;
     }
 }
