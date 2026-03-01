@@ -41,13 +41,7 @@ impl RenderObject {
     ///
     /// The caller is responsible for writing the initial matrix via
     /// `model_buf.write(queue, slot, &matrix)`.
-    pub fn new(
-        _device: &wgpu::Device,
-        id: u64,
-        mesh: Mesh,
-        matrix: Mat4,
-        slot: usize,
-    ) -> Self {
+    pub fn new(_device: &wgpu::Device, id: u64, mesh: Mesh, matrix: Mat4, slot: usize) -> Self {
         Self {
             id,
             mesh,
@@ -77,5 +71,3 @@ impl RenderObject {
         self.matrix = matrix;
     }
 }
-
-

@@ -29,12 +29,12 @@ pub use ferrous_gui::{GuiBatch, GuiQuad};
 pub use glam;
 
 pub use camera::{Camera, Controller, GpuCamera};
+pub use ferrous_core::input::{KeyCode, MouseButton};
 pub use geometry::{Mesh, Vertex};
 pub use graph::frame_packet::Viewport;
 pub use graph::{FramePacket, RenderPass};
 pub use render_target::RenderTarget;
 pub use scene::{Aabb, Frustum, RenderObject};
-pub use ferrous_core::input::{KeyCode, MouseButton};
 
 // -- Internal imports ---------------------------------------------------------
 
@@ -129,8 +129,7 @@ impl Renderer {
         let rt = RenderTarget::new(device, width, height, format, sample_count);
 
         let layouts = PipelineLayouts::new(device);
-        let world_pipeline =
-            WorldPipeline::new(device, format, rt.sample_count(), layouts.clone());
+        let world_pipeline = WorldPipeline::new(device, format, rt.sample_count(), layouts.clone());
 
         let camera = Camera {
             eye: glam::Vec3::new(0.0, 0.0, 5.0),
@@ -177,7 +176,12 @@ impl Renderer {
             draw_commands_cache: Vec::new(),
             format,
             sample_count,
-            viewport: Viewport { x: 0, y: 0, width, height },
+            viewport: Viewport {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            },
             width,
             height,
         }
@@ -228,9 +232,11 @@ impl Renderer {
 
         // Grow the buffer if needed, then update WorldPass bind group.
         let prev_bg = self.model_buf.bind_group.clone();
-        self.model_buf.ensure_capacity(&self.context.device, &self.model_layout, slot + 1);
+        self.model_buf
+            .ensure_capacity(&self.context.device, &self.model_layout, slot + 1);
         if !Arc::ptr_eq(&prev_bg, &self.model_buf.bind_group) {
-            self.world_pass.set_model_buffer(self.model_buf.bind_group.clone(), self.model_buf.stride);
+            self.world_pass
+                .set_model_buffer(self.model_buf.bind_group.clone(), self.model_buf.stride);
         }
         self.model_buf.write(&self.context.queue, slot, &matrix);
 
@@ -275,7 +281,8 @@ impl Renderer {
         );
         // If the buffer was reallocated, update WorldPass with the new bind group.
         if !Arc::ptr_eq(&prev_bg, &self.model_buf.bind_group) {
-            self.world_pass.set_model_buffer(self.model_buf.bind_group.clone(), self.model_buf.stride);
+            self.world_pass
+                .set_model_buffer(self.model_buf.bind_group.clone(), self.model_buf.stride);
         }
     }
 
@@ -310,20 +317,35 @@ impl Renderer {
             .resize(&self.context.device, new_width, new_height);
 
         if self.viewport.width == self.width && self.viewport.height == self.height {
-            self.viewport.width  = new_width;
+            self.viewport.width = new_width;
             self.viewport.height = new_height;
             self.camera.set_aspect(new_width as f32 / new_height as f32);
         }
 
-        self.width  = new_width;
+        self.width = new_width;
         self.height = new_height;
 
         // Built-in passes
-        self.world_pass.on_resize(&self.context.device, &self.context.queue, new_width, new_height);
-        self.ui_pass.on_resize(&self.context.device, &self.context.queue, new_width, new_height);
+        self.world_pass.on_resize(
+            &self.context.device,
+            &self.context.queue,
+            new_width,
+            new_height,
+        );
+        self.ui_pass.on_resize(
+            &self.context.device,
+            &self.context.queue,
+            new_width,
+            new_height,
+        );
         // User passes
         for pass in &mut self.extra_passes {
-            pass.on_resize(&self.context.device, &self.context.queue, new_width, new_height);
+            pass.on_resize(
+                &self.context.device,
+                &self.context.queue,
+                new_width,
+                new_height,
+            );
         }
     }
 
@@ -366,14 +388,21 @@ impl Renderer {
         self.gpu_camera.sync(&self.context.queue, &self.camera);
 
         let mut packet = self.build_base_packet();
-        if let Some(b) = ui_batch   { packet.insert(b); }
-        if let Some(b) = text_batch { packet.insert(b); }
+        if let Some(b) = ui_batch {
+            packet.insert(b);
+        }
+        if let Some(b) = text_batch {
+            packet.insert(b);
+        }
 
         let (color_view, resolve_target) = match dest {
             RenderDest::Target => self.render_target.color_views(),
             RenderDest::View(v) => {
                 if self.render_target.sample_count() > 1 {
-                    (self.render_target.color.msaa_view.as_ref().unwrap(), Some(v))
+                    (
+                        self.render_target.color.msaa_view.as_ref().unwrap(),
+                        Some(v),
+                    )
                 } else {
                     (v, None)
                 }
@@ -382,19 +411,36 @@ impl Renderer {
         let depth_view = self.render_target.depth_view();
 
         let dev = &self.context.device;
-        let q   = &self.context.queue;
+        let q = &self.context.queue;
 
         // Built-in passes first
         self.world_pass.prepare(dev, q, &packet);
-        self.world_pass.execute(dev, q, encoder, color_view, resolve_target, Some(depth_view), &packet);
+        self.world_pass.execute(
+            dev,
+            q,
+            encoder,
+            color_view,
+            resolve_target,
+            Some(depth_view),
+            &packet,
+        );
 
         self.ui_pass.prepare(dev, q, &packet);
-        self.ui_pass.execute(dev, q, encoder, color_view, resolve_target, None, &packet);
+        self.ui_pass
+            .execute(dev, q, encoder, color_view, resolve_target, None, &packet);
 
         // User-supplied passes
         for pass in &mut self.extra_passes {
             pass.prepare(dev, q, &packet);
-            pass.execute(dev, q, encoder, color_view, resolve_target, Some(depth_view), &packet);
+            pass.execute(
+                dev,
+                q,
+                encoder,
+                color_view,
+                resolve_target,
+                Some(depth_view),
+                &packet,
+            );
         }
 
         // Reclaim the Vec<DrawCommand> allocation back into cache for next frame.
@@ -414,14 +460,15 @@ impl Renderer {
         let frustum = scene::Frustum::from_view_proj(&camera_packet.view_proj);
 
         self.draw_commands_cache.extend(
-            self.objects.values()
+            self.objects
+                .values()
                 .filter(|obj| frustum.intersects_aabb(&obj.world_aabb()))
                 .map(|obj| DrawCommand {
                     vertex_buffer: obj.mesh.vertex_buffer.clone(),
-                    index_buffer:  obj.mesh.index_buffer.clone(),
-                    index_count:   obj.mesh.index_count,
-                    index_format:  obj.mesh.index_format,
-                    model_slot:    obj.slot,
+                    index_buffer: obj.mesh.index_buffer.clone(),
+                    index_count: obj.mesh.index_count,
+                    index_format: obj.mesh.index_format,
+                    model_slot: obj.slot,
                 }),
         );
 
