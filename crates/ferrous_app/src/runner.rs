@@ -354,13 +354,16 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
         let Some(window) = &self.window else { return };
 
         let is_idle = if let Some(timeout) = self.config.idle_timeout {
-            Instant::now().duration_since(self.last_action_time).as_secs_f32() > timeout
+            Instant::now()
+                .duration_since(self.last_action_time)
+                .as_secs_f32()
+                > timeout
         } else {
             false
         };
 
         if is_idle {
-            // We've been idle for longer than the timeout. 
+            // We've been idle for longer than the timeout.
             // Just wait for OS events, don't request a continuous redraw.
             event_loop.set_control_flow(ControlFlow::Wait);
             return;

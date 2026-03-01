@@ -24,8 +24,8 @@ pub struct AppConfig {
     /// `None` = unlimited (busy-loop, maximum throughput at the cost of CPU).
     /// Default: `Some(60)`.
     pub target_fps: Option<u32>,
-    /// How many seconds of no input before the application drops to idle 
-    /// (stops continuous rendering) to save CPU/GPU usage. 
+    /// How many seconds of no input before the application drops to idle
+    /// (stops continuous rendering) to save CPU/GPU usage.
     /// Useful for editors or UI-heavy apps.
     /// `None` = never goes idle (always continuously redraws).
     pub idle_timeout: Option<f32>,
@@ -121,7 +121,7 @@ impl<A: FerrousApp + 'static> App<A> {
         self
     }
 
-    /// Sets how long (in seconds) the application expects no input before 
+    /// Sets how long (in seconds) the application expects no input before
     /// stopping continuous redraws. `None` disables idling.
     pub fn with_idle_timeout(mut self, timeout: Option<f32>) -> Self {
         self.config.idle_timeout = timeout;
