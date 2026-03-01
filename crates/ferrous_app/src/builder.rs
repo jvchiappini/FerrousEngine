@@ -24,6 +24,11 @@ pub struct AppConfig {
     /// `None` = unlimited (busy-loop, maximum throughput at the cost of CPU).
     /// Default: `Some(60)`.
     pub target_fps: Option<u32>,
+    /// How many seconds of no input before the application drops to idle 
+    /// (stops continuous rendering) to save CPU/GPU usage. 
+    /// Useful for editors or UI-heavy apps.
+    /// `None` = never goes idle (always continuously redraws).
+    pub idle_timeout: Option<f32>,
     /// MSAA sample count: `1` = no anti-aliasing, `4` = 4x MSAA.
     ///
     /// Higher values improve edge quality but multiply GPU raster work.
@@ -42,6 +47,7 @@ impl Default for AppConfig {
             resizable: true,
             background_color: Color::rgb(0.1, 0.1, 0.1),
             target_fps: Some(60),
+            idle_timeout: None,
             sample_count: 1,
         }
     }
@@ -110,12 +116,19 @@ impl<A: FerrousApp + 'static> App<A> {
     /// Cap the frame rate.  The runner sleeps unused CPU time each frame.
     ///
     /// `None` disables the cap (maximum throughput, higher CPU usage).
-    pub fn with_target_fps(mut self, fps: impl Into<Option<u32>>) -> Self {
-        self.config.target_fps = fps.into();
+    pub fn with_target_fps(mut self, fps: Option<u32>) -> Self {
+        self.config.target_fps = fps;
         self
     }
 
-    /// Set the MSAA sample count (`1` = off, `4` = 4x).
+    /// Sets how long (in seconds) the application expects no input before 
+    /// stopping continuous redraws. `None` disables idling.
+    pub fn with_idle_timeout(mut self, timeout: Option<f32>) -> Self {
+        self.config.idle_timeout = timeout;
+        self
+    }
+
+    /// Set MSAA sample count (`1` = off, `4` = 4x).
     ///
     /// 4x MSAA significantly increases GPU raster cost; only enable it when
     /// edge quality is critical.

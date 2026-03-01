@@ -32,6 +32,9 @@ struct Runner<A: FerrousApp> {
     /// Timestamp of the last rendered frame, used to enforce the frame budget
     /// even when the OS delivers input events faster than the target FPS.
     last_frame: Instant,
+    /// Timestamp of the last received window event (e.g. input), used to determine
+    /// if the application is idle and should stop continuous rendering.
+    last_action_time: Instant,
 }
 
 impl<A: FerrousApp> Runner<A> {
@@ -55,6 +58,7 @@ impl<A: FerrousApp> Runner<A> {
             font: None,
             font_rx: None,
             last_frame: Instant::now(),
+            last_action_time: Instant::now(),
         }
     }
 
@@ -262,6 +266,12 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {}
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        // Track input/actions so we know when to stay awake vs. idle
+        match event {
+            WindowEvent::RedrawRequested => {} // Redraw itself doesn't count as an interactive event
+            _ => self.last_action_time = Instant::now(),
+        }
+
         // Let the GUI system see the event first
         self.ui.handle_window_event(&event, &mut self.input);
 
@@ -342,6 +352,19 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
         // This combination keeps the CPU and GPU fully idle between frames
         // regardless of how many input events (mouse moves, etc.) arrive.
         let Some(window) = &self.window else { return };
+
+        let is_idle = if let Some(timeout) = self.config.idle_timeout {
+            Instant::now().duration_since(self.last_action_time).as_secs_f32() > timeout
+        } else {
+            false
+        };
+
+        if is_idle {
+            // We've been idle for longer than the timeout. 
+            // Just wait for OS events, don't request a continuous redraw.
+            event_loop.set_control_flow(ControlFlow::Wait);
+            return;
+        }
 
         if let Some(target_fps) = self.config.target_fps {
             let budget = Duration::from_secs_f64(1.0 / target_fps as f64);

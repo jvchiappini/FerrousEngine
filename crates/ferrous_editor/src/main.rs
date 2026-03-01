@@ -127,7 +127,8 @@ impl FerrousApp for EditorApp {
 
 fn main() {
     App::new(EditorApp::default())
-        .with_target_fps(60)
+        .with_target_fps(Some(60))
+        .with_idle_timeout(Some(0.5))
         .with_msaa(1)
         .with_title("Ferrous Engine — Editor")
         .with_size(1280, 720)
