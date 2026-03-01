@@ -25,25 +25,30 @@ pub enum ContextError {
 }
 
 impl EngineContext {
-    /// Crea un `EngineContext` de forma asíncrona. Esto inicializa
-    /// una instancia de WGPU, el adaptador y el par device/queue.
-    ///
-    /// Se utiliza una preferencia de alto rendimiento y no se asocia a una
-    /// superficie porque la idea es que el renderizador sea "render-to-\
-    /// texture" y la superficie la gestione el editor más adelante.
+    /// Crea un `EngineContext` headless (sin surface), útil para tests y
+    /// contextos de render-to-texture puros.
     pub async fn new() -> anyhow::Result<Self> {
-        // wgpu 0.23 requires an InstanceDescriptor instead of a direct
-        // Backends bitfield. We opt for all backends to allow Vulkan/Metal/
-        // DX12/BrowserGPU depending on platform.
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
+        Self::new_with_instance(instance, None).await
+    }
 
+    /// Crea un `EngineContext` reutilizando una `Instance` ya existente y
+    /// opcionalmente asociando una `Surface` para que el adaptador
+    /// seleccionado sea garantizadamente compatible con la ventana.
+    ///
+    /// Usar este método cuando se renderiza a una ventana real — evita rutas
+    /// de presentación costosas (copias cross-bus en sistemas multi-GPU).
+    pub async fn new_with_instance(
+        instance: wgpu::Instance,
+        compatible_surface: Option<&wgpu::Surface<'_>>,
+    ) -> anyhow::Result<Self> {
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None, // headless para RTT
+                compatible_surface,
                 force_fallback_adapter: false,
             })
             .await
@@ -59,7 +64,6 @@ impl EngineContext {
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("Engine Device"),
-                    // the fields were renamed in 0.23
                     required_features: wgpu::Features::empty(),
                     required_limits: wgpu::Limits::default(),
                     ..Default::default()

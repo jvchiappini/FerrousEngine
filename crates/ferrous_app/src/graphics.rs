@@ -16,9 +16,22 @@ impl GraphicsState {
         vsync: bool,
         sample_count: u32,
     ) -> Self {
-        let context = EngineContext::new().await.unwrap();
-        let surface = context.instance.create_surface(window).unwrap();
+        // Create the instance first so we can create the surface before the
+        // adapter — this lets wgpu pick the adapter that actually supports
+        // presenting to our window (critical on multi-GPU systems).
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        });
+
+        let surface = instance.create_surface(window).unwrap();
         let surface: wgpu::Surface<'static> = unsafe { std::mem::transmute(surface) };
+
+        // Build the context with the surface so the adapter selection is
+        // surface-compatible (avoids costly cross-bus present paths).
+        let context = EngineContext::new_with_instance(instance, Some(&surface))
+            .await
+            .unwrap();
 
         let caps = surface.get_capabilities(&context.adapter);
         let format = caps

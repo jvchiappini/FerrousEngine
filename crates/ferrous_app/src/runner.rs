@@ -29,6 +29,9 @@ struct Runner<A: FerrousApp> {
     world: World,
     font: Option<Font>,
     font_rx: Option<std::sync::mpsc::Receiver<Font>>,
+    /// Timestamp of the last rendered frame, used to enforce the frame budget
+    /// even when the OS delivers input events faster than the target FPS.
+    last_frame: Instant,
 }
 
 impl<A: FerrousApp> Runner<A> {
@@ -51,7 +54,135 @@ impl<A: FerrousApp> Runner<A> {
             world: World::new(),
             font: None,
             font_rx: None,
+            last_frame: Instant::now(),
         }
+    }
+
+    /// Executes one full update + render cycle.  Called exclusively from
+    /// `WindowEvent::RedrawRequested` so that input events (mouse moves, etc.)
+    /// never trigger extra renders outside the frame budget.
+    fn render_frame(&mut self, event_loop: &ActiveEventLoop) {
+        let (Some(gfx), Some(window)) = (&mut self.graphics, &self.window) else {
+            return;
+        };
+
+        // Stamp the frame start for the next deadline calculation.
+        self.last_frame = Instant::now();
+
+        // Check for async font completion
+        if self.font.is_none() {
+            if let Some(Ok(font)) = self.font_rx.as_ref().map(|rx| rx.try_recv()) {
+                gfx.renderer
+                    .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
+                self.font = Some(font);
+                self.font_rx = None;
+            }
+        }
+
+        // Advance the frame clock
+        let time = self.clock.tick();
+
+        // ── 1. UPDATE ────────────────────────────────────────────────────────
+        {
+            let mut ctx = AppContext {
+                input: &self.input,
+                time,
+                window_size: self.window_size,
+                window,
+                viewport: self.viewport,
+                world: &mut self.world,
+                renderer: Some(&mut gfx.renderer),
+                exit_requested: false,
+            };
+
+            self.app.update(&mut ctx);
+            if ctx.exit_requested {
+                event_loop.exit();
+                return;
+            }
+
+            // Sync viewport change to renderer + GUI
+            if self.viewport != ctx.viewport {
+                self.viewport = ctx.viewport;
+                gfx.renderer.set_viewport(self.viewport);
+                self.ui.set_viewport_rect(
+                    self.viewport.x as f32,
+                    self.viewport.y as f32,
+                    self.viewport.width as f32,
+                    self.viewport.height as f32,
+                );
+            }
+        }
+
+        // ── Auto world → renderer sync ───────────────────────────────────────
+        gfx.renderer.sync_world(&self.world);
+
+        // ── 3D camera input ──────────────────────────────────────────────────
+        let dt = time.delta;
+        if self.viewport.width > 0 && self.viewport.height > 0 {
+            let (mx, my) = self.input.mouse_position();
+            let in_viewport = mx >= self.viewport.x as f64
+                && mx < (self.viewport.x + self.viewport.width) as f64
+                && my >= self.viewport.y as f64
+                && my < (self.viewport.y + self.viewport.height) as f64;
+            if in_viewport {
+                gfx.renderer.handle_input(&mut self.input, dt);
+            }
+        }
+
+        // ── 2. DRAW 3D + DRAW UI ─────────────────────────────────────────────
+        let mut encoder = gfx.renderer.begin_frame();
+        {
+            let mut ctx = AppContext {
+                input: &self.input,
+                time,
+                window_size: self.window_size,
+                window,
+                viewport: self.viewport,
+                world: &mut self.world,
+                renderer: None,
+                exit_requested: false,
+            };
+
+            if self.viewport.width > 0 {
+                self.app.draw_3d(&mut gfx.renderer, &mut ctx);
+            }
+
+            let mut gui_batch = GuiBatch::new();
+            let mut text_batch = TextBatch::new();
+            self.app.draw_ui(
+                &mut gui_batch,
+                &mut text_batch,
+                self.font.as_ref(),
+                &mut ctx,
+            );
+            self.ui
+                .draw(&mut gui_batch, &mut text_batch, self.font.as_ref());
+
+            // ── 3. RENDER FINAL ──────────────────────────────────────────────
+            let frame = match gfx.surface.get_current_texture() {
+                Ok(f) => f,
+                // Outdated/Lost: the swapchain needs reconfiguring (e.g. window
+                // minimised or resized race).  Skip this frame — the next
+                // Resized event or WaitUntil wake-up will recover automatically.
+                Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
+                    gfx.resize(self.window_size.0, self.window_size.1);
+                    return;
+                }
+                // Out of memory or unknown driver error — nothing we can do.
+                Err(e) => panic!("Surface error: {e:?}"),
+            };
+            let view = frame
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+            gfx.renderer
+                .render_to_view(&mut encoder, &view, Some(gui_batch), Some(text_batch));
+            gfx.renderer.context.queue.submit(Some(encoder.finish()));
+            frame.present();
+        }
+
+        // ── End-of-frame input cleanup ───────────────────────────────────────
+        self.input.end_frame();
     }
 }
 
@@ -181,150 +312,57 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                     }
                 }
             }
+            WindowEvent::RedrawRequested => {
+                // Guard: skip if we haven't reached the next frame deadline yet.
+                // This prevents mouse events from sneaking in extra renders
+                // between WaitUntil wake-ups.
+                if let Some(target_fps) = self.config.target_fps {
+                    let budget = Duration::from_secs_f64(1.0 / target_fps as f64);
+                    if self.last_frame.elapsed() < budget {
+                        return;
+                    }
+                }
+                self.render_frame(event_loop);
+            }
             _ => {}
         }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let (Some(gfx), Some(window)) = (&mut self.graphics, &self.window) else {
-            return;
-        };
+        // about_to_wait fires after every batch of events (including mouse
+        // moves).  Do NOT render here — that would bypass the frame budget.
+        //
+        // Strategy:
+        //  - If the frame deadline has arrived  → request_redraw() so winit
+        //    emits RedrawRequested (where the actual render happens).
+        //  - If the deadline is still in the future → WaitUntil(deadline) so
+        //    the OS scheduler sleeps the thread; winit will call about_to_wait
+        //    again when it fires, and we'll request_redraw() at that point.
+        //
+        // This combination keeps the CPU and GPU fully idle between frames
+        // regardless of how many input events (mouse moves, etc.) arrive.
+        let Some(window) = &self.window else { return };
 
-        // Record the moment this frame started (used by the FPS limiter below).
-        let frame_start = Instant::now();
-
-        // Check for async font completion
-        if self.font.is_none() {
-            if let Some(Ok(font)) = self.font_rx.as_ref().map(|rx| rx.try_recv()) {
-                gfx.renderer
-                    .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
-                self.font = Some(font);
-                self.font_rx = None;
-            }
-        }
-
-        // Advance the frame clock
-        let time = self.clock.tick();
-
-        // ── 1. UPDATE ────────────────────────────────────────────────────────
-        {
-            let mut ctx = AppContext {
-                input: &self.input,
-                time,
-                window_size: self.window_size,
-                window,
-                viewport: self.viewport,
-                world: &mut self.world,
-                renderer: Some(&mut gfx.renderer),
-                exit_requested: false,
-            };
-
-            self.app.update(&mut ctx);
-            if ctx.exit_requested {
-                event_loop.exit();
-                return;
-            }
-
-            // Sync viewport change to renderer + GUI
-            if self.viewport != ctx.viewport {
-                self.viewport = ctx.viewport;
-                gfx.renderer.set_viewport(self.viewport);
-                self.ui.set_viewport_rect(
-                    self.viewport.x as f32,
-                    self.viewport.y as f32,
-                    self.viewport.width as f32,
-                    self.viewport.height as f32,
-                );
-            }
-        }
-
-        // ── Auto world → renderer sync ───────────────────────────────────────
-        // The runner reconciles the scene graph automatically so users don't
-        // have to call renderer.sync_world() manually.
-        gfx.renderer.sync_world(&self.world);
-
-        // ── 3D camera input ──────────────────────────────────────────────────
-        // Feed input to the camera whenever the mouse cursor is inside the 3D
-        // viewport rect.  We intentionally do NOT gate on viewport_focused() —
-        // that only matters for GUI widgets, not for free-flight/orbit camera.
-        let dt = time.delta;
-        if self.viewport.width > 0 && self.viewport.height > 0 {
-            let (mx, my) = self.input.mouse_position();
-            let in_viewport = mx >= self.viewport.x as f64
-                && mx < (self.viewport.x + self.viewport.width) as f64
-                && my >= self.viewport.y as f64
-                && my < (self.viewport.y + self.viewport.height) as f64;
-            if in_viewport {
-                gfx.renderer.handle_input(&mut self.input, dt);
-            }
-        }
-
-        // ── 2. DRAW 3D + DRAW UI ─────────────────────────────────────────────
-        let mut encoder = gfx.renderer.begin_frame();
-        {
-            let mut ctx = AppContext {
-                input: &self.input,
-                time,
-                window_size: self.window_size,
-                window,
-                viewport: self.viewport,
-                world: &mut self.world,
-                // renderer given explicitly to draw_3d; keep None here to
-                // avoid a double-mutable-borrow.
-                renderer: None,
-                exit_requested: false,
-            };
-
-            if self.viewport.width > 0 {
-                self.app.draw_3d(&mut gfx.renderer, &mut ctx);
-            }
-
-            let mut gui_batch = GuiBatch::new();
-            let mut text_batch = TextBatch::new();
-            self.app.draw_ui(
-                &mut gui_batch,
-                &mut text_batch,
-                self.font.as_ref(),
-                &mut ctx,
-            );
-            self.ui
-                .draw(&mut gui_batch, &mut text_batch, self.font.as_ref());
-
-            // ── 3. RENDER FINAL ──────────────────────────────────────────────
-            let frame = gfx.surface.get_current_texture().unwrap();
-            let view = frame
-                .texture
-                .create_view(&wgpu::TextureViewDescriptor::default());
-            gfx.renderer
-                .render_to_view(&mut encoder, &view, Some(gui_batch), Some(text_batch));
-            gfx.renderer.context.queue.submit(Some(encoder.finish()));
-            frame.present();
-        }
-
-        // ── End-of-frame input cleanup ───────────────────────────────────────
-        // Must happen AFTER all update/draw callbacks have read just_pressed etc.
-        self.input.end_frame();
-
-        // ── FPS limiter ──────────────────────────────────────────────────────
-        // Sleep the remaining frame budget so the CPU idles instead of spinning.
-        // This is done BEFORE request_redraw so the sleep happens at the right
-        // point in the pipeline.  vsync will further throttle GPU submission.
         if let Some(target_fps) = self.config.target_fps {
             let budget = Duration::from_secs_f64(1.0 / target_fps as f64);
-            let elapsed = frame_start.elapsed();
-            if elapsed < budget {
-                std::thread::sleep(budget - elapsed);
+            let next_frame = self.last_frame + budget;
+            if Instant::now() >= next_frame {
+                window.request_redraw();
+            } else {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(next_frame));
             }
+        } else {
+            // Unlimited FPS: always redraw immediately.
+            window.request_redraw();
         }
-
-        window.request_redraw();
     }
 }
 
 pub(crate) fn run_internal<A: FerrousApp + 'static>(config: AppConfig, app: A) {
     let mut runner = Runner::new(app, config);
     let event_loop = EventLoop::new().unwrap();
-    // Poll = spin the loop as fast as possible; no sleeping between frames.
-    event_loop.set_control_flow(ControlFlow::Poll);
+    // Wait = winit sleeps the thread between redraws; the runner wakes it
+    // precisely via WaitUntil so the CPU and GPU idle between frames.
+    event_loop.set_control_flow(ControlFlow::Wait);
     event_loop.run_app(&mut runner).unwrap();
 }
