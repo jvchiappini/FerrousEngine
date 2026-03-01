@@ -16,21 +16,20 @@
 use std::sync::Arc;
 
 use wgpu::{
-    Color, CommandEncoder, Device, LoadOp, Operations, Queue,
-    RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor,
-    StoreOp, TextureView,
+    Color, CommandEncoder, Device, LoadOp, Operations, Queue, RenderPassColorAttachment,
+    RenderPassDepthStencilAttachment, RenderPassDescriptor, StoreOp, TextureView,
 };
 
 use crate::graph::{FramePacket, RenderPass};
 use crate::pipeline::WorldPipeline;
 
 pub struct WorldPass {
-    pipeline:          WorldPipeline,
+    pipeline: WorldPipeline,
     camera_bind_group: Arc<wgpu::BindGroup>,
     /// Shared dynamic model-matrix bind group (one for the whole scene).
-    model_bind_group:  Option<Arc<wgpu::BindGroup>>,
+    model_bind_group: Option<Arc<wgpu::BindGroup>>,
     /// Byte stride between matrix slots in the model buffer.
-    model_stride:      u32,
+    model_stride: u32,
     /// Sky / clear color.
     pub clear_color: Color,
 }
@@ -42,7 +41,12 @@ impl WorldPass {
             camera_bind_group,
             model_bind_group: None,
             model_stride: 256, // safe default; overwritten by set_model_buffer
-            clear_color: Color { r: 0.1, g: 0.2, b: 0.3, a: 1.0 },
+            clear_color: Color {
+                r: 0.1,
+                g: 0.2,
+                b: 0.3,
+                a: 1.0,
+            },
         }
     }
 
@@ -54,7 +58,9 @@ impl WorldPass {
 }
 
 impl RenderPass for WorldPass {
-    fn name(&self) -> &str { "World Opaque Pass" }
+    fn name(&self) -> &str {
+        "World Opaque Pass"
+    }
 
     fn prepare(&mut self, _device: &Device, _queue: &Queue, _packet: &FramePacket) {}
 
@@ -74,27 +80,30 @@ impl RenderPass for WorldPass {
                 view: color_view,
                 resolve_target,
                 ops: Operations {
-                    load:  LoadOp::Clear(self.clear_color),
+                    load: LoadOp::Clear(self.clear_color),
                     store: StoreOp::Store,
                 },
             })],
             depth_stencil_attachment: depth_view.map(|v| RenderPassDepthStencilAttachment {
                 view: v,
                 depth_ops: Some(Operations {
-                    load:  LoadOp::Clear(1.0),
+                    load: LoadOp::Clear(1.0),
                     store: StoreOp::Store,
                 }),
                 stencil_ops: None,
             }),
-            occlusion_query_set:  None,
-            timestamp_writes:     None,
+            occlusion_query_set: None,
+            timestamp_writes: None,
         });
 
         if let Some(vp) = &packet.viewport {
             rpass.set_viewport(
-                vp.x as f32, vp.y as f32,
-                vp.width as f32, vp.height as f32,
-                0.0, 1.0,
+                vp.x as f32,
+                vp.y as f32,
+                vp.width as f32,
+                vp.height as f32,
+                0.0,
+                1.0,
             );
             rpass.set_scissor_rect(vp.x, vp.y, vp.width, vp.height);
         }
@@ -114,4 +123,3 @@ impl RenderPass for WorldPass {
         }
     }
 }
-

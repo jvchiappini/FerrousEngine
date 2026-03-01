@@ -24,7 +24,9 @@ struct EditorApp {
 impl Default for EditorApp {
     fn default() -> Self {
         Self {
-            add_button: Rc::new(RefCell::new(InteractiveButton::new(10.0, 10.0, 120.0, 32.0))),
+            add_button: Rc::new(RefCell::new(InteractiveButton::new(
+                10.0, 10.0, 120.0, 32.0,
+            ))),
             ui_viewport: Rc::new(RefCell::new(ViewportWidget::new(0.0, 0.0, 0.0, 0.0))),
             button_was_pressed: false,
             add_cube: false,
@@ -81,7 +83,7 @@ impl FerrousApp for EditorApp {
             // Show a small HUD with frame timing.
             let fps_str = format!("FPS: {:.0}", ctx.time.fps);
             let elapsed_str = format!("t = {:.1}s", ctx.time.elapsed);
-            text.draw_text(font, &fps_str,     [15.0, 52.0], 14.0, [0.8, 0.8, 0.8, 1.0]);
+            text.draw_text(font, &fps_str, [15.0, 52.0], 14.0, [0.8, 0.8, 0.8, 1.0]);
             text.draw_text(font, &elapsed_str, [15.0, 70.0], 14.0, [0.6, 0.6, 0.6, 1.0]);
         }
     }
@@ -125,6 +127,8 @@ impl FerrousApp for EditorApp {
 
 fn main() {
     App::new(EditorApp::default())
+        .with_target_fps(60)
+        .with_msaa(1)
         .with_title("Ferrous Engine — Editor")
         .with_size(1280, 720)
         .with_font("assets/fonts/Roboto-Regular.ttf")

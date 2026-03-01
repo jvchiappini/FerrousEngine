@@ -22,12 +22,12 @@ use crate::scene::RenderObject;
 
 /// Update `objects` so that it mirrors the renderable entities in `world`.
 pub fn sync_world(
-    world:        &World,
-    objects:      &mut HashMap<u64, RenderObject>,
-    next_slot:    &mut usize,
-    model_buf:    &mut ModelBuffer,
-    device:       &wgpu::Device,
-    queue:        &wgpu::Queue,
+    world: &World,
+    objects: &mut HashMap<u64, RenderObject>,
+    next_slot: &mut usize,
+    model_buf: &mut ModelBuffer,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
     model_layout: &wgpu::BindGroupLayout,
 ) {
     // ── Phase 1: remove stale objects ──────────────────────────────────────
@@ -71,4 +71,3 @@ pub fn sync_world(
         }
     }
 }
-

@@ -10,12 +10,25 @@ pub struct AppConfig {
     pub height: u32,
     /// Optional path to a `.ttf`/`.otf` font loaded asynchronously at startup.
     pub font_path: Option<String>,
-    /// Enable vertical sync (smooth but capped to monitor refresh rate).
+    /// Enable vertical sync — locks GPU present to monitor refresh rate,
+    /// eliminating tearing and capping GPU usage to the refresh rate.
+    /// Default: `true`.
     pub vsync: bool,
     /// Whether the user can resize the window. Defaults to `true`.
     pub resizable: bool,
     /// Color used to clear the 3-D viewport every frame.
     pub background_color: Color,
+    /// Maximum frames per second.  The runner sleeps the remainder of each
+    /// frame budget on the CPU, keeping usage low during idle scenes.
+    ///
+    /// `None` = unlimited (busy-loop, maximum throughput at the cost of CPU).
+    /// Default: `Some(60)`.
+    pub target_fps: Option<u32>,
+    /// MSAA sample count: `1` = no anti-aliasing, `4` = 4x MSAA.
+    ///
+    /// Higher values improve edge quality but multiply GPU raster work.
+    /// Default: `1` (no MSAA) — enable explicitly when needed.
+    pub sample_count: u32,
 }
 
 impl Default for AppConfig {
@@ -25,9 +38,11 @@ impl Default for AppConfig {
             width: 1280,
             height: 720,
             font_path: None,
-            vsync: false,
+            vsync: true,
             resizable: true,
             background_color: Color::rgb(0.1, 0.1, 0.1),
+            target_fps: Some(60),
+            sample_count: 1,
         }
     }
 }
@@ -89,6 +104,23 @@ impl<A: FerrousApp + 'static> App<A> {
     /// Colour used to clear the 3-D viewport before each frame (default: dark gray).
     pub fn with_background_color(mut self, color: Color) -> Self {
         self.config.background_color = color;
+        self
+    }
+
+    /// Cap the frame rate.  The runner sleeps unused CPU time each frame.
+    ///
+    /// `None` disables the cap (maximum throughput, higher CPU usage).
+    pub fn with_target_fps(mut self, fps: impl Into<Option<u32>>) -> Self {
+        self.config.target_fps = fps.into();
+        self
+    }
+
+    /// Set the MSAA sample count (`1` = off, `4` = 4x).
+    ///
+    /// 4x MSAA significantly increases GPU raster cost; only enable it when
+    /// edge quality is critical.
+    pub fn with_msaa(mut self, sample_count: u32) -> Self {
+        self.config.sample_count = sample_count;
         self
     }
 

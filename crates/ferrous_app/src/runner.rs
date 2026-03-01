@@ -3,6 +3,7 @@ use ferrous_core::{InputState, TimeClock, World};
 use ferrous_gui::{GuiBatch, TextBatch, Ui};
 use ferrous_renderer::Viewport;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -80,6 +81,7 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
             self.config.width,
             self.config.height,
             self.config.vsync,
+            self.config.sample_count,
         ));
         gfx.renderer.set_viewport(self.viewport);
         gfx.renderer
@@ -187,6 +189,9 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
         let (Some(gfx), Some(window)) = (&mut self.graphics, &self.window) else {
             return;
         };
+
+        // Record the moment this frame started (used by the FPS limiter below).
+        let frame_start = Instant::now();
 
         // Check for async font completion
         if self.font.is_none() {
@@ -299,6 +304,18 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
         // ── End-of-frame input cleanup ───────────────────────────────────────
         // Must happen AFTER all update/draw callbacks have read just_pressed etc.
         self.input.end_frame();
+
+        // ── FPS limiter ──────────────────────────────────────────────────────
+        // Sleep the remaining frame budget so the CPU idles instead of spinning.
+        // This is done BEFORE request_redraw so the sleep happens at the right
+        // point in the pipeline.  vsync will further throttle GPU submission.
+        if let Some(target_fps) = self.config.target_fps {
+            let budget = Duration::from_secs_f64(1.0 / target_fps as f64);
+            let elapsed = frame_start.elapsed();
+            if elapsed < budget {
+                std::thread::sleep(budget - elapsed);
+            }
+        }
 
         window.request_redraw();
     }

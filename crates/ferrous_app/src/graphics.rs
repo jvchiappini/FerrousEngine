@@ -9,7 +9,13 @@ pub struct GraphicsState {
 }
 
 impl GraphicsState {
-    pub async fn new(window: &Window, width: u32, height: u32, vsync: bool) -> Self {
+    pub async fn new(
+        window: &Window,
+        width: u32,
+        height: u32,
+        vsync: bool,
+        sample_count: u32,
+    ) -> Self {
         let context = EngineContext::new().await.unwrap();
         let surface = context.instance.create_surface(window).unwrap();
         let surface: wgpu::Surface<'static> = unsafe { std::mem::transmute(surface) };
@@ -21,10 +27,23 @@ impl GraphicsState {
             .copied()
             .find(|f| f.is_srgb())
             .unwrap_or(caps.formats[0]);
+        // PresentMode::Fifo  = hard vsync (monitor refresh rate, lowest GPU usage)
+        // PresentMode::Mailbox = no tearing, but uncapped GPU (use only for benchmarks)
+        // PresentMode::AutoNoVsync = fully uncapped — high GPU usage even at low FPS
+        //
+        // We always prefer Fifo (or FifoRelaxed when available) because the
+        // target_fps limiter on the CPU side is not enough: the GPU executes
+        // queued work *during* the CPU sleep, so AutoNoVsync causes high GPU
+        // usage regardless of how slow the CPU loop runs.
+        let available = caps.present_modes.as_slice();
         let present_mode = if vsync {
             wgpu::PresentMode::Fifo
+        } else if available.contains(&wgpu::PresentMode::Mailbox) {
+            // Mailbox: no tearing, GPU is rate-limited by the swapchain queue
+            // (at most 1 frame ahead), much lower GPU usage than AutoNoVsync.
+            wgpu::PresentMode::Mailbox
         } else {
-            wgpu::PresentMode::AutoNoVsync
+            wgpu::PresentMode::Fifo
         };
 
         let config = wgpu::SurfaceConfiguration {
@@ -35,11 +54,19 @@ impl GraphicsState {
             present_mode,
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
+            // 1 = only one frame queued ahead; minimises GPU pre-work and
+            // therefore GPU usage when the CPU is sleeping between frames.
             desired_maximum_frame_latency: 1,
         };
         surface.configure(&context.device, &config);
 
-        let renderer = Renderer::new(context, config.width, config.height, config.format, 4);
+        let renderer = Renderer::new(
+            context,
+            config.width,
+            config.height,
+            config.format,
+            sample_count,
+        );
 
         Self {
             surface,
