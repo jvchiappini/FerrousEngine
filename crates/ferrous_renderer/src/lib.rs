@@ -68,7 +68,6 @@ enum RenderDest<'a> {
     View(&'a wgpu::TextureView),
 }
 
-
 impl Renderer {
     /// Crea un `Renderer` inicializando el render target y el pipeline.
     pub fn new(
