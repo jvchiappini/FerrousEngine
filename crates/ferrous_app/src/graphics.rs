@@ -39,7 +39,7 @@ impl GraphicsState {
         };
         surface.configure(&context.device, &config);
 
-        let renderer = Renderer::new(context, config.width, config.height, config.format);
+        let renderer = Renderer::new(context, config.width, config.height, config.format, 4);
 
         Self {
             surface,

@@ -291,7 +291,7 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                 .texture
                 .create_view(&wgpu::TextureViewDescriptor::default());
             gfx.renderer
-                .render_to_view(&mut encoder, &view, Some(&gui_batch), Some(&text_batch));
+                .render_to_view(&mut encoder, &view, Some(gui_batch), Some(text_batch));
             gfx.renderer.context.queue.submit(Some(encoder.finish()));
             frame.present();
         }

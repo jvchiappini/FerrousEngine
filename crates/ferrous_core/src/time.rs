@@ -60,8 +60,8 @@ impl Time {
 /// The runner creates one of these at startup and calls `tick()` at the
 /// beginning of every frame.
 pub struct TimeClock {
-    start:       std::time::Instant,
-    last_tick:   std::time::Instant,
+    start: std::time::Instant,
+    last_tick: std::time::Instant,
     frame_count: u64,
 }
 
@@ -70,8 +70,8 @@ impl TimeClock {
     pub fn new() -> Self {
         let now = std::time::Instant::now();
         Self {
-            start:       now,
-            last_tick:   now,
+            start: now,
+            last_tick: now,
             frame_count: 0,
         }
     }
@@ -82,27 +82,37 @@ impl TimeClock {
     /// hot frame path — they still want valid timing data but must not advance
     /// the frame counter.
     pub fn peek(&self) -> Time {
-        let now     = std::time::Instant::now();
-        let raw_dt  = (now - self.last_tick).as_secs_f32();
-        let delta   = raw_dt.min(0.1);
+        let now = std::time::Instant::now();
+        let raw_dt = (now - self.last_tick).as_secs_f32();
+        let delta = raw_dt.min(0.1);
         let elapsed = (now - self.start).as_secs_f64();
-        let fps     = if delta > 0.0 { 1.0 / delta } else { 0.0 };
-        Time { delta, elapsed, frame_count: self.frame_count, fps }
+        let fps = if delta > 0.0 { 1.0 / delta } else { 0.0 };
+        Time {
+            delta,
+            elapsed,
+            frame_count: self.frame_count,
+            fps,
+        }
     }
 
     /// Advance by one frame.  Returns the [`Time`] snapshot for this frame.
     pub fn tick(&mut self) -> Time {
-        let now     = std::time::Instant::now();
-        let raw_dt  = (now - self.last_tick).as_secs_f32();
-        let delta   = raw_dt.min(0.1); // clamp to avoid spiral-of-death
+        let now = std::time::Instant::now();
+        let raw_dt = (now - self.last_tick).as_secs_f32();
+        let delta = raw_dt.min(0.1); // clamp to avoid spiral-of-death
         let elapsed = (now - self.start).as_secs_f64();
-        let fps     = if delta > 0.0 { 1.0 / delta } else { 0.0 };
-        let count   = self.frame_count;
+        let fps = if delta > 0.0 { 1.0 / delta } else { 0.0 };
+        let count = self.frame_count;
 
-        self.last_tick   = now;
+        self.last_tick = now;
         self.frame_count += 1;
 
-        Time { delta, elapsed, frame_count: count, fps }
+        Time {
+            delta,
+            elapsed,
+            frame_count: count,
+            fps,
+        }
     }
 }
 

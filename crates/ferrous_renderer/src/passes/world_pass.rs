@@ -1,7 +1,10 @@
-/// 3-D opaque geometry pass.
+/// 3-D / 2-D opaque geometry pass.
 ///
-/// Clears color + depth, sets the camera and per-object bind groups, and
+/// Clears color + depth, binds the camera and per-object model matrices, and
 /// emits one indexed draw call per `DrawCommand` in the `FramePacket`.
+///
+/// Supports both 3-D (perspective) and 2-D (orthographic) cameras — the
+/// distinction is entirely in the camera's view-projection matrix.
 use std::sync::Arc;
 
 use wgpu::{
@@ -33,13 +36,10 @@ impl WorldPass {
 impl RenderPass for WorldPass {
     fn name(&self) -> &str { "World Opaque Pass" }
 
-    fn as_any(&self)         -> &dyn std::any::Any      { self }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any  { self }
-
     fn prepare(&mut self, _device: &Device, _queue: &Queue, _packet: &FramePacket) {}
 
     fn execute(
-        &self,
+        &mut self,
         _device: &Device,
         _queue: &Queue,
         encoder: &mut CommandEncoder,

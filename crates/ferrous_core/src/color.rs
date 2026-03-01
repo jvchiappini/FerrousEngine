@@ -54,8 +54,8 @@ impl Color {
     pub fn from_hex(hex: u32) -> Self {
         let r = ((hex >> 24) & 0xFF) as f32 / 255.0;
         let g = ((hex >> 16) & 0xFF) as f32 / 255.0;
-        let b = ((hex >> 8)  & 0xFF) as f32 / 255.0;
-        let a = ((hex)        & 0xFF) as f32 / 255.0;
+        let b = ((hex >> 8) & 0xFF) as f32 / 255.0;
+        let a = ((hex) & 0xFF) as f32 / 255.0;
         Self { r, g, b, a }
     }
 
@@ -128,32 +128,32 @@ impl Color {
 
     // ── Palette ─────────────────────────────────────────────────────────────
 
-    pub const WHITE:       Self = Self::rgb(1.0, 1.0, 1.0);
-    pub const BLACK:       Self = Self::rgb(0.0, 0.0, 0.0);
+    pub const WHITE: Self = Self::rgb(1.0, 1.0, 1.0);
+    pub const BLACK: Self = Self::rgb(0.0, 0.0, 0.0);
     pub const TRANSPARENT: Self = Self::rgba(0.0, 0.0, 0.0, 0.0);
 
-    pub const RED:         Self = Self::rgb(1.0, 0.0, 0.0);
-    pub const GREEN:       Self = Self::rgb(0.0, 1.0, 0.0);
-    pub const BLUE:        Self = Self::rgb(0.0, 0.0, 1.0);
+    pub const RED: Self = Self::rgb(1.0, 0.0, 0.0);
+    pub const GREEN: Self = Self::rgb(0.0, 1.0, 0.0);
+    pub const BLUE: Self = Self::rgb(0.0, 0.0, 1.0);
 
-    pub const YELLOW:      Self = Self::rgb(1.0, 1.0, 0.0);
-    pub const CYAN:        Self = Self::rgb(0.0, 1.0, 1.0);
-    pub const MAGENTA:     Self = Self::rgb(1.0, 0.0, 1.0);
+    pub const YELLOW: Self = Self::rgb(1.0, 1.0, 0.0);
+    pub const CYAN: Self = Self::rgb(0.0, 1.0, 1.0);
+    pub const MAGENTA: Self = Self::rgb(1.0, 0.0, 1.0);
 
-    pub const ORANGE:      Self = Self::rgb(1.0, 0.5, 0.0);
-    pub const PURPLE:      Self = Self::rgb(0.5, 0.0, 0.5);
-    pub const PINK:        Self = Self::rgb(1.0, 0.41, 0.71);
+    pub const ORANGE: Self = Self::rgb(1.0, 0.5, 0.0);
+    pub const PURPLE: Self = Self::rgb(0.5, 0.0, 0.5);
+    pub const PINK: Self = Self::rgb(1.0, 0.41, 0.71);
 
-    pub const DARK_GRAY:   Self = Self::rgb(0.25, 0.25, 0.25);
-    pub const GRAY:        Self = Self::rgb(0.5, 0.5, 0.5);
-    pub const LIGHT_GRAY:  Self = Self::rgb(0.75, 0.75, 0.75);
+    pub const DARK_GRAY: Self = Self::rgb(0.25, 0.25, 0.25);
+    pub const GRAY: Self = Self::rgb(0.5, 0.5, 0.5);
+    pub const LIGHT_GRAY: Self = Self::rgb(0.75, 0.75, 0.75);
 
-    pub const SKY_BLUE:    Self = Self::rgb(0.53, 0.81, 0.92);
-    pub const LIME:        Self = Self::rgb(0.0, 0.8, 0.0);
-    pub const TEAL:        Self = Self::rgb(0.0, 0.5, 0.5);
-    pub const NAVY:        Self = Self::rgb(0.0, 0.0, 0.5);
-    pub const BEIGE:       Self = Self::rgb(0.96, 0.96, 0.86);
-    pub const BROWN:       Self = Self::rgb(0.55, 0.27, 0.07);
+    pub const SKY_BLUE: Self = Self::rgb(0.53, 0.81, 0.92);
+    pub const LIME: Self = Self::rgb(0.0, 0.8, 0.0);
+    pub const TEAL: Self = Self::rgb(0.0, 0.5, 0.5);
+    pub const NAVY: Self = Self::rgb(0.0, 0.0, 0.5);
+    pub const BEIGE: Self = Self::rgb(0.96, 0.96, 0.86);
+    pub const BROWN: Self = Self::rgb(0.55, 0.27, 0.07);
 }
 
 impl From<[f32; 4]> for Color {

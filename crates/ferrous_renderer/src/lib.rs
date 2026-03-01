@@ -1,5 +1,4 @@
-pub mod camera;
-/// `ferrous_renderer` — modular, extensible GPU rendering for Ferrous Engine.
+﻿/// `ferrous_renderer` -- modular, extensible GPU rendering for Ferrous Engine.
 ///
 /// # Module layout
 ///
@@ -14,6 +13,7 @@ pub mod camera;
 /// | `scene`         | `RenderObject`, `sync_world` helper                  |
 /// | `graph`         | `RenderPass` trait + `FramePacket`                   |
 /// | `passes`        | Built-in passes: `WorldPass`, `UiPass`               |
+pub mod camera;
 pub mod context;
 pub mod geometry;
 pub mod graph;
@@ -23,7 +23,7 @@ pub mod render_target;
 pub mod resources;
 pub mod scene;
 
-// ── Public re-exports ─────────────────────────────────────────────────────────
+// -- Public re-exports --------------------------------------------------------
 
 pub use ferrous_gui::{GuiBatch, GuiQuad};
 pub use glam;
@@ -34,11 +34,11 @@ pub use graph::frame_packet::Viewport;
 pub use graph::{FramePacket, RenderPass};
 pub use render_target::RenderTarget;
 pub use scene::RenderObject;
-// Key / mouse button types — users need these to configure Controller bindings.
 pub use ferrous_core::input::{KeyCode, MouseButton};
 
-// ── Internal imports ──────────────────────────────────────────────────────────
+// -- Internal imports ---------------------------------------------------------
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use ferrous_gui::TextBatch;
@@ -48,42 +48,56 @@ use graph::frame_packet::{CameraPacket, DrawCommand};
 use passes::{UiPass, WorldPass};
 use pipeline::{PipelineLayouts, WorldPipeline};
 
-// ── RenderDest ────────────────────────────────────────────────────────────────
+// -- RenderDest ---------------------------------------------------------------
 
-/// Where a render call should write its output.
 enum RenderDest<'a> {
-    /// Internal off-screen [`RenderTarget`].
     Target,
-    /// An external `TextureView` supplied by the caller (e.g. swapchain surface).
     View(&'a wgpu::TextureView),
 }
 
-// ── Renderer ──────────────────────────────────────────────────────────────────
+// -- Renderer -----------------------------------------------------------------
 
 /// Top-level renderer.
 ///
 /// Holds GPU resources and executes a list of [`RenderPass`] stages each frame
-/// using the two-phase **prepare → execute** pattern.
+/// using the two-phase **prepare -> execute** pattern.
 ///
-/// Custom passes can be appended with [`Renderer::add_pass`].  The built-in
-/// [`WorldPass`] (3-D geometry) and [`UiPass`] (GUI overlay) are registered
-/// automatically during construction.
+/// ## Built-in passes
+/// `WorldPass` (3-D/2-D geometry) and `UiPass` (GUI overlay) are always present
+/// as typed fields, giving direct access without any downcast.
+///
+/// ## Custom passes
+/// Call [`Renderer::add_pass`] to append extra passes. They execute after
+/// the built-in ones and receive `on_resize` / `on_attach` automatically.
+///
+/// ## 2-D / 3-D support
+/// Both modes work simultaneously. Use an orthographic camera for 2-D,
+/// perspective for 3-D. The pipeline is the same either way.
 pub struct Renderer {
     pub context: context::EngineContext,
     pub render_target: RenderTarget,
-    /// Ordered list of passes executed every frame.
-    pub passes: Vec<Box<dyn RenderPass>>,
 
-    // ── Camera ────────────────────────────────────────────────────────────
+    // -- Built-in passes (direct typed access, zero-cost) --------------------
+    pub world_pass: WorldPass,
+    pub ui_pass: UiPass,
+    /// Additional user-supplied passes executed after the built-ins.
+    pub extra_passes: Vec<Box<dyn RenderPass>>,
+
+    // -- Camera ---------------------------------------------------------------
     pub camera: Camera,
     pub orbit: OrbitState,
     gpu_camera: GpuCamera,
 
-    // ── Scene ─────────────────────────────────────────────────────────────
-    objects: Vec<RenderObject>,
+    // -- Scene (O(1) lookup by id) --------------------------------------------
+    objects: HashMap<u64, RenderObject>,
+    next_manual_id: u64,
     model_layout: Arc<wgpu::BindGroupLayout>,
 
-    // ── Viewport ──────────────────────────────────────────────────────────
+    // -- Surface info (for registering passes post-construction) --------------
+    format: wgpu::TextureFormat,
+    sample_count: u32,
+
+    // -- Viewport -------------------------------------------------------------
     pub viewport: Viewport,
     width: u32,
     height: u32,
@@ -91,22 +105,23 @@ pub struct Renderer {
 
 impl Renderer {
     /// Creates a `Renderer` with the default world + UI passes.
+    ///
+    /// `sample_count`: `1` = no MSAA, `4` = 4x MSAA (recommended).
     pub fn new(
         context: context::EngineContext,
         width: u32,
         height: u32,
         format: wgpu::TextureFormat,
+        sample_count: u32,
     ) -> Self {
         let device = &context.device;
 
-        // GPU render target (MSAA x4)
-        let rt = RenderTarget::new(device, width, height, format, 4);
+        let rt = RenderTarget::new(device, width, height, format, sample_count);
 
-        // Shared bind-group layouts + world pipeline
         let layouts = PipelineLayouts::new(device);
-        let world_pipeline = WorldPipeline::new(device, format, rt.sample_count(), layouts.clone());
+        let world_pipeline =
+            WorldPipeline::new(device, format, rt.sample_count(), layouts.clone());
 
-        // Camera
         let camera = Camera {
             eye: glam::Vec3::new(0.0, 0.0, 5.0),
             target: glam::Vec3::ZERO,
@@ -119,7 +134,6 @@ impl Renderer {
         };
         let gpu_camera = GpuCamera::new(device, &camera, &layouts.camera);
 
-        // Built-in passes
         let world_pass = WorldPass::new(world_pipeline, gpu_camera.bind_group.clone());
         let ui_renderer = ferrous_gui::GuiRenderer::new(
             context.device.clone(),
@@ -131,31 +145,27 @@ impl Renderer {
         );
         let ui_pass = UiPass::new(ui_renderer);
 
-        let mut passes: Vec<Box<dyn RenderPass>> = Vec::new();
-        passes.push(Box::new(world_pass));
-        passes.push(Box::new(ui_pass));
-
         Self {
             context,
             render_target: rt,
-            passes,
+            world_pass,
+            ui_pass,
+            extra_passes: Vec::new(),
             camera,
             orbit: OrbitState::default(),
             gpu_camera,
-            objects: Vec::new(),
+            objects: HashMap::new(),
+            next_manual_id: u64::MAX,
             model_layout: layouts.model,
-            viewport: Viewport {
-                x: 0,
-                y: 0,
-                width,
-                height,
-            },
+            format,
+            sample_count,
+            viewport: Viewport { x: 0, y: 0, width, height },
             width,
             height,
         }
     }
 
-    // ── Frame API ─────────────────────────────────────────────────────────────
+    // -- Frame API ------------------------------------------------------------
 
     /// Allocates a fresh `CommandEncoder` for the current frame.
     pub fn begin_frame(&self) -> wgpu::CommandEncoder {
@@ -170,51 +180,58 @@ impl Renderer {
     pub fn render_to_target(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
-        ui_batch: Option<&GuiBatch>,
-        text_batch: Option<&TextBatch>,
+        ui_batch: Option<GuiBatch>,
+        text_batch: Option<TextBatch>,
     ) {
         self.do_render(encoder, RenderDest::Target, ui_batch, text_batch);
     }
 
-    /// Renders directly into an external `TextureView` (e.g. a swapchain frame).
+    /// Renders directly into an external `TextureView` (e.g. swapchain frame).
     pub fn render_to_view(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
-        ui_batch: Option<&GuiBatch>,
-        text_batch: Option<&TextBatch>,
+        ui_batch: Option<GuiBatch>,
+        text_batch: Option<TextBatch>,
     ) {
         self.do_render(encoder, RenderDest::View(view), ui_batch, text_batch);
     }
 
-    // ── Scene management ──────────────────────────────────────────────────────
+    // -- Scene management -----------------------------------------------------
 
-    /// Spawns a mesh instance at `pos`; returns its stable handle index.
-    pub fn add_object(&mut self, mesh: Mesh, pos: glam::Vec3) -> usize {
+    /// Spawns a mesh instance at `pos`; returns a stable u64 handle.
+    pub fn add_object(&mut self, mesh: Mesh, pos: glam::Vec3) -> u64 {
+        let id = self.next_manual_id;
+        self.next_manual_id = self.next_manual_id.wrapping_sub(1);
         let obj = RenderObject::new(
             &self.context.device,
-            0, // manual objects use id=0 (not tracked by World)
+            id,
             mesh,
             glam::Mat4::from_translation(pos),
             &self.model_layout,
         );
-        self.objects.push(obj);
-        self.objects.len() - 1
+        self.objects.insert(id, obj);
+        id
     }
 
-    /// Moves an existing object to `pos` (GPU write).
-    pub fn set_object_position(&mut self, idx: usize, pos: glam::Vec3) {
-        if let Some(obj) = self.objects.get_mut(idx) {
+    /// Moves an existing object (GPU write). No-op if id is unknown.
+    pub fn set_object_position(&mut self, id: u64, pos: glam::Vec3) {
+        if let Some(obj) = self.objects.get_mut(&id) {
             obj.set_position(&self.context.queue, pos);
         }
     }
 
-    /// Returns the world-space position of an object, or `None` if OOB.
-    pub fn get_object_position(&self, idx: usize) -> Option<glam::Vec3> {
-        self.objects.get(idx).map(|o| o.position)
+    /// Returns the world-space position of an object, or `None`.
+    pub fn get_object_position(&self, id: u64) -> Option<glam::Vec3> {
+        self.objects.get(&id).map(|o| o.position)
     }
 
-    /// Synchronises a `ferrous_core::scene::World` with the renderer's object list.
+    /// Removes a manually-spawned object. No-op if unknown.
+    pub fn remove_object(&mut self, id: u64) {
+        self.objects.remove(&id);
+    }
+
+    /// Synchronises a `ferrous_core::scene::World` with the renderer's object map.
     pub fn sync_world(&mut self, world: &ferrous_core::scene::World) {
         scene::sync_world(
             world,
@@ -225,21 +242,29 @@ impl Renderer {
         );
     }
 
-    // ── Pass management ───────────────────────────────────────────────────────
+    // -- Pass management ------------------------------------------------------
 
-    /// Appends a custom pass.  Passes execute in insertion order.
-    pub fn add_pass(&mut self, pass: Box<dyn RenderPass>) {
-        self.passes.push(pass);
+    /// Appends a custom pass after the built-in ones.
+    /// `on_attach` is called immediately with the current surface format.
+    pub fn add_pass<P: RenderPass>(&mut self, mut pass: P) {
+        pass.on_attach(
+            &self.context.device,
+            &self.context.queue,
+            self.format,
+            self.sample_count,
+        );
+        self.extra_passes.push(Box::new(pass));
     }
 
-    /// Removes all registered passes (including the built-in ones).
-    pub fn clear_passes(&mut self) {
-        self.passes.clear();
+    /// Removes all user-supplied passes.  Built-in passes are NOT removed.
+    pub fn clear_extra_passes(&mut self) {
+        self.extra_passes.clear();
     }
 
-    // ── Resize / viewport ─────────────────────────────────────────────────────
+    // -- Resize / viewport ----------------------------------------------------
 
     /// Recreates GPU textures when the window changes size.
+    /// Notifies every pass via `on_resize` -- no downcast needed.
     pub fn resize(&mut self, new_width: u32, new_height: u32) {
         if new_width == self.width && new_height == self.height {
             return;
@@ -247,82 +272,71 @@ impl Renderer {
         self.render_target
             .resize(&self.context.device, new_width, new_height);
 
-        // Stretch the viewport if it covered the full window before.
         if self.viewport.width == self.width && self.viewport.height == self.height {
-            self.viewport.width = new_width;
+            self.viewport.width  = new_width;
             self.viewport.height = new_height;
             self.camera.set_aspect(new_width as f32 / new_height as f32);
         }
 
-        self.width = new_width;
+        self.width  = new_width;
         self.height = new_height;
 
-        for pass in &mut self.passes {
-            if let Some(ui) = pass.as_any_mut().downcast_mut::<UiPass>() {
-                ui.resize(&self.context.queue, new_width, new_height);
-            }
+        // Built-in passes
+        self.world_pass.on_resize(&self.context.device, &self.context.queue, new_width, new_height);
+        self.ui_pass.on_resize(&self.context.device, &self.context.queue, new_width, new_height);
+        // User passes
+        for pass in &mut self.extra_passes {
+            pass.on_resize(&self.context.device, &self.context.queue, new_width, new_height);
         }
     }
 
-    /// Explicitly sets the 3-D viewport rectangle and updates camera aspect.
+    /// Explicitly sets the viewport rectangle and updates the camera aspect ratio.
     pub fn set_viewport(&mut self, vp: Viewport) {
         self.viewport = vp;
         self.camera.set_aspect(vp.width as f32 / vp.height as f32);
     }
 
-    // ── Font atlas ────────────────────────────────────────────────────────────
+    // -- Configuration helpers (direct typed access, zero-cost) ---------------
 
-    /// Uploads font atlas data to the `UiPass`.  Call once after font loading.
-    /// Set the sky / background colour used to clear the 3-D viewport each frame.
+    /// Sets the sky / background color used to clear the 3-D viewport.
+    #[inline]
     pub fn set_clear_color(&mut self, color: wgpu::Color) {
-        use crate::passes::WorldPass;
-        for pass in &mut self.passes {
-            if let Some(wp) = pass.as_any_mut().downcast_mut::<WorldPass>() {
-                wp.clear_color = color;
-                return;
-            }
-        }
+        self.world_pass.clear_color = color;
     }
 
+    /// Uploads a font atlas texture to the UI pass. Call once after font loading.
+    #[inline]
     pub fn set_font_atlas(&mut self, view: &wgpu::TextureView, sampler: &wgpu::Sampler) {
-        for pass in &mut self.passes {
-            if let Some(ui) = pass.as_any_mut().downcast_mut::<UiPass>() {
-                ui.set_font_atlas(view, sampler);
-            }
-        }
+        self.ui_pass.set_font_atlas(view, sampler);
     }
 
-    // ── Input ─────────────────────────────────────────────────────────────────
+    // -- Input ----------------------------------------------------------------
 
-    /// Applies keyboard/mouse input to the camera.  `dt` is seconds elapsed.
+    /// Applies keyboard/mouse input to the orbit camera. `dt` is seconds elapsed.
     pub fn handle_input(&mut self, input: &mut ferrous_core::input::InputState, dt: f32) {
         self.orbit.update(&mut self.camera, input, dt);
     }
 
-    // ── Private helpers ───────────────────────────────────────────────────────
+    // -- Private helpers ------------------------------------------------------
 
     fn do_render(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         dest: RenderDest<'_>,
-        ui_batch: Option<&GuiBatch>,
-        text_batch: Option<&TextBatch>,
+        ui_batch: Option<GuiBatch>,
+        text_batch: Option<TextBatch>,
     ) {
-        // 1. Upload camera to GPU
         self.gpu_camera.sync(&self.context.queue, &self.camera);
 
-        // 2. Assemble the frame packet (pure CPU data)
-        let packet = self.build_packet(ui_batch, text_batch);
+        let mut packet = self.build_base_packet();
+        if let Some(b) = ui_batch   { packet.insert(b); }
+        if let Some(b) = text_batch { packet.insert(b); }
 
-        // 3. Resolve color / depth views
         let (color_view, resolve_target) = match dest {
             RenderDest::Target => self.render_target.color_views(),
             RenderDest::View(v) => {
                 if self.render_target.sample_count() > 1 {
-                    (
-                        self.render_target.color.msaa_view.as_ref().unwrap(),
-                        Some(v),
-                    )
+                    (self.render_target.color.msaa_view.as_ref().unwrap(), Some(v))
                 } else {
                     (v, None)
                 }
@@ -330,47 +344,43 @@ impl Renderer {
         };
         let depth_view = self.render_target.depth_view();
 
-        // 4. Execute every registered pass
-        for pass in &mut self.passes {
-            pass.prepare(&self.context.device, &self.context.queue, &packet);
-            pass.execute(
-                &self.context.device,
-                &self.context.queue,
-                encoder,
-                color_view,
-                resolve_target,
-                Some(depth_view),
-                &packet,
-            );
+        let dev = &self.context.device;
+        let q   = &self.context.queue;
+
+        // Built-in passes first
+        self.world_pass.prepare(dev, q, &packet);
+        self.world_pass.execute(dev, q, encoder, color_view, resolve_target, Some(depth_view), &packet);
+
+        self.ui_pass.prepare(dev, q, &packet);
+        self.ui_pass.execute(dev, q, encoder, color_view, resolve_target, None, &packet);
+
+        // User-supplied passes
+        for pass in &mut self.extra_passes {
+            pass.prepare(dev, q, &packet);
+            pass.execute(dev, q, encoder, color_view, resolve_target, Some(depth_view), &packet);
         }
     }
 
-    fn build_packet(
-        &self,
-        ui_batch: Option<&GuiBatch>,
-        text_batch: Option<&TextBatch>,
-    ) -> FramePacket {
-        let scene_objects = self
+    fn build_base_packet(&self) -> FramePacket {
+        let camera_packet = CameraPacket {
+            view_proj: glam::Mat4::from_cols_array_2d(&self.gpu_camera.uniform.view_proj),
+            eye: self.camera.eye,
+        };
+
+        let mut packet = FramePacket::new(Some(self.viewport), camera_packet);
+
+        packet.scene_objects = self
             .objects
-            .iter()
+            .values()
             .map(|obj| DrawCommand {
-                vertex_buffer: obj.mesh.vertex_buffer.clone(),
-                index_buffer: obj.mesh.index_buffer.clone(),
-                index_count: obj.mesh.index_count,
-                index_format: obj.mesh.index_format,
+                vertex_buffer:    obj.mesh.vertex_buffer.clone(),
+                index_buffer:     obj.mesh.index_buffer.clone(),
+                index_count:      obj.mesh.index_count,
+                index_format:     obj.mesh.index_format,
                 model_bind_group: obj.model_bind_group.clone(),
             })
             .collect();
 
-        FramePacket {
-            viewport: Some(self.viewport),
-            camera: CameraPacket {
-                view_proj: glam::Mat4::from_cols_array_2d(&self.gpu_camera.uniform.view_proj),
-                eye: self.camera.eye,
-            },
-            scene_objects,
-            ui_batch: ui_batch.cloned(),
-            text_batch: text_batch.cloned(),
-        }
+        packet
     }
 }
