@@ -31,6 +31,7 @@ pub struct GuiQuad {
 ///
 /// El `GuiRenderer` consumirá un `GuiBatch` para rellenar el buffer de
 /// instancias antes de emitir el paso de renderizado.
+#[derive(Clone)]
 pub struct GuiBatch {
     quads: Vec<GuiQuad>,
 }
@@ -75,6 +76,7 @@ pub struct TextQuad {
 }
 
 /// Batch of text quads.
+#[derive(Clone)]
 pub struct TextBatch {
     quads: Vec<TextQuad>,
 }
@@ -532,7 +534,6 @@ impl GuiRenderer {
             let instance_bytes = batch.as_bytes();
             let required_instances = batch.len() as u32;
 
-            // si la capacidad no alcanza, re-creamos el buffer
             if required_instances > self.max_instances {
                 let new_size = std::mem::size_of::<GuiQuad>() as u64 * required_instances as u64;
                 self.instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -543,8 +544,27 @@ impl GuiRenderer {
                 });
                 self.max_instances = required_instances;
             }
-
             queue.write_buffer(&self.instance_buffer, 0, instance_bytes);
+        }
+
+        // handle text quads before starting pass
+        if let Some(tb) = text_batch {
+            if !tb.is_empty() {
+                let text_bytes = tb.as_bytes();
+                let required = tb.len() as u32;
+                if required > self.text_max_instances {
+                    let new_size = std::mem::size_of::<TextQuad>() as u64 * required as u64;
+                    self.text_instance_buffer =
+                        self.device.create_buffer(&wgpu::BufferDescriptor {
+                            label: Some("GUI Text Instance Buffer (resized)"),
+                            size: new_size,
+                            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                            mapped_at_creation: false,
+                        });
+                    self.text_max_instances = required;
+                }
+                queue.write_buffer(&self.text_instance_buffer, 0, text_bytes);
+            }
         }
 
         let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -576,22 +596,8 @@ impl GuiRenderer {
         // now draw text if requested
         if let Some(tb) = text_batch {
             if !tb.is_empty() {
-                // ensure atlas bind group is ready
                 if let Some(font_bg) = &self.font_bind_group {
-                    let text_bytes = tb.as_bytes();
                     let required = tb.len() as u32;
-                    if required > self.text_max_instances {
-                        let new_size = std::mem::size_of::<TextQuad>() as u64 * required as u64;
-                        self.text_instance_buffer =
-                            self.device.create_buffer(&wgpu::BufferDescriptor {
-                                label: Some("GUI Text Instance Buffer (resized)"),
-                                size: new_size,
-                                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                                mapped_at_creation: false,
-                            });
-                        self.text_max_instances = required;
-                    }
-                    queue.write_buffer(&self.text_instance_buffer, 0, text_bytes);
                     rpass.set_pipeline(&self.text_pipeline);
                     rpass.set_bind_group(0, &self.uniform_bind_group, &[]);
                     rpass.set_bind_group(1, font_bg, &[]);

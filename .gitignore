@@ -33,3 +33,5 @@ Thumbs.db
 *.dll
 *.so
 *.dylib
+
+tree_analyzer.py
