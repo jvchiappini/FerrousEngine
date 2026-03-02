@@ -4,6 +4,7 @@ use super::msdf_gen::generate_msdf;
 use anyhow::Result;
 use std::collections::HashMap;
 // rayon is used to parallelize glyph MSDF generation and metrics computation
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 
 #[derive(Debug, Clone)]
@@ -50,8 +51,20 @@ impl FontAtlas {
         let mut metrics = HashMap::new();
 
         // enumerate so we know each glyph's position in the grid
+        #[cfg(not(target_arch = "wasm32"))]
         let glyph_results: Vec<(usize, char, Vec<u8>, f32)> = char_list
             .par_iter()
+            .enumerate()
+            .map(|(i, &c)| {
+                let outline = parser.get_glyph_outline(c);
+                let advance = parser.get_glyph_advance(c);
+                let bmp = generate_msdf(&outline, glyph_size);
+                (i, c, bmp, advance)
+            })
+            .collect();
+        #[cfg(target_arch = "wasm32")]
+        let glyph_results: Vec<(usize, char, Vec<u8>, f32)> = char_list
+            .iter()
             .enumerate()
             .map(|(i, &c)| {
                 let outline = parser.get_glyph_outline(c);

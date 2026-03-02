@@ -14,6 +14,8 @@ pub struct EngineContext {
     pub adapter: wgpu::Adapter,
     pub device: Arc<wgpu::Device>,
     pub queue: Arc<wgpu::Queue>,
+    /// Backend seleccionado por wgpu (Vulkan, Metal, Dx12, WebGpu, Gl, etc.).
+    pub backend: wgpu::Backend,
 }
 
 #[derive(Debug, Error)]
@@ -54,18 +56,28 @@ impl EngineContext {
             .await
             .context(ContextError::AdapterUnavailable)?;
 
+        let info = adapter.get_info();
         println!(
             "[WGPU] Selected Adapter: {} ({:?})",
-            adapter.get_info().name,
-            adapter.get_info().backend
+            info.name, info.backend
         );
+        let backend = info.backend;
+
+        // WebGL2 tiene límites mucho más bajos que un backend nativo;
+        // usar Limits::default() en GL hace que request_device falle o
+        // active rutas de validación lentas. Usamos los límites correctos.
+        let limits = if backend == wgpu::Backend::Gl {
+            wgpu::Limits::downlevel_webgl2_defaults()
+        } else {
+            wgpu::Limits::default()
+        };
 
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("Engine Device"),
                     required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::default(),
+                    required_limits: limits,
                     ..Default::default()
                 },
                 None,
@@ -78,6 +90,7 @@ impl EngineContext {
             adapter,
             device: Arc::new(device),
             queue: Arc::new(queue),
+            backend,
         })
     }
 }

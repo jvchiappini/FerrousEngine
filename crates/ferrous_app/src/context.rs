@@ -1,5 +1,5 @@
-use ferrous_core::{InputState, RenderStats, Time, Viewport, World};
 use ferrous_core::glam::Vec3;
+use ferrous_core::{InputState, RenderStats, Time, Viewport, World};
 use winit::window::Window;
 
 /// Per-frame context passed to every [`FerrousApp`] callback.
@@ -49,12 +49,28 @@ pub struct AppContext<'a> {
 
     /// Set to `true` via [`request_exit`] to stop the event loop gracefully.
     pub(crate) exit_requested: bool,
+
+    /// Active GPU backend, set by the runner after GPU init.
+    pub(crate) _gpu_backend: wgpu::Backend,
 }
 
 impl<'a> AppContext<'a> {
     /// Signal the event loop to shut down after the current frame.
     pub fn request_exit(&mut self) {
         self.exit_requested = true;
+    }
+
+    /// Active GPU backend as a readable string (e.g. `"WebGPU"`, `"WebGL2"`, `"Vulkan"`).
+    /// Useful to show which backend is in use in a debug overlay.
+    pub fn gpu_backend(&self) -> &str {
+        match self._gpu_backend {
+            wgpu::Backend::Vulkan => "Vulkan",
+            wgpu::Backend::Metal => "Metal",
+            wgpu::Backend::Dx12 => "Dx12",
+            wgpu::Backend::Gl => "WebGL2",
+            wgpu::Backend::BrowserWebGpu => "WebGPU",
+            _ => "Unknown",
+        }
     }
 
     /// Shortcut: window width in physical pixels.
@@ -73,6 +89,10 @@ impl<'a> AppContext<'a> {
     #[inline]
     pub fn aspect(&self) -> f32 {
         let (w, h) = self.window_size;
-        if h == 0 { 1.0 } else { w as f32 / h as f32 }
+        if h == 0 {
+            1.0
+        } else {
+            w as f32 / h as f32
+        }
     }
 }

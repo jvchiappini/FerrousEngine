@@ -52,6 +52,8 @@ pub struct EditorApp {
     slider_w: Rc<RefCell<Slider>>,
     slider_h: Rc<RefCell<Slider>>,
     slider_d: Rc<RefCell<Slider>>,
+    /// Backend GPU activo (WebGPU, WebGL2, Vulkan, etc.), detectado en setup.
+    gpu_backend: String,
 }
 
 impl Default for EditorApp {
@@ -76,9 +78,28 @@ impl Default for EditorApp {
             fps_history_idx: 0,
             fps_avg: 0.0,
             cached_render_stats: RenderStats::default(),
-            slider_w: Rc::new(RefCell::new(Slider::new(10.0, 220.0, 160.0, 16.0, slider_norm(1.0)))),
-            slider_h: Rc::new(RefCell::new(Slider::new(10.0, 248.0, 160.0, 16.0, slider_norm(1.0)))),
-            slider_d: Rc::new(RefCell::new(Slider::new(10.0, 276.0, 160.0, 16.0, slider_norm(1.0)))),
+            slider_w: Rc::new(RefCell::new(Slider::new(
+                10.0,
+                234.0,
+                160.0,
+                16.0,
+                slider_norm(1.0),
+            ))),
+            slider_h: Rc::new(RefCell::new(Slider::new(
+                10.0,
+                262.0,
+                160.0,
+                16.0,
+                slider_norm(1.0),
+            ))),
+            slider_d: Rc::new(RefCell::new(Slider::new(
+                10.0,
+                290.0,
+                160.0,
+                16.0,
+                slider_norm(1.0),
+            ))),
+            gpu_backend: String::new(),
         }
     }
 }
@@ -95,6 +116,7 @@ impl FerrousApp for EditorApp {
 
     fn setup(&mut self, ctx: &mut AppContext) {
         ctx.world.spawn_cube("Default Cube", Vec3::ZERO);
+        self.gpu_backend = ctx.gpu_backend().to_string();
     }
 
     fn update(&mut self, ctx: &mut AppContext) {
@@ -169,6 +191,21 @@ impl FerrousApp for EditorApp {
             let fps_str = format!("FPS: {:.0}  avg: {:.0}", ctx.time.fps, self.fps_avg);
             text.draw_text(font, &fps_str, [15.0, 92.0], 14.0, [0.8, 0.8, 0.8, 1.0]);
 
+            if !self.gpu_backend.is_empty() {
+                let backend_color = if self.gpu_backend == "WebGL2" {
+                    [1.0, 0.6, 0.2, 1.0] // naranja = backend lento
+                } else {
+                    [0.4, 1.0, 0.5, 1.0] // verde = backend nativo/WebGPU
+                };
+                text.draw_text(
+                    font,
+                    &format!("GPU: {}", self.gpu_backend),
+                    [15.0, 108.0],
+                    12.0,
+                    backend_color,
+                );
+            }
+
             let stats = &self.cached_render_stats;
             let verts = stats.vertex_count;
             let tris = stats.triangle_count;
@@ -188,9 +225,9 @@ impl FerrousApp for EditorApp {
                 format!("Tris: {}", tris)
             };
             let dc_str = format!("Draw calls: {}", dcs);
-            text.draw_text(font, &verts_str, [15.0, 112.0], 13.0, [0.5, 0.9, 1.0, 1.0]);
-            text.draw_text(font, &tris_str, [15.0, 128.0], 13.0, [0.5, 0.9, 1.0, 1.0]);
-            text.draw_text(font, &dc_str, [15.0, 144.0], 13.0, [0.5, 0.9, 1.0, 1.0]);
+            text.draw_text(font, &verts_str, [15.0, 126.0], 13.0, [0.5, 0.9, 1.0, 1.0]);
+            text.draw_text(font, &tris_str, [15.0, 142.0], 13.0, [0.5, 0.9, 1.0, 1.0]);
+            text.draw_text(font, &dc_str, [15.0, 158.0], 13.0, [0.5, 0.9, 1.0, 1.0]);
 
             match self.bench_state {
                 BenchmarkState::Idle => {}
@@ -199,25 +236,47 @@ impl FerrousApp for EditorApp {
                         "Cubes: {}  (+{}·frame)",
                         self.bench_cube_count, BENCHMARK_BATCH
                     );
-                    text.draw_text(font, &live, [15.0, 164.0], 14.0, [0.4, 1.0, 0.4, 1.0]);
+                    text.draw_text(font, &live, [15.0, 178.0], 14.0, [0.4, 1.0, 0.4, 1.0]);
                     let threshold = format!("Stops at avg < {:.0} FPS", BENCHMARK_MIN_FPS);
-                    text.draw_text(font, &threshold, [15.0, 182.0], 12.0, [0.6, 0.6, 0.6, 1.0]);
+                    text.draw_text(font, &threshold, [15.0, 196.0], 12.0, [0.6, 0.6, 0.6, 1.0]);
                 }
                 BenchmarkState::Finished => {
                     let result = format!("Peak cubes: {}", self.bench_peak_cubes);
-                    text.draw_text(font, &result, [15.0, 164.0], 14.0, [1.0, 0.8, 0.2, 1.0]);
+                    text.draw_text(font, &result, [15.0, 178.0], 14.0, [1.0, 0.8, 0.2, 1.0]);
                     let fps_drop = format!("Avg FPS at stop: {:.1}", self.bench_stopped_fps);
-                    text.draw_text(font, &fps_drop, [15.0, 182.0], 12.0, [1.0, 0.5, 0.3, 1.0]);
+                    text.draw_text(font, &fps_drop, [15.0, 196.0], 12.0, [1.0, 0.5, 0.3, 1.0]);
                 }
             }
 
-            if self.last_cube.map(|h| ctx.world.contains(h)).unwrap_or(false) {
+            if self
+                .last_cube
+                .map(|h| ctx.world.contains(h))
+                .unwrap_or(false)
+            {
                 let w = slider_to_size(self.slider_w.borrow().value);
                 let h = slider_to_size(self.slider_h.borrow().value);
                 let d = slider_to_size(self.slider_d.borrow().value);
-                text.draw_text(font, &format!("W: {:.2}", w), [15.0, 210.0], 13.0, [0.9, 0.9, 0.5, 1.0]);
-                text.draw_text(font, &format!("H: {:.2}", h), [15.0, 238.0], 13.0, [0.9, 0.9, 0.5, 1.0]);
-                text.draw_text(font, &format!("D: {:.2}", d), [15.0, 266.0], 13.0, [0.9, 0.9, 0.5, 1.0]);
+                text.draw_text(
+                    font,
+                    &format!("W: {:.2}", w),
+                    [15.0, 224.0],
+                    13.0,
+                    [0.9, 0.9, 0.5, 1.0],
+                );
+                text.draw_text(
+                    font,
+                    &format!("H: {:.2}", h),
+                    [15.0, 252.0],
+                    13.0,
+                    [0.9, 0.9, 0.5, 1.0],
+                );
+                text.draw_text(
+                    font,
+                    &format!("D: {:.2}", d),
+                    [15.0, 280.0],
+                    13.0,
+                    [0.9, 0.9, 0.5, 1.0],
+                );
             }
         }
     }
@@ -297,12 +356,14 @@ pub fn build_app() -> App<EditorApp> {
     #[cfg(not(target_arch = "wasm32"))]
     let base = base
         .with_target_fps(Some(240))
-        .with_idle_timeout(Some(0.5))
+        .with_vsync(false)
+        .with_idle_timeout(None)
         .with_font("assets/fonts/Roboto-Regular.ttf");
 
     #[cfg(target_arch = "wasm32")]
     let base = base
-        .with_target_fps(Some(60))
+        .with_target_fps(None) // rAF already rate-limits to monitor refresh; no extra cap needed
+        .with_vsync(false) // rAF is always vsynced; this is just for clarity
         .with_font_bytes(include_bytes!("../../../assets/fonts/Roboto-Regular.ttf"));
 
     base

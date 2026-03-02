@@ -8,7 +8,8 @@ struct VsOut {
     @location(2) uv: vec2<f32>,
     // size in pixels, required for correct corner SDF
     @location(3) size: vec2<f32>,
-    @location(4) flags: u32,
+    // WebGPU requires @interpolate(flat) on integer vertex outputs
+    @location(4) @interpolate(flat) flags: u32,
 };
 
 struct Uniforms {

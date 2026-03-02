@@ -13,6 +13,11 @@ use wgpu::{CommandEncoder, Device, Queue, TextureView};
 
 use crate::graph::FramePacket;
 
+// On wasm32, wgpu types (BindGroup, RenderPipeline, …) do not implement Send/Sync
+// because the browser JS runtime is single-threaded. We conditionally remove
+// the Send + Sync bounds so the trait can be implemented by passes that hold
+// those GPU resources.
+#[cfg(not(target_arch = "wasm32"))]
 pub trait RenderPass: Send + Sync + 'static {
     /// Short human-readable label used as the WGPU debug label.
     fn name(&self) -> &str;
@@ -55,6 +60,37 @@ pub trait RenderPass: Send + Sync + 'static {
     /// - `color_view`     — color attachment (MSAA texture when active)
     /// - `resolve_target` — single-sample resolve target, or `None` without MSAA
     /// - `depth_view`     — depth attachment, or `None` for passes that skip depth
+    fn execute(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        encoder: &mut CommandEncoder,
+        color_view: &TextureView,
+        resolve_target: Option<&TextureView>,
+        depth_view: Option<&TextureView>,
+        packet: &FramePacket,
+    );
+}
+
+#[cfg(target_arch = "wasm32")]
+pub trait RenderPass: 'static {
+    fn name(&self) -> &str;
+
+    #[allow(unused_variables)]
+    fn on_attach(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        format: wgpu::TextureFormat,
+        sample_count: u32,
+    ) {
+    }
+
+    #[allow(unused_variables)]
+    fn on_resize(&mut self, device: &Device, queue: &Queue, width: u32, height: u32) {}
+
+    fn prepare(&mut self, device: &Device, queue: &Queue, packet: &FramePacket);
+
     fn execute(
         &mut self,
         device: &Device,

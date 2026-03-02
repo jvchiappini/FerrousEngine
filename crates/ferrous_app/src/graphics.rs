@@ -29,7 +29,9 @@ impl GraphicsState {
         #[cfg(target_arch = "wasm32")]
         {
             use winit::platform::web::WindowExtWebSys;
-            let canvas = window.canvas().expect("winit window has no canvas in wasm32");
+            let canvas = window
+                .canvas()
+                .expect("winit window has no canvas in wasm32");
             let web_window = web_sys::window().unwrap();
             let document = web_window.document().unwrap();
             let body = document.body().unwrap();
@@ -56,23 +58,14 @@ impl GraphicsState {
             .copied()
             .find(|f| f.is_srgb())
             .unwrap_or(caps.formats[0]);
-        // PresentMode::Fifo  = hard vsync (monitor refresh rate, lowest GPU usage)
-        // PresentMode::Mailbox = no tearing, but uncapped GPU (use only for benchmarks)
-        // PresentMode::AutoNoVsync = fully uncapped — high GPU usage even at low FPS
-        //
-        // We always prefer Fifo (or FifoRelaxed when available) because the
-        // target_fps limiter on the CPU side is not enough: the GPU executes
-        // queued work *during* the CPU sleep, so AutoNoVsync causes high GPU
-        // usage regardless of how slow the CPU loop runs.
-        let available = caps.present_modes.as_slice();
+        // PresentMode::Fifo        = hard vsync (locked to monitor refresh)
+        // PresentMode::AutoNoVsync = fully uncapped, no tearing guarantee — works on all backends
+        // Note: Mailbox is avoided because on NVIDIA/Vulkan it can still be
+        // driver-capped to the monitor refresh rate, behaving like vsync.
         let present_mode = if vsync {
             wgpu::PresentMode::Fifo
-        } else if available.contains(&wgpu::PresentMode::Mailbox) {
-            // Mailbox: no tearing, GPU is rate-limited by the swapchain queue
-            // (at most 1 frame ahead), much lower GPU usage than AutoNoVsync.
-            wgpu::PresentMode::Mailbox
         } else {
-            wgpu::PresentMode::Fifo
+            wgpu::PresentMode::AutoNoVsync
         };
 
         let config = wgpu::SurfaceConfiguration {
@@ -83,9 +76,7 @@ impl GraphicsState {
             present_mode,
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
-            // 1 = only one frame queued ahead; minimises GPU pre-work and
-            // therefore GPU usage when the CPU is sleeping between frames.
-            desired_maximum_frame_latency: 1,
+            desired_maximum_frame_latency: 2,
         };
         surface.configure(&context.device, &config);
 

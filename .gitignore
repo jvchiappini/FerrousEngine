@@ -3,6 +3,8 @@
 # Ignore build artifacts
 /target/
 **/target/
+/web
+web/
 
 # Ignore editor-specific files
 **/*.swp
