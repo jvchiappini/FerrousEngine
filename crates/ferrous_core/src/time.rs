@@ -13,6 +13,14 @@
 //! }
 //! ```
 
+// ─── Platform-specific Instant ─────────────────────────────────────────────
+// `std::time::Instant` is not available in wasm32-unknown-unknown.
+// `web-time` provides a drop-in replacement backed by `performance.now()`.
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
+
 /// A snapshot of timing information for the current frame.
 ///
 /// Passed by value into every `FerrousApp` callback.  Since it is `Copy`
@@ -60,15 +68,15 @@ impl Time {
 /// The runner creates one of these at startup and calls `tick()` at the
 /// beginning of every frame.
 pub struct TimeClock {
-    start: std::time::Instant,
-    last_tick: std::time::Instant,
+    start: Instant,
+    last_tick: Instant,
     frame_count: u64,
 }
 
 impl TimeClock {
     /// Create a new clock, starting the epoch now.
     pub fn new() -> Self {
-        let now = std::time::Instant::now();
+        let now = Instant::now();
         Self {
             start: now,
             last_tick: now,
@@ -82,7 +90,7 @@ impl TimeClock {
     /// hot frame path — they still want valid timing data but must not advance
     /// the frame counter.
     pub fn peek(&self) -> Time {
-        let now = std::time::Instant::now();
+        let now = Instant::now();
         let raw_dt = (now - self.last_tick).as_secs_f32();
         let delta = raw_dt.min(0.1);
         let elapsed = (now - self.start).as_secs_f64();
@@ -97,7 +105,7 @@ impl TimeClock {
 
     /// Advance by one frame.  Returns the [`Time`] snapshot for this frame.
     pub fn tick(&mut self) -> Time {
-        let now = std::time::Instant::now();
+        let now = Instant::now();
         let raw_dt = (now - self.last_tick).as_secs_f32();
         let delta = raw_dt.min(0.1); // clamp to avoid spiral-of-death
         let elapsed = (now - self.start).as_secs_f64();

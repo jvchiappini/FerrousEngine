@@ -15,7 +15,8 @@ pub struct Font {
 }
 
 impl Font {
-    /// Carga una fuente desde el disco o usa una de respaldo si falla.
+    /// Carga una fuente desde el disco (desktop) o usa la fuente de respaldo
+    /// (wasm32, donde no existe sistema de ficheros).
     pub fn load(
         path: &str,
         device: &Device,
@@ -24,6 +25,8 @@ impl Font {
     ) -> Self {
         let char_list: Vec<char> = chars.into_iter().collect();
 
+        // ── Desktop: leer del sistema de ficheros ──────────────────────────────
+        #[cfg(not(target_arch = "wasm32"))]
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
             Err(e) => {
@@ -35,9 +38,39 @@ impl Font {
             }
         };
 
+        // ── wasm32: no hay fs — usar siempre la fuente de respaldo ─────────
+        // Use `Font::load_bytes` to supply a real font in a web build.
+        #[cfg(target_arch = "wasm32")]
+        let bytes = {
+            let _ = path; // evitar warning de variable no usada
+            Self::build_fallback_font()
+        };
+
+        Self::from_bytes_and_chars(bytes, char_list, device, queue)
+    }
+
+    /// Carga una fuente desde un slice de bytes en memoria.  Útil en wasm32
+    /// donde los assets se embeben con `include_bytes!` o se reciben via fetch.
+    pub fn load_bytes(
+        bytes: &[u8],
+        device: &Device,
+        queue: &Queue,
+        chars: impl IntoIterator<Item = char>,
+    ) -> Self {
+        let char_list: Vec<char> = chars.into_iter().collect();
+        Self::from_bytes_and_chars(bytes.to_vec(), char_list, device, queue)
+    }
+
+    // ── private helpers ────────────────────────────────────────────────
+
+    fn from_bytes_and_chars(
+        bytes: Vec<u8>,
+        char_list: Vec<char>,
+        device: &Device,
+        queue: &Queue,
+    ) -> Self {
         let parser = FontParser::new(bytes).expect("Failed to parse font data");
 
-        // Si usamos la fuente de respaldo, solo tiene el glifo 'A'
         let final_chars = if char_list.is_empty() {
             vec!['A']
         } else {

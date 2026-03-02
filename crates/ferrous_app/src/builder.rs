@@ -9,7 +9,11 @@ pub struct AppConfig {
     pub width: u32,
     pub height: u32,
     /// Optional path to a `.ttf`/`.otf` font loaded asynchronously at startup.
+    /// On wasm32 this field is ignored; use `font_bytes` instead.
     pub font_path: Option<String>,
+    /// Optional raw font bytes (e.g. from `include_bytes!`).  Takes priority
+    /// over `font_path` and works on every platform including wasm32.
+    pub font_bytes: Option<&'static [u8]>,
     /// Enable vertical sync — locks GPU present to monitor refresh rate,
     /// eliminating tearing and capping GPU usage to the refresh rate.
     /// Default: `true`.
@@ -43,6 +47,7 @@ impl Default for AppConfig {
             width: 1280,
             height: 720,
             font_path: None,
+            font_bytes: None,
             vsync: true,
             resizable: true,
             background_color: Color::rgb(0.1, 0.1, 0.1),
@@ -90,8 +95,23 @@ impl<A: FerrousApp + 'static> App<A> {
     }
 
     /// Path to a font file to load at startup (optional).
+    /// On wasm32 this is ignored; use [`with_font_bytes`] instead.
     pub fn with_font(mut self, path: &str) -> Self {
         self.config.font_path = Some(path.to_string());
+        self
+    }
+
+    /// Embed a font directly as bytes (e.g. via `include_bytes!`).
+    /// Works on every platform and takes priority over `with_font`.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// App::new(MyGame)
+    ///     .with_font_bytes(include_bytes!("../../assets/fonts/Roboto-Regular.ttf"))
+    ///     .run();
+    /// ```
+    pub fn with_font_bytes(mut self, bytes: &'static [u8]) -> Self {
+        self.config.font_bytes = Some(bytes);
         self
     }
 

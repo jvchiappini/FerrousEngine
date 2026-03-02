@@ -35,11 +35,13 @@ pub use geometry::{Mesh, Vertex};
 pub use graph::frame_packet::Viewport;
 pub use graph::{FramePacket, InstancedDrawCommand, RenderPass};
 pub use pipeline::InstancingPipeline;
-use rayon::prelude::*;
 pub use render_stats::RenderStats;
 pub use render_target::RenderTarget;
 pub use resources::InstanceBuffer;
 pub use scene::{Aabb, Frustum, RenderObject};
+
+#[cfg(not(target_arch = "wasm32"))]
+use rayon::prelude::*;
 
 // -- Internal imports ---------------------------------------------------------
 
@@ -530,11 +532,13 @@ impl Renderer {
             }
         }
 
-        // Multi-mesh DOD parallel frustum culling + grouping
-        // We use fold & reduce to aggregate matrices by mesh vertex_buffer pointer.
+        // Multi-mesh DOD frustum culling + grouping
+        // On desktop we use rayon for parallel culling; on wasm32 we fall back
+        // to a sequential iterator since the browser has a single JS thread.
         use std::collections::HashMap;
 
-        let visible_mesh_groups = self
+        #[cfg(not(target_arch = "wasm32"))]
+        let visible_mesh_groups: HashMap<usize, (geometry::Mesh, Vec<glam::Mat4>)> = self
             .world_objects
             .par_iter()
             .flatten()
@@ -562,6 +566,21 @@ impl Renderer {
                     map1
                 },
             );
+
+        #[cfg(target_arch = "wasm32")]
+        let visible_mesh_groups: HashMap<usize, (geometry::Mesh, Vec<glam::Mat4>)> =
+            self.world_objects
+                .iter()
+                .flatten()
+                .filter(|obj| frustum.intersects_aabb(&obj.world_aabb()))
+                .fold(HashMap::new(), |mut map, obj| {
+                    let key = Arc::as_ptr(&obj.mesh.vertex_buffer) as usize;
+                    map.entry(key)
+                        .or_insert_with(|| (obj.mesh.clone(), Vec::with_capacity(128)))
+                        .1
+                        .push(obj.matrix);
+                    map
+                });
 
         let mut total_visible = 0;
         for (_, (_, mats)) in &visible_mesh_groups {

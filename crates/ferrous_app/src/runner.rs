@@ -2,13 +2,19 @@ use ferrous_assets::Font;
 use ferrous_core::{glam::Vec3, InputState, TimeClock, Viewport, World};
 use ferrous_gui::{GuiBatch, TextBatch, Ui};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     window::{Window, WindowId},
 };
+
+// ─── Platform-specific Instant ──────────────────────────────────────────
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 use crate::builder::AppConfig;
 use crate::context::AppContext;
@@ -27,6 +33,8 @@ struct Runner<A: FerrousApp> {
     clock: TimeClock,
     world: World,
     font: Option<Font>,
+    /// Desktop-only: channel receiver for the async font-loading thread.
+    #[cfg(not(target_arch = "wasm32"))]
     font_rx: Option<std::sync::mpsc::Receiver<Font>>,
     /// Timestamp of the last rendered frame, used to enforce the frame budget
     /// even when the OS delivers input events faster than the target FPS.
@@ -55,6 +63,7 @@ impl<A: FerrousApp> Runner<A> {
             clock: TimeClock::new(),
             world: World::new(),
             font: None,
+            #[cfg(not(target_arch = "wasm32"))]
             font_rx: None,
             last_frame: Instant::now(),
             last_action_time: Instant::now(),
@@ -77,7 +86,8 @@ impl<A: FerrousApp> Runner<A> {
         // mouse cursor happens to be outside the window.
         self.last_action_time = now;
 
-        // Check for async font completion
+        // Check for async font completion (desktop only; wasm32 loads synchronously)
+        #[cfg(not(target_arch = "wasm32"))]
         if self.font.is_none() {
             if let Some(Ok(font)) = self.font_rx.as_ref().map(|rx| rx.try_recv()) {
                 gfx.renderer
@@ -219,27 +229,61 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
             height: self.config.height,
         };
 
-        let mut gfx = pollster::block_on(GraphicsState::new(
-            &window,
-            self.config.width,
-            self.config.height,
-            self.config.vsync,
-            self.config.sample_count,
-        ));
+        let mut gfx = {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                pollster::block_on(GraphicsState::new(
+                    &window,
+                    self.config.width,
+                    self.config.height,
+                    self.config.vsync,
+                    self.config.sample_count,
+                ))
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                // On wasm32 we cannot block, but `resumed()` is called
+                // synchronously from the JS event loop and WebGPU adapter
+                // requests complete before the first frame anyway when driven
+                // via `run_app`.  We use `wasm_bindgen_futures::spawn_local`
+                // inside `run_internal` to drive the future to completion.
+                // Here we rely on `pollster` being absent and use the
+                // wasm-bindgen-futures block_on equivalent:
+                wasm_bindgen_futures::spawn_local(async {});
+                // Actually for wasm32 the entire init is done via an async
+                // trampoline in run_internal; this branch is unreachable.
+                unreachable!("wasm32 init happens in run_internal")
+            }
+        };
         gfx.renderer.set_viewport(self.viewport);
         gfx.renderer
             .set_clear_color(self.config.background_color.to_wgpu());
 
-        // Optional async font load
-        if let Some(path) = &self.config.font_path {
-            let device = gfx.renderer.context.device.clone();
-            let queue = gfx.renderer.context.queue.clone();
-            let path = path.clone();
-            let (tx, rx) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                let _ = tx.send(Font::load(&path, &device, &queue, ' '..'~'));
-            });
-            self.font_rx = Some(rx);
+        // Font loading: font_bytes takes priority (works on all platforms).
+        // font_path is desktop-only (requires std::fs).
+        if let Some(bytes) = self.config.font_bytes {
+            // Synchronous — bytes are already in memory.
+            let font = Font::load_bytes(
+                bytes,
+                &gfx.renderer.context.device,
+                &gfx.renderer.context.queue,
+                ' '..'~',
+            );
+            gfx.renderer
+                .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
+            self.font = Some(font);
+        } else {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(path) = &self.config.font_path {
+                let device = gfx.renderer.context.device.clone();
+                let queue = gfx.renderer.context.queue.clone();
+                let path = path.clone();
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let _ = tx.send(Font::load(&path, &device, &queue, ' '..'~'));
+                });
+                self.font_rx = Some(rx);
+            }
         }
 
         // Call user setup — borrow ends before we move gfx into self.graphics
@@ -395,6 +439,8 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
     }
 }
 
+/// Desktop entry point: blocks the calling thread running the event loop.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn run_internal<A: FerrousApp + 'static>(config: AppConfig, app: A) {
     let mut runner = Runner::new(app, config);
     let event_loop = EventLoop::new().unwrap();
@@ -403,3 +449,99 @@ pub(crate) fn run_internal<A: FerrousApp + 'static>(config: AppConfig, app: A) {
     event_loop.set_control_flow(ControlFlow::Wait);
     event_loop.run_app(&mut runner).unwrap();
 }
+
+/// wasm32 entry point: schedules the event loop via the browser scheduler.
+/// Must be called from the JS side (e.g. `ferrous_app::run()` exported via
+/// `#[wasm_bindgen]`).
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn run_internal<A: FerrousApp + 'static>(config: AppConfig, app: A) {
+    // Install a pretty panic hook so panics show up in the browser console.
+    console_error_panic_hook::set_once();
+
+    wasm_bindgen_futures::spawn_local(async move {
+        let mut runner = RunnerWasm::new(app, config).await;
+        let event_loop = EventLoop::new().unwrap();
+        event_loop.set_control_flow(ControlFlow::Poll);
+        event_loop.run_app(&mut runner).unwrap();
+    });
+}
+
+// \u2500\u2500\u2500 wasm32-specific async runner wrapper \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// On wasm32 we cannot call `pollster::block_on`, so GraphicsState::new
+// (which is async) must be awaited inside `spawn_local`.  We do the GPU
+// init here and hand the fully-initialised state off to a normal Runner.
+#[cfg(target_arch = "wasm32")]
+struct RunnerWasm<A: FerrousApp>(Runner<A>);
+
+#[cfg(target_arch = "wasm32")]
+impl<A: FerrousApp + 'static> RunnerWasm<A> {
+    async fn new(app: A, config: AppConfig) -> Self {
+        use winit::event_loop::EventLoop;
+        // We need a temporary event loop just to create the window for the
+        // surface. winit on wasm creates a window bound to the canvas.
+        // In practice the real event loop below is the one that runs; this
+        // is only used for the window/surface creation step.
+        let event_loop = EventLoop::new().unwrap();
+        let attributes = winit::window::Window::default_attributes()
+            .with_title(&config.title)
+            .with_inner_size(winit::dpi::PhysicalSize::new(config.width, config.height));
+        let window = Arc::new(event_loop.create_window(attributes).unwrap());
+
+        let mut gfx = GraphicsState::new(
+            &window,
+            config.width,
+            config.height,
+            config.vsync,
+            config.sample_count,
+        )
+        .await;
+
+        gfx.renderer
+            .set_clear_color(config.background_color.to_wgpu());
+
+        let mut inner = Runner::new(app, config);
+        inner.window_size = (inner.config.width, inner.config.height);
+        inner.viewport = Viewport {
+            x: 0,
+            y: 0,
+            width: inner.config.width,
+            height: inner.config.height,
+        };
+
+        // Font loading from bytes (only supported path on wasm32)
+        if let Some(bytes) = inner.config.font_bytes {
+            let font = Font::load_bytes(
+                bytes,
+                &gfx.renderer.context.device,
+                &gfx.renderer.context.queue,
+                ' '..'~',
+            );
+            gfx.renderer
+                .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
+            inner.font = Some(font);
+        }
+
+        gfx.renderer.set_viewport(inner.viewport);
+        inner.window = Some(window);
+        inner.graphics = Some(gfx);
+
+        RunnerWasm(inner)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl<A: FerrousApp + 'static> ApplicationHandler for RunnerWasm<A> {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        self.0.app.configure_ui(&mut self.0.ui);
+        // Window + GPU already set up in `new`; nothing to do here.
+        let _ = event_loop;
+    }
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {}
+    fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        self.0.window_event(el, id, event);
+    }
+    fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        self.0.about_to_wait(el);
+    }
+}
+

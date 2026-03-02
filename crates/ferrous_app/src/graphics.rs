@@ -16,13 +16,29 @@ impl GraphicsState {
         vsync: bool,
         sample_count: u32,
     ) -> Self {
-        // Create the instance first so we can create the surface before the
-        // adapter — this lets wgpu pick the adapter that actually supports
-        // presenting to our window (critical on multi-GPU systems).
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            // On wasm32 we must request the WebGPU (or WebGL2) backend.
+            #[cfg(target_arch = "wasm32")]
+            backends: wgpu::Backends::BROWSER_WEBGPU | wgpu::Backends::GL,
+            #[cfg(not(target_arch = "wasm32"))]
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
+
+        // ── wasm32: attach the canvas before creating the surface ─────────────
+        #[cfg(target_arch = "wasm32")]
+        {
+            use winit::platform::web::WindowExtWebSys;
+            let canvas = window.canvas().expect("winit window has no canvas in wasm32");
+            let web_window = web_sys::window().unwrap();
+            let document = web_window.document().unwrap();
+            let body = document.body().unwrap();
+            // Append the canvas to <body> if it isn't already there.
+            if canvas.parent_element().is_none() {
+                body.append_child(&canvas)
+                    .expect("failed to append canvas to document body");
+            }
+        }
 
         let surface = instance.create_surface(window).unwrap();
         let surface: wgpu::Surface<'static> = unsafe { std::mem::transmute(surface) };

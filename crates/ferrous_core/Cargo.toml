@@ -3,19 +3,24 @@ name = "ferrous_core"
 version = "0.1.0"
 edition = "2021"
 
- # core types depend on simple math utilities; use the workspace version of glam
+# core types depend on simple math utilities; use the workspace version of glam
 [dependencies]
 glam = { workspace = true }
 wgpu = "23.0"
 anyhow = "1.0"
 thiserror = "1.0"
 # needed for input types and later editor/event loop
-# (winit comments must use '#', not '//')
 winit = "0.30"
-
-# utility for lazy static initialization of the system handle
-once_cell = "1.18"
-sysinfo = "0.28"
 
 # used by camera uniform definitions
 bytemuck = "1.17"
+
+# ── desktop-only (process metrics via OS APIs) ────────────────────────────
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+once_cell = "1.18"
+sysinfo = "0.28"
+
+# ── wasm32 ────────────────────────────────────────────────────────────────
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Drop-in replacement for std::time::Instant that works in the browser.
+web-time = "1.1"
