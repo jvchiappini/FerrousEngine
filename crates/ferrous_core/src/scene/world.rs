@@ -21,7 +21,6 @@
 //! world.despawn(h);
 //! ```
 
-
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use glam::{Quat, Vec3};
@@ -229,12 +228,7 @@ impl World {
 
     /// Convenience: spawn a box with explicit dimensions (width, height, depth)
     /// at the given position and return its handle.
-    pub fn spawn_box(
-        &mut self,
-        name: impl Into<String>,
-        position: Vec3,
-        size: Vec3,
-    ) -> Handle {
+    pub fn spawn_box(&mut self, name: impl Into<String>, position: Vec3, size: Vec3) -> Handle {
         let he = size * 0.5;
         self.spawn(name)
             .with_kind(ElementKind::Cube { half_extents: he })
@@ -266,7 +260,10 @@ impl World {
 
     /// Read the world-space position.
     pub fn position(&self, handle: Handle) -> Option<Vec3> {
-        self.entities.get(handle.0 as usize).and_then(|o| o.as_ref()).map(|e| e.transform.position)
+        self.entities
+            .get(handle.0 as usize)
+            .and_then(|o| o.as_ref())
+            .map(|e| e.transform.position)
     }
 
     /// Translate by an offset.
@@ -303,7 +300,10 @@ impl World {
     /// `half_extents` = half of (width, height, depth).
     pub fn set_cube_half_extents(&mut self, handle: Handle, half_extents: Vec3) {
         if let Some(Some(e)) = self.entities.get_mut(handle.0 as usize) {
-            if let ElementKind::Cube { half_extents: ref mut he } = e.kind {
+            if let ElementKind::Cube {
+                half_extents: ref mut he,
+            } = e.kind
+            {
                 *he = half_extents;
             }
             e.transform.scale = half_extents;
@@ -353,13 +353,17 @@ impl World {
     // ── Raw element access ──────────────────────────────────────────────────
     /// Immutable reference to an entity.
     pub fn get(&self, handle: Handle) -> Option<&Element> {
-        self.entities.get(handle.0 as usize).and_then(|o| o.as_ref())
+        self.entities
+            .get(handle.0 as usize)
+            .and_then(|o| o.as_ref())
     }
 
     /// Mutable reference to an entity — use this for complex multi-field
     /// updates to avoid multiple individual method calls.
     pub fn get_mut(&mut self, handle: Handle) -> Option<&mut Element> {
-        self.entities.get_mut(handle.0 as usize).and_then(|o| o.as_mut())
+        self.entities
+            .get_mut(handle.0 as usize)
+            .and_then(|o| o.as_mut())
     }
 
     /// Returns `true` if the world contains this handle.
@@ -386,7 +390,10 @@ impl World {
 
     /// Iterate over `(Handle, &Element)` pairs.
     pub fn iter_with_handles(&self) -> impl Iterator<Item = (Handle, &Element)> {
-        self.entities.iter().enumerate().filter_map(|(id, o)| o.as_ref().map(|e| (Handle(id as u64), e)))
+        self.entities
+            .iter()
+            .enumerate()
+            .filter_map(|(id, o)| o.as_ref().map(|e| (Handle(id as u64), e)))
     }
 
     /// Total number of entities currently alive.
@@ -414,7 +421,10 @@ impl World {
 
     /// Internal: retrieve the renderer handle for an entity.
     pub fn render_handle(&self, handle: Handle) -> Option<usize> {
-        self.entities.get(handle.0 as usize).and_then(|o| o.as_ref()).and_then(|e| e.render_handle)
+        self.entities
+            .get(handle.0 as usize)
+            .and_then(|o| o.as_ref())
+            .and_then(|e| e.render_handle)
     }
 }
 
