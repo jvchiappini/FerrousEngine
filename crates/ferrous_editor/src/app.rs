@@ -5,7 +5,7 @@ use ferrous_app::{
     App, AppContext, Color, FerrousApp, Handle, MouseButton, RenderStats, Vec3, Viewport,
 };
 use ferrous_assets::font::Font;
-use ferrous_core::scene::Axis;
+use ferrous_core::scene::{Axis, GizmoMode};
 use ferrous_gui::{GuiBatch, InteractiveButton, Slider, TextBatch, Ui, ViewportWidget};
 use rand::Rng;
 
@@ -60,7 +60,10 @@ pub struct EditorApp {
     gpu_backend: String,
     selected: Option<Handle>,
     gizmo: ferrous_core::scene::GizmoState,
-
+    /// Secondary gizmo used to reposition the rotation pivot point.
+    pivot_gizmo: ferrous_core::scene::GizmoState,
+    /// Whether the pivot-move gizmo is visible / active.
+    show_pivot_gizmo: bool,
 }
 
 impl Default for EditorApp {
@@ -84,6 +87,23 @@ impl Default for EditorApp {
             bench_stopped_fps: 0.0,
             selected: None,
             gizmo: ferrous_core::scene::GizmoState::default(),
+            pivot_gizmo: {
+                let mut g = ferrous_core::scene::GizmoState::default();
+                // Slightly smaller + white/grey palette so it's visually distinct.
+                g.style.arm_length = 0.8;
+                g.style.show_planes = false;
+                g.style.x_axis = ferrous_core::scene::AxisColors::new(
+                    [1.0, 0.6, 0.6], [1.0, 1.0, 0.0],
+                );
+                g.style.y_axis = ferrous_core::scene::AxisColors::new(
+                    [0.6, 1.0, 0.6], [1.0, 1.0, 0.0],
+                );
+                g.style.z_axis = ferrous_core::scene::AxisColors::new(
+                    [0.6, 0.8, 1.0], [1.0, 1.0, 0.0],
+                );
+                g
+            },
+            show_pivot_gizmo: false,
             fps_history: vec![0.0; FPS_WINDOW],
             fps_history_idx: 0,
             fps_avg: 0.0,
@@ -192,10 +212,44 @@ impl FerrousApp for EditorApp {
         }
 
         // Left-click with no gizmo drag active → select last spawned cube.
-        if ctx.input.button_just_pressed(MouseButton::Left) && !self.gizmo.dragging {
+        if ctx.input.button_just_pressed(MouseButton::Left)
+            && !self.gizmo.dragging
+            && !self.pivot_gizmo.dragging
+        {
             if let Some(h) = self.last_cube {
                 if ctx.world.contains(h) {
                     self.selected = Some(h);
+                }
+            }
+        }
+
+        // ── Gizmo mode hotkeys ─────────────────────────────────────────────
+        // T  → Translate mode
+        // R  → Rotate mode  (shows arc rings)
+        // P  → Toggle pivot-move gizmo (only active in Rotate mode)
+        if ctx.input.just_pressed(ferrous_app::KeyCode::KeyT) {
+            self.gizmo.mode = GizmoMode::Translate;
+            self.gizmo.dragging = false;
+            self.gizmo.highlighted_axis = None;
+            self.show_pivot_gizmo = false;
+        }
+        if ctx.input.just_pressed(ferrous_app::KeyCode::KeyR) {
+            self.gizmo.mode = GizmoMode::Rotate;
+            self.gizmo.dragging = false;
+            self.gizmo.highlighted_axis = None;
+        }
+        if ctx.input.just_pressed(ferrous_app::KeyCode::KeyP) {
+            if self.gizmo.mode == GizmoMode::Rotate {
+                self.show_pivot_gizmo = !self.show_pivot_gizmo;
+                // Reset pivot offset to entity origin when toggling on.
+                if self.show_pivot_gizmo {
+                    if let Some(sel) = self.selected {
+                        if let Some(pos) = ctx.world.position(sel) {
+                            // Reset to local offset zero = pivot sits on entity.
+                            self.gizmo.pivot_offset = Vec3::ZERO;
+                            self.pivot_gizmo.world_transform.position = pos;
+                        }
+                    }
                 }
             }
         }
@@ -266,17 +320,15 @@ impl FerrousApp for EditorApp {
 
             // Gizmo status
             if self.selected.is_some() {
-                let axis_str = match self.gizmo.highlighted_axis {
-                    Some(Axis::X) => "Axis: X  (drag to move)",
-                    Some(Axis::Y) => "Axis: Y  (drag to move)",
-                    Some(Axis::Z) => "Axis: Z  (drag to move)",
-                    None => "Click an axis to translate",
+                let mode_label = match self.gizmo.mode {
+                    GizmoMode::Translate => "Translate  [T]",
+                    GizmoMode::Rotate    => "Rotate     [R]",
+                    GizmoMode::Scale     => "Scale",
                 };
-                let axis_color = match self.gizmo.highlighted_axis {
-                    Some(Axis::X) => [1.0, 0.3, 0.3, 1.0],
-                    Some(Axis::Y) => [0.3, 1.0, 0.3, 1.0],
-                    Some(Axis::Z) => [0.3, 0.5, 1.0, 1.0],
-                    None => [0.8, 0.8, 0.8, 1.0],
+                let mode_color: [f32; 4] = match self.gizmo.mode {
+                    GizmoMode::Translate => [0.4, 0.9, 1.0, 1.0],
+                    GizmoMode::Rotate    => [0.9, 0.5, 1.0, 1.0],
+                    GizmoMode::Scale     => [1.0, 0.8, 0.2, 1.0],
                 };
                 text.draw_text(
                     font,
@@ -285,7 +337,45 @@ impl FerrousApp for EditorApp {
                     13.0,
                     [1.0, 0.85, 0.2, 1.0],
                 );
-                text.draw_text(font, axis_str, [15.0, 194.0], 12.0, axis_color);
+                text.draw_text(font, mode_label, [15.0, 194.0], 12.0, mode_color);
+
+                let axis_str = match (self.gizmo.mode, self.gizmo.highlighted_axis) {
+                    (GizmoMode::Translate, Some(Axis::X)) => "Axis: X  (dragging)",
+                    (GizmoMode::Translate, Some(Axis::Y)) => "Axis: Y  (dragging)",
+                    (GizmoMode::Translate, Some(Axis::Z)) => "Axis: Z  (dragging)",
+                    (GizmoMode::Translate, None) => "Click axis / plane",
+                    (GizmoMode::Rotate, Some(Axis::X)) => "Ring: X  (drag to rotate)",
+                    (GizmoMode::Rotate, Some(Axis::Y)) => "Ring: Y  (drag to rotate)",
+                    (GizmoMode::Rotate, Some(Axis::Z)) => "Ring: Z  (drag to rotate)",
+                    (GizmoMode::Rotate, None) => "Click a ring to rotate  [P] pivot",
+                    _ => "",
+                };
+                let axis_color = match self.gizmo.highlighted_axis {
+                    Some(Axis::X) => [1.0, 0.3, 0.3, 1.0],
+                    Some(Axis::Y) => [0.3, 1.0, 0.3, 1.0],
+                    Some(Axis::Z) => [0.3, 0.5, 1.0, 1.0],
+                    None => [0.7, 0.7, 0.7, 1.0],
+                };
+                text.draw_text(font, axis_str, [15.0, 208.0], 11.0, axis_color);
+
+                // Show pivot info when in rotate mode.
+                if self.gizmo.mode == GizmoMode::Rotate {
+                    let off = self.gizmo.pivot_offset;
+                    let piv_str = if off == Vec3::ZERO {
+                        "Pivot: origin  [P] move".to_string()
+                    } else {
+                        format!(
+                            "Pivot offset ({:.2},{:.2},{:.2})  [P]",
+                            off.x, off.y, off.z
+                        )
+                    };
+                    let piv_color: [f32; 4] = if self.show_pivot_gizmo {
+                        [1.0, 1.0, 0.4, 1.0]
+                    } else {
+                        [0.6, 0.6, 0.6, 1.0]
+                    };
+                    text.draw_text(font, &piv_str, [15.0, 221.0], 10.0, piv_color);
+                }
             } else {
                 text.draw_text(
                     font,
@@ -386,9 +476,24 @@ impl FerrousApp for EditorApp {
             self.add_cube = false;
         }
 
-        // Gizmo: pick axis, drag-translate, and queue draw — all in one call.
+        // Gizmo: pick axis / ring, drag, queue draw.
         // Must be in draw_3d (not update) so camera_eye/camera_target are valid.
         if let Some(sel) = self.selected {
+            // When the pivot gizmo is active and dragging, give it priority
+            // so its mouse-pick wins over the rotation gizmo.
+            let pivot_active = self.show_pivot_gizmo
+                && self.gizmo.mode == GizmoMode::Rotate;
+
+            if pivot_active {
+                // Borrow split: update_pivot_gizmo needs both &mut pivot_gizmo
+                // and &mut rotation_gizmo simultaneously.  We use a small trick:
+                // call the helper manually here and update the fields directly.
+                // Safer: clone the pivot state for the call, then write back.
+                let mut pg = self.pivot_gizmo.clone();
+                ctx.update_pivot_gizmo(sel, &mut pg, &mut self.gizmo);
+                self.pivot_gizmo = pg;
+            }
+
             ctx.update_gizmo(sel, &mut self.gizmo);
         }
     }

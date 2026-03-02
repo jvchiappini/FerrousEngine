@@ -83,7 +83,7 @@ pub fn sync_world(
             };
             let double_sided =
                 matches!(element.kind, ElementKind::Quad { double_sided, .. } if double_sided);
-            let mut obj = RenderObject::new(device, element.id, mesh, matrix, 0, double_sided);
+            let mut obj = RenderObject::new(device, element.id, mesh, matrix, 0, double_sided, 0);
             // Override AABB with per-axis half_extents when available.
             match element.kind {
                 ElementKind::Cube { half_extents } => {

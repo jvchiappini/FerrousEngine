@@ -27,16 +27,17 @@ impl WorldPipeline {
         // optional cull mode; `None` disables culling (double-sided)
         cull_mode: Option<wgpu::Face>,
     ) -> Self {
-        let shader = device.create_shader_module(wgpu::include_wgsl!(
-            "../../../../assets/shaders/base.wgsl"
-        ));
+        let shader = device
+            .create_shader_module(wgpu::include_wgsl!("../../../../assets/shaders/base.wgsl"));
 
-        let pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("World Pipeline Layout"),
-                bind_group_layouts: &[&layouts.camera, &layouts.model],
-                push_constant_ranges: &[],
-            });
+        // World pipeline now binds camera (group0), model (group1) and
+        // material (group2).  The material bind group is supplied per-object
+        // by the world pass when drawing.
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("World Pipeline Layout"),
+            bind_group_layouts: &[&layouts.camera, &layouts.model, &layouts.material],
+            push_constant_ranges: &[],
+        });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("World Render Pipeline"),

@@ -49,6 +49,9 @@ pub struct WorldPass {
     instance_bind_group: Option<Arc<wgpu::BindGroup>>,
     /// Sky / clear color.
     pub clear_color: Color,
+    /// Table of material bind groups, indexed by slot.  Populated by the
+    /// renderer when materials are created or updated.
+    material_bind_groups: Vec<Arc<wgpu::BindGroup>>,
 }
 
 impl WorldPass {
@@ -74,6 +77,7 @@ impl WorldPass {
                 b: 0.3,
                 a: 1.0,
             },
+            material_bind_groups: Vec::new(),
         }
     }
 
@@ -86,6 +90,14 @@ impl WorldPass {
     /// Called by `Renderer` whenever the `InstanceBuffer` is created or reallocated.
     pub fn set_instance_buffer(&mut self, bind_group: Arc<wgpu::BindGroup>) {
         self.instance_bind_group = Some(bind_group);
+    }
+
+    /// Update the material table used during draw.  The passed slice is
+    /// cloned into the pass; the renderer should call this whenever it
+    /// reallocates or adds new materials.
+    pub fn set_material_table(&mut self, table: &[Arc<wgpu::BindGroup>]) {
+        self.material_bind_groups.clear();
+        self.material_bind_groups.extend_from_slice(table);
     }
 }
 
@@ -154,6 +166,10 @@ impl RenderPass for WorldPass {
                     } else {
                         rpass.set_pipeline(&self.instancing_pipeline.inner);
                     }
+                    // bind material if present
+                    if let Some(mat_bg) = self.material_bind_groups.get(cmd.material_slot) {
+                        rpass.set_bind_group(2, mat_bg.as_ref(), &[]);
+                    }
                     rpass.set_vertex_buffer(0, cmd.vertex_buffer.slice(..));
                     rpass.set_index_buffer(cmd.index_buffer.slice(..), cmd.index_format);
                     rpass.draw_indexed(
@@ -173,6 +189,10 @@ impl RenderPass for WorldPass {
                 for cmd in &packet.scene_objects {
                     let offset = (cmd.model_slot as u32).wrapping_mul(self.model_stride);
                     rpass.set_bind_group(1, model_bg.as_ref(), &[offset]);
+                    // bind material group if available
+                    if let Some(mat_bg) = self.material_bind_groups.get(cmd.material_slot) {
+                        rpass.set_bind_group(2, mat_bg.as_ref(), &[]);
+                    }
                     rpass.set_pipeline(if cmd.double_sided {
                         &self.pipeline_double.inner
                     } else {

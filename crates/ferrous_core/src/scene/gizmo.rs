@@ -24,7 +24,10 @@ pub struct AxisColors {
 
 impl AxisColors {
     pub const fn new(normal: [f32; 3], highlighted: [f32; 3]) -> Self {
-        Self { normal, highlighted }
+        Self {
+            normal,
+            highlighted,
+        }
     }
 }
 
@@ -39,7 +42,10 @@ pub struct PlaneColors {
 
 impl PlaneColors {
     pub const fn new(normal: [f32; 4], highlighted: [f32; 4]) -> Self {
-        Self { normal, highlighted }
+        Self {
+            normal,
+            highlighted,
+        }
     }
 }
 
@@ -130,11 +136,20 @@ impl Default for GizmoStyle {
 
 impl GizmoStyle {
     /// Computed plane offset in world units.
-    #[inline] pub fn plane_offset(&self) -> f32 { self.arm_length * self.plane_offset_ratio }
+    #[inline]
+    pub fn plane_offset(&self) -> f32 {
+        self.arm_length * self.plane_offset_ratio
+    }
     /// Computed plane square side length in world units.
-    #[inline] pub fn plane_size(&self)   -> f32 { self.arm_length * self.plane_size_ratio }
+    #[inline]
+    pub fn plane_size(&self) -> f32 {
+        self.arm_length * self.plane_size_ratio
+    }
     /// Computed arrowhead length in world units.
-    #[inline] pub fn arrow_length(&self) -> f32 { self.arm_length * self.arrow_length_ratio }
+    #[inline]
+    pub fn arrow_length(&self) -> f32 {
+        self.arm_length * self.arrow_length_ratio
+    }
 
     /// Return the idle color of `axis`.
     pub fn axis_color(&self, axis: Axis) -> [f32; 3] {
@@ -230,6 +245,12 @@ pub struct GizmoState {
     /// things like pivot adjustment.
     pub world_transform: Transform,
 
+    /// Local-space offset from the entity's position to the rotation pivot.
+    /// `Vec3::ZERO` means the pivot sits exactly on the entity's origin.
+    /// The effective world-space pivot is always `entity_position + pivot_offset`,
+    /// so moving the entity automatically moves the pivot with it.
+    pub pivot_offset: Vec3,
+
     /// Optional axis that is currently highlighted (e.g. under the mouse
     /// cursor) or actively being dragged.  `None` means "no constraint".
     pub highlighted_axis: Option<Axis>,
@@ -253,6 +274,7 @@ impl Default for GizmoState {
         Self {
             mode: GizmoMode::Translate,
             world_transform: Transform::default(),
+            pivot_offset: Vec3::ZERO,
             highlighted_axis: None,
             highlighted_plane: None,
             dragging: false,
@@ -279,6 +301,14 @@ impl GizmoState {
     /// the object.
     pub fn position_matrix(&self) -> Mat4 {
         Mat4::from_translation(self.world_transform.position)
+    }
+
+    /// Effective world-space pivot used for rotation.
+    ///
+    /// Always equal to `entity_position + entity_rotation * pivot_offset`.
+    #[inline]
+    pub fn effective_pivot(&self) -> Vec3 {
+        self.world_transform.position + self.world_transform.rotation * self.pivot_offset
     }
 }
 

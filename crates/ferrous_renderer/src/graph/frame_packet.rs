@@ -46,6 +46,9 @@ pub struct DrawCommand {
     /// `WorldPass` converts this to a byte offset via `model_buf.offset(slot)`
     /// and supplies it as the dynamic offset to `set_bind_group(1, ...)`.
     pub model_slot: usize,
+    /// Slot index inside the renderer's material table.  WorldPass will
+    /// convert this to a bind group reference when drawing.
+    pub material_slot: usize,
     /// Indicates whether the object should be drawn with back-face culling disabled.
     pub double_sided: bool,
 }
@@ -67,6 +70,10 @@ pub struct InstancedDrawCommand {
     pub instance_count: u32,
     /// Whether the draw should disable back-face culling.
     pub double_sided: bool,
+    /// Material slot for all instances in this batch.  If you need
+    /// per-instance materials the caller must split them into multiple
+    /// batches (current implementation doesn't support an array of materials).
+    pub material_slot: usize,
 }
 
 // ── Viewport ──────────────────────────────────────────────────────────────────

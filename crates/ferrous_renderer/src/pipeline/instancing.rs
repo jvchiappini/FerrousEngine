@@ -32,7 +32,7 @@ impl InstancingPipeline {
         let pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Instancing Pipeline Layout"),
-                bind_group_layouts: &[&layouts.camera, &layouts.instance],
+                bind_group_layouts: &[&layouts.camera, &layouts.instance, &layouts.material],
                 push_constant_ranges: &[],
             });
 

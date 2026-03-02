@@ -125,7 +125,7 @@ let obj = RenderObject::new(
     &pipeline_layouts.model,
     glam::Mat4::IDENTITY,
     /* double_sided= */ false,
-);
+    0, // material slot (white by default)
 ```
 
 `RenderObject::update_transform(queue, matrix)` writes a new transform

@@ -23,6 +23,7 @@ docs/
 ├── render_pass.md         # RenderPass trait – the primary extension point
 ├── camera.md              # GpuCamera, OrbitState, Controller configuration
 ├── geometry.md            # Vertex, Mesh, built-in primitives, custom geometry
+├── materials.md           # material & texture system (slots, registry, shaders)
 ├── render_target.md       # off-screen rendering, MSAA, pixel readback
 ├── gizmo.md               # GizmoDraw, GizmoPipeline, execute_gizmo_pass(), GizmoStyle
 └── extending/

@@ -10,6 +10,9 @@ pub struct Vertex {
     pub position: [f32; 3],
     /// Linear RGB vertex color.
     pub color: [f32; 3],
+    /// UV coordinates for texture lookup.  Base shader will sample this
+    /// when a material with a texture is bound.
+    pub uv: [f32; 2],
 }
 
 impl Vertex {
@@ -32,6 +35,12 @@ impl Vertex {
                     format: wgpu::VertexFormat::Float32x3,
                     offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
                     shader_location: 1,
+                },
+                // @location(2) uv
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x2,
+                    offset: (std::mem::size_of::<[f32; 3]>() * 2) as wgpu::BufferAddress,
+                    shader_location: 2,
                 },
             ],
         }

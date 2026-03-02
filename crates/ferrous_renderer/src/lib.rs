@@ -23,6 +23,7 @@ pub mod render_stats;
 pub mod render_target;
 pub mod resources;
 pub mod scene;
+pub mod materials;
 
 // -- Public re-exports --------------------------------------------------------
 
@@ -39,6 +40,8 @@ pub use render_stats::RenderStats;
 pub use render_target::RenderTarget;
 pub use resources::InstanceBuffer;
 pub use scene::{Aabb, Frustum, RenderObject};
+
+use materials::MaterialRegistry;
 
 #[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
@@ -113,6 +116,8 @@ pub struct Renderer {
     instance_buf: InstanceBuffer,
     /// Layout for the instance storage buffer bind group.
     instance_layout: Arc<wgpu::BindGroupLayout>,
+    /// A copy of the pipeline bind-group layouts; needed when creating
+    /// new materials or other GPU resources that rely on them.
 
     /// Shared cube mesh — lazily created on first World spawn so that every
     /// cube RenderObject carries the same Arc<Buffer> pointers, enabling
@@ -140,6 +145,9 @@ pub struct Renderer {
     // -- Caching optimization flags -------------------------------------------
     prev_view_proj: Option<glam::Mat4>,
     scene_dirty: bool,
+
+    /// Material manager handling textures and bind groups.
+    material_registry: MaterialRegistry,
 
     // -- Surface info (for registering passes post-construction) --------------
     format: wgpu::TextureFormat,
@@ -212,6 +220,10 @@ impl Renderer {
             instancing_pipeline_double,
             gpu_camera.bind_group.clone(),
         );
+        // create material registry (includes default white material)
+        let mut material_registry = MaterialRegistry::new(device, &context.queue, &layouts);
+        let mut world_pass = world_pass;
+        world_pass.set_material_table(&material_registry.bind_group_table());
         let ui_renderer = ferrous_gui::GuiRenderer::new(
             context.device.clone(),
             format,
@@ -248,9 +260,9 @@ impl Renderer {
             next_manual_id: u64::MAX,
             model_buf,
             next_slot: 0,
-            model_layout: layouts.model,
+            model_layout: layouts.model.clone(),
             instance_buf,
-            instance_layout: layouts.instance,
+            instance_layout: layouts.instance.clone(),
             shared_cube_mesh: None,
             shared_quad_mesh: None,
             gizmo_pipeline,
@@ -260,6 +272,8 @@ impl Renderer {
             instance_matrix_scratch: Vec::new(),
             prev_view_proj: None,
             scene_dirty: true,
+
+            material_registry,
             format,
             sample_count,
             viewport: Viewport {
@@ -286,6 +300,59 @@ impl Renderer {
     }
 
     /// Renders into the internal off-screen [`RenderTarget`].
+
+        /// Creates a GPU texture from raw RGBA8 bytes and returns its slot index.
+        /// This texture can then be referenced when creating a material.
+        pub fn create_texture_from_rgba(
+            &mut self,
+            width: u32,
+            height: u32,
+            data: &[u8],
+        ) -> usize {
+            let slot = self.material_registry.create_texture_from_rgba(
+                &self.context.device,
+                &self.context.queue,
+                width,
+                height,
+                data,
+            );
+            self.world_pass.set_material_table(&self.material_registry.bind_group_table());
+            slot
+        }
+
+        /// Creates a material with the given base color and optional texture slot.
+        /// If `texture_slot` is `None` the default white texture is used.
+        /// Returns the material slot index.
+        pub fn create_material(
+            &mut self,
+            base_color: [f32; 4],
+            _texture_slot: Option<usize>,
+        ) -> usize {
+            let slot = self.material_registry.create_material(
+                &self.context.device,
+                &self.context.queue,
+                base_color,
+                _texture_slot,
+            );
+            self.world_pass.set_material_table(&self.material_registry.bind_group_table());
+            slot
+        }
+
+        /// Set the material slot for a previously-spawned legacy object.
+        pub fn set_object_material(&mut self, id: u64, material_slot: usize) {
+            if let Some(obj) = self.legacy_objects.get_mut(&id) {
+                obj.material_slot = material_slot;
+            }
+        }
+
+        /// Set the material slot for a world object by index (matching the world ID).
+        pub fn set_world_object_material(&mut self, index: usize, material_slot: usize) {
+            // layouts no longer stored; registry keeps its own copy
+            if let Some(Some(obj)) = self.world_objects.get_mut(index) {
+                obj.material_slot = material_slot;
+            }
+        }
+
     pub fn render_to_target(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -330,7 +397,7 @@ impl Renderer {
         }
         self.model_buf.write(&self.context.queue, slot, &matrix);
 
-        let obj = RenderObject::new(&self.context.device, id, mesh, matrix, slot, double_sided);
+        let obj = RenderObject::new(&self.context.device, id, mesh, matrix, slot, double_sided, 0);
         self.legacy_objects.insert(id, obj);
         self.scene_dirty = true;
         id
@@ -431,7 +498,7 @@ impl Renderer {
         // build a flat list of vertices; each pair forms one line segment.
         let mut vertices: Vec<Vertex> = Vec::new();
         for gizmo in &self.gizmo_draws {
-            use ferrous_core::scene::Plane;
+            use ferrous_core::scene::{GizmoMode, Plane};
             let st = &gizmo.style;
 
             // ── Derived sizes from style ───────────────────────────────────
@@ -443,92 +510,159 @@ impl Renderer {
 
             let m = gizmo.transform;
 
-            // ── Axis arms + optional arrowheads ───────────────────────────
-            for &(axis_vec, axis_enum) in &[
-                (glam::Vec3::X, ferrous_core::scene::Axis::X),
-                (glam::Vec3::Y, ferrous_core::scene::Axis::Y),
-                (glam::Vec3::Z, ferrous_core::scene::Axis::Z),
-            ] {
-                let c = if gizmo.highlighted_axis == Some(axis_enum) {
-                    st.axis_highlight(axis_enum)
-                } else {
-                    st.axis_color(axis_enum)
-                };
+            match gizmo.mode {
+                GizmoMode::Translate | GizmoMode::Scale => {
+                    // ── Axis arms + optional arrowheads ───────────────────────────
+                    for &(axis_vec, axis_enum) in &[
+                        (glam::Vec3::X, ferrous_core::scene::Axis::X),
+                        (glam::Vec3::Y, ferrous_core::scene::Axis::Y),
+                        (glam::Vec3::Z, ferrous_core::scene::Axis::Z),
+                    ] {
+                        let c = if gizmo.highlighted_axis == Some(axis_enum) {
+                            st.axis_highlight(axis_enum)
+                        } else {
+                            st.axis_color(axis_enum)
+                        };
 
-                let p0 = m.transform_point3(glam::Vec3::ZERO);
-                let p1 = m.transform_point3(axis_vec * arm);
+                        let p0 = m.transform_point3(glam::Vec3::ZERO);
+                        let p1 = m.transform_point3(axis_vec * arm);
 
-                // Shaft line
-                vertices.push(Vertex {
-                    position: p0.into(),
-                    color: c,
-                });
-                vertices.push(Vertex {
-                    position: p1.into(),
-                    color: c,
-                });
-
-                // Arrowhead — two "V" lines in the plane that looks best at
-                // any camera angle: pick two perpendicular vectors to axis_vec,
-                // rotate the arrowhead fins around the axis.
-                if st.show_arrows && arr_len > 1e-4 {
-                    // Find a stable perpendicular to axis_vec.
-                    let perp = if axis_vec.dot(glam::Vec3::Y).abs() < 0.9 {
-                        axis_vec.cross(glam::Vec3::Y).normalize()
-                    } else {
-                        axis_vec.cross(glam::Vec3::X).normalize()
-                    };
-                    // Base of the arrowhead (along shaft)
-                    let base_local = axis_vec * (arm - arr_len);
-                    // 4 fins evenly spaced (cross shape)
-                    let up2 = perp;
-                    let side = axis_vec.cross(perp).normalize();
-                    for &fin_dir in &[up2, -up2, side, -side] {
-                        let fin_tip = axis_vec * arm;
-                        let fin_base = base_local + fin_dir * (arr_len * arr_half.tan());
+                        // Shaft line
                         vertices.push(Vertex {
-                            position: m.transform_point3(fin_tip).into(),
+                            position: p0.into(),
                             color: c,
+                            uv: [0.0, 0.0],
                         });
                         vertices.push(Vertex {
-                            position: m.transform_point3(fin_base).into(),
+                            position: p1.into(),
                             color: c,
+                            uv: [0.0, 0.0],
                         });
+
+                        // Arrowhead
+                        if st.show_arrows && arr_len > 1e-4 {
+                            let perp = if axis_vec.dot(glam::Vec3::Y).abs() < 0.9 {
+                                axis_vec.cross(glam::Vec3::Y).normalize()
+                            } else {
+                                axis_vec.cross(glam::Vec3::X).normalize()
+                            };
+                            let base_local = axis_vec * (arm - arr_len);
+                            let up2 = perp;
+                            let side = axis_vec.cross(perp).normalize();
+                            for &fin_dir in &[up2, -up2, side, -side] {
+                                let fin_tip = axis_vec * arm;
+                                let fin_base = base_local + fin_dir * (arr_len * arr_half.tan());
+                                vertices.push(Vertex {
+                                    position: m.transform_point3(fin_tip).into(),
+                                    color: c,
+                                    uv: [0.0, 0.0],
+                                });
+                                vertices.push(Vertex {
+                                    position: m.transform_point3(fin_base).into(),
+                                    color: c,
+                                    uv: [0.0, 0.0],
+                                });
+                            }
+                        }
+                    }
+
+                    // ── Plane square outlines ─────────────────────────────────────
+                    if st.show_planes {
+                        for &plane in &[Plane::XY, Plane::XZ, Plane::YZ] {
+                            let rgba = if gizmo.highlighted_plane == Some(plane) {
+                                st.plane_highlight(plane)
+                            } else {
+                                st.plane_color(plane)
+                            };
+                            let c = [rgba[0], rgba[1], rgba[2]];
+                            let (a, b) = plane.axes();
+                            let c0 = a * p_off + b * p_off;
+                            let c1 = a * (p_off + p_size) + b * p_off;
+                            let c2 = a * (p_off + p_size) + b * (p_off + p_size);
+                            let c3 = a * p_off + b * (p_off + p_size);
+                            let corners = [
+                                m.transform_point3(c0),
+                                m.transform_point3(c1),
+                                m.transform_point3(c2),
+                                m.transform_point3(c3),
+                            ];
+                            for i in 0..4 {
+                                let j = (i + 1) % 4;
+                                vertices.push(Vertex {
+                                    position: corners[i].into(),
+                                    color: c,
+                                    uv: [0.0, 0.0],
+                                });
+                                vertices.push(Vertex {
+                                    position: corners[j].into(),
+                                    color: c,
+                                    uv: [0.0, 0.0],
+                                });
+                            }
+                        }
                     }
                 }
-            }
 
-            // ── Plane square outlines ─────────────────────────────────────
-            if st.show_planes {
-                for &plane in &[Plane::XY, Plane::XZ, Plane::YZ] {
-                    let rgba = if gizmo.highlighted_plane == Some(plane) {
-                        st.plane_highlight(plane)
-                    } else {
-                        st.plane_color(plane)
-                    };
-                    // Use RGB only (the pipeline currently uses [f32;3] vertices).
-                    let c = [rgba[0], rgba[1], rgba[2]];
-                    let (a, b) = plane.axes();
-                    let c0 = a * p_off + b * p_off;
-                    let c1 = a * (p_off + p_size) + b * p_off;
-                    let c2 = a * (p_off + p_size) + b * (p_off + p_size);
-                    let c3 = a * p_off + b * (p_off + p_size);
-                    let corners = [
-                        m.transform_point3(c0),
-                        m.transform_point3(c1),
-                        m.transform_point3(c2),
-                        m.transform_point3(c3),
-                    ];
-                    for i in 0..4 {
-                        let j = (i + 1) % 4;
-                        vertices.push(Vertex {
-                            position: corners[i].into(),
-                            color: c,
-                        });
-                        vertices.push(Vertex {
-                            position: corners[j].into(),
-                            color: c,
-                        });
+                GizmoMode::Rotate => {
+                    // ── Rotation arc rings — one full circle per axis ──────────────
+                    // Each ring lives in the plane perpendicular to the axis.
+                    const ARC_SEGS: usize = 48;
+                    let origin = m.transform_point3(glam::Vec3::ZERO);
+
+                    for &(axis_vec, axis_enum) in &[
+                        (glam::Vec3::X, ferrous_core::scene::Axis::X),
+                        (glam::Vec3::Y, ferrous_core::scene::Axis::Y),
+                        (glam::Vec3::Z, ferrous_core::scene::Axis::Z),
+                    ] {
+                        let c = if gizmo.highlighted_axis == Some(axis_enum) {
+                            st.axis_highlight(axis_enum)
+                        } else {
+                            st.axis_color(axis_enum)
+                        };
+
+                        // Two stable perpendiculars in the ring's plane.
+                        let perp1 = if axis_vec.dot(glam::Vec3::Y).abs() < 0.9 {
+                            axis_vec.cross(glam::Vec3::Y).normalize()
+                        } else {
+                            axis_vec.cross(glam::Vec3::X).normalize()
+                        };
+                        let perp2 = axis_vec.cross(perp1).normalize();
+
+                        // Generate ring vertices in world space (m is translation-only).
+                        let mut ring: Vec<[f32; 3]> = Vec::with_capacity(ARC_SEGS);
+                        for i in 0..ARC_SEGS {
+                            let theta = (i as f32 / ARC_SEGS as f32)
+                                * std::f32::consts::TAU;
+                            let local = (perp1 * theta.cos() + perp2 * theta.sin()) * arm;
+                            ring.push((origin + local).into());
+                        }
+
+                        // Emit line segments forming the closed ring.
+                        for i in 0..ARC_SEGS {
+                            let j = (i + 1) % ARC_SEGS;
+                            vertices.push(Vertex {
+                                position: ring[i],
+                                color: c,
+                                uv: [0.0, 0.0],
+                            });
+                            vertices.push(Vertex {
+                                position: ring[j],
+                                color: c,
+                                uv: [0.0, 0.0],
+                            });
+                        }
+                    }
+
+                    // Small dot (cross) at the pivot origin so users can see it.
+                    let dot_size = arm * 0.06;
+                    let pivot_c = [1.0_f32, 1.0, 0.4];
+                    for &dir in &[
+                        glam::Vec3::X, glam::Vec3::NEG_X,
+                        glam::Vec3::Y, glam::Vec3::NEG_Y,
+                        glam::Vec3::Z, glam::Vec3::NEG_Z,
+                    ] {
+                        vertices.push(Vertex { position: origin.into(), color: pivot_c, uv: [0.0, 0.0] });
+                        vertices.push(Vertex { position: (origin + dir * dot_size).into(), color: pivot_c, uv: [0.0, 0.0] });
                     }
                 }
             }
@@ -835,6 +969,7 @@ impl Renderer {
                     index_format: obj.mesh.index_format,
                     model_slot: obj.slot,
                     double_sided: obj.double_sided,
+                    material_slot: obj.material_slot,
                 });
             }
         }
@@ -927,6 +1062,7 @@ impl Renderer {
                     first_instance: offset,
                     instance_count: count,
                     double_sided,
+                    material_slot: 0,
                 });
 
                 offset += count;

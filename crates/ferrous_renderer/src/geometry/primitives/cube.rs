@@ -7,9 +7,11 @@ use crate::geometry::{Mesh, Vertex};
 use crate::resources::buffer;
 
 pub fn cube(device: &wgpu::Device) -> Mesh {
-    let v = |pos: [f32; 3], col: [f32; 3]| Vertex {
+    // helper that includes uv coordinates in addition to position and color
+    let v = |pos: [f32; 3], col: [f32; 3], uv: [f32; 2]| Vertex {
         position: pos,
         color: col,
+        uv,
     };
 
     // one constant per face color for readability
@@ -20,26 +22,34 @@ pub fn cube(device: &wgpu::Device) -> Mesh {
     const MAGENTA: [f32; 3] = [1.0, 0.0, 1.0];
     const CYAN: [f32; 3] = [0.0, 1.0, 1.0];
 
+    // helper to compute UV coordinates based on face index; the texture is
+    // assumed to be laid out as a horizontal strip of six regions.  this way
+    // each cube face can sample a different portion of the same texture.
+    let uv_for = |face: usize, u: f32, v: f32| -> [f32; 2] {
+        let region = face as f32 / 6.0;
+        [region + u / 6.0, v]
+    };
+
     #[rustfmt::skip]
     let vertices: &[Vertex] = &[
         // front  (z+)
-        v([-1.0, -1.0,  1.0], RED),    v([ 1.0, -1.0,  1.0], RED),
-        v([ 1.0,  1.0,  1.0], RED),    v([-1.0,  1.0,  1.0], RED),
+        v([-1.0, -1.0,  1.0], RED,     uv_for(0, 0.0, 0.0)), v([ 1.0, -1.0,  1.0], RED,     uv_for(0, 1.0, 0.0)),
+        v([ 1.0,  1.0,  1.0], RED,     uv_for(0, 1.0, 1.0)), v([-1.0,  1.0,  1.0], RED,     uv_for(0, 0.0, 1.0)),
         // back   (z-)
-        v([-1.0, -1.0, -1.0], GREEN),  v([ 1.0, -1.0, -1.0], GREEN),
-        v([ 1.0,  1.0, -1.0], GREEN),  v([-1.0,  1.0, -1.0], GREEN),
+        v([-1.0, -1.0, -1.0], GREEN,   uv_for(1, 0.0, 0.0)), v([ 1.0, -1.0, -1.0], GREEN,   uv_for(1, 1.0, 0.0)),
+        v([ 1.0,  1.0, -1.0], GREEN,   uv_for(1, 1.0, 1.0)), v([-1.0,  1.0, -1.0], GREEN,   uv_for(1, 0.0, 1.0)),
         // left   (x-)
-        v([-1.0, -1.0, -1.0], BLUE),   v([-1.0, -1.0,  1.0], BLUE),
-        v([-1.0,  1.0,  1.0], BLUE),   v([-1.0,  1.0, -1.0], BLUE),
+        v([-1.0, -1.0, -1.0], BLUE,    uv_for(2, 0.0, 0.0)), v([-1.0, -1.0,  1.0], BLUE,    uv_for(2, 1.0, 0.0)),
+        v([-1.0,  1.0,  1.0], BLUE,    uv_for(2, 1.0, 1.0)), v([-1.0,  1.0, -1.0], BLUE,    uv_for(2, 0.0, 1.0)),
         // right  (x+)
-        v([ 1.0, -1.0, -1.0], YELLOW), v([ 1.0, -1.0,  1.0], YELLOW),
-        v([ 1.0,  1.0,  1.0], YELLOW), v([ 1.0,  1.0, -1.0], YELLOW),
+        v([ 1.0, -1.0, -1.0], YELLOW,  uv_for(3, 0.0, 0.0)), v([ 1.0, -1.0,  1.0], YELLOW,  uv_for(3, 1.0, 0.0)),
+        v([ 1.0,  1.0,  1.0], YELLOW,  uv_for(3, 1.0, 1.0)), v([ 1.0,  1.0, -1.0], YELLOW,  uv_for(3, 0.0, 1.0)),
         // top    (y+)
-        v([-1.0,  1.0, -1.0], MAGENTA),v([-1.0,  1.0,  1.0], MAGENTA),
-        v([ 1.0,  1.0,  1.0], MAGENTA),v([ 1.0,  1.0, -1.0], MAGENTA),
+        v([-1.0,  1.0, -1.0], MAGENTA,uv_for(4, 0.0, 0.0)), v([-1.0,  1.0,  1.0], MAGENTA,uv_for(4, 1.0, 0.0)),
+        v([ 1.0,  1.0,  1.0], MAGENTA,uv_for(4, 1.0, 1.0)), v([ 1.0,  1.0, -1.0], MAGENTA,uv_for(4, 0.0, 1.0)),
         // bottom (y-)
-        v([-1.0, -1.0, -1.0], CYAN),   v([-1.0, -1.0,  1.0], CYAN),
-        v([ 1.0, -1.0,  1.0], CYAN),   v([ 1.0, -1.0, -1.0], CYAN),
+        v([-1.0, -1.0, -1.0], CYAN,   uv_for(5, 0.0, 0.0)), v([-1.0, -1.0,  1.0], CYAN,   uv_for(5, 1.0, 0.0)),
+        v([ 1.0, -1.0,  1.0], CYAN,   uv_for(5, 1.0, 1.0)), v([ 1.0, -1.0, -1.0], CYAN,   uv_for(5, 0.0, 1.0)),
     ];
 
     #[rustfmt::skip]

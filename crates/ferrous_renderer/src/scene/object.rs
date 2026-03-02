@@ -35,6 +35,8 @@ pub struct RenderObject {
     pub slot: usize,
     /// Whether this object should be rendered without back-face culling.
     pub double_sided: bool,
+    /// Index into the renderer's material table.  Defaults to 0 (solid white)
+    pub material_slot: usize,
 }
 
 impl RenderObject {
@@ -52,6 +54,7 @@ impl RenderObject {
         matrix: Mat4,
         slot: usize,
         double_sided: bool,
+        material_slot: usize,
     ) -> Self {
         let local_aabb = Aabb::unit_cube();
         let cached_world_aabb = local_aabb.transform(&matrix);
@@ -63,6 +66,7 @@ impl RenderObject {
             cached_world_aabb,
             slot,
             double_sided,
+            material_slot,
         }
     }
 

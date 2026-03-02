@@ -22,6 +22,9 @@ pub struct PipelineLayouts {
     /// The shader indexes this array by `@builtin(instance_index)`, so a
     /// single `draw_indexed` with `instance_count > 1` renders all instances.
     pub instance: Arc<wgpu::BindGroupLayout>,
+    /// group(2) — material parameters (uniform buffer) + optional texture.
+    /// binding 0 = Material uniform, binding 1 = sampler, binding 2 = texture.
+    pub material: Arc<wgpu::BindGroupLayout>,
 }
 
 impl PipelineLayouts {
@@ -37,17 +40,17 @@ impl PipelineLayouts {
             count: None,
         };
 
-        let camera = Arc::new(device.create_bind_group_layout(
-            &wgpu::BindGroupLayoutDescriptor {
+        let camera = Arc::new(
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Layout: Camera"),
                 entries: &[static_uniform_entry(0)],
-            },
-        ));
+            }),
+        );
 
         // Model layout uses a dynamic offset so all per-object matrices live
         // in one buffer and we only switch the offset, not the bind group.
-        let model = Arc::new(device.create_bind_group_layout(
-            &wgpu::BindGroupLayoutDescriptor {
+        let model = Arc::new(
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Layout: Model (dynamic)"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -60,8 +63,8 @@ impl PipelineLayouts {
                     },
                     count: None,
                 }],
-            },
-        ));
+            }),
+        );
 
         // Instance layout: read-only storage buffer holding array<mat4x4<f32>>.
         // Indexed by instance_index in the vertex shader.
@@ -81,6 +84,49 @@ impl PipelineLayouts {
             },
         ));
 
-        Self { camera, model, instance }
+        // material layout: uniform + sampler + texture
+        let material = Arc::new(device.create_bind_group_layout(
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("Layout: Material"),
+                entries: &[
+                    // base color / flags
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // sampler (optional, still declared so binding numbers are stable)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    // texture itself
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                ],
+            },
+        ));
+
+        Self {
+            camera,
+            model,
+            instance,
+            material,
+        }
     }
 }

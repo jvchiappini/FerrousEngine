@@ -73,6 +73,38 @@ assets/shaders/
 ├── gizmo.wgsl              coloured line segments; only group 0 (camera) needed
 ├── gui.wgsl                2D quad rendering
 └── text.wgsl               glyph / SDF text rendering
+
+## Material & Texture System
+
+`ferrous_renderer` now includes a minimal material layer that sits on
+top of the existing mesh/camera infrastructure.  Each `RenderObject` has
+a `material_slot` index referring to a registered `Material`, which
+combines a base color and an optional texture.  The base shaders
+multiply the vertex color by the material color and, if a texture is
+bound, sample it using the vertex's UV coordinates.
+
+UVs for the built-in cube primitive are arranged as a 6×1 horizontal
+strip, allowing a single texture to map one region per face.  This makes
+it easy to paint individual faces by writing into the corresponding
+location of a dynamic texture.
+
+```rust
+// create a neon green strip where face 2 is green
+let tex_slot = renderer.create_texture_from_rgba(6, 1, &[
+    0,0,0,255, // face0
+    0,0,0,255, // face1
+    0,255,0,255, // face2 neon green
+    0,0,0,255,
+    0,0,0,255,
+    0,0,0,255,
+]);
+let mat = renderer.create_material([1.0,1.0,1.0,1.0], Some(tex_slot));
+renderer.set_object_material(obj_id, mat);
+```
+
+Dynamic textures and material slots can be created at runtime, giving
+applications full control over object appearance without needing to
+recompile shaders.
 ```
 
 ## Bind-group layout conventions

@@ -6,17 +6,18 @@ use crate::resources::buffer;
 /// The mesh spans [-1.0,1.0] in X and Y so that a transform scale of
 /// (width*0.5, height*0.5, 1.0) yields a quad of the desired size.
 pub fn quad(device: &wgpu::Device) -> Mesh {
-    let v = |pos: [f32; 3]| Vertex {
+    let v = |pos: [f32; 3], uv: [f32; 2]| Vertex {
         position: pos,
         color: [1.0, 1.0, 1.0],
+        uv,
     };
 
     #[rustfmt::skip]
     let vertices: &[Vertex] = &[
-        v([-1.0, -1.0, 0.0]),
-        v([ 1.0, -1.0, 0.0]),
-        v([ 1.0,  1.0, 0.0]),
-        v([-1.0,  1.0, 0.0]),
+        v([-1.0, -1.0, 0.0], [0.0, 0.0]),
+        v([ 1.0, -1.0, 0.0], [1.0, 0.0]),
+        v([ 1.0,  1.0, 0.0], [1.0, 1.0]),
+        v([-1.0,  1.0, 0.0], [0.0, 1.0]),
     ];
 
     // single-faced winding (CCW) -- back-face triangles will be generated
