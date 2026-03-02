@@ -32,7 +32,7 @@ sequenceDiagram
     RUN->>REND: renderer.sync_world(&world)
     REND->>REND: Phase 1 — remove stale RenderObjects (id not in World)
     REND->>REND: Phase 2 — insert new RenderObjects (id in World, not in objects map)
-    REND->>REND:   ElementKind::Cube → primitives::cube(device) → Mesh
+    REND->>REND:   ElementKind::Cube/Quad → primitives::cube() or quad() → Mesh
     REND->>GPU:   InstanceBuffer.write_slice(queue, base_slot, &matrices) [World entities]
     REND->>REND:   RenderObject::new(id, mesh, matrix, aabb, slot)
     REND->>REND: Phase 3 — update matrices (element.transform changed)

@@ -97,6 +97,19 @@ use ferrous_renderer::geometry::primitives::cube::create_cube;
 let cube_mesh = create_cube(&ctx.device);
 ```
 
+### Quad
+
+`geometry::primitives::quad::quad(device)` returns a unit quad lying in
+the XY plane.  Scale the object via the entity's transform to achieve
+arbitrary width/height.  The mesh itself has four vertices and six
+indices (two triangles).
+
+```rust
+use ferrous_renderer::geometry::primitives::quad::quad;
+
+let quad_mesh = quad(&ctx.device);
+```
+
 ## Using meshes with `RenderObject`
 
 A `RenderObject` pairs a `Mesh` with a per-instance model transform
@@ -111,6 +124,7 @@ let obj = RenderObject::new(
     mesh,
     &pipeline_layouts.model,
     glam::Mat4::IDENTITY,
+    /* double_sided= */ false,
 );
 ```
 

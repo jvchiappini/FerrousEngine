@@ -134,6 +134,10 @@ pub struct FramePacket {
     pub scene_objects:     Vec<DrawCommand>,
     /// Instanced draw calls for World entities — one per unique mesh.
     pub instanced_objects: Vec<InstancedDrawCommand>,
+    /// Objects which request double‑sided rendering (culling disabled)
+    /// carry a flag in both command types; the `WorldPass` uses that flag
+    /// to pick a pipeline variant with `cull_mode = None`.  Instanced groups
+    /// are split on the flag so mixed batches never occur.
     // ... open-ended extras map
 }
 ```

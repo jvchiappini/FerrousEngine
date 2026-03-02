@@ -11,7 +11,7 @@ graph LR
     subgraph "ferrous_core  ✅ OWNS"
         C1["World\n  HashMap&lt;u64, Element&gt;\n  next_id: AtomicU64\n  spawn_* helpers"]
         C2["Element\n  id: u64\n  name: String\n  transform: Transform\n  color: Color\n  kind: ElementKind\n  visible: bool\n  tags: Vec&lt;String&gt;"]
-        C3["ElementKind (enum)\n  Cube { half_extent: f32 }\n  Mesh { path: String }\n  PointLight { intensity: f32 }\n  Empty"]
+        C3["ElementKind (enum)\n  Cube { half_extent: f32 }\n  Quad { width: f32, height: f32, double_sided: bool }\n  Mesh { path: String }\n  PointLight { intensity: f32 }\n  Empty"]
         C4["Transform\n  position: Vec3\n  rotation: Quat\n  scale: Vec3\n  fn matrix() → Mat4"]
         C5["Camera\n  eye, target, up: Vec3\n  fovy, aspect: f32\n  znear, zfar: f32"]
         C6["CameraController\n  WASD + mouse orbit\n  fn process_input(&input, dt) → bool"]
@@ -44,7 +44,7 @@ graph LR
         R6["world_sync\n  Three-phase O(n) reconciliation:\n  1. remove stale\n  2. insert new → create Mesh\n  3. update matrices"]
         R7["Passes\n  WorldPass (3D geometry)\n  UiPass (2D overlay)"]
         R8["Culling\n  Aabb { min, max }\n  Frustum { planes: [Plane;6] }\n  frustum_cull() → visible subset"]
-        R9["Primitives\n  cube(device) → Mesh\n  sphere(device, subdivisions) → Mesh"]
+        R9["Primitives\n  cube(device) → Mesh\n  quad(device) → Mesh\n  sphere(device, subdivisions) → Mesh"]
         R10["FramePacket\n  draw_commands: Vec&lt;DrawCommand&gt;\n  (built after cull, consumed by WorldPass)"]
     end
 

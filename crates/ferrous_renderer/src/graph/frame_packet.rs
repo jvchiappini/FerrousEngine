@@ -12,7 +12,9 @@
 /// // Producer (app layer):
 /// packet.insert(my_gui_batch);
 /// // Consumer (UiPass::execute):
-/// if let Some(batch) = packet.get::<MyGuiBatch>() { ... }
+/// if let Some(batch) = packet.get::<MyGuiBatch>() {
+///     // handle batch here
+/// }
 /// ```
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
@@ -44,6 +46,8 @@ pub struct DrawCommand {
     /// `WorldPass` converts this to a byte offset via `model_buf.offset(slot)`
     /// and supplies it as the dynamic offset to `set_bind_group(1, ...)`.
     pub model_slot: usize,
+    /// Indicates whether the object should be drawn with back-face culling disabled.
+    pub double_sided: bool,
 }
 
 /// One instanced draw call: all instances share the same mesh buffers and
@@ -61,6 +65,8 @@ pub struct InstancedDrawCommand {
     pub first_instance: u32,
     /// Number of instances in this batch.
     pub instance_count: u32,
+    /// Whether the draw should disable back-face culling.
+    pub double_sided: bool,
 }
 
 // ── Viewport ──────────────────────────────────────────────────────────────────

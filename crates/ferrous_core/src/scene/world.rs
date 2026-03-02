@@ -57,7 +57,22 @@ pub struct Handle(pub u64);
 pub enum ElementKind {
     /// A solid box defined by per-axis half-extents in world units.
     /// The full dimensions are `half_extents * 2` (width, height, depth).
+    /// A solid box defined by per-axis half-extents in world units.
+    /// The full dimensions are `half_extents * 2` (width, height, depth).
     Cube { half_extents: Vec3 },
+    /// A flat 2‑D rectangle lying in the XY plane.  The renderer uses a
+    /// unit quad mesh and applies the transform's scale to achieve the
+    /// requested size; the AABB is computed from `width`/`height` so that
+    /// frustum culling works even when the object is not uniformly scaled.
+    ///
+    /// `double_sided` controls whether the quad should be visible when the
+    /// camera is looking at its back face.  This flag is propagated to the
+    /// renderer and used to pick a pipeline with culling disabled.
+    Quad {
+        width: f32,
+        height: f32,
+        double_sided: bool,
+    },
     /// An arbitrary triangle mesh identified by an asset path or key.
     Mesh { asset_key: String },
     /// A point light that illuminates the scene.
@@ -223,6 +238,33 @@ impl World {
             .with_kind(ElementKind::Cube { half_extents: he })
             .with_position(position)
             .with_scale(he)
+            .build()
+    }
+
+    /// Convenience: spawn a 2‑D quad at the given position.  `width` and
+    /// `height` are the total dimensions in world units; the spawn helper
+    /// automatically sets the entity's scale accordingly so the built-in
+    /// unit quad mesh (±1 coordinates) ends up the correct size.  The
+    /// `double_sided` flag selects whether the quad should render from both
+    /// sides or only the front face.
+    pub fn spawn_quad(
+        &mut self,
+        name: impl Into<String>,
+        position: Vec3,
+        width: f32,
+        height: f32,
+        double_sided: bool,
+    ) -> Handle {
+        // scale is half extents because built-in mesh spans [-1,1]
+        let scale = Vec3::new(width * 0.5, height * 0.5, 1.0);
+        self.spawn(name)
+            .with_kind(ElementKind::Quad {
+                width,
+                height,
+                double_sided,
+            })
+            .with_position(position)
+            .with_scale(scale)
             .build()
     }
 
@@ -443,6 +485,33 @@ mod tests {
         assert!(w.despawn(h));
         assert!(!w.contains(h));
         assert_eq!(w.len(), 0);
+    }
+
+    #[test]
+    fn spawn_quad_behavior() {
+        let mut w = World::new();
+        let h = w.spawn_quad("Q", Vec3::ZERO, 2.0, 4.0, false);
+        assert!(w.contains(h));
+        // quad has width 2, height 4; the transform scale should be half
+        // extents
+        if let Some(Some(e)) = w.entities.get(h.0 as usize) {
+            if let ElementKind::Quad {
+                width,
+                height,
+                double_sided,
+            } = e.kind.clone()
+            {
+                assert_eq!(width, 2.0);
+                assert_eq!(height, 4.0);
+                assert!(!double_sided);
+            } else {
+                panic!("wrong kind");
+            }
+        } else {
+            panic!("entity missing");
+        }
+        assert_eq!(w.len(), 1);
+        assert!(w.despawn(h));
     }
 
     #[test]

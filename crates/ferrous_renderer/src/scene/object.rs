@@ -33,6 +33,8 @@ pub struct RenderObject {
     pub cached_world_aabb: Aabb,
     /// Slot index in the renderer-wide `ModelBuffer`.
     pub slot: usize,
+    /// Whether this object should be rendered without back-face culling.
+    pub double_sided: bool,
 }
 
 impl RenderObject {
@@ -43,7 +45,14 @@ impl RenderObject {
     ///
     /// The caller is responsible for writing the initial matrix via
     /// `model_buf.write(queue, slot, &matrix)`.
-    pub fn new(_device: &wgpu::Device, id: u64, mesh: Mesh, matrix: Mat4, slot: usize) -> Self {
+    pub fn new(
+        _device: &wgpu::Device,
+        id: u64,
+        mesh: Mesh,
+        matrix: Mat4,
+        slot: usize,
+        double_sided: bool,
+    ) -> Self {
         let local_aabb = Aabb::unit_cube();
         let cached_world_aabb = local_aabb.transform(&matrix);
         Self {
@@ -53,6 +62,7 @@ impl RenderObject {
             local_aabb,
             cached_world_aabb,
             slot,
+            double_sided,
         }
     }
 
@@ -76,3 +86,4 @@ impl RenderObject {
         self.cached_world_aabb = self.local_aabb.transform(&matrix);
     }
 }
+

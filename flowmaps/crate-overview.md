@@ -65,7 +65,7 @@ graph TD
         Geometry:
           Mesh (Arc vertex + Arc index buffers)
           Vertex ([f32;3] pos + [f32;3] color)
-          primitives: cube / sphere / ...
+          primitives: cube / quad / sphere / ...
         Culling:
           Aabb · Frustum · frustum_cull()
         Camera GPU:

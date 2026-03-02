@@ -32,8 +32,14 @@ use crate::pipeline::{InstancingPipeline, WorldPipeline};
 
 pub struct WorldPass {
     pipeline: WorldPipeline,
+    /// Pipeline variant used for objects that need both-sides rendering
+    /// (i.e. `double_sided` flag).  Identical to `pipeline` except
+    /// `primitive.cull_mode` is `None`.
+    pipeline_double: WorldPipeline,
     /// Pipeline for instanced draws (group 1 = storage buffer).
     instancing_pipeline: InstancingPipeline,
+    /// Instancing pipeline variant with culling disabled.
+    instancing_pipeline_double: InstancingPipeline,
     camera_bind_group: Arc<wgpu::BindGroup>,
     /// Shared dynamic model-matrix bind group (legacy path).
     model_bind_group: Option<Arc<wgpu::BindGroup>>,
@@ -48,12 +54,16 @@ pub struct WorldPass {
 impl WorldPass {
     pub fn new(
         pipeline: WorldPipeline,
+        pipeline_double: WorldPipeline,
         instancing_pipeline: InstancingPipeline,
+        instancing_pipeline_double: InstancingPipeline,
         camera_bind_group: Arc<wgpu::BindGroup>,
     ) -> Self {
         Self {
             pipeline,
+            pipeline_double,
             instancing_pipeline,
+            instancing_pipeline_double,
             camera_bind_group,
             model_bind_group: None,
             model_stride: 256, // safe default; overwritten by set_model_buffer
@@ -138,6 +148,12 @@ impl RenderPass for WorldPass {
                 rpass.set_bind_group(1, inst_bg.as_ref(), &[]);
 
                 for cmd in &packet.instanced_objects {
+                    // choose instancing pipeline variant based on flag
+                    if cmd.double_sided {
+                        rpass.set_pipeline(&self.instancing_pipeline_double.inner);
+                    } else {
+                        rpass.set_pipeline(&self.instancing_pipeline.inner);
+                    }
                     rpass.set_vertex_buffer(0, cmd.vertex_buffer.slice(..));
                     rpass.set_index_buffer(cmd.index_buffer.slice(..), cmd.index_format);
                     rpass.draw_indexed(
@@ -150,14 +166,18 @@ impl RenderPass for WorldPass {
         }
 
         // ── Legacy per-object path (manually-spawned objects) ─────────────────
-        if let Some(model_bg) = &self.model_bind_group {
+                if let Some(model_bg) = &self.model_bind_group {
             if !packet.scene_objects.is_empty() {
-                rpass.set_pipeline(&self.pipeline.inner);
                 rpass.set_bind_group(0, &*self.camera_bind_group, &[]);
 
                 for cmd in &packet.scene_objects {
                     let offset = (cmd.model_slot as u32).wrapping_mul(self.model_stride);
                     rpass.set_bind_group(1, model_bg.as_ref(), &[offset]);
+                    rpass.set_pipeline(if cmd.double_sided {
+                        &self.pipeline_double.inner
+                    } else {
+                        &self.pipeline.inner
+                    });
                     rpass.set_vertex_buffer(0, cmd.vertex_buffer.slice(..));
                     rpass.set_index_buffer(cmd.index_buffer.slice(..), cmd.index_format);
                     rpass.draw_indexed(0..cmd.index_count, 0, 0..1);

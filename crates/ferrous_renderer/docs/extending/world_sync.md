@@ -100,7 +100,8 @@ pub fn sync_world_extended(
             ElementKind::Mesh(ref mesh) => {
                 // existing path
                 if !objects.iter().any(|o| o.id == *id) {
-                    objects.push(RenderObject::new(device, mesh.clone(), model_layout, element.transform));
+                    // assuming non-double-sided by default
+                    objects.push(RenderObject::new(device, mesh.clone(), element.transform, 0, false));
                 } else {
                     if let Some(obj) = objects.iter_mut().find(|o| o.id == *id) {
                         obj.update_transform(queue, element.transform);
@@ -111,7 +112,7 @@ pub fn sync_world_extended(
                 let mesh = mesh_cache.entry(*id)
                     .or_insert_with(|| build_sprite_mesh(device, sprite));
                 if !objects.iter().any(|o| o.id == *id) {
-                    objects.push(RenderObject::new(device, mesh.clone(), model_layout, element.transform));
+                    objects.push(RenderObject::new(device, mesh.clone(), element.transform, 0, false));
                 } else {
                     if let Some(obj) = objects.iter_mut().find(|o| o.id == *id) {
                         obj.update_transform(queue, element.transform);

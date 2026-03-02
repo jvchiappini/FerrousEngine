@@ -23,13 +23,14 @@ graph LR
 
 ```mermaid
 flowchart TD
-    S1["Step 1 — Add ElementKind variant
+    S1["Step 1 — Add ElementKind variant (example shows sphere, quad similar)
     ──────────────────────────────────
     File: ferrous_core/src/scene/world.rs
 
     pub enum ElementKind {
-        Cube { half_extent: f32 },
-        Sphere { radius: f32 },       ← ADD THIS
+    Cube { half_extent: f32 },
+    Sphere { radius: f32 },       ← ADD THIS
+    Quad { width: f32, height: f32, double_sided: bool },
         Mesh { path: String },
         PointLight { intensity: f32 },
         Empty,
@@ -85,7 +86,7 @@ flowchart TD
     pub use cube::cube;
     pub use sphere::sphere;  ← ADD THIS"]
 
-    S5["Step 5 — Add sync arm in world_sync
+    S5["Step 5 — Add sync arm in world_sync (also handle quad)
     ──────────────────────────────────────
     File: ferrous_renderer/src/scene/world_sync.rs
 
@@ -96,6 +97,9 @@ flowchart TD
     },
     ElementKind::Sphere { radius } => {    ← ADD THIS
         primitives::sphere(device, 16)     // 16 subdivisions
+    },
+    ElementKind::Quad { .. } => {
+        primitives::quad(device)
     },
     ElementKind::Mesh { path } => {
         load_or_cache_mesh(device, path)
@@ -154,6 +158,11 @@ flowchart LR
         local_aabb = Aabb {
             min: Vec3::splat(-half_extent),
             max: Vec3::splat(half_extent),
+        }"]
+        QUAD["Quad { width: f32, height: f32, .. }
+        local_aabb = Aabb {
+            min: Vec3::new(-width/2.0, -height/2.0, 0.0),
+            max: Vec3::new(width/2.0, height/2.0, 0.0),
         }"]
         SPHERE["Sphere { radius: f32 }
         local_aabb = Aabb {

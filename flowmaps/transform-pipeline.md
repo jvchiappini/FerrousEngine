@@ -107,6 +107,7 @@ flowchart TD
         P2B["If id NOT in objects map:"]
         P2C["match element.kind:
         Cube { half_extent } → primitives::cube(device)
+        Quad { .. } → primitives::quad(device)             // size from transform/scale
         Mesh { path } → load/cache mesh
         PointLight → no RenderObject (light-only)
         Empty → no RenderObject"]

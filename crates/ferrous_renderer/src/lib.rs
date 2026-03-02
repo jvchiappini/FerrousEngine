@@ -117,6 +117,8 @@ pub struct Renderer {
     /// cube RenderObject carries the same Arc<Buffer> pointers, enabling
     /// instanced grouping by vertex-buffer pointer in build_base_packet.
     shared_cube_mesh: Option<geometry::Mesh>,
+    /// Shared quad mesh, used for all quads irrespective of size.
+    shared_quad_mesh: Option<geometry::Mesh>,
 
     // -- Per-frame caches (reused across frames, zero heap alloc/frame) -------
     /// Reusable `DrawCommand` list — cleared and filled each frame.
@@ -161,9 +163,26 @@ impl Renderer {
         let rt = RenderTarget::new(device, width, height, format, sample_count);
 
         let layouts = PipelineLayouts::new(device);
-        let world_pipeline = WorldPipeline::new(device, format, rt.sample_count(), layouts.clone());
-        let instancing_pipeline =
-            InstancingPipeline::new(device, format, rt.sample_count(), layouts.clone());
+        // normal pipeline with back-face culling
+        let world_pipeline = WorldPipeline::new(
+            device,
+            format,
+            rt.sample_count(),
+            layouts.clone(),
+            Some(wgpu::Face::Back),
+        );
+        // pipeline for double-sided geometry (no culling)
+        let world_pipeline_double =
+            WorldPipeline::new(device, format, rt.sample_count(), layouts.clone(), None);
+        let instancing_pipeline = InstancingPipeline::new(
+            device,
+            format,
+            rt.sample_count(),
+            layouts.clone(),
+            Some(wgpu::Face::Back),
+        );
+        let instancing_pipeline_double =
+            InstancingPipeline::new(device, format, rt.sample_count(), layouts.clone(), None);
 
         let camera = Camera {
             eye: glam::Vec3::new(0.0, 0.0, 5.0),
@@ -179,7 +198,9 @@ impl Renderer {
 
         let world_pass = WorldPass::new(
             world_pipeline,
+            world_pipeline_double,
             instancing_pipeline,
+            instancing_pipeline_double,
             gpu_camera.bind_group.clone(),
         );
         let ui_renderer = ferrous_gui::GuiRenderer::new(
@@ -217,6 +238,7 @@ impl Renderer {
             instance_buf,
             instance_layout: layouts.instance,
             shared_cube_mesh: None,
+            shared_quad_mesh: None,
             draw_commands_cache: Vec::new(),
             instanced_commands_cache: Vec::new(),
             instance_matrix_scratch: Vec::new(),
@@ -271,7 +293,10 @@ impl Renderer {
     // -- Scene management -----------------------------------------------------
 
     /// Spawns a mesh instance at `pos`; returns a stable u64 handle.
-    pub fn add_object(&mut self, mesh: Mesh, pos: glam::Vec3) -> u64 {
+    ///
+    /// `double_sided` indicates whether the object should be rendered with
+    /// face culling disabled.  `false` is the traditional behaviour.
+    pub fn add_object(&mut self, mesh: Mesh, pos: glam::Vec3, double_sided: bool) -> u64 {
         let id = self.next_manual_id;
         self.next_manual_id = self.next_manual_id.wrapping_sub(1);
 
@@ -289,7 +314,7 @@ impl Renderer {
         }
         self.model_buf.write(&self.context.queue, slot, &matrix);
 
-        let obj = RenderObject::new(&self.context.device, id, mesh, matrix, slot);
+        let obj = RenderObject::new(&self.context.device, id, mesh, matrix, slot, double_sided);
         self.legacy_objects.insert(id, obj);
         self.scene_dirty = true;
         id
@@ -327,6 +352,7 @@ impl Renderer {
             &mut self.world_objects,
             &self.context.device,
             &mut self.shared_cube_mesh,
+            &mut self.shared_quad_mesh,
         );
         if mutated {
             self.scene_dirty = true;
@@ -528,6 +554,7 @@ impl Renderer {
                     vertex_count: obj.mesh.vertex_count,
                     index_format: obj.mesh.index_format,
                     model_slot: obj.slot,
+                    double_sided: obj.double_sided,
                 });
             }
         }
@@ -538,17 +565,20 @@ impl Renderer {
         use std::collections::HashMap;
 
         #[cfg(not(target_arch = "wasm32"))]
-        let visible_mesh_groups: HashMap<usize, (geometry::Mesh, Vec<glam::Mat4>)> = self
+        let visible_mesh_groups: HashMap<(usize, bool), (geometry::Mesh, Vec<glam::Mat4>)> = self
             .world_objects
             .par_iter()
             .flatten()
             .filter(|obj| frustum.intersects_aabb(&obj.world_aabb()))
             .fold(
                 || HashMap::new(),
-                |mut map: HashMap<usize, (geometry::Mesh, Vec<glam::Mat4>)>, obj| {
-                    let key = Arc::as_ptr(&obj.mesh.vertex_buffer) as usize;
+                |mut map: HashMap<(usize, bool), (geometry::Mesh, Vec<glam::Mat4>)>, obj| {
+                    let key = (
+                        Arc::as_ptr(&obj.mesh.vertex_buffer) as usize,
+                        obj.double_sided,
+                    );
                     map.entry(key)
-                        .or_insert_with(|| (obj.mesh.clone(), Vec::with_capacity(128)))
+                        .or_insert_with(|| (obj.mesh.clone(), Vec::new()))
                         .1
                         .push(obj.matrix);
                     map
@@ -556,31 +586,34 @@ impl Renderer {
             )
             .reduce(
                 || HashMap::new(),
-                |mut map1, map2| {
-                    for (k, (mesh, mut mats)) in map2 {
-                        map1.entry(k)
-                            .or_insert_with(|| (mesh, Vec::with_capacity(mats.len())))
+                |mut a, b| {
+                    for (k, (mesh, mats)) in b {
+                        a.entry(k)
+                            .or_insert_with(|| (mesh.clone(), Vec::new()))
                             .1
-                            .append(&mut mats);
+                            .extend(mats);
                     }
-                    map1
+                    a
                 },
             );
 
         #[cfg(target_arch = "wasm32")]
-        let visible_mesh_groups: HashMap<usize, (geometry::Mesh, Vec<glam::Mat4>)> =
-            self.world_objects
-                .iter()
-                .flatten()
-                .filter(|obj| frustum.intersects_aabb(&obj.world_aabb()))
-                .fold(HashMap::new(), |mut map, obj| {
-                    let key = Arc::as_ptr(&obj.mesh.vertex_buffer) as usize;
-                    map.entry(key)
-                        .or_insert_with(|| (obj.mesh.clone(), Vec::with_capacity(128)))
-                        .1
-                        .push(obj.matrix);
-                    map
-                });
+        let visible_mesh_groups: HashMap<(usize, bool), (geometry::Mesh, Vec<glam::Mat4>)> = self
+            .world_objects
+            .iter()
+            .flatten()
+            .filter(|obj| frustum.intersects_aabb(&obj.world_aabb()))
+            .fold(HashMap::new(), |mut map, obj| {
+                let key = (
+                    Arc::as_ptr(&obj.mesh.vertex_buffer) as usize,
+                    obj.double_sided,
+                );
+                map.entry(key)
+                    .or_insert_with(|| (obj.mesh.clone(), Vec::new()))
+                    .1
+                    .push(obj.matrix);
+                map
+            });
 
         let mut total_visible = 0;
         for (_, (_, mats)) in &visible_mesh_groups {
@@ -601,7 +634,7 @@ impl Renderer {
             let mut offset = 0;
             self.instance_matrix_scratch.reserve(total_visible);
 
-            for (_key, (mesh, mats)) in visible_mesh_groups {
+            for ((_key, double_sided), (mesh, mats)) in visible_mesh_groups {
                 let count = mats.len() as u32;
                 self.instance_matrix_scratch.extend_from_slice(&mats);
 
@@ -613,6 +646,7 @@ impl Renderer {
                     index_format: mesh.index_format,
                     first_instance: offset,
                     instance_count: count,
+                    double_sided,
                 });
 
                 offset += count;

@@ -116,6 +116,9 @@ impl FerrousApp for EditorApp {
 
     fn setup(&mut self, ctx: &mut AppContext) {
         ctx.world.spawn_cube("Default Cube", Vec3::ZERO);
+        // also place a quad next to the cube so the new primitive is visible
+        ctx.world
+            .spawn_quad("Default Quad", Vec3::new(2.0, 0.0, 0.0), 1.0, 1.0, false);
         self.gpu_backend = ctx.gpu_backend().to_string();
     }
 
@@ -309,6 +312,11 @@ impl FerrousApp for EditorApp {
                 rng.gen_range(100..=255),
             );
             ctx.world.set_color(handle, color);
+            // also spawn a small quad at the same location
+            let qh = ctx
+                .world
+                .spawn_quad("Quad", pos + Vec3::new(0.0, 0.0, 1.0), 0.5, 0.5, true);
+            ctx.world.set_color(qh, color);
             self.last_cube = Some(handle);
             self.add_cube = false;
         }

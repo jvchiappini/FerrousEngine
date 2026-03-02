@@ -24,6 +24,8 @@ impl WorldPipeline {
         target_format: wgpu::TextureFormat,
         sample_count: u32,
         layouts: PipelineLayouts,
+        // optional cull mode; `None` disables culling (double-sided)
+        cull_mode: Option<wgpu::Face>,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::include_wgsl!(
             "../../../../assets/shaders/base.wgsl"
@@ -58,7 +60,7 @@ impl WorldPipeline {
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
+                cull_mode,
                 ..Default::default()
             },
             depth_stencil: Some(wgpu::DepthStencilState {
