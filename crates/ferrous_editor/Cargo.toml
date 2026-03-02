@@ -9,3 +9,17 @@ ferrous_gui = { path = "../ferrous_gui" }
 ferrous_assets = { path = "../ferrous_assets" }
 ferrous_app = { path = "../ferrous_app" }
 rand = "0.8"
+
+# ── wasm32 ────────────────────────────────────────────────────────────
+# rand uses getrandom under the hood; on wasm32 it must source entropy from
+# the browser's crypto API, which requires the "js" feature.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+wasm-bindgen = "0.2"
+
+# wasm-pack needs a cdylib target to produce the .wasm + JS glue.
+# rlib keeps the crate usable as a library internally.
+[lib]
+name = "ferrous_editor"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]

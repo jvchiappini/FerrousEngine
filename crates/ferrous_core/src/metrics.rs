@@ -71,18 +71,25 @@ mod inner {
 #[cfg(target_arch = "wasm32")]
 mod inner {
     /// Not available in the browser — always returns `0.0`.
-    pub fn get_cpu_usage() -> f32 { 0.0 }
-    pub fn get_ram_usage_bytes() -> u64 { 0 }
-    pub fn get_ram_usage_mb() -> f32 { 0.0 }
-    pub fn get_virtual_memory_mb() -> f32 { 0.0 }
-    pub fn get_virtual_memory_bytes() -> u64 { 0 }
+    pub fn get_cpu_usage() -> f32 {
+        0.0
+    }
+    pub fn get_ram_usage_bytes() -> u64 {
+        0
+    }
+    pub fn get_ram_usage_mb() -> f32 {
+        0.0
+    }
+    pub fn get_virtual_memory_mb() -> f32 {
+        0.0
+    }
+    pub fn get_virtual_memory_bytes() -> u64 {
+        0
+    }
 }
 
 // ─── Public API (uniform on all platforms) ─────────────────────────────────
 pub use inner::{
-    get_cpu_usage,
-    get_ram_usage_bytes,
-    get_ram_usage_mb,
-    get_virtual_memory_bytes,
+    get_cpu_usage, get_ram_usage_bytes, get_ram_usage_mb, get_virtual_memory_bytes,
     get_virtual_memory_mb,
 };
