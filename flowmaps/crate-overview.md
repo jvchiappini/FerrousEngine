@@ -106,7 +106,7 @@ graph TD
           setup() → spawns scene objects
           update() → camera/input logic
           draw_ui() → editor panels
-          draw_3d() → gizmos, overlays"]
+          draw_3d() → gizmos (translate/rotate/scale handles), overlays"]
     end
 
     CORE    -->|"ElementKind, Transform, Camera\nused by renderer for sync"| RENDERER

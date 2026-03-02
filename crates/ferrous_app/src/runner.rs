@@ -117,6 +117,8 @@ impl<A: FerrousApp> Runner<A> {
                                 viewport: self.viewport,
                                 render_stats: Default::default(),
                                 camera_eye: Vec3::ZERO,
+                                camera_target: Vec3::ZERO,
+                                gizmos: Vec::new(),
                                 world: &mut self.world,
                                 exit_requested: false,
                                 _gpu_backend: gfx.renderer.context.backend,
@@ -167,7 +169,11 @@ impl<A: FerrousApp> Runner<A> {
                     let candidate = prev + budget;
                     // If we've fallen more than one budget behind, reset to now
                     // to avoid a burst of immediate redraws.
-                    if candidate < now { now + budget } else { candidate }
+                    if candidate < now {
+                        now + budget
+                    } else {
+                        candidate
+                    }
                 }
                 None => now + budget,
             };
@@ -198,6 +204,8 @@ impl<A: FerrousApp> Runner<A> {
                 viewport: self.viewport,
                 render_stats: Default::default(),
                 camera_eye: Vec3::ZERO,
+                camera_target: Vec3::ZERO,
+                gizmos: Vec::new(),
                 world: &mut self.world,
                 exit_requested: false,
                 _gpu_backend: gfx.renderer.context.backend,
@@ -243,6 +251,7 @@ impl<A: FerrousApp> Runner<A> {
         {
             let render_stats = gfx.renderer.render_stats;
             let camera_eye = gfx.renderer.camera.eye;
+            let camera_target = gfx.renderer.camera.target;
             let backend = gfx.renderer.context.backend;
             let mut ctx = AppContext {
                 input: &self.input,
@@ -252,6 +261,8 @@ impl<A: FerrousApp> Runner<A> {
                 viewport: self.viewport,
                 render_stats,
                 camera_eye,
+                camera_target,
+                gizmos: Vec::new(),
                 world: &mut self.world,
                 exit_requested: false,
                 _gpu_backend: backend,
@@ -259,6 +270,11 @@ impl<A: FerrousApp> Runner<A> {
 
             if self.viewport.width > 0 {
                 self.app.draw_3d(&mut ctx);
+            }
+
+            // Drain any gizmos queued by draw_3d into the renderer.
+            for gizmo in ctx.gizmos.drain(..) {
+                gfx.renderer.queue_gizmo(gizmo);
             }
 
             let mut gui_batch = GuiBatch::new();
@@ -367,6 +383,8 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                     viewport: self.viewport,
                     render_stats: Default::default(),
                     camera_eye: Vec3::ZERO,
+                    camera_target: Vec3::ZERO,
+                    gizmos: Vec::new(),
                     world: &mut self.world,
                     exit_requested: false,
                     _gpu_backend: gfx.renderer.context.backend,
@@ -455,7 +473,9 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
         // Forward to user callback
         if let Some(window) = self.window.clone() {
             let time = self.clock.peek();
-            let backend = self.graphics.as_ref()
+            let backend = self
+                .graphics
+                .as_ref()
                 .map(|g| g.renderer.context.backend)
                 .unwrap_or(wgpu::Backend::Empty);
             let mut ctx = AppContext {
@@ -466,6 +486,8 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                 viewport: self.viewport,
                 render_stats: Default::default(),
                 camera_eye: Vec3::ZERO,
+                camera_target: Vec3::ZERO,
+                gizmos: Vec::new(),
                 world: &mut self.world,
                 exit_requested: false,
                 _gpu_backend: backend,
@@ -489,7 +511,9 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                 if let Some(window) = self.window.clone() {
                     if self.graphics.is_some() {
                         let time = self.clock.peek();
-                        let backend = self.graphics.as_ref()
+                        let backend = self
+                            .graphics
+                            .as_ref()
                             .map(|g| g.renderer.context.backend)
                             .unwrap_or(wgpu::Backend::Empty);
                         let mut ctx = AppContext {
@@ -500,6 +524,8 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                             viewport: self.viewport,
                             render_stats: Default::default(),
                             camera_eye: Vec3::ZERO,
+                            camera_target: Vec3::ZERO,
+                            gizmos: Vec::new(),
                             world: &mut self.world,
                             exit_requested: false,
                             _gpu_backend: backend,

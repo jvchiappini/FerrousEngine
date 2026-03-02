@@ -116,6 +116,46 @@ impl Transform {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Convenience helpers for pivoted rotations
+// ---------------------------------------------------------------------------
+impl Transform {
+    /// Rotate the object around an arbitrary point in **world space**.
+    ///
+    /// The standard `matrix()` implementation builds a TRS matrix where the
+    /// translation component is effectively the point that will be rotated.
+    /// In other words, the object is spun around its own origin.  If you want
+    /// to rotate **around a different pivot** you must move the origin before
+    /// and/or after applying the rotation.  This method encapsulates that
+    /// logic for you.
+    ///
+    /// # Parameters
+    ///
+    /// * `pivot` – the point in world coordinates to rotate around.  Common
+    ///   choices are `Vec3::ZERO` or the centre of another object.
+    /// * `axis` – axis of rotation in world space (e.g. `Vec3::Z` for a 2‑D
+    ///   quad lying in the XY plane).
+    /// * `angle` – rotation in radians; positive means right‑handed about the
+    ///   axis.
+    ///
+    /// After this call both `rotation` and `position` will have been updated.
+    pub fn rotate_around(&mut self, pivot: Vec3, axis: Vec3, angle: f32) {
+        let rot = Quat::from_axis_angle(axis, angle);
+        // rotate the orientation first
+        self.rotation = rot * self.rotation;
+
+        // then move the position around the pivot
+        let rel = self.position - pivot;
+        self.position = pivot + (rot * rel);
+    }
+
+    /// Rotate around the Z axis with a world-space pivot.  This is the common
+    /// case for 2‑D quads and UI elements.
+    pub fn rotate_around_z(&mut self, pivot: Vec3, angle: f32) {
+        self.rotate_around(pivot, Vec3::Z, angle);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,5 +172,24 @@ mod tests {
         let m = t.matrix();
         let (_, _, pos) = m.to_scale_rotation_translation();
         assert!((pos - Vec3::new(1.0, 2.0, 3.0)).length() < 1e-5);
+    }
+
+    #[test]
+    fn rotate_around_pivot() {
+        let mut t = Transform::from_position(Vec3::new(1.0, 0.0, 0.0));
+        // rotate 90° about Z around the origin; object should move to (0,1,0)
+        t.rotate_around(Vec3::ZERO, Vec3::Z, std::f32::consts::FRAC_PI_2);
+        assert!((t.position - Vec3::new(0.0, 1.0, 0.0)).length() < 1e-5);
+        // orientation should also have rotated by 90° about Z
+        let forward = t.forward();
+        assert!((forward - Vec3::NEG_Y).length() < 1e-5);
+    }
+
+    #[test]
+    fn rotate_around_z_helper() {
+        let mut t = Transform::from_position(Vec3::new(2.0, 0.0, 0.0));
+        t.rotate_around_z(Vec3::new(1.0, 0.0, 0.0), std::f32::consts::PI);
+        // point 1 unit to the right of pivot should flip to the left
+        assert!((t.position - Vec3::new(0.0, 0.0, 0.0)).length() < 1e-5);
     }
 }

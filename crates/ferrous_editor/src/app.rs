@@ -1,8 +1,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ferrous_app::{App, AppContext, Color, FerrousApp, Handle, RenderStats, Vec3, Viewport};
+use ferrous_app::{
+    App, AppContext, Color, FerrousApp, Handle, MouseButton, RenderStats, Vec3, Viewport,
+};
 use ferrous_assets::font::Font;
+use ferrous_core::scene::Axis;
 use ferrous_gui::{GuiBatch, InteractiveButton, Slider, TextBatch, Ui, ViewportWidget};
 use rand::Rng;
 
@@ -41,6 +44,7 @@ pub struct EditorApp {
     bench_button_was_pressed: bool,
     add_cube: bool,
     last_cube: Option<Handle>,
+    last_quad: Option<Handle>,
     bench_state: BenchmarkState,
     bench_cube_count: u32,
     bench_peak_cubes: u32,
@@ -54,6 +58,9 @@ pub struct EditorApp {
     slider_d: Rc<RefCell<Slider>>,
     /// Backend GPU activo (WebGPU, WebGL2, Vulkan, etc.), detectado en setup.
     gpu_backend: String,
+    selected: Option<Handle>,
+    gizmo: ferrous_core::scene::GizmoState,
+
 }
 
 impl Default for EditorApp {
@@ -70,10 +77,13 @@ impl Default for EditorApp {
             bench_button_was_pressed: false,
             add_cube: false,
             last_cube: None,
+            last_quad: None,
             bench_state: BenchmarkState::Idle,
             bench_cube_count: 0,
             bench_peak_cubes: 0,
             bench_stopped_fps: 0.0,
+            selected: None,
+            gizmo: ferrous_core::scene::GizmoState::default(),
             fps_history: vec![0.0; FPS_WINDOW],
             fps_history_idx: 0,
             fps_avg: 0.0,
@@ -168,6 +178,28 @@ impl FerrousApp for EditorApp {
             }
         }
 
+        // ------------------------------------------------------------------
+        // Selection — invalidate if entity was despawned.
+        // Gizmo interaction (pick axis, drag-translate) runs in draw_3d
+        // where camera_eye / camera_target are valid.
+        // ------------------------------------------------------------------
+        if let Some(h) = self.selected {
+            if !ctx.world.contains(h) {
+                self.selected = None;
+                self.gizmo.dragging = false;
+                self.gizmo.highlighted_axis = None;
+            }
+        }
+
+        // Left-click with no gizmo drag active → select last spawned cube.
+        if ctx.input.button_just_pressed(MouseButton::Left) && !self.gizmo.dragging {
+            if let Some(h) = self.last_cube {
+                if ctx.world.contains(h) {
+                    self.selected = Some(h);
+                }
+            }
+        }
+
         // Escape only makes sense on desktop (browser has no app exit).
         #[cfg(not(target_arch = "wasm32"))]
         if ctx.input.just_pressed(ferrous_app::KeyCode::Escape) {
@@ -231,6 +263,38 @@ impl FerrousApp for EditorApp {
             text.draw_text(font, &verts_str, [15.0, 126.0], 13.0, [0.5, 0.9, 1.0, 1.0]);
             text.draw_text(font, &tris_str, [15.0, 142.0], 13.0, [0.5, 0.9, 1.0, 1.0]);
             text.draw_text(font, &dc_str, [15.0, 158.0], 13.0, [0.5, 0.9, 1.0, 1.0]);
+
+            // Gizmo status
+            if self.selected.is_some() {
+                let axis_str = match self.gizmo.highlighted_axis {
+                    Some(Axis::X) => "Axis: X  (drag to move)",
+                    Some(Axis::Y) => "Axis: Y  (drag to move)",
+                    Some(Axis::Z) => "Axis: Z  (drag to move)",
+                    None => "Click an axis to translate",
+                };
+                let axis_color = match self.gizmo.highlighted_axis {
+                    Some(Axis::X) => [1.0, 0.3, 0.3, 1.0],
+                    Some(Axis::Y) => [0.3, 1.0, 0.3, 1.0],
+                    Some(Axis::Z) => [0.3, 0.5, 1.0, 1.0],
+                    None => [0.8, 0.8, 0.8, 1.0],
+                };
+                text.draw_text(
+                    font,
+                    "[ Gizmo active ]",
+                    [15.0, 178.0],
+                    13.0,
+                    [1.0, 0.85, 0.2, 1.0],
+                );
+                text.draw_text(font, axis_str, [15.0, 194.0], 12.0, axis_color);
+            } else {
+                text.draw_text(
+                    font,
+                    "Click cube to select",
+                    [15.0, 178.0],
+                    12.0,
+                    [0.6, 0.6, 0.6, 1.0],
+                );
+            }
 
             match self.bench_state {
                 BenchmarkState::Idle => {}
@@ -317,25 +381,15 @@ impl FerrousApp for EditorApp {
                 .world
                 .spawn_quad("Quad", pos + Vec3::new(0.0, 0.0, 1.0), 0.5, 0.5, true);
             ctx.world.set_color(qh, color);
+            self.last_quad = Some(qh);
             self.last_cube = Some(handle);
             self.add_cube = false;
         }
 
-        if self.bench_state == BenchmarkState::Running {
-            for _ in 0..BENCHMARK_BATCH {
-                let pos = Vec3::new(
-                    (rng.gen::<f32>() - 0.5) * 5.0,
-                    (rng.gen::<f32>() - 0.5) * 5.0,
-                    -(rng.gen::<f32>() * 10.0) - 5.0,
-                );
-                let handle = ctx.world.spawn_cube("BenchCube", pos);
-                let color = Color::from_rgb8(
-                    rng.gen_range(80..=255),
-                    rng.gen_range(80..=255),
-                    rng.gen_range(80..=255),
-                );
-                ctx.world.set_color(handle, color);
-            }
+        // Gizmo: pick axis, drag-translate, and queue draw — all in one call.
+        // Must be in draw_3d (not update) so camera_eye/camera_target are valid.
+        if let Some(sel) = self.selected {
+            ctx.update_gizmo(sel, &mut self.gizmo);
         }
     }
 

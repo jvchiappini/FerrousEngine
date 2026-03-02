@@ -189,4 +189,6 @@ graph TD
     EX2["90° Y rotation\n  transform.rotation = Quat::from_rotation_y(PI/2)\n  → right column swapped"]
     EX3["Billboard (always faces camera)\n  rotation = Quat::from_rotation_arc(forward, cam_dir)\n  Computed in update(), stored in transform.rotation"]
     EX4["Non-uniform scale + rotation\n  transform.scale = Vec3::new(1, 2, 0.5)\n  transform.rotation = Quat::from_euler(...)"]
+    EX4a["Rotate around arbitrary axis\n  transform.rotate_axis(Vec3::X, PI/180)\n  → forward/up change but position unchanged"]
+        EX5["Pivoted rotation (2‑D quad around origin)\n  // rotate quad at (2,0) 90° about Z with pivot at world origin\n  transform.position = Vec3::new(2.0, 0.0, 0.0)\n  transform.rotate_around_z(Vec3::ZERO, PI/2)\n  → position becomes (0,2,0)"]
 ```

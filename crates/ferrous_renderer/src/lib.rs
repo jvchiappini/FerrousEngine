@@ -51,8 +51,10 @@ use std::sync::Arc;
 use ferrous_gui::TextBatch;
 
 use camera::controller::OrbitState;
+use ferrous_core::scene::axis_vector;
 use graph::frame_packet::{CameraPacket, DrawCommand};
 use passes::{UiPass, WorldPass};
+use pipeline::GizmoPipeline;
 use pipeline::{PipelineLayouts, WorldPipeline};
 use resources::ModelBuffer;
 
@@ -119,6 +121,14 @@ pub struct Renderer {
     shared_cube_mesh: Option<geometry::Mesh>,
     /// Shared quad mesh, used for all quads irrespective of size.
     shared_quad_mesh: Option<geometry::Mesh>,
+
+    /// Pipeline used for drawing gizmos (lines); created once at startup.
+    gizmo_pipeline: GizmoPipeline,
+
+    /// Queued gizmos for the current frame.  Cleared each time `do_render`
+    /// finishes so clients only need to push as part of their `draw_3d`
+    /// implementation.
+    gizmo_draws: Vec<scene::GizmoDraw>,
 
     // -- Per-frame caches (reused across frames, zero heap alloc/frame) -------
     /// Reusable `DrawCommand` list — cleared and filled each frame.
@@ -220,6 +230,11 @@ impl Renderer {
         world_pass_init.set_model_buffer(model_buf.bind_group.clone(), model_buf.stride);
         world_pass_init.set_instance_buffer(instance_buf.bind_group.clone());
 
+        // gizmo pipeline may be created once now that we know the target
+        // format/sample count.  create it before we move `context` or `rt`
+        // into the returned struct so we can still borrow them.
+        let gizmo_pipeline = GizmoPipeline::new(device, format, rt.sample_count(), layouts.clone());
+
         Self {
             context,
             render_target: rt,
@@ -239,6 +254,8 @@ impl Renderer {
             instance_layout: layouts.instance,
             shared_cube_mesh: None,
             shared_quad_mesh: None,
+            gizmo_pipeline,
+            gizmo_draws: Vec::new(),
             draw_commands_cache: Vec::new(),
             instanced_commands_cache: Vec::new(),
             instance_matrix_scratch: Vec::new(),
@@ -358,6 +375,167 @@ impl Renderer {
             self.scene_dirty = true;
         }
     } // -- Pass management ------------------------------------------------------
+
+    /// Queue a gizmo for rendering this frame.
+    ///
+    /// Typically called by the `ferrous_app` runner which drains
+    /// `AppContext::gizmos` after `FerrousApp::draw_3d` returns — app code
+    /// should push to `ctx.gizmos` rather than calling this directly.
+    ///
+    /// The gizmo list is automatically cleared after
+    /// [`execute_gizmo_pass`](Self::execute_gizmo_pass) runs, so there is no
+    /// need to manage lifetime manually.
+    pub fn queue_gizmo(&mut self, gizmo: scene::GizmoDraw) {
+        self.gizmo_draws.push(gizmo);
+        // mark scene dirty so that the world pass will rebuild the packet; the
+        // gizmos are drawn separately but the packet cache logic should reset
+        // when an unrelated draw request arrives.
+        self.scene_dirty = true;
+    }
+
+    /// Builds vertex data for all queued [`GizmoDraw`] instances and emits a
+    /// dedicated line-list render pass on top of the world pass.
+    ///
+    /// The pass uses `LoadOp::Load` on both the colour and depth attachments so
+    /// gizmos composite correctly over the 3-D scene.  Depth writes are enabled
+    /// so that gizmos respect scene occlusion.
+    ///
+    /// After drawing, `gizmo_draws` is cleared ready for the next frame.
+    fn execute_gizmo_pass(&mut self, encoder: &mut wgpu::CommandEncoder, dest: &RenderDest<'_>) {
+        // reconstruct the texture views from the destination
+        // compute views early; these borrow self temporarily
+        // initial views used for the world pass (and possibly gizmo pass)
+        let (color_view, resolve_target) = match dest {
+            RenderDest::Target => self.render_target.color_views(),
+            RenderDest::View(v) => {
+                // `v` has type `&&TextureView` because `dest` is a & reference;
+                // dereference once to get `&TextureView` for use below.
+                let vv: &wgpu::TextureView = *v;
+                if self.render_target.sample_count() > 1 {
+                    (
+                        self.render_target.color.msaa_view.as_ref().unwrap(),
+                        Some(vv),
+                    )
+                } else {
+                    (vv, None)
+                }
+            }
+        };
+        // depth_view is always present (non-optional)
+        let depth_view = self.render_target.depth_view();
+        use wgpu::util::DeviceExt;
+        use wgpu::{
+            LoadOp, Operations, RenderPassColorAttachment, RenderPassDepthStencilAttachment,
+            RenderPassDescriptor, StoreOp,
+        };
+
+        // build a flat list of vertices; each pair forms one line segment.
+        let mut vertices: Vec<Vertex> = Vec::new();
+        for gizmo in &self.gizmo_draws {
+            use ferrous_core::scene::Plane;
+            // ARM_LEN: how far each handle extends in world units.
+            // 1.5 ensures handles are clearly visible outside a 1×1×1 cube
+            // (half-extent 0.5), while still feeling snappy to grab.
+            const ARM_LEN: f32 = 1.5;
+            // PLANE_OFF: how far along each axis the plane square starts.
+            // PLANE_SIZE: side length of the plane square handle.
+            const PLANE_OFF: f32 = ARM_LEN * 0.25;
+            const PLANE_SIZE: f32 = ARM_LEN * 0.22;
+
+            let m = gizmo.transform;
+
+            // ── Axis arrows ──────────────────────────────────────────────
+            for &(axis_vec, color) in &[
+                (glam::Vec3::X, [1.0, 0.2, 0.2_f32]),
+                (glam::Vec3::Y, [0.2, 1.0, 0.2_f32]),
+                (glam::Vec3::Z, [0.2, 0.4, 1.0_f32]),
+            ] {
+                let mut c = color;
+                if let Some(high) = gizmo.highlighted_axis {
+                    if axis_vec == axis_vector(high) {
+                        c = [1.0, 1.0, 0.0];
+                    }
+                }
+                let p0 = m.transform_point3(glam::Vec3::ZERO);
+                let p1 = m.transform_point3(axis_vec * ARM_LEN);
+                vertices.push(Vertex { position: p0.into(), color: c });
+                vertices.push(Vertex { position: p1.into(), color: c });
+            }
+
+            // ── Plane square outlines ─────────────────────────────────────
+            // Each plane is drawn as 4 line segments forming a small square
+            // that sits between the two corresponding axis arms.
+            for &plane in &[Plane::XY, Plane::XZ, Plane::YZ] {
+                let c = if gizmo.highlighted_plane == Some(plane) {
+                    plane.highlight_color()
+                } else {
+                    plane.color()
+                };
+                let (a, b) = plane.axes();
+                // Four corners of the square in gizmo-local space.
+                let c0 = a * PLANE_OFF             + b * PLANE_OFF;
+                let c1 = a * (PLANE_OFF+PLANE_SIZE) + b * PLANE_OFF;
+                let c2 = a * (PLANE_OFF+PLANE_SIZE) + b * (PLANE_OFF+PLANE_SIZE);
+                let c3 = a * PLANE_OFF             + b * (PLANE_OFF+PLANE_SIZE);
+                let corners = [
+                    m.transform_point3(c0),
+                    m.transform_point3(c1),
+                    m.transform_point3(c2),
+                    m.transform_point3(c3),
+                ];
+                // 4 edges
+                for i in 0..4 {
+                    let j = (i + 1) % 4;
+                    vertices.push(Vertex { position: corners[i].into(), color: c });
+                    vertices.push(Vertex { position: corners[j].into(), color: c });
+                }
+            }
+        }
+
+        // upload vertex buffer
+        let vb = self
+            .context
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("gizmo vertex buffer"),
+                contents: bytemuck::cast_slice(&vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+
+        // begin a second render pass that loads existing contents
+        let mut rpass = encoder.begin_render_pass(&RenderPassDescriptor {
+            label: Some("Gizmo Pass"),
+            color_attachments: &[Some(RenderPassColorAttachment {
+                view: color_view,
+                resolve_target,
+                ops: Operations {
+                    load: LoadOp::Load,
+                    store: StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                view: depth_view,
+                depth_ops: Some(Operations {
+                    load: LoadOp::Load,
+                    store: StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            occlusion_query_set: None,
+            timestamp_writes: None,
+        });
+        rpass.set_pipeline(&self.gizmo_pipeline.inner);
+        // bind the camera uniform from the shared GpuCamera, not the layout
+        rpass.set_bind_group(0, &*self.gpu_camera.bind_group, &[]);
+        rpass.set_vertex_buffer(0, vb.slice(..));
+        let vertex_count = vertices.len() as u32;
+        if vertex_count > 0 {
+            rpass.draw(0..vertex_count, 0..1);
+        }
+
+        // clear for next frame
+        self.gizmo_draws.clear();
+    }
 
     /// Appends a custom pass after the built-in ones.
     /// `on_attach` is called immediately with the current surface format.
@@ -481,14 +659,15 @@ impl Renderer {
         };
         let depth_view = self.render_target.depth_view();
 
-        let dev = &self.context.device;
-        let q = &self.context.queue;
+        // avoid holding immutable borrow of self across calls to execute_gizmo_pass
+        // by passing the device/queue directly where needed
 
         // Built-in passes first
-        self.world_pass.prepare(dev, q, &packet);
+        self.world_pass
+            .prepare(&self.context.device, &self.context.queue, &packet);
         self.world_pass.execute(
-            dev,
-            q,
+            &self.context.device,
+            &self.context.queue,
             encoder,
             color_view,
             resolve_target,
@@ -496,22 +675,81 @@ impl Renderer {
             &packet,
         );
 
-        self.ui_pass.prepare(dev, q, &packet);
-        self.ui_pass
-            .execute(dev, q, encoder, color_view, resolve_target, None, &packet);
+        // after the opaque world pass we may have gizmos queued; draw them in
+        // a lightweight line-only pass.  drop the borrowed views first so the
+        // mutable borrow in `execute_gizmo_pass` is allowed.
+        if !self.gizmo_draws.is_empty() {
+            let _ = color_view;
+            let _ = resolve_target;
+            let _ = depth_view;
+            self.execute_gizmo_pass(encoder, &dest);
+            // recompute views for the UI/extra passes since we dropped the old
+            // ones above.
+            let (color_view, resolve_target) = match dest {
+                RenderDest::Target => self.render_target.color_views(),
+                RenderDest::View(v) => {
+                    if self.render_target.sample_count() > 1 {
+                        (
+                            self.render_target.color.msaa_view.as_ref().unwrap(),
+                            Some(v),
+                        )
+                    } else {
+                        (v, None)
+                    }
+                }
+            };
+            let depth_view = self.render_target.depth_view();
 
-        // User-supplied passes
-        for pass in &mut self.extra_passes {
-            pass.prepare(dev, q, &packet);
-            pass.execute(
-                dev,
-                q,
+            self.ui_pass
+                .prepare(&self.context.device, &self.context.queue, &packet);
+            self.ui_pass.execute(
+                &self.context.device,
+                &self.context.queue,
                 encoder,
                 color_view,
                 resolve_target,
-                Some(depth_view),
+                None,
                 &packet,
             );
+
+            // User-supplied passes
+            for pass in &mut self.extra_passes {
+                pass.prepare(&self.context.device, &self.context.queue, &packet);
+                pass.execute(
+                    &self.context.device,
+                    &self.context.queue,
+                    encoder,
+                    color_view,
+                    resolve_target,
+                    Some(depth_view),
+                    &packet,
+                );
+            }
+        } else {
+            // no gizmos, just run UI/extra passes once using the original views
+            self.ui_pass
+                .prepare(&self.context.device, &self.context.queue, &packet);
+            self.ui_pass.execute(
+                &self.context.device,
+                &self.context.queue,
+                encoder,
+                color_view,
+                resolve_target,
+                None,
+                &packet,
+            );
+            for pass in &mut self.extra_passes {
+                pass.prepare(&self.context.device, &self.context.queue, &packet);
+                pass.execute(
+                    &self.context.device,
+                    &self.context.queue,
+                    encoder,
+                    color_view,
+                    resolve_target,
+                    Some(depth_view),
+                    &packet,
+                );
+            }
         }
 
         // Reclaim the Vec<DrawCommand> allocation back into cache for next frame.

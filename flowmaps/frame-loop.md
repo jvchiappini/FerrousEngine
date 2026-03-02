@@ -39,8 +39,13 @@ sequenceDiagram
     REND->>GPU:   InstanceBuffer.write_slice(queue, base_slot, &updated_matrices)
 
     Note over RUN: --- 3D Draw Phase ---
-    RUN->>APP: app.draw_3d(&mut renderer, &mut ctx)
-    APP->>REND: renderer.spawn_object(...)  [optional extra objects]
+    RUN->>RUN: camera_target = renderer.camera.target
+    RUN->>APP: app.draw_3d(&mut ctx)
+    APP->>CTX: ctx.gizmos.push(GizmoDraw::new(matrix, GizmoMode::Translate))
+    Note over CTX: ctx.gizmos: Vec<GizmoDraw> accumulates this frame's gizmos
+    APP->>CTX: ctx.camera_target  (read-only: look-at target for axis projection math)
+    RUN->>REND: for gizmo in ctx.gizmos.drain(..) → renderer.queue_gizmo(gizmo)
+    Note over REND: gizmo_draws: Vec<GizmoDraw> held until execute_gizmo_pass
 
     Note over RUN: --- UI Build Phase ---
     RUN->>APP: app.draw_ui(&mut gui_batch, &mut text_batch)
@@ -53,10 +58,16 @@ sequenceDiagram
     REND->>REND: build_base_packet() → FramePacket { draw_commands: Vec<DrawCommand> }
     REND->>REND:   frustum_cull(objects, &camera_frustum) — skip off-screen objects
     REND->>GPU: GpuCamera.sync(queue, &camera) — upload view_proj matrix
-    REND->>GPU: WorldPass.execute(encoder, &packet)
+        REND->>GPU: WorldPass.execute(encoder, &packet)
     REND->>GPU:   set_pipeline(base_pipeline)
     REND->>GPU:   set_bind_group(0, &camera_bind_group)
     REND->>GPU:   [instanced] set_bind_group(1, instance_storage_bg), draw_indexed(0..N, first..first+count)\n    REND->>GPU:   [legacy]    per DrawCommand: set_bind_group(1, model_slot_offset), draw_indexed(0..N, 0..1)
+    REND->>GPU: execute_gizmo_pass(encoder) — if gizmo_draws is non-empty
+    REND->>GPU:   build gizmo vertex buffer (coloured line segments, CPU-side)
+    REND->>GPU:   set_pipeline(gizmo_pipeline)  [LineList topology, loads depth]
+    REND->>GPU:   set_bind_group(0, &camera_bind_group)
+    REND->>GPU:   draw(0..vertex_count, 0..1)
+    REND->>REND:  gizmo_draws.clear()
     REND->>GPU: UiPass.execute(encoder, &gui_batch, &text_batch)
     REND->>GPU:   set_pipeline(gui_pipeline)
     REND->>GPU:   upload quads, draw rects + glyphs
@@ -163,7 +174,7 @@ graph TD
     TR["FerrousApp trait"]
     S["setup(&mut self, ctx: &mut AppContext)\nCalled once at startup\n→ load assets, spawn initial scene"]
     U["update(&mut self, ctx: &mut AppContext)\nCalled every frame\n→ handle input, modify World"]
-    D3["draw_3d(&mut self, renderer: &mut Renderer, ctx: &mut AppContext)\nCalled every frame after sync\n→ add runtime render objects, gizmos"]
+    D3["draw_3d(&mut self, ctx: &mut AppContext)\nCalled every frame after sync\n→ push GizmoDraw into ctx.gizmos\n   read ctx.camera_eye / ctx.camera_target for axis math\n   Runner drains ctx.gizmos → renderer.queue_gizmo after return"]
     DU["draw_ui(&mut self, gui: &mut GuiBatch, text: &mut TextBatch)\nCalled every frame before render\n→ build UI quads and text"]
 
     TR --> S

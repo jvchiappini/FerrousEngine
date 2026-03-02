@@ -130,7 +130,7 @@ graph LR
         ED2["setup()\n  load fonts via ferrous_assets\n  spawn initial scene objects"]
         ED3["update()\n  WASD / orbit camera\n  UI input handling"]
         ED4["draw_ui()\n  inspector panel\n  hierarchy panel\n  performance overlay"]
-        ED5["draw_3d()\n  gizmos (move handles)\n  selection highlight\n  grid overlay"]
+        ED5["draw_3d()\n  gizmos (translate/rotate/scale)\n  selection highlight\n  grid overlay"]
     end
 
     subgraph "ferrous_editor  ❌ MUST NEVER"

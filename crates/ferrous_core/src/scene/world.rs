@@ -308,6 +308,18 @@ impl World {
             .map(|e| e.transform.position)
     }
 
+    /// Read the full transform (position/rotation/scale) of an entity.
+    ///
+    /// This is mostly a convenience for editor code; most gameplay logic only
+    /// needs position or individual components.  Returning a copy keeps the
+    /// world borrow-free.
+    pub fn transform(&self, handle: Handle) -> Option<Transform> {
+        self.entities
+            .get(handle.0 as usize)
+            .and_then(|o| o.as_ref())
+            .map(|e| e.transform)
+    }
+
     /// Translate by an offset.
     pub fn translate(&mut self, handle: Handle, offset: Vec3) {
         if let Some(Some(e)) = self.entities.get_mut(handle.0 as usize) {
@@ -321,6 +333,38 @@ impl World {
         if let Some(Some(e)) = self.entities.get_mut(handle.0 as usize) {
             e.transform.rotation = rot;
         }
+    }
+
+    /// Rotate an entity around a given world-space pivot.
+    ///
+    /// This is a thin wrapper around [`Transform::rotate_around`]; it updates
+    /// both the `position` and `rotation` fields of the underlying
+    /// transform.  If the handle is invalid or the entity has been despawned
+    /// this method is a no-op.
+    pub fn rotate_around(&mut self, handle: Handle, pivot: Vec3, axis: Vec3, angle: f32) {
+        if let Some(Some(e)) = self.entities.get_mut(handle.0 as usize) {
+            e.transform.rotate_around(pivot, axis, angle);
+        }
+    }
+
+    /// Convenience: rotate around the world Z axis.
+    pub fn rotate_around_z(&mut self, handle: Handle, pivot: Vec3, angle: f32) {
+        if let Some(Some(e)) = self.entities.get_mut(handle.0 as usize) {
+            e.transform.rotate_around_z(pivot, angle);
+        }
+    }
+
+    /// Rotate an entity about an arbitrary world-space axis, preserving the
+    /// entity's current position (i.e. not pivoting).
+    pub fn rotate_axis(&mut self, handle: Handle, axis: Vec3, angle: f32) {
+        if let Some(Some(e)) = self.entities.get_mut(handle.0 as usize) {
+            e.transform.rotate_axis(axis, angle);
+        }
+    }
+
+    /// Convenience: rotate about the world Y axis (yaw).
+    pub fn rotate_y(&mut self, handle: Handle, angle: f32) {
+        self.rotate_axis(handle, Vec3::Y, angle);
     }
 
     // ── Scale ───────────────────────────────────────────────────────────────
@@ -520,6 +564,57 @@ mod tests {
         let h = w.spawn_cube("B", Vec3::ZERO);
         w.set_position(h, Vec3::new(1.0, 2.0, 3.0));
         assert_eq!(w.position(h), Some(Vec3::new(1.0, 2.0, 3.0)));
+    }
+
+    #[test]
+    fn rotate_entity_about_world_origin() {
+        let mut w = World::new();
+        let h = w.spawn_cube("R", Vec3::new(1.0, 0.0, 0.0));
+        // rotate 90° about Z around the origin
+        w.rotate_around(h, Vec3::ZERO, Vec3::Z, std::f32::consts::FRAC_PI_2);
+        assert_eq!(w.position(h), Some(Vec3::new(0.0, 1.0, 0.0)));
+        // also verify the rotation quaternion changed
+        if let Some(e) = w.get(h) {
+            let forward = e.transform.forward();
+            assert!((forward - Vec3::NEG_Y).length() < 1e-5);
+        } else {
+            panic!("missing entity");
+        }
+    }
+
+    #[test]
+    fn rotate_z_helper_works() {
+        let mut w = World::new();
+        let h = w.spawn_cube("Z", Vec3::new(2.0, 0.0, 0.0));
+        w.rotate_around_z(h, Vec3::new(1.0, 0.0, 0.0), std::f32::consts::PI);
+        assert_eq!(w.position(h), Some(Vec3::new(0.0, 0.0, 0.0)));
+    }
+
+    #[test]
+    fn rotate_axis_wrapper() {
+        let mut w = World::new();
+        let h = w.spawn_cube("A", Vec3::ZERO);
+        w.rotate_axis(h, Vec3::Z, std::f32::consts::FRAC_PI_2);
+        // orientation should have changed but position remains zero
+        assert_eq!(w.position(h), Some(Vec3::ZERO));
+        if let Some(e) = w.get(h) {
+            let forward = e.transform.forward();
+            assert!((forward - Vec3::NEG_Y).length() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn rotate_y_wrapper() {
+        let mut w = World::new();
+        let h = w.spawn_cube("B", Vec3::ZERO);
+        w.rotate_y(h, std::f32::consts::FRAC_PI_2);
+        if let Some(e) = w.get(h) {
+            // yaw 90° should make forward = -X
+            let forward = e.transform.forward();
+            assert!((forward - Vec3::NEG_X).length() < 1e-5);
+        } else {
+            panic!("missing entity");
+        }
     }
 
     #[test]

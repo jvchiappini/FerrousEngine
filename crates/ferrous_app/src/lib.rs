@@ -57,3 +57,6 @@ pub use ferrous_core::glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 
 // Renderer-agnostic display types
 pub use ferrous_core::{RenderStats, Viewport};
+
+// Gizmo types — re-exported so app code doesn't need ferrous_renderer directly.
+pub use ferrous_renderer::scene::GizmoDraw;
