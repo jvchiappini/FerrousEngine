@@ -51,7 +51,6 @@ use std::sync::Arc;
 use ferrous_gui::TextBatch;
 
 use camera::controller::OrbitState;
-use ferrous_core::scene::axis_vector;
 use graph::frame_packet::{CameraPacket, DrawCommand};
 use passes::{UiPass, WorldPass};
 use pipeline::GizmoPipeline;
@@ -433,61 +432,104 @@ impl Renderer {
         let mut vertices: Vec<Vertex> = Vec::new();
         for gizmo in &self.gizmo_draws {
             use ferrous_core::scene::Plane;
-            // ARM_LEN: how far each handle extends in world units.
-            // 1.5 ensures handles are clearly visible outside a 1×1×1 cube
-            // (half-extent 0.5), while still feeling snappy to grab.
-            const ARM_LEN: f32 = 1.5;
-            // PLANE_OFF: how far along each axis the plane square starts.
-            // PLANE_SIZE: side length of the plane square handle.
-            const PLANE_OFF: f32 = ARM_LEN * 0.25;
-            const PLANE_SIZE: f32 = ARM_LEN * 0.22;
+            let st = &gizmo.style;
+
+            // ── Derived sizes from style ───────────────────────────────────
+            let arm = st.arm_length;
+            let p_off = st.plane_offset();
+            let p_size = st.plane_size();
+            let arr_len = st.arrow_length();
+            let arr_half = st.arrow_half_angle_deg.to_radians();
 
             let m = gizmo.transform;
 
-            // ── Axis arrows ──────────────────────────────────────────────
-            for &(axis_vec, color) in &[
-                (glam::Vec3::X, [1.0, 0.2, 0.2_f32]),
-                (glam::Vec3::Y, [0.2, 1.0, 0.2_f32]),
-                (glam::Vec3::Z, [0.2, 0.4, 1.0_f32]),
+            // ── Axis arms + optional arrowheads ───────────────────────────
+            for &(axis_vec, axis_enum) in &[
+                (glam::Vec3::X, ferrous_core::scene::Axis::X),
+                (glam::Vec3::Y, ferrous_core::scene::Axis::Y),
+                (glam::Vec3::Z, ferrous_core::scene::Axis::Z),
             ] {
-                let mut c = color;
-                if let Some(high) = gizmo.highlighted_axis {
-                    if axis_vec == axis_vector(high) {
-                        c = [1.0, 1.0, 0.0];
+                let c = if gizmo.highlighted_axis == Some(axis_enum) {
+                    st.axis_highlight(axis_enum)
+                } else {
+                    st.axis_color(axis_enum)
+                };
+
+                let p0 = m.transform_point3(glam::Vec3::ZERO);
+                let p1 = m.transform_point3(axis_vec * arm);
+
+                // Shaft line
+                vertices.push(Vertex {
+                    position: p0.into(),
+                    color: c,
+                });
+                vertices.push(Vertex {
+                    position: p1.into(),
+                    color: c,
+                });
+
+                // Arrowhead — two "V" lines in the plane that looks best at
+                // any camera angle: pick two perpendicular vectors to axis_vec,
+                // rotate the arrowhead fins around the axis.
+                if st.show_arrows && arr_len > 1e-4 {
+                    // Find a stable perpendicular to axis_vec.
+                    let perp = if axis_vec.dot(glam::Vec3::Y).abs() < 0.9 {
+                        axis_vec.cross(glam::Vec3::Y).normalize()
+                    } else {
+                        axis_vec.cross(glam::Vec3::X).normalize()
+                    };
+                    // Base of the arrowhead (along shaft)
+                    let base_local = axis_vec * (arm - arr_len);
+                    // 4 fins evenly spaced (cross shape)
+                    let up2 = perp;
+                    let side = axis_vec.cross(perp).normalize();
+                    for &fin_dir in &[up2, -up2, side, -side] {
+                        let fin_tip = axis_vec * arm;
+                        let fin_base = base_local + fin_dir * (arr_len * arr_half.tan());
+                        vertices.push(Vertex {
+                            position: m.transform_point3(fin_tip).into(),
+                            color: c,
+                        });
+                        vertices.push(Vertex {
+                            position: m.transform_point3(fin_base).into(),
+                            color: c,
+                        });
                     }
                 }
-                let p0 = m.transform_point3(glam::Vec3::ZERO);
-                let p1 = m.transform_point3(axis_vec * ARM_LEN);
-                vertices.push(Vertex { position: p0.into(), color: c });
-                vertices.push(Vertex { position: p1.into(), color: c });
             }
 
             // ── Plane square outlines ─────────────────────────────────────
-            // Each plane is drawn as 4 line segments forming a small square
-            // that sits between the two corresponding axis arms.
-            for &plane in &[Plane::XY, Plane::XZ, Plane::YZ] {
-                let c = if gizmo.highlighted_plane == Some(plane) {
-                    plane.highlight_color()
-                } else {
-                    plane.color()
-                };
-                let (a, b) = plane.axes();
-                // Four corners of the square in gizmo-local space.
-                let c0 = a * PLANE_OFF             + b * PLANE_OFF;
-                let c1 = a * (PLANE_OFF+PLANE_SIZE) + b * PLANE_OFF;
-                let c2 = a * (PLANE_OFF+PLANE_SIZE) + b * (PLANE_OFF+PLANE_SIZE);
-                let c3 = a * PLANE_OFF             + b * (PLANE_OFF+PLANE_SIZE);
-                let corners = [
-                    m.transform_point3(c0),
-                    m.transform_point3(c1),
-                    m.transform_point3(c2),
-                    m.transform_point3(c3),
-                ];
-                // 4 edges
-                for i in 0..4 {
-                    let j = (i + 1) % 4;
-                    vertices.push(Vertex { position: corners[i].into(), color: c });
-                    vertices.push(Vertex { position: corners[j].into(), color: c });
+            if st.show_planes {
+                for &plane in &[Plane::XY, Plane::XZ, Plane::YZ] {
+                    let rgba = if gizmo.highlighted_plane == Some(plane) {
+                        st.plane_highlight(plane)
+                    } else {
+                        st.plane_color(plane)
+                    };
+                    // Use RGB only (the pipeline currently uses [f32;3] vertices).
+                    let c = [rgba[0], rgba[1], rgba[2]];
+                    let (a, b) = plane.axes();
+                    let c0 = a * p_off + b * p_off;
+                    let c1 = a * (p_off + p_size) + b * p_off;
+                    let c2 = a * (p_off + p_size) + b * (p_off + p_size);
+                    let c3 = a * p_off + b * (p_off + p_size);
+                    let corners = [
+                        m.transform_point3(c0),
+                        m.transform_point3(c1),
+                        m.transform_point3(c2),
+                        m.transform_point3(c3),
+                    ];
+                    for i in 0..4 {
+                        let j = (i + 1) % 4;
+                        vertices.push(Vertex {
+                            position: corners[i].into(),
+                            color: c,
+                        });
+                        vertices.push(Vertex {
+                            position: corners[j].into(),
+                            color: c,
+                        });
+                    }
                 }
             }
         }

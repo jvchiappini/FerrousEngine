@@ -20,6 +20,8 @@ pub struct GizmoDraw {
     pub highlighted_axis: Option<ferrous_core::scene::Axis>,
     /// If the editor has highlighted a plane handle, the renderer brightens it.
     pub highlighted_plane: Option<ferrous_core::scene::Plane>,
+    /// Full visual style for this gizmo (colors, sizes, arrows, planes…).
+    pub style: ferrous_core::scene::GizmoStyle,
 }
 
 impl GizmoDraw {
@@ -29,6 +31,7 @@ impl GizmoDraw {
             mode,
             highlighted_axis: None,
             highlighted_plane: None,
+            style: ferrous_core::scene::GizmoStyle::default(),
         }
     }
 }

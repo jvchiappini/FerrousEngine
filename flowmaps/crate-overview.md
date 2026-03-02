@@ -21,6 +21,12 @@ graph TD
           Camera (eye, target, up, fovy, aspect, znear, zfar)
           CameraUniform (view_proj: [[f32;4];4])
           CameraController (WASD / orbit)
+        Gizmo:
+          GizmoState (mode, highlighted_axis, highlighted_plane, dragging, style)
+          GizmoStyle (arm_length, show_arrows, show_planes, colors...)
+          AxisColors · PlaneColors
+          Axis (X/Y/Z) · Plane (XY/XZ/YZ) · GizmoMode
+          axis_vector() · position_matrix()
         Utilities:
           Color · Time · InputState
           EngineContext (wgpu Device+Queue shared handle)
@@ -72,6 +78,10 @@ graph TD
           GpuCamera (wgpu::Buffer + BindGroup)
         Buffers:
           ModelBuffer (dynamic uniform, legacy manual objects)\n          InstanceBuffer (storage buffer, instanced World entities)
+        Gizmo:
+          GizmoDraw (transform, mode, highlighted_axis, highlighted_plane, style)
+          GizmoPipeline (LineList, depth_compare: Always, no depth write)
+          execute_gizmo_pass() — shafts + arrowheads + plane squares
         Passes:
           WorldPass (3D geometry pass — instanced + legacy)
           UiPass (2D overlay pass)
@@ -91,6 +101,13 @@ graph TD
         Per-frame:
           AppContext (InputState, Time, World, Renderer, Viewport)
           GraphicsState (wgpu Surface + Renderer)
+        Gizmo:
+          AppContext::update_gizmo(handle, &mut GizmoState)
+            axis picking (dist-to-segment, 24 px threshold)
+            plane picking (shoelace signed-area, camera-independent)
+            axis drag (1D screen projection)
+            plane drag (2D sum of axis projections)
+            queues GizmoDraw with full GizmoStyle clone
         Auto-wired:
           renderer.sync_world(&world) — called automatically
           TimeClock.tick() — drives Time

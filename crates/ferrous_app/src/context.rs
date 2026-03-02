@@ -1,5 +1,5 @@
 use ferrous_core::glam::{Mat4, Vec3, Vec4};
-use ferrous_core::scene::{Axis, GizmoState, Plane, axis_vector};
+use ferrous_core::scene::{axis_vector, Axis, GizmoState, Plane};
 use ferrous_core::{Handle, InputState, MouseButton, RenderStats, Time, Viewport, World};
 use ferrous_renderer::scene::GizmoDraw;
 use winit::window::Window;
@@ -173,7 +173,9 @@ impl<'a> AppContext<'a> {
         // Project a world point → screen pixels. Returns None if behind camera.
         let project = |world: Vec3| -> Option<(f32, f32)> {
             let clip = vp * Vec4::new(world.x, world.y, world.z, 1.0);
-            if clip.w <= 0.0 { return None; }
+            if clip.w <= 0.0 {
+                return None;
+            }
             let ndc_x = clip.x / clip.w;
             let ndc_y = clip.y / clip.w;
             Some((
@@ -182,10 +184,10 @@ impl<'a> AppContext<'a> {
             ))
         };
 
-        // Gizmo constants — fixed world-space sizes, independent of entity scale.
-        const ARM_LEN: f32 = 1.5;       // must match execute_gizmo_pass
-        const PLANE_OFF: f32 = ARM_LEN * 0.25;
-        const PLANE_SIZE: f32 = ARM_LEN * 0.22;
+        // Gizmo sizes driven by the style — no hardcoded constants.
+        let arm_len = gizmo.style.arm_length;
+        let plane_off = gizmo.style.plane_offset();
+        let plane_size = gizmo.style.plane_size();
         // Origin = entity position only (no scale, no rotation applied).
         let origin = gizmo.world_transform.position;
 
@@ -194,13 +196,14 @@ impl<'a> AppContext<'a> {
             let mut best_axis: Option<Axis> = None;
             let mut best_axis_dist = 24.0_f32;
             for &axis in &[Axis::X, Axis::Y, Axis::Z] {
-                let tip = origin + axis_vector(axis) * ARM_LEN;
+                let tip = origin + axis_vector(axis) * arm_len;
                 if let (Some(os), Some(ts)) = (project(origin), project(tip)) {
                     let dx = ts.0 - os.0;
                     let dy = ts.1 - os.1;
                     let len2 = dx * dx + dy * dy;
                     let dist = if len2 < 1e-4 {
-                        let ex = mx - os.0; let ey = my - os.1;
+                        let ex = mx - os.0;
+                        let ey = my - os.1;
                         (ex * ex + ey * ey).sqrt()
                     } else {
                         let t = ((mx - os.0) * dx + (my - os.1) * dy) / len2;
@@ -209,7 +212,10 @@ impl<'a> AppContext<'a> {
                         let cy = os.1 + t * dy - my;
                         (cx * cx + cy * cy).sqrt()
                     };
-                    if dist < best_axis_dist { best_axis_dist = dist; best_axis = Some(axis); }
+                    if dist < best_axis_dist {
+                        best_axis_dist = dist;
+                        best_axis = Some(axis);
+                    }
                 }
             }
 
@@ -218,10 +224,10 @@ impl<'a> AppContext<'a> {
             'planes: for &plane in &[Plane::XY, Plane::XZ, Plane::YZ] {
                 let (a, b) = plane.axes();
                 let corners_world = [
-                    origin + a * PLANE_OFF              + b * PLANE_OFF,
-                    origin + a * (PLANE_OFF + PLANE_SIZE) + b * PLANE_OFF,
-                    origin + a * (PLANE_OFF + PLANE_SIZE) + b * (PLANE_OFF + PLANE_SIZE),
-                    origin + a * PLANE_OFF              + b * (PLANE_OFF + PLANE_SIZE),
+                    origin + a * plane_off + b * plane_off,
+                    origin + a * (plane_off + plane_size) + b * plane_off,
+                    origin + a * (plane_off + plane_size) + b * (plane_off + plane_size),
+                    origin + a * plane_off + b * (plane_off + plane_size),
                 ];
                 // Project all 4 corners; skip if any is behind camera.
                 let mut sc = [(0.0_f32, 0.0_f32); 4];
@@ -242,11 +248,17 @@ impl<'a> AppContext<'a> {
                 let mut inside = true;
                 for i in 0..4 {
                     let j = (i + 1) % 4;
-                    let cross = (sc[j].0 - sc[i].0) * (my - sc[i].1)
-                              - (sc[j].1 - sc[i].1) * (mx - sc[i].0);
-                    if cross * sign < 0.0 { inside = false; break; }
+                    let cross =
+                        (sc[j].0 - sc[i].0) * (my - sc[i].1) - (sc[j].1 - sc[i].1) * (mx - sc[i].0);
+                    if cross * sign < 0.0 {
+                        inside = false;
+                        break;
+                    }
                 }
-                if inside { best_plane = Some(plane); break; }
+                if inside {
+                    best_plane = Some(plane);
+                    break;
+                }
             }
 
             // Planes take priority over axes when overlapping.
@@ -273,7 +285,7 @@ impl<'a> AppContext<'a> {
         if gizmo.dragging {
             if let Some(axis) = gizmo.highlighted_axis {
                 let av = axis_vector(axis);
-                let tip = origin + av * ARM_LEN;
+                let tip = origin + av * arm_len;
                 if let (Some(os), Some(ts)) = (project(origin), project(tip)) {
                     let sx = ts.0 - os.0;
                     let sy = ts.1 - os.1;
@@ -281,7 +293,7 @@ impl<'a> AppContext<'a> {
                     if slen > 1.0 {
                         let (dx, dy) = self.input.mouse_delta();
                         let screen_dot = (dx * sx + dy * sy) / slen;
-                        let world_delta = screen_dot / slen * ARM_LEN;
+                        let world_delta = screen_dot / slen * arm_len;
                         self.world.translate(handle, av * world_delta);
                     }
                 }
@@ -295,14 +307,14 @@ impl<'a> AppContext<'a> {
                 // then accumulate contribution from mouse delta along each.
                 let mut total = Vec3::ZERO;
                 for av in [a, b] {
-                    let tip = origin + av * ARM_LEN;
+                    let tip = origin + av * arm_len;
                     if let (Some(os), Some(ts)) = (project(origin), project(tip)) {
                         let sx = ts.0 - os.0;
                         let sy = ts.1 - os.1;
                         let slen = (sx * sx + sy * sy).sqrt();
                         if slen > 1.0 {
                             let screen_dot = (dx * sx + dy * sy) / slen;
-                            let world_delta = screen_dot / slen * ARM_LEN;
+                            let world_delta = screen_dot / slen * arm_len;
                             total += av * world_delta;
                         }
                     }
@@ -316,6 +328,7 @@ impl<'a> AppContext<'a> {
         let mut draw = GizmoDraw::new(gizmo.position_matrix(), gizmo.mode);
         draw.highlighted_axis = gizmo.highlighted_axis;
         draw.highlighted_plane = gizmo.highlighted_plane;
+        draw.style = gizmo.style.clone();
         self.gizmos.push(draw);
     }
 }

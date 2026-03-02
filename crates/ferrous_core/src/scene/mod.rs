@@ -19,6 +19,6 @@ pub use controller::Controller;
 // (in `ferrous_renderer::scene::gizmo`), but the editor and any other
 // application code that implements interaction should be able to refer to
 // `ferrous_core::scene::GizmoState` directly.
-pub use gizmo::{Axis, GizmoMode, GizmoState, Plane};
+pub use gizmo::{Axis, AxisColors, GizmoMode, GizmoState, GizmoStyle, Plane, PlaneColors};
 // re-export helper too
 pub use gizmo::axis_vector;

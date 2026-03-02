@@ -24,10 +24,13 @@ docs/
 ├── camera.md              # GpuCamera, OrbitState, Controller configuration
 ├── geometry.md            # Vertex, Mesh, built-in primitives, custom geometry
 ├── render_target.md       # off-screen rendering, MSAA, pixel readback
+├── gizmo.md               # GizmoDraw, GizmoPipeline, execute_gizmo_pass(), GizmoStyle
 └── extending/
     ├── custom_pass.md         # step-by-step guide to writing a custom raster pass
     ├── new_pipeline.md        # adding a new wgpu render pipeline
     ├── compute_pipeline.md    # adding a compute shader pass (raymarching, particles, …)
+    └── world_sync.md          # hooking new scene element types into sync_world
+```
     └── world_sync.md          # hooking new scene element types into sync_world
 ```
 
@@ -106,6 +109,9 @@ You can replace or extend this list with `Renderer::add_pass` /
 | `ComputePipeline` | `pipeline/compute.rs` | generic wgpu compute pipeline wrapper |
 | `ComputePass` | `passes/compute_pass.rs` | compute shader dispatch via the render graph |
 | `RenderObject` | `scene/object.rs` | per-instance GPU data |
+| `GizmoDraw` | `scene/gizmo.rs` | per-frame gizmo draw descriptor (transform + style) |
+| `GizmoPipeline` | `pipeline/gizmo.rs` | LineList pipeline, depth Always, no depth write |
+| `GizmoStyle` | *(re-export from ferrous_core)* | full visual config for a gizmo instance |
 
 ## Feature highlights
 
@@ -132,4 +138,5 @@ You can replace or extend this list with `Renderer::add_pass` /
 - `camera.md` — configure movement speed, key mappings, and sensitivity.
 - `geometry.md` — create meshes from code or load them from assets.
 - `render_target.md` — off-screen rendering and MSAA details.
+- `gizmo.md` — GizmoDraw, GizmoPipeline, vertex generation, and GizmoStyle reference.
 - `extending/` — practical guides for common extension scenarios.

@@ -63,8 +63,12 @@ sequenceDiagram
     REND->>GPU:   set_bind_group(0, &camera_bind_group)
     REND->>GPU:   [instanced] set_bind_group(1, instance_storage_bg), draw_indexed(0..N, first..first+count)\n    REND->>GPU:   [legacy]    per DrawCommand: set_bind_group(1, model_slot_offset), draw_indexed(0..N, 0..1)
     REND->>GPU: execute_gizmo_pass(encoder) — if gizmo_draws is non-empty
-    REND->>GPU:   build gizmo vertex buffer (coloured line segments, CPU-side)
-    REND->>GPU:   set_pipeline(gizmo_pipeline)  [LineList topology, loads depth]
+    REND->>GPU:   for each GizmoDraw: read GizmoDraw.style
+    REND->>GPU:   build axis shaft vertices (2 pts × 3 axes)
+    REND->>GPU:   build arrowhead fins (4-fin cross, if style.show_arrows)
+    REND->>GPU:   build plane square edges (4 edges × 3 planes, if style.show_planes)
+    REND->>GPU:   colors from style.axis_color/highlight · style.plane_color/highlight
+    REND->>GPU:   set_pipeline(gizmo_pipeline)  [LineList, depth_compare: Always]
     REND->>GPU:   set_bind_group(0, &camera_bind_group)
     REND->>GPU:   draw(0..vertex_count, 0..1)
     REND->>REND:  gizmo_draws.clear()
@@ -174,7 +178,7 @@ graph TD
     TR["FerrousApp trait"]
     S["setup(&mut self, ctx: &mut AppContext)\nCalled once at startup\n→ load assets, spawn initial scene"]
     U["update(&mut self, ctx: &mut AppContext)\nCalled every frame\n→ handle input, modify World"]
-    D3["draw_3d(&mut self, ctx: &mut AppContext)\nCalled every frame after sync\n→ push GizmoDraw into ctx.gizmos\n   read ctx.camera_eye / ctx.camera_target for axis math\n   Runner drains ctx.gizmos → renderer.queue_gizmo after return"]
+    D3["draw_3d(&mut self, ctx: &mut AppContext)\nCalled every frame after sync\n→ ctx.update_gizmo(handle, &mut gizmo)\n   └ syncs transform, picks axis/plane, drags entity, queues GizmoDraw\n   └ gizmo.style drives all visual properties (colors, arm_length, arrows...)\n   Runner drains ctx.gizmos → renderer.queue_gizmo after return"]
     DU["draw_ui(&mut self, gui: &mut GuiBatch, text: &mut TextBatch)\nCalled every frame before render\n→ build UI quads and text"]
 
     TR --> S

@@ -41,6 +41,7 @@ ferrous_renderer/src/
 │   ├── layout.rs             PipelineLayouts – camera BGL (group 0) + model BGL + instance BGL (group 1)
 │   ├── world.rs              WorldPipeline – compiles assets/shaders/base.wgsl
 │   ├── instancing.rs         InstancingPipeline – compiles assets/shaders/instanced.wgsl
+│   ├── gizmo.rs              GizmoPipeline – LineList, depth_compare: Always, no depth write
 │   └── compute.rs            ComputePipeline – generic wrapper for wgpu compute pipelines
 │
 ├── render_target/            colour + depth targets with MSAA support
@@ -52,6 +53,7 @@ ferrous_renderer/src/
 ├── scene/                    bridge between ferrous_core::World and GPU objects
 │   ├── mod.rs
 │   ├── object.rs             RenderObject – mesh + matrix + aabb + slot
+│   ├── gizmo.rs              GizmoDraw – transform + mode + highlights + GizmoStyle clone
 │   └── world_sync.rs         sync_world() free function
 │
 ├── graph/                    render-graph abstractions
@@ -68,6 +70,7 @@ ferrous_renderer/src/
 assets/shaders/
 ├── base.wgsl               per-object model matrix via dynamic uniform (group 1)
 ├── instanced.wgsl          instanced: reads instances[instance_index] from storage buffer
+├── gizmo.wgsl              coloured line segments; only group 0 (camera) needed
 ├── gui.wgsl                2D quad rendering
 └── text.wgsl               glyph / SDF text rendering
 ```
@@ -223,6 +226,14 @@ Application
             │              ──► legacy path:
             │                   bind WorldPipeline
             │                   for each DrawCommand: dynamic offset → draw_indexed
+            │   execute_gizmo_pass (inline in Renderer):
+            │                   build CPU vertex buffer from gizmo_draws
+            │                   shafts + arrowheads (style.show_arrows)
+            │                   plane squares (style.show_planes)
+            │                   bind GizmoPipeline (LineList, depth: Always)
+            │                   draw(0..vertex_count)
+            │                   gizmo_draws.clear()
+            │
             ▼
        queue.submit(encoder.finish())
 ```

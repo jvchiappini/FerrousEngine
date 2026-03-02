@@ -18,6 +18,7 @@ graph LR
         C7["CameraUniform\n  view_proj: [[f32;4];4]\n  fn update_view_proj(&camera)"]
         C8["EngineContext\n  device: Arc&lt;Device&gt;\n  queue: Arc&lt;Queue&gt;\n  (shared wgpu handle only)"]
         C9["Utilities\n  Color, Time, InputState\n  metrics (CPU%, RAM)\n  Viewport { width, height }"]
+        C10["Gizmo\n  GizmoState · GizmoMode\n  Axis (X/Y/Z) · Plane (XY/XZ/YZ)\n  GizmoStyle (arm_length, show_arrows,\n    show_planes, x/y/z_axis: AxisColors,\n    xy/xz/yz_plane: PlaneColors)\n  position_matrix() — translation-only Mat4\n  axis_vector() — Axis → Vec3"]
     end
 
     subgraph "ferrous_core  ❌ MUST NEVER"
@@ -46,6 +47,8 @@ graph LR
         R8["Culling\n  Aabb { min, max }\n  Frustum { planes: [Plane;6] }\n  frustum_cull() → visible subset"]
         R9["Primitives\n  cube(device) → Mesh\n  quad(device) → Mesh\n  sphere(device, subdivisions) → Mesh"]
         R10["FramePacket\n  draw_commands: Vec&lt;DrawCommand&gt;\n  (built after cull, consumed by WorldPass)"]
+        R11["GizmoDraw\n  transform: Mat4 (position_matrix — no scale)\n  mode: GizmoMode\n  highlighted_axis: Option&lt;Axis&gt;\n  highlighted_plane: Option&lt;Plane&gt;\n  style: GizmoStyle (full visual config)"]
+        R12["GizmoPipeline\n  LineList topology\n  depth_compare: Always — always on top\n  depth_write_enabled: false\n  execute_gizmo_pass():  shafts + arrowheads + plane squares"]
     end
 
     subgraph "ferrous_renderer  ❌ MUST NEVER"
@@ -66,7 +69,7 @@ graph LR
     subgraph "ferrous_app  ✅ OWNS"
         A1["Runner\n  winit EventLoop\n  owns GraphicsState\n  calls FerrousApp hooks in order"]
         A2["GraphicsState\n  wgpu Surface + SurfaceConfig\n  owns Renderer instance\n  handles resize events"]
-        A3["AppContext&lt;'a&gt;\n  &InputState\n  Time { delta, fps, total }\n  &mut World\n  Option&lt;&mut Renderer&gt;\n  Viewport { width, height }"]
+        A3["AppContext&lt;'a&gt;\n  &InputState\n  Time { delta, fps, total }\n  &mut World\n  Option&lt;&mut Renderer&gt;\n  Viewport { width, height }\n  update_gizmo(handle, &mut GizmoState)\n    — picks axis/plane, drags entity, queues GizmoDraw"]
         A4["FerrousApp trait\n  setup() · update()\n  draw_3d() · draw_ui()"]
         A5["TimeClock\n  Instant-based\n  drives Time every frame"]
         A6["AppConfig\n  title: String\n  width, height: u32\n  vsync: bool\n  msaa: u32"]
