@@ -70,6 +70,12 @@ pub fn sync_world(
                 obj.set_matrix(matrix);
                 mutated = true;
             }
+            // update material slot if the world descriptor changed
+            let slot = element.material.handle.0 as usize;
+            if obj.material_slot != slot {
+                obj.material_slot = slot;
+                mutated = true;
+            }
         } else {
             // Phase 2 — spawn new object.
             let mesh = match &element.kind {
@@ -83,7 +89,8 @@ pub fn sync_world(
             };
             let double_sided =
                 matches!(element.kind, ElementKind::Quad { double_sided, .. } if double_sided);
-            let mut obj = RenderObject::new(device, element.id, mesh, matrix, 0, double_sided, 0);
+            let mat_slot = element.material.handle.0 as usize;
+            let mut obj = RenderObject::new(device, element.id, mesh, matrix, 0, double_sided, mat_slot);
             // Override AABB with per-axis half_extents when available.
             match element.kind {
                 ElementKind::Cube { half_extents } => {

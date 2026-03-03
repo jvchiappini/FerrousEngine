@@ -188,7 +188,13 @@ let compute_pass = ComputePass::new(
 // when the raster pass reads the vertex buffer.
 renderer.clear_passes();
 renderer.add_pass(Box::new(compute_pass));
-renderer.add_pass(Box::new(WorldPass::new(/* … */)));
+// note: the WorldPass constructor now takes eight pipelines (four PBR and
+// four instancing variants) plus the camera bind group, device and layouts.
+// the placeholder below is for illustration only; see `renderer::new` in
+// the crate for a concrete example.
+// world pass now requires device, queue, and layouts in addition to the
+// pipelines and camera bind group.
+renderer.add_pass(Box::new(WorldPass::new(/* … including &device, &queue, &layouts */)));
 renderer.add_pass(Box::new(UiPass::new(/* … */)));
 ```
 

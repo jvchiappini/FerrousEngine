@@ -17,13 +17,13 @@ pub mod camera;
 pub mod context;
 pub mod geometry;
 pub mod graph;
+pub mod materials;
 pub mod passes;
 pub mod pipeline;
 pub mod render_stats;
 pub mod render_target;
 pub mod resources;
 pub mod scene;
-pub mod materials;
 
 // -- Public re-exports --------------------------------------------------------
 
@@ -42,6 +42,19 @@ pub use resources::InstanceBuffer;
 pub use scene::{Aabb, Frustum, RenderObject};
 
 use materials::MaterialRegistry;
+// re-export material types for API consumers
+// re-export material primitives from `ferrous_core` directly so that they
+// remain public even though the local `materials` module imports them
+// privately.  this avoids the privacy errors encountered when the compiler
+// treated the earlier exports as private imports.
+pub use ferrous_core::scene::{AlphaMode, MaterialDescriptor, MaterialHandle, MATERIAL_DEFAULT};
+
+// texture handles/constants are owned by the texture registry but we expose
+// them here so end users can construct `MaterialDescriptor` values without
+// digging into submodules.
+pub use resources::texture_registry::{
+    TextureHandle, TEXTURE_BLACK, TEXTURE_NORMAL, TEXTURE_WHITE,
+};
 
 #[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
@@ -57,7 +70,7 @@ use camera::controller::OrbitState;
 use graph::frame_packet::{CameraPacket, DrawCommand};
 use passes::{UiPass, WorldPass};
 use pipeline::GizmoPipeline;
-use pipeline::{PipelineLayouts, WorldPipeline};
+use pipeline::{PbrPipeline, PipelineLayouts};
 use resources::ModelBuffer;
 
 // -- RenderDest ---------------------------------------------------------------
@@ -105,6 +118,10 @@ pub struct Renderer {
     legacy_objects: HashMap<u64, RenderObject>,
     /// World objects mirrored from `ferrous_core::scene::World` (indices match World IDs)
     world_objects: Vec<Option<RenderObject>>,
+    /// CPU-side copy of each object’s material descriptor.  Used during
+    /// `sync_world` to detect when the core has modified a material and
+    /// therefore we need to call `material_registry.update_material_params`.
+    world_material_descs: Vec<Option<ferrous_core::scene::MaterialDescriptor>>,
     next_manual_id: u64,
     /// Shared dynamic uniform buffer for all model matrices (legacy/manual objects).
     model_buf: ModelBuffer,
@@ -180,26 +197,79 @@ impl Renderer {
         let rt = RenderTarget::new(device, width, height, format, sample_count);
 
         let layouts = PipelineLayouts::new(device);
-        // normal pipeline with back-face culling
-        let world_pipeline = WorldPipeline::new(
+        // pbr pipelines use the same layout plus a light bind group
+        let pbr_pipeline = PbrPipeline::new(
             device,
             format,
             rt.sample_count(),
             layouts.clone(),
             Some(wgpu::Face::Back),
+            None, // no blending for opaque
+            true, // depth write enabled
         );
-        // pipeline for double-sided geometry (no culling)
-        let world_pipeline_double =
-            WorldPipeline::new(device, format, rt.sample_count(), layouts.clone(), None);
+        let pbr_pipeline_double = PbrPipeline::new(
+            device,
+            format,
+            rt.sample_count(),
+            layouts.clone(),
+            None,
+            None,
+            true,
+        );
+        let pbr_pipeline_blend = PbrPipeline::new(
+            device,
+            format,
+            rt.sample_count(),
+            layouts.clone(),
+            Some(wgpu::Face::Back),
+            Some(wgpu::BlendState::ALPHA_BLENDING),
+            false,
+        );
+        let pbr_pipeline_blend_double = PbrPipeline::new(
+            device,
+            format,
+            rt.sample_count(),
+            layouts.clone(),
+            None,
+            Some(wgpu::BlendState::ALPHA_BLENDING),
+            false,
+        );
         let instancing_pipeline = InstancingPipeline::new(
             device,
             format,
             rt.sample_count(),
             layouts.clone(),
             Some(wgpu::Face::Back),
+            None,
+            true,
         );
-        let instancing_pipeline_double =
-            InstancingPipeline::new(device, format, rt.sample_count(), layouts.clone(), None);
+        let instancing_pipeline_double = InstancingPipeline::new(
+            device,
+            format,
+            rt.sample_count(),
+            layouts.clone(),
+            None,
+            None,
+            true,
+        );
+        let instancing_pipeline_blend = InstancingPipeline::new(
+            device,
+            format,
+            rt.sample_count(),
+            layouts.clone(),
+            Some(wgpu::Face::Back),
+            Some(wgpu::BlendState::ALPHA_BLENDING),
+            false,
+        );
+        let instancing_pipeline_blend_double = InstancingPipeline::new(
+            device,
+            format,
+            rt.sample_count(),
+            layouts.clone(),
+            None,
+            Some(wgpu::BlendState::ALPHA_BLENDING),
+            false,
+        );
 
         let camera = Camera {
             eye: glam::Vec3::new(0.0, 0.0, 5.0),
@@ -214,16 +284,23 @@ impl Renderer {
         let gpu_camera = GpuCamera::new(device, &camera, &layouts.camera);
 
         let world_pass = WorldPass::new(
-            world_pipeline,
-            world_pipeline_double,
+            pbr_pipeline,
+            pbr_pipeline_double,
+            pbr_pipeline_blend,
+            pbr_pipeline_blend_double,
             instancing_pipeline,
             instancing_pipeline_double,
+            instancing_pipeline_blend,
+            instancing_pipeline_blend_double,
             gpu_camera.bind_group.clone(),
+            device,
+            &context.queue,
+            &layouts,
         );
         // create material registry (includes default white material)
-        let mut material_registry = MaterialRegistry::new(device, &context.queue, &layouts);
+        let material_registry = MaterialRegistry::new(device, &context.queue, &layouts);
         let mut world_pass = world_pass;
-        world_pass.set_material_table(&material_registry.bind_group_table());
+        world_pass.set_material_table(&material_registry.bind_group_table(), &material_registry);
         let ui_renderer = ferrous_gui::GuiRenderer::new(
             context.device.clone(),
             format,
@@ -257,6 +334,7 @@ impl Renderer {
             gpu_camera,
             legacy_objects: HashMap::new(),
             world_objects: Vec::new(),
+            world_material_descs: Vec::new(),
             next_manual_id: u64::MAX,
             model_buf,
             next_slot: 0,
@@ -301,57 +379,124 @@ impl Renderer {
 
     /// Renders into the internal off-screen [`RenderTarget`].
 
-        /// Creates a GPU texture from raw RGBA8 bytes and returns its slot index.
-        /// This texture can then be referenced when creating a material.
-        pub fn create_texture_from_rgba(
-            &mut self,
-            width: u32,
-            height: u32,
-            data: &[u8],
-        ) -> usize {
-            let slot = self.material_registry.create_texture_from_rgba(
-                &self.context.device,
-                &self.context.queue,
-                width,
-                height,
-                data,
-            );
-            self.world_pass.set_material_table(&self.material_registry.bind_group_table());
-            slot
-        }
+    /// Register a GPU texture from raw RGBA8 bytes and return a
+    /// [`TextureHandle`] that can later be plugged into a
+    /// [`MaterialDescriptor`].
+    pub fn register_texture(&mut self, width: u32, height: u32, data: &[u8]) -> TextureHandle {
+        let handle = self.material_registry.register_texture_rgba8(
+            &self.context.device,
+            &self.context.queue,
+            width,
+            height,
+            data,
+        );
+        // maintain the old behaviour of refreshing the world-pass table
+        // even though the material bind groups are unchanged by adding a
+        // standalone texture.  this keeps external code from implicitly
+        // depending on the side‑effect.
+        self.world_pass.set_material_table(
+            &self.material_registry.bind_group_table(),
+            &self.material_registry,
+        );
+        handle
+    }
 
-        /// Creates a material with the given base color and optional texture slot.
-        /// If `texture_slot` is `None` the default white texture is used.
-        /// Returns the material slot index.
-        pub fn create_material(
-            &mut self,
-            base_color: [f32; 4],
-            _texture_slot: Option<usize>,
-        ) -> usize {
-            let slot = self.material_registry.create_material(
-                &self.context.device,
-                &self.context.queue,
-                base_color,
-                _texture_slot,
-            );
-            self.world_pass.set_material_table(&self.material_registry.bind_group_table());
-            slot
-        }
+    /// Free a texture previously registered with [`register_texture`].  if
+    /// the provided handle corresponds to one of the three built-in
+    /// fallbacks this function is a no-op.  freed slots are recycled by the
+    /// registry on future registrations.
+    pub fn free_texture(&mut self, handle: TextureHandle) {
+        self.material_registry.free_texture(handle);
+    }
 
-        /// Set the material slot for a previously-spawned legacy object.
-        pub fn set_object_material(&mut self, id: u64, material_slot: usize) {
-            if let Some(obj) = self.legacy_objects.get_mut(&id) {
-                obj.material_slot = material_slot;
-            }
-        }
+    /// Create a material using a full descriptor.  Returns a
+    /// [`MaterialHandle`] that may be stored by the application.
+    pub fn create_material(&mut self, desc: &MaterialDescriptor) -> MaterialHandle {
+        let handle = self
+            .material_registry
+            .create(&self.context.device, &self.context.queue, desc);
+        // sync the world pass table so newly‑created slot is available to
+        // shaders immediately; forgetting this leads to panics when the
+        // pass tries to index past the end of its internal array.
+        self.world_pass.set_material_table(
+            &self.material_registry.bind_group_table(),
+            &self.material_registry,
+        );
+        handle
+    }
 
-        /// Set the material slot for a world object by index (matching the world ID).
-        pub fn set_world_object_material(&mut self, index: usize, material_slot: usize) {
-            // layouts no longer stored; registry keeps its own copy
-            if let Some(Some(obj)) = self.world_objects.get_mut(index) {
-                obj.material_slot = material_slot;
-            }
+    /// Free a material slot so that the corresponding bind group may be
+    /// reused later.  the slot is overwritten with a clone of
+    /// [`MATERIAL_DEFAULT`], ensuring that any draw commands referencing the
+    /// old handle will simply render using the default material instead of
+    /// crashing the GPU.  After freeing we refresh the world-pass table.
+    pub fn free_material(&mut self, handle: MaterialHandle) {
+        self.material_registry.free(handle);
+        self.world_pass.set_material_table(
+            &self.material_registry.bind_group_table(),
+            &self.material_registry,
+        );
+    }
+
+    /// Update the scalar parameters of an existing material.  Only the
+    /// uniform buffer is rewritten; texture handles are assumed to remain
+    /// constant.  This is useful for tweaking colour/roughness/etc without
+    /// reallocating the material.
+    pub fn update_material_params(&mut self, handle: MaterialHandle, desc: &MaterialDescriptor) {
+        self.material_registry
+            .update_params(&self.context.queue, handle, desc);
+    }
+
+    /// Overwrite the contents of a texture handle with new RGBA8 data.  This
+    /// is the hot‑reload API; it does not allocate a new GPU texture but
+    /// instead writes directly into the existing one.  Materials already
+    /// pointing at the handle will observe the update automatically.
+    pub fn update_texture_data(
+        &mut self,
+        handle: TextureHandle,
+        width: u32,
+        height: u32,
+        data: &[u8],
+    ) {
+        self.material_registry.update_texture_data(
+            &self.context.queue,
+            handle,
+            width,
+            height,
+            data,
+        );
+    }
+
+    /// Adjust the global directional light used by the PBR shaders.
+    ///
+    /// The direction should be a normalized vector pointing *from* the light
+    /// toward the scene.  Colour is linear RGB and `intensity` is a scalar
+    /// multiplier.
+    pub fn set_directional_light(&mut self, direction: [f32; 3], color: [f32; 3], intensity: f32) {
+        let uniform = crate::resources::light::DirectionalLightUniform {
+            direction,
+            color,
+            intensity,
+            _pad0: 0.0,
+        };
+        // delegate to world pass so that the buffer is encapsulated
+        self.world_pass.update_light(&self.context.queue, uniform);
+    }
+
+    /// Set the material for a previously‑spawned legacy object.
+    pub fn set_object_material(&mut self, id: u64, material: MaterialHandle) {
+        if let Some(obj) = self.legacy_objects.get_mut(&id) {
+            obj.material_slot = material.0 as usize;
         }
+    }
+
+    /// Set the material for a world object by index (matching the world ID).
+    pub fn set_world_object_material(&mut self, index: usize, material: MaterialHandle) {
+        // layouts no longer stored; registry keeps its own copy
+        if let Some(Some(obj)) = self.world_objects.get_mut(index) {
+            obj.material_slot = material.0 as usize;
+        }
+    }
 
     pub fn render_to_target(
         &mut self,
@@ -379,7 +524,17 @@ impl Renderer {
     ///
     /// `double_sided` indicates whether the object should be rendered with
     /// face culling disabled.  `false` is the traditional behaviour.
-    pub fn add_object(&mut self, mesh: Mesh, pos: glam::Vec3, double_sided: bool) -> u64 {
+    /// Spawn a mesh instance at `pos` using the given material.
+    ///
+    /// Returns a stable u64 handle that may be used with the legacy
+    /// `set_object_*` helpers.  `double_sided` controls culling as before.
+    pub fn add_object(
+        &mut self,
+        mesh: Mesh,
+        pos: glam::Vec3,
+        double_sided: bool,
+        material: MaterialHandle,
+    ) -> u64 {
         let id = self.next_manual_id;
         self.next_manual_id = self.next_manual_id.wrapping_sub(1);
 
@@ -397,7 +552,15 @@ impl Renderer {
         }
         self.model_buf.write(&self.context.queue, slot, &matrix);
 
-        let obj = RenderObject::new(&self.context.device, id, mesh, matrix, slot, double_sided, 0);
+        let obj = RenderObject::new(
+            &self.context.device,
+            id,
+            mesh,
+            matrix,
+            slot,
+            double_sided,
+            material.0 as usize,
+        );
         self.legacy_objects.insert(id, obj);
         self.scene_dirty = true;
         id
@@ -439,6 +602,30 @@ impl Renderer {
         );
         if mutated {
             self.scene_dirty = true;
+        }
+
+        // ensure our descriptor cache is large enough
+        if self.world_material_descs.len() != world.capacity() {
+            self.world_material_descs.resize_with(world.capacity(), || None);
+        }
+
+        // iterate over every entity and propagate any descriptor changes
+        for element in world.iter() {
+            let idx = element.id as usize;
+            let desc = &element.material.descriptor;
+            let needs_update = match &self.world_material_descs[idx] {
+                Some(prev) => prev != desc,
+                None => true,
+            };
+            if needs_update {
+                // push new parameters to GPU; `create_material` already wrote
+                // the initial state so this is safe even if the handle is
+                // MATERIAL_DEFAULT.
+                self.material_registry
+                    .update_params(&self.context.queue, element.material.handle, desc);
+                self.world_material_descs[idx] = Some(desc.clone());
+                self.scene_dirty = true;
+            }
         }
     } // -- Pass management ------------------------------------------------------
 
@@ -497,6 +684,12 @@ impl Renderer {
 
         // build a flat list of vertices; each pair forms one line segment.
         let mut vertices: Vec<Vertex> = Vec::new();
+        // helper for gizmo lines: provide a dummy normal and default tangent
+        let mut push_line = |pos: [f32; 3], col: [f32; 3]| {
+            let mut vert = Vertex::new(pos, [0.0, 0.0, 1.0], [0.0, 0.0]);
+            vert.color = col;
+            vertices.push(vert);
+        };
         for gizmo in &self.gizmo_draws {
             use ferrous_core::scene::{GizmoMode, Plane};
             let st = &gizmo.style;
@@ -528,16 +721,8 @@ impl Renderer {
                         let p1 = m.transform_point3(axis_vec * arm);
 
                         // Shaft line
-                        vertices.push(Vertex {
-                            position: p0.into(),
-                            color: c,
-                            uv: [0.0, 0.0],
-                        });
-                        vertices.push(Vertex {
-                            position: p1.into(),
-                            color: c,
-                            uv: [0.0, 0.0],
-                        });
+                        push_line(p0.into(), c);
+                        push_line(p1.into(), c);
 
                         // Arrowhead
                         if st.show_arrows && arr_len > 1e-4 {
@@ -552,16 +737,8 @@ impl Renderer {
                             for &fin_dir in &[up2, -up2, side, -side] {
                                 let fin_tip = axis_vec * arm;
                                 let fin_base = base_local + fin_dir * (arr_len * arr_half.tan());
-                                vertices.push(Vertex {
-                                    position: m.transform_point3(fin_tip).into(),
-                                    color: c,
-                                    uv: [0.0, 0.0],
-                                });
-                                vertices.push(Vertex {
-                                    position: m.transform_point3(fin_base).into(),
-                                    color: c,
-                                    uv: [0.0, 0.0],
-                                });
+                                push_line(m.transform_point3(fin_tip).into(), c);
+                                push_line(m.transform_point3(fin_base).into(), c);
                             }
                         }
                     }
@@ -588,16 +765,8 @@ impl Renderer {
                             ];
                             for i in 0..4 {
                                 let j = (i + 1) % 4;
-                                vertices.push(Vertex {
-                                    position: corners[i].into(),
-                                    color: c,
-                                    uv: [0.0, 0.0],
-                                });
-                                vertices.push(Vertex {
-                                    position: corners[j].into(),
-                                    color: c,
-                                    uv: [0.0, 0.0],
-                                });
+                                push_line(corners[i].into(), c);
+                                push_line(corners[j].into(), c);
                             }
                         }
                     }
@@ -631,8 +800,7 @@ impl Renderer {
                         // Generate ring vertices in world space (m is translation-only).
                         let mut ring: Vec<[f32; 3]> = Vec::with_capacity(ARC_SEGS);
                         for i in 0..ARC_SEGS {
-                            let theta = (i as f32 / ARC_SEGS as f32)
-                                * std::f32::consts::TAU;
+                            let theta = (i as f32 / ARC_SEGS as f32) * std::f32::consts::TAU;
                             let local = (perp1 * theta.cos() + perp2 * theta.sin()) * arm;
                             ring.push((origin + local).into());
                         }
@@ -640,16 +808,8 @@ impl Renderer {
                         // Emit line segments forming the closed ring.
                         for i in 0..ARC_SEGS {
                             let j = (i + 1) % ARC_SEGS;
-                            vertices.push(Vertex {
-                                position: ring[i],
-                                color: c,
-                                uv: [0.0, 0.0],
-                            });
-                            vertices.push(Vertex {
-                                position: ring[j],
-                                color: c,
-                                uv: [0.0, 0.0],
-                            });
+                            push_line(ring[i], c);
+                            push_line(ring[j], c);
                         }
                     }
 
@@ -657,12 +817,15 @@ impl Renderer {
                     let dot_size = arm * 0.06;
                     let pivot_c = [1.0_f32, 1.0, 0.4];
                     for &dir in &[
-                        glam::Vec3::X, glam::Vec3::NEG_X,
-                        glam::Vec3::Y, glam::Vec3::NEG_Y,
-                        glam::Vec3::Z, glam::Vec3::NEG_Z,
+                        glam::Vec3::X,
+                        glam::Vec3::NEG_X,
+                        glam::Vec3::Y,
+                        glam::Vec3::NEG_Y,
+                        glam::Vec3::Z,
+                        glam::Vec3::NEG_Z,
                     ] {
-                        vertices.push(Vertex { position: origin.into(), color: pivot_c, uv: [0.0, 0.0] });
-                        vertices.push(Vertex { position: (origin + dir * dot_size).into(), color: pivot_c, uv: [0.0, 0.0] });
+                        push_line(origin.into(), pivot_c);
+                        push_line((origin + dir * dot_size).into(), pivot_c);
                     }
                 }
             }

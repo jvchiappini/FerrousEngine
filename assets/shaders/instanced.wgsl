@@ -14,7 +14,13 @@ struct VsOut {
 // material definitions (same as base.wgsl)
 struct Material {
     base_color : vec4<f32>,
-    use_texture : u32,
+    emissive : vec4<f32>,
+    metallic_roughness : vec4<f32>,
+    normal_ao : vec4<f32>,
+    flags : u32,
+    _pad0 : u32,
+    _pad1 : u32,
+    _pad2 : u32,
 };
 
 @group(2) @binding(0)
@@ -35,10 +41,14 @@ var<uniform> camera : Camera;
 @group(1) @binding(0)
 var<storage, read> instances : array<mat4x4<f32>>;
 
+// NOTE: we keep the same ordering as base.wgsl to match the buffer layout
+// used by the renderer.
 struct VsIn {
     @location(0) position : vec3<f32>,
-    @location(1) color    : vec3<f32>,
-    @location(2) uv       : vec2<f32>,
+    @location(1) normal   : vec3<f32>,
+    @location(2) tangent  : vec4<f32>,
+    @location(3) color    : vec3<f32>,
+    @location(4) uv       : vec2<f32>,
 };
 
 @vertex
@@ -63,7 +73,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // material uniforms declared globally
 
     var color : vec4<f32> = material.base_color * vec4<f32>(in.color, 1.0);
-    if (material.use_texture == 1u) {
+    if ((material.flags & 1u) != 0u) {
         let texel = textureSample(texture, texture_sampler, in.uv);
         color = color * texel;
     }

@@ -18,13 +18,25 @@ renderer.  Its implementation lives in `src/materials.rs` so that
 ## Public API (in `Renderer`)
 
 ```rust
-/// Create a dynamic texture and reserve a material slot for it.
-/// Returns the slot index.
-fn create_texture_from_rgba(&mut self, w: u32, h: u32, data: &[u8]) -> usize;
+/// Create a dynamic texture from raw RGBA8 data and return a
+fn register_texture(&mut self, w: u32, h: u32, data: &[u8]) -> TextureHandle;
+fn create_texture_from_rgba(&mut self, w: u32, h: u32, data: &[u8]) -> TextureHandle;
 
-/// Create a material with a given base colour.  The optional texture slot
-/// parameter is currently ignored (always uses the default white texture).
-fn create_material(&mut self, base_color: [f32;4], texture_slot: Option<usize>) -> usize;
+/// release a texture slot so that the GPU memory may be reclaimed and the
+/// index reused.  built-in fallbacks are immune to this call.
+fn free_texture(&mut self, handle: TextureHandle);
+
+/// overwrite the bytes of an existing texture.  used for hot–reloading
+/// image assets at runtime; any materials referencing the handle will
+/// automatically see the new pixels.
+fn update_texture_data(&mut self, handle: TextureHandle, w: u32, h: u32, data: &[u8]);
+
+fn create_material(&mut self, desc: &MaterialDescriptor) -> MaterialHandle;
+fn create_material(&mut self, desc: MaterialDescriptor) -> usize;
+
+/// destroy a material slot.  the slot will revert to the default material
+/// and its index will be recycled on subsequent creations.
+fn free_material(&mut self, handle: MaterialHandle);
 
 /// Change the material of an existing object.
 fn set_object_material(&mut self, id: u64, material_slot: usize);
@@ -34,7 +46,7 @@ fn set_world_object_material(&mut self, index: usize, material_slot: usize);
 ```
 
 All material creation automatically updates the `WorldPass`'s internal
-bind-group table so that newly registered slots are available to the
+let material = renderer.create_material(&desc);
 shaders immediately.
 
 ## Shader support
@@ -47,10 +59,14 @@ cube/quad primitives supply sensible coordinates.
 ## Example: paint cube face
 
 ```rust
-let texture_slot = renderer.create_texture_from_rgba(6, 1, &[
-    /* six horizontal texels */
+use ferrous_renderer::materials::{MaterialDescriptor, AlphaMode};
+
+let texture_handle = renderer.create_texture_from_rgba(6, 1, &[
+  /* six horizontal texels */
 ]);
-let material = renderer.create_material([1.0,1.0,1.0,1.0], Some(texture_slot));
+let mut desc = MaterialDescriptor::default();
+desc.albedo_tex = Some(texture_handle);
+let material = renderer.create_material(desc);
 renderer.set_object_material(obj_id, material);
 ```
 

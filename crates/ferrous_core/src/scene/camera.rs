@@ -90,16 +90,22 @@ impl Camera {
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraUniform {
     pub view_proj: [[f32; 4]; 4],
+    // eye/camera world-space position (padding to 16 bytes required)
+    pub position: [f32; 3],
+    pub _pad: f32,
 }
 
 impl CameraUniform {
     pub fn new() -> Self {
         Self {
             view_proj: Mat4::IDENTITY.to_cols_array_2d(),
+            position: [0.0; 3],
+            _pad: 0.0,
         }
     }
 
     pub fn update_view_proj(&mut self, camera: &Camera) {
         self.view_proj = camera.build_view_projection_matrix().to_cols_array_2d();
+        self.position = camera.eye.to_array();
     }
 }

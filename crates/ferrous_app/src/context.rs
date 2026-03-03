@@ -69,6 +69,13 @@ pub struct AppContext<'a> {
     /// ```
     pub gizmos: Vec<GizmoDraw>,
 
+    /// Mutable reference to the renderer owned by the runner.  This is made
+    /// available so that higher-level code (editor, game) can create or
+    /// update GPU resources such as materials without needing to reach into
+    /// the runner itself.  The reference lives for the duration of the
+    /// callback, so it is safe to mutate.
+    pub renderer: &'a mut ferrous_renderer::Renderer,
+
     /// Set to `true` via [`request_exit`] to stop the event loop gracefully.
     pub(crate) exit_requested: bool,
 

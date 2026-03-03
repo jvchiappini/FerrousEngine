@@ -25,6 +25,8 @@ pub struct PipelineLayouts {
     /// group(2) — material parameters (uniform buffer) + optional texture.
     /// binding 0 = Material uniform, binding 1 = sampler, binding 2 = texture.
     pub material: Arc<wgpu::BindGroupLayout>,
+    /// group(3) — directional light uniform buffer (one `UNIFORM` buffer at binding 0)
+    pub lights: Arc<wgpu::BindGroupLayout>,
 }
 
 impl PipelineLayouts {
@@ -58,8 +60,9 @@ impl PipelineLayouts {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: true,
-                        // Each element is a mat4x4<f32> = 64 bytes.
-                        min_binding_size: wgpu::BufferSize::new(64),
+                        // Each element is now two mat4x4<f32> = 128 bytes
+                        // (model matrix + normal matrix).
+                        min_binding_size: wgpu::BufferSize::new(128),
                     },
                     count: None,
                 }],
@@ -84,32 +87,75 @@ impl PipelineLayouts {
             },
         ));
 
-        // material layout: uniform + sampler + texture
+        // material layout: uniform + sampler + up to five textures
         let material = Arc::new(device.create_bind_group_layout(
             &wgpu::BindGroupLayoutDescriptor {
                 label: Some("Layout: Material"),
                 entries: &[
-                    // base color / flags
+                    // binding 0: uniform buffer (MaterialUniformPbr)
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::VERTEX,
+                        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
-                            min_binding_size: None,
+                            // 80 bytes for our PBR material struct
+                            // struct now 96 bytes due to alignment/padding
+                            min_binding_size: wgpu::BufferSize::new(96),
                         },
                         count: None,
                     },
-                    // sampler (optional, still declared so binding numbers are stable)
+                    // binding 1: sampler (filtering)
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
-                    // texture itself
+                    // bindings 2-6: up to five texture2d slots
+                    // albedo, normal, metallic/roughness, emissive, ao
                     wgpu::BindGroupLayoutEntry {
                         binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 6,
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
                             multisampled: false,
@@ -122,11 +168,72 @@ impl PipelineLayouts {
             },
         ));
 
+        // lights layout: directional light + IBL resources (Phase 10)
+        let lights = Arc::new(
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Layout: Lights/Environment"),
+                entries: &[
+                    // binding 0: directional light uniform
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(32),
+                        },
+                        count: None,
+                    },
+                    // binding 1: sampler for environment maps
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    // binding 2: irradiance cubemap
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::Cube,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    // binding 3: prefiltered environment cubemap
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::Cube,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    // binding 4: BRDF integration LUT (2D)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                ],
+            }),
+        );
+
         Self {
             camera,
             model,
             instance,
             material,
+            lights,
         }
     }
 }

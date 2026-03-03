@@ -15,6 +15,11 @@ winit = "0.30"
 # used by camera uniform definitions
 bytemuck = "1.17"
 
+# NOTE: we intentionally do *not* depend on `ferrous_renderer` here.  the
+# material handle/descriptor types used by the core scene live in this
+# crate instead so that we avoid a cyclic dependency (the renderer already
+# depends on `ferrous_core`).  `ferrous_renderer` will re-export these types
+# for convenience.
 # ── desktop-only (process metrics via OS APIs) ────────────────────────────
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 once_cell = "1.18"

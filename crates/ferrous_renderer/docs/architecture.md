@@ -90,7 +90,7 @@ location of a dynamic texture.
 
 ```rust
 // create a neon green strip where face 2 is green
-let tex_slot = renderer.create_texture_from_rgba(6, 1, &[
+let tex_slot = renderer.register_texture(6, 1, &[
     0,0,0,255, // face0
     0,0,0,255, // face1
     0,255,0,255, // face2 neon green
@@ -98,7 +98,9 @@ let tex_slot = renderer.create_texture_from_rgba(6, 1, &[
     0,0,0,255,
     0,0,0,255,
 ]);
-let mat = renderer.create_material([1.0,1.0,1.0,1.0], Some(tex_slot));
+let mut desc = ferrous_renderer::materials::MaterialDescriptor::default();
+desc.albedo_tex = Some(tex_slot);
+let mat = renderer.create_material(&desc);
 renderer.set_object_material(obj_id, mat);
 ```
 
@@ -124,8 +126,10 @@ into `InstanceBuffer` and the shader reads `instances[instance_index]`.
 Result: **1 `draw_indexed` call per unique mesh**, regardless of count.
 
 **Legacy path** (`WorldPipeline`):
-Manually-spawned objects (via `renderer.add_object(...)`) still use the
-dynamic-uniform `ModelBuffer`.  One `draw_indexed` per object.
+Manually-spawned objects (via `renderer.add_object(mesh, pos, double_sided, material)`)
+still use the dynamic-uniform `ModelBuffer`.  Each call now requires an
+explicit `MaterialHandle` rather than a raw slot index. One `draw_indexed`
+per object.
 
 Custom pipelines must respect group 0 (camera) to be compatible with
 `PipelineLayouts`.  See `extending/new_pipeline.md` for details.
@@ -146,6 +150,17 @@ Renderer::handle_input(input, dt)
 
 Renderer::sync_world(world, ctx)
     └── scene::sync_world(world, objects, device, queue, model_layout)
+
+### Lighting
+
+`Renderer` exposes a simple method for driving the global directional light
+used by the PBR shaders:
+
+```rust
+renderer.set_directional_light([1.0, -1.0, 0.0], [1.0, 1.0, 0.9], 2.5);
+```
+
+The values are copied into a GPU uniform buffer owned by `WorldPass`.
             spawns / removes / updates RenderObjects
             InstanceBuffer::write_slice(queue, base, &[Mat4])
                 writes contiguous matrix slice for World entities

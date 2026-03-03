@@ -5,6 +5,7 @@ use ferrous_app::{
     App, AppContext, Color, FerrousApp, Handle, MouseButton, RenderStats, Vec3, Viewport,
 };
 use ferrous_assets::font::Font;
+use ferrous_core::scene::MaterialDescriptor;
 use ferrous_core::scene::{Axis, GizmoMode};
 use ferrous_gui::{GuiBatch, InteractiveButton, Slider, TextBatch, Ui, ViewportWidget};
 use rand::Rng;
@@ -145,10 +146,31 @@ impl FerrousApp for EditorApp {
     }
 
     fn setup(&mut self, ctx: &mut AppContext) {
-        ctx.world.spawn_cube("Default Cube", Vec3::ZERO);
-        // also place a quad next to the cube so the new primitive is visible
-        ctx.world
-            .spawn_quad("Default Quad", Vec3::new(2.0, 0.0, 0.0), 1.0, 1.0, false);
+        // create a default material and assign it to both primitives; the
+        // renderer owns the GPU handle and we keep the descriptor in the
+        // world for editing later.
+        let desc = MaterialDescriptor::default();
+        let default_mat = ctx.renderer.create_material(&desc);
+        let _cube = ctx
+            .world
+            .spawn("Default Cube")
+            .with_position(Vec3::ZERO)
+            .with_kind(ferrous_core::scene::ElementKind::Cube { half_extents: Vec3::splat(0.5) })
+            .with_scale(Vec3::splat(0.5))
+            .with_material_handle(default_mat)
+            .build();
+        let _quad = ctx
+            .world
+            .spawn("Default Quad")
+            .with_position(Vec3::new(2.0, 0.0, 0.0))
+            .with_kind(ferrous_core::scene::ElementKind::Quad {
+                width: 1.0,
+                height: 1.0,
+                double_sided: false,
+            })
+            .with_scale(Vec3::new(0.5, 0.5, 1.0))
+            .with_material_handle(default_mat)
+            .build();
         self.gpu_backend = ctx.gpu_backend().to_string();
     }
 
@@ -465,12 +487,20 @@ impl FerrousApp for EditorApp {
                 rng.gen_range(100..=255),
                 rng.gen_range(100..=255),
             );
-            ctx.world.set_color(handle, color);
+            // create a dedicated material for this object and assign it
+            let mut desc = MaterialDescriptor::default();
+            desc.base_color = color.to_array();
+            let mat = ctx.renderer.create_material(&desc);
+            ctx.world.set_material_handle(handle, mat);
+            ctx.world.set_material_descriptor(handle, desc.clone());
+            // no need to call update_material_params because create_material
+            // already populated the GPU state, but the descriptor lives in the
+            // world so editors can still tweak it later.
             // also spawn a small quad at the same location
             let qh = ctx
                 .world
                 .spawn_quad("Quad", pos + Vec3::new(0.0, 0.0, 1.0), 0.5, 0.5, true);
-            ctx.world.set_color(qh, color);
+            ctx.world.set_material_handle(qh, mat);
             self.last_quad = Some(qh);
             self.last_cube = Some(handle);
             self.add_cube = false;

@@ -24,6 +24,8 @@ impl InstancingPipeline {
         sample_count: u32,
         layouts: PipelineLayouts,
         cull_mode: Option<wgpu::Face>,
+        blend: Option<wgpu::BlendState>,
+        depth_write: bool,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::include_wgsl!(
             "../../../../assets/shaders/instanced.wgsl"
@@ -45,14 +47,14 @@ impl InstancingPipeline {
                 buffers: &[Vertex::layout()],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
-            fragment: Some(wgpu::FragmentState {
+                fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: target_format,
+                            blend,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
             primitive: wgpu::PrimitiveState {
@@ -63,7 +65,7 @@ impl InstancingPipeline {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
+                depth_write_enabled: depth_write,
                 depth_compare: wgpu::CompareFunction::Less,
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),

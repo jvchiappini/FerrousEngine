@@ -12,9 +12,18 @@
 //!
 //! let mut world = World::new();
 //!
+//! // create a PBR descriptor and register it with the renderer first:
+//! //
+//! // ```ignore
+//! // let mut desc = MaterialDescriptor::default();
+//! // desc.base_color = Color::CYAN.to_array();
+//! // let mat_handle = renderer.create_material(&desc);
+//! // ```
+//!
 //! let h = world.spawn("Player")
 //!     .with_position(Vec3::new(0.0, 0.5, 0.0))
-//!     .with_color(Color::CYAN)
+//!     // the descriptor was stored on the element; keep the handle too
+//!     .with_material_handle(mat_handle)
 //!     .build();
 //!
 //! world.set_position(h, Vec3::new(1.0, 0.0, 0.0));
@@ -25,8 +34,39 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use glam::{Quat, Vec3};
 
-use crate::color::Color;
+// colour utilities remain available for auxiliary code (UI, helpers), but
+// the scene elements no longer store a simple `Color`.  PBR materials have
+// replaced the old tint field; the material descriptor contains a
+// `base_color` parameter that fulfils the same role.
+use crate::scene::{MaterialDescriptor, MaterialHandle, MATERIAL_DEFAULT};
 use crate::transform::Transform;
+// colour type is still available for convenience helpers such as
+// `EntityBuilder::with_color`; the scene itself no longer stores a lone
+// `Color`, but editors and apps may find it handy when constructing
+// descriptors.
+use crate::color::Color;
+
+/// Holds the material handle and CPU-side descriptor attached to an entity.
+///
+/// The handle is expected to be allocated by the renderer; the descriptor
+/// lives on the CPU so that it can be edited by game logic or the editor.
+/// Core does not know about the renderer's internals, it simply carries the
+/// data around until the application chooses to push updates into the
+/// renderer (e.g. via `renderer.update_material_params`).
+#[derive(Debug, Clone)]
+pub struct MaterialComponent {
+    pub handle: MaterialHandle,
+    pub descriptor: MaterialDescriptor,
+}
+
+impl Default for MaterialComponent {
+    fn default() -> Self {
+        Self {
+            handle: MATERIAL_DEFAULT,
+            descriptor: MaterialDescriptor::default(),
+        }
+    }
+}
 
 // ─── ID generation ─────────────────────────────────────────────────────────
 
@@ -102,8 +142,10 @@ pub struct Element {
     pub name: String,
     /// World-space transform (position, rotation, scale).
     pub transform: Transform,
-    /// Visual tint / base colour used by the renderer.
-    pub color: Color,
+    /// Material component describing how the object should be shaded.
+    /// The descriptor lives in core and may be edited; the handle is managed
+    /// by the renderer.
+    pub material: MaterialComponent,
     /// Geometric / logical kind.
     pub kind: ElementKind,
     /// Whether the entity participates in rendering.
@@ -121,7 +163,7 @@ impl Element {
             id,
             name: name.into(),
             transform: Transform::default(),
-            color: Color::WHITE,
+            material: MaterialComponent::default(),
             kind: ElementKind::default(),
             visible: true,
             tags: Vec::new(),
@@ -162,12 +204,34 @@ impl<'a> EntityBuilder<'a> {
     }
 
     pub fn with_color(mut self, color: Color) -> Self {
-        self.element.color = color;
+        // convenience helper that simply changes the base colour on the
+        // descriptor.  existing material handle is untouched; users who want
+        // to create a new GPU material should call
+        // `renderer.create_material` themselves and update the handle via
+        // [`World::set_material_handle`].
+        self.element.material.descriptor.base_color = color.to_array();
         self
     }
 
     pub fn with_kind(mut self, kind: ElementKind) -> Self {
         self.element.kind = kind;
+        self
+    }
+
+    /// Assign a material descriptor to this entity.  The descriptor is copied
+    /// into the element; the caller is responsible for obtaining a GPU
+    /// `MaterialHandle` from the renderer and setting it via
+    /// [`with_material_handle`] (or later with
+    /// [`World::set_material_handle`]).
+    pub fn with_material(mut self, desc: MaterialDescriptor) -> Self {
+        self.element.material.descriptor = desc;
+        self
+    }
+
+    /// Set the material handle for this entity.  This is typically the value
+    /// returned by `renderer.create_material(&desc)`.
+    pub fn with_material_handle(mut self, handle: MaterialHandle) -> Self {
+        self.element.material.handle = handle;
         self
     }
 
@@ -232,6 +296,12 @@ impl World {
     }
 
     /// Convenience: spawn a 1×1×1 cube at the given position and return its handle.
+    /// The material descriptor on the new entity will be the PBR default
+    /// (white, roughness 0.5, etc.) and the handle will initially be
+    /// [`MATERIAL_DEFAULT`].  Callers that own a material factory (for
+    /// example the renderer) can subsequently create a GPU material and
+    /// update the handle via [`World::set_material_handle`] or use the
+    /// builder helpers before calling `.build()`.
     pub fn spawn_cube(&mut self, name: impl Into<String>, position: Vec3) -> Handle {
         let he = Vec3::splat(0.5);
         self.spawn(name)
@@ -401,11 +471,33 @@ impl World {
         self.set_cube_half_extents(handle, size * 0.5);
     }
 
-    // ── Color ───────────────────────────────────────────────────────────────
-    /// Change the visual tint of an entity.
+    // ── Material ───────────────────────────────────────────────────────────
+    /// Replace the material descriptor stored on an entity.
+    ///
+    /// The caller is responsible for pushing the change to the renderer by
+    /// calling `renderer.update_material_params(handle, &desc)` (or by
+    /// creating a new material and updating the handle).  Core simply keeps
+    /// the data in the world.
+    pub fn set_material_descriptor(&mut self, handle: Handle, desc: MaterialDescriptor) {
+        if let Some(Some(e)) = self.entities.get_mut(handle.0 as usize) {
+            e.material.descriptor = desc;
+        }
+    }
+
+    /// Set the material handle for an entity.  This might be necessary after
+    /// creating or recreating a GPU material in the renderer.
+    pub fn set_material_handle(&mut self, handle: Handle, mat: MaterialHandle) {
+        if let Some(Some(e)) = self.entities.get_mut(handle.0 as usize) {
+            e.material.handle = mat;
+        }
+    }
+
+    /// Convenience: tint the object by changing the base colour on its
+    /// descriptor.  This mimics the old `set_color` behaviour and is useful
+    /// for quick prototypes; full PBR uses the material descriptor directly.
     pub fn set_color(&mut self, handle: Handle, color: Color) {
         if let Some(Some(e)) = self.entities.get_mut(handle.0 as usize) {
-            e.color = color;
+            e.material.descriptor.base_color = color.to_array();
         }
     }
 
@@ -532,6 +624,20 @@ mod tests {
     }
 
     #[test]
+    fn default_material_properties() {
+        let mut w = World::new();
+        let h = w.spawn_cube("M", Vec3::ZERO);
+        if let Some(e) = w.get(h) {
+            assert_eq!(e.material.handle, MATERIAL_DEFAULT);
+            let desc = &e.material.descriptor;
+            assert_eq!(desc.base_color, [1.0, 1.0, 1.0, 1.0]);
+            assert_eq!(desc.roughness, 0.5);
+        } else {
+            panic!("entity missing");
+        }
+    }
+
+    #[test]
     fn spawn_quad_behavior() {
         let mut w = World::new();
         let h = w.spawn_quad("Q", Vec3::ZERO, 2.0, 4.0, false);
@@ -635,5 +741,26 @@ mod tests {
         w.despawn(h1);
         assert!(w.contains(h2));
         assert_eq!(w.position(h2), Some(Vec3::ONE));
+    }
+
+    #[test]
+    fn material_descriptor_and_handle_manipulation() {
+        let mut w = World::new();
+        let h = w.spawn_cube("MatTest", Vec3::ZERO);
+        // defaults are as expected
+        assert_eq!(w.get(h).unwrap().material.handle, MATERIAL_DEFAULT);
+        assert_eq!(
+            w.get(h).unwrap().material.descriptor,
+            MaterialDescriptor::default()
+        );
+
+        let mut desc = MaterialDescriptor::default();
+        desc.roughness = 0.25;
+        w.set_material_descriptor(h, desc.clone());
+        assert_eq!(w.get(h).unwrap().material.descriptor, desc);
+
+        let new_handle = MaterialHandle(5);
+        w.set_material_handle(h, new_handle);
+        assert_eq!(w.get(h).unwrap().material.handle, new_handle);
     }
 }

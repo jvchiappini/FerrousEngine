@@ -22,7 +22,14 @@ var<uniform> model : Model;
 // ---- material definitions moved to global scope ------------------------
 struct Material {
     base_color : vec4<f32>,
-    use_texture : u32,
+    emissive : vec4<f32>,
+    metallic_roughness : vec4<f32>,
+    normal_ao : vec4<f32>,
+    flags : u32,
+    // three 32‑bit padding values keep the struct at 80 bytes (5×16).
+    _pad0 : u32,
+    _pad1 : u32,
+    _pad2 : u32,
 };
 
 @group(2) @binding(0)
@@ -35,8 +42,10 @@ var texture : texture_2d<f32>;
 // vertex input layout
 struct VsIn {
     @location(0) position : vec3<f32>,
-    @location(1) color : vec3<f32>,
-    @location(2) uv : vec2<f32>,
+    @location(1) normal   : vec3<f32>,
+    @location(2) tangent  : vec4<f32>,
+    @location(3) color    : vec3<f32>,
+    @location(4) uv       : vec2<f32>,
 };
 
 @vertex
@@ -54,8 +63,9 @@ fn vs_main(in: VsIn) -> VsOut {
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // material uniforms and bindings are declared at global scope above
 
+    // simple albedo sampling for now; only the ALBEDO_TEX bit is observed.
     var color : vec4<f32> = material.base_color * vec4<f32>(in.color, 1.0);
-    if (material.use_texture == 1u) {
+    if ((material.flags & 1u) != 0u) {
         let texel = textureSample(texture, texture_sampler, in.uv);
         color = color * texel;
     }

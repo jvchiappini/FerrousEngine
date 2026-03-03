@@ -28,18 +28,27 @@ use wgpu::{
 };
 
 use crate::graph::{FramePacket, RenderPass};
-use crate::pipeline::{InstancingPipeline, WorldPipeline};
+use crate::pipeline::{InstancingPipeline, PbrPipeline, PipelineLayouts};
+use ferrous_core::scene::MaterialHandle;
+use crate::resources::{DirectionalLightUniform, Environment};
 
 pub struct WorldPass {
-    pipeline: WorldPipeline,
-    /// Pipeline variant used for objects that need both-sides rendering
-    /// (i.e. `double_sided` flag).  Identical to `pipeline` except
-    /// `primitive.cull_mode` is `None`.
-    pipeline_double: WorldPipeline,
+    /// PBR pipeline used for opaque geometry.
+    pbr_pipeline: PbrPipeline,
+    /// Double-sided variant of the PBR pipeline (culling disabled).
+    pbr_pipeline_double: PbrPipeline,
+    /// Opaque blending pipeline (depth writes disabled).
+    pbr_pipeline_blend: PbrPipeline,
+    /// Double-sided blend pipeline.
+    pbr_pipeline_blend_double: PbrPipeline,
     /// Pipeline for instanced draws (group 1 = storage buffer).
     instancing_pipeline: InstancingPipeline,
     /// Instancing pipeline variant with culling disabled.
     instancing_pipeline_double: InstancingPipeline,
+    /// Instancing pipeline for blended geometry.
+    instancing_pipeline_blend: InstancingPipeline,
+    /// Double-sided blended instancing pipeline.
+    instancing_pipeline_blend_double: InstancingPipeline,
     camera_bind_group: Arc<wgpu::BindGroup>,
     /// Shared dynamic model-matrix bind group (legacy path).
     model_bind_group: Option<Arc<wgpu::BindGroup>>,
@@ -52,21 +61,40 @@ pub struct WorldPass {
     /// Table of material bind groups, indexed by slot.  Populated by the
     /// renderer when materials are created or updated.
     material_bind_groups: Vec<Arc<wgpu::BindGroup>>,
+    /// optional copy of the material registry used for flag queries.
+    material_registry: Option<crate::materials::MaterialRegistry>,
+    /// Light data and bind group for PBR shading.
+    /// encapsulates light data plus IBL resources
+    environment: Environment,
 }
 
 impl WorldPass {
     pub fn new(
-        pipeline: WorldPipeline,
-        pipeline_double: WorldPipeline,
+        pbr_pipeline: PbrPipeline,
+        pbr_pipeline_double: PbrPipeline,
+        pbr_pipeline_blend: PbrPipeline,
+        pbr_pipeline_blend_double: PbrPipeline,
         instancing_pipeline: InstancingPipeline,
         instancing_pipeline_double: InstancingPipeline,
+        instancing_pipeline_blend: InstancingPipeline,
+        instancing_pipeline_blend_double: InstancingPipeline,
         camera_bind_group: Arc<wgpu::BindGroup>,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layouts: &PipelineLayouts,
     ) -> Self {
+        // environment bundle includes directional light and placeholder IBL
+        let environment = Environment::new_dummy(device, queue, &layouts.lights);
+
         Self {
-            pipeline,
-            pipeline_double,
+            pbr_pipeline,
+            pbr_pipeline_double,
+            pbr_pipeline_blend,
+            pbr_pipeline_blend_double,
             instancing_pipeline,
             instancing_pipeline_double,
+            instancing_pipeline_blend,
+            instancing_pipeline_blend_double,
             camera_bind_group,
             model_bind_group: None,
             model_stride: 256, // safe default; overwritten by set_model_buffer
@@ -78,6 +106,8 @@ impl WorldPass {
                 a: 1.0,
             },
             material_bind_groups: Vec::new(),
+            material_registry: None,
+            environment,
         }
     }
 
@@ -95,15 +125,32 @@ impl WorldPass {
     /// Update the material table used during draw.  The passed slice is
     /// cloned into the pass; the renderer should call this whenever it
     /// reallocates or adds new materials.
-    pub fn set_material_table(&mut self, table: &[Arc<wgpu::BindGroup>]) {
+    /// Update the material table and remember the source registry so we can
+    /// query flags during draw.
+    pub fn set_material_table(
+        &mut self,
+        table: &[Arc<wgpu::BindGroup>],
+        registry: &crate::materials::MaterialRegistry,
+    ) {
         self.material_bind_groups.clear();
         self.material_bind_groups.extend_from_slice(table);
+        // keep a clone of the registry for flag lookups; cloning is cheap
+        // because most data inside is stored in Arcs.
+        self.material_registry = Some(registry.clone());
+    }
+
+    /// Push new light data into the GPU buffer.  The caller is responsible
+    /// for providing a queue reference; the uniform struct will also be
+    /// cached locally so that it may be inspected later if required.
+    pub fn update_light(&mut self, queue: &wgpu::Queue, uniform: DirectionalLightUniform) {
+        // forward update to environment helper
+        self.environment.update_light(queue, uniform);
     }
 }
 
 impl RenderPass for WorldPass {
     fn name(&self) -> &str {
-        "World Opaque Pass"
+        "World Pass"
     }
 
     fn prepare(&mut self, _device: &Device, _queue: &Queue, _packet: &FramePacket) {}
@@ -155,16 +202,35 @@ impl RenderPass for WorldPass {
         // ── Instanced path (World entities) ──────────────────────────────────
         if let Some(inst_bg) = &self.instance_bind_group {
             if !packet.instanced_objects.is_empty() {
-                rpass.set_pipeline(&self.instancing_pipeline.inner);
                 rpass.set_bind_group(0, &*self.camera_bind_group, &[]);
                 rpass.set_bind_group(1, inst_bg.as_ref(), &[]);
 
                 for cmd in &packet.instanced_objects {
-                    // choose instancing pipeline variant based on flag
-                    if cmd.double_sided {
-                        rpass.set_pipeline(&self.instancing_pipeline_double.inner);
+                    // choose appropriate instancing pipeline based on material
+                    if let Some(reg) = &self.material_registry {
+                        let (alpha_mode, double_sided) =
+                            reg.get_render_flags(MaterialHandle(cmd.material_slot as u32));
+                        let pipe = match (alpha_mode, double_sided) {
+                            (ferrous_core::scene::AlphaMode::Opaque, false) =>
+                                &self.instancing_pipeline.inner,
+                            (ferrous_core::scene::AlphaMode::Opaque, true) =>
+                                &self.instancing_pipeline_double.inner,
+                            (ferrous_core::scene::AlphaMode::Mask { .. }, false) =>
+                                &self.instancing_pipeline.inner,
+                            (ferrous_core::scene::AlphaMode::Mask { .. }, true) =>
+                                &self.instancing_pipeline_double.inner,
+                            (ferrous_core::scene::AlphaMode::Blend, false) =>
+                                &self.instancing_pipeline_blend.inner,
+                            (ferrous_core::scene::AlphaMode::Blend, true) =>
+                                &self.instancing_pipeline_blend_double.inner,
+                        };
+                        rpass.set_pipeline(pipe);
                     } else {
-                        rpass.set_pipeline(&self.instancing_pipeline.inner);
+                        if cmd.double_sided {
+                            rpass.set_pipeline(&self.instancing_pipeline_double.inner);
+                        } else {
+                            rpass.set_pipeline(&self.instancing_pipeline.inner);
+                        }
                     }
                     // bind material if present
                     if let Some(mat_bg) = self.material_bind_groups.get(cmd.material_slot) {
@@ -182,7 +248,7 @@ impl RenderPass for WorldPass {
         }
 
         // ── Legacy per-object path (manually-spawned objects) ─────────────────
-                if let Some(model_bg) = &self.model_bind_group {
+        if let Some(model_bg) = &self.model_bind_group {
             if !packet.scene_objects.is_empty() {
                 rpass.set_bind_group(0, &*self.camera_bind_group, &[]);
 
@@ -193,11 +259,28 @@ impl RenderPass for WorldPass {
                     if let Some(mat_bg) = self.material_bind_groups.get(cmd.material_slot) {
                         rpass.set_bind_group(2, mat_bg.as_ref(), &[]);
                     }
-                    rpass.set_pipeline(if cmd.double_sided {
-                        &self.pipeline_double.inner
-                    } else {
-                        &self.pipeline.inner
-                    });
+                    // bind lights for PBR
+                    rpass.set_bind_group(3, self.environment.bind_group.as_ref(), &[]);
+                        // pick pipeline based on material flags and sidedness
+                        if let Some(reg) = &self.material_registry {
+                            let (alpha_mode, double_sided) = reg.get_render_flags(MaterialHandle(cmd.material_slot as u32));
+                            let pipeline_ref = match (alpha_mode, double_sided) {
+                                (ferrous_core::scene::AlphaMode::Opaque, false) => &self.pbr_pipeline.inner,
+                                (ferrous_core::scene::AlphaMode::Opaque, true) => &self.pbr_pipeline_double.inner,
+                                (ferrous_core::scene::AlphaMode::Mask { .. }, false) => &self.pbr_pipeline.inner,
+                                (ferrous_core::scene::AlphaMode::Mask { .. }, true) => &self.pbr_pipeline_double.inner,
+                                (ferrous_core::scene::AlphaMode::Blend, false) => &self.pbr_pipeline_blend.inner,
+                                (ferrous_core::scene::AlphaMode::Blend, true) => &self.pbr_pipeline_blend_double.inner,
+                            };
+                            rpass.set_pipeline(pipeline_ref);
+                        } else {
+                            // fallback: use regular pipeline with culling as requested
+                            if cmd.double_sided {
+                                rpass.set_pipeline(&self.pbr_pipeline_double.inner);
+                            } else {
+                                rpass.set_pipeline(&self.pbr_pipeline.inner);
+                            }
+                        }
                     rpass.set_vertex_buffer(0, cmd.vertex_buffer.slice(..));
                     rpass.set_index_buffer(cmd.index_buffer.slice(..), cmd.index_format);
                     rpass.draw_indexed(0..cmd.index_count, 0, 0..1);

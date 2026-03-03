@@ -12,10 +12,17 @@ winit = "0.30" # el renderer puede necesitar winit más adelante
 ferrous_gui = { path = "../ferrous_gui" }
 bytemuck = { version = "1.14", features = ["derive"] }
 glam = { workspace = true }
+image = { version = "0.25", optional = true, default-features = false, features = ["png", "jpeg"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon = "1.11.0"
 
 [dev-dependencies]
 pollster = "0.3"
-image = "0.24"
+# image is used by tests/examples but we now also expose it as an optional
+# feature for runtime texture loading (png/jpeg).  we keep the dev-dependency
+# at 0.24 so that existing tests continue to compile when the feature flag is
+# disabled; the optional dependency below is the one that will be used by
+# consumers when they enable `--features image`.
+[features]
+image = ["dep:image"]

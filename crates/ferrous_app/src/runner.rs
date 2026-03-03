@@ -109,7 +109,7 @@ impl<A: FerrousApp> Runner<A> {
                         if let (Some(gfx), Some(window)) = (&mut self.graphics, &self.window) {
                             gfx.renderer.set_viewport(self.viewport);
                             let time = self.clock.peek();
-                            let mut ctx = AppContext {
+                                let mut ctx = AppContext {
                                 input: &self.input,
                                 time,
                                 window_size: self.window_size,
@@ -122,6 +122,7 @@ impl<A: FerrousApp> Runner<A> {
                                 world: &mut self.world,
                                 exit_requested: false,
                                 _gpu_backend: gfx.renderer.context.backend,
+                                    renderer: &mut gfx.renderer,
                             };
                             self.app.setup(&mut ctx);
                             self.viewport = ctx.viewport;
@@ -196,6 +197,7 @@ impl<A: FerrousApp> Runner<A> {
 
         // â”€â”€ 1. UPDATE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         {
+            let backend = gfx.renderer.context.backend;
             let mut ctx = AppContext {
                 input: &self.input,
                 time,
@@ -207,8 +209,9 @@ impl<A: FerrousApp> Runner<A> {
                 camera_target: Vec3::ZERO,
                 gizmos: Vec::new(),
                 world: &mut self.world,
+                renderer: &mut gfx.renderer,
                 exit_requested: false,
-                _gpu_backend: gfx.renderer.context.backend,
+                _gpu_backend: backend,
             };
 
             self.app.update(&mut ctx);
@@ -264,6 +267,7 @@ impl<A: FerrousApp> Runner<A> {
                 camera_target,
                 gizmos: Vec::new(),
                 world: &mut self.world,
+                renderer: &mut gfx.renderer,
                 exit_requested: false,
                 _gpu_backend: backend,
             };
@@ -274,7 +278,8 @@ impl<A: FerrousApp> Runner<A> {
 
             // Drain any gizmos queued by draw_3d into the renderer.
             for gizmo in ctx.gizmos.drain(..) {
-                gfx.renderer.queue_gizmo(gizmo);
+                // use the mutable borrow already held inside ctx
+                ctx.renderer.queue_gizmo(gizmo);
             }
 
             let mut gui_batch = GuiBatch::new();
@@ -375,6 +380,7 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
             // Call user setup
             {
                 let time = self.clock.peek();
+                let backend = gfx.renderer.context.backend;
                 let mut ctx = AppContext {
                     input: &self.input,
                     time,
@@ -386,8 +392,9 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                     camera_target: Vec3::ZERO,
                     gizmos: Vec::new(),
                     world: &mut self.world,
+                    renderer: &mut gfx.renderer,
                     exit_requested: false,
-                    _gpu_backend: gfx.renderer.context.backend,
+                    _gpu_backend: backend,
                 };
                 self.app.setup(&mut ctx);
                 self.viewport = ctx.viewport;
@@ -489,6 +496,7 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                 camera_target: Vec3::ZERO,
                 gizmos: Vec::new(),
                 world: &mut self.world,
+                renderer: &mut self.graphics.as_mut().unwrap().renderer,
                 exit_requested: false,
                 _gpu_backend: backend,
             };
@@ -527,6 +535,7 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                             camera_target: Vec3::ZERO,
                             gizmos: Vec::new(),
                             world: &mut self.world,
+                            renderer: &mut self.graphics.as_mut().unwrap().renderer,
                             exit_requested: false,
                             _gpu_backend: backend,
                         };

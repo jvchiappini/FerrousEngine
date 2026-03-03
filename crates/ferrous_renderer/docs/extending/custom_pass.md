@@ -220,11 +220,23 @@ the pass **between** `WorldPass` and `UiPass`:
 renderer.clear_passes();
 
 // 2. Re-add WorldPass manually (it was removed by clear_passes)
+// when constructing a `WorldPass` you now supply four PBR pipelines
+// (opaque, opaque-double-sided, blend, blend-double-sided) followed by
+// four analogous instancing pipelines. the snippet above is abbreviated –
+// consult `renderer::new` for the full call with concrete variables.
 let world_pass = ferrous_renderer::passes::world_pass::WorldPass::new(
+    /* pbr_opaque */ pbr_pipeline,
+    /* pbr_double */ pbr_pipeline_double,
+    /* pbr_blend */ pbr_pipeline_blend,
+    /* pbr_blend_double */ pbr_pipeline_blend_double,
+    /* inst_opaque */ instancing_pipeline,
+    /* inst_double */ instancing_pipeline_double,
+    /* inst_blend */ instancing_pipeline_blend,
+    /* inst_blend_double */ instancing_pipeline_blend_double,
+    gpu_camera.bind_group.clone(),
     &ctx.device,
+    &ctx.queue,            // new parameter: queue reference is required for environment
     &pipeline_layouts,
-    &gpu_camera,
-    wgpu::Color { r: 0.1, g: 0.1, b: 0.1, a: 1.0 },
 );
 renderer.add_pass(Box::new(world_pass));
 

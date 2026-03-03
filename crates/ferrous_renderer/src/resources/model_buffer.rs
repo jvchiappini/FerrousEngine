@@ -26,8 +26,14 @@ use std::sync::Arc;
 
 use wgpu::util::DeviceExt;
 
-/// One aligned slot = 64 bytes of matrix + padding to reach `stride`.
-const MAT4_SIZE: u64 = 64; // 4×4 × f32
+/// One aligned slot = 128 bytes of two matrices (model + normal)
+/// plus padding to reach `stride`.
+///
+/// The shader's `Model` uniform contains a `model` mat4x4 and a
+/// `normal_mat` mat4x4, so we must upload both back-to-back.  We still
+/// align each slot to `min_uniform_buffer_offset_alignment` for dynamic
+/// offsets, but the **data size** per slot is 128 bytes.
+const SLOT_DATA_SIZE: u64 = 128; // two 4×4 f32 matrices
 
 /// A growable GPU buffer holding one `mat4x4<f32>` per slot, aligned to the
 /// device's `min_uniform_buffer_offset_alignment`.
@@ -52,7 +58,7 @@ impl ModelBuffer {
         initial_capacity: usize,
     ) -> Self {
         let alignment = device.limits().min_uniform_buffer_offset_alignment;
-        let stride = align_up(MAT4_SIZE as u32, alignment);
+        let stride = align_up(SLOT_DATA_SIZE as u32, alignment);
 
         let capacity = initial_capacity.max(1);
         let buf = Self::create_buffer(device, capacity, stride);
@@ -72,16 +78,22 @@ impl ModelBuffer {
         (index as u32).wrapping_mul(self.stride)
     }
 
-    /// Writes `matrix` into slot `index`.
+    /// Writes `matrix` (model matrix) into slot `index` along with its
+    /// corresponding normal matrix.  The normal matrix is the transpose of
+    /// the inverse of `matrix` and is computed here so callers don't have to
+    /// worry about it.
     ///
     /// Panics if `index >= capacity`.
     #[inline]
     pub fn write(&self, queue: &wgpu::Queue, index: usize, matrix: &glam::Mat4) {
         debug_assert!(index < self.capacity, "ModelBuffer slot out of range");
+        // build two 4×4 arrays: model then normal_mat
+        let normal_mat = matrix.inverse().transpose();
+        let data = [matrix.to_cols_array(), normal_mat.to_cols_array()];
         queue.write_buffer(
             &self.buffer,
             self.offset(index) as u64,
-            bytemuck::cast_slice(&[matrix.to_cols_array()]),
+            bytemuck::cast_slice(&data),
         );
     }
 
@@ -105,7 +117,12 @@ impl ModelBuffer {
             new_cap *= 2;
         }
         self.buffer = Self::create_buffer(device, new_cap, self.stride);
-        self.bind_group = Arc::new(Self::create_bind_group(device, layout, &self.buffer, self.stride));
+        self.bind_group = Arc::new(Self::create_bind_group(
+            device,
+            layout,
+            &self.buffer,
+            self.stride,
+        ));
         self.capacity = new_cap;
     }
 
@@ -114,11 +131,15 @@ impl ModelBuffer {
     fn create_buffer(device: &wgpu::Device, capacity: usize, stride: u32) -> wgpu::Buffer {
         let size = capacity as u64 * stride as u64;
         // Fill with identity matrices so uninitialised slots are harmless.
+        // Each slot contains two identity matrices back-to-back.
         let identity = glam::Mat4::IDENTITY.to_cols_array();
         let mut data = vec![0u8; size as usize];
         for slot in 0..capacity {
             let off = slot * stride as usize;
+            // first matrix
             data[off..off + 64].copy_from_slice(bytemuck::cast_slice(&identity));
+            // second matrix (normal) follows immediately
+            data[off + 64..off + 128].copy_from_slice(bytemuck::cast_slice(&identity));
         }
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("ModelBuffer"),
@@ -142,7 +163,7 @@ impl ModelBuffer {
                     buffer,
                     offset: 0,
                     // Size of one slot (the dynamic portion the shader sees).
-                    size: wgpu::BufferSize::new(MAT4_SIZE),
+                    size: wgpu::BufferSize::new(SLOT_DATA_SIZE),
                 }),
             }],
         })
