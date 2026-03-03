@@ -387,6 +387,25 @@ impl World {
             .build()
     }
 
+    /// Convenience: spawn a mesh that was previously registered with the
+    /// renderer under the given `asset_key`.  The mesh is not owned by the
+    /// world; the renderer is expected to maintain a cache keyed by the same
+    /// string.  Transform and material are left at their defaults (identity
+    /// / white).  Returns the entity handle so callers can adjust further.
+    pub fn spawn_mesh(
+        &mut self,
+        name: impl Into<String>,
+        asset_key: impl Into<String>,
+        position: Vec3,
+    ) -> Handle {
+        self.spawn(name)
+            .with_kind(ElementKind::Mesh {
+                asset_key: asset_key.into(),
+            })
+            .with_position(position)
+            .build()
+    }
+
     // ── Despawn ─────────────────────────────────────────────────────────────
     /// Remove the entity from the world.  Returns `true` if it existed.
     pub fn despawn(&mut self, handle: Handle) -> bool {
@@ -659,6 +678,21 @@ mod tests {
         assert!(w.despawn(h));
         assert!(!w.contains(h));
         assert_eq!(w.len(), 0);
+    }
+
+    #[test]
+    fn spawn_mesh_helper() {
+        let mut w = World::new();
+        let key = "foo.mesh";
+        let h = w.spawn_mesh("MeshObj", key, Vec3::new(1.0, 2.0, 3.0));
+        assert!(w.contains(h));
+        let elem = w.entities[h.0 as usize].as_ref().unwrap();
+        if let ElementKind::Mesh { asset_key } = &elem.kind {
+            assert_eq!(asset_key, key);
+        } else {
+            panic!("expected Mesh kind");
+        }
+        assert_eq!(elem.transform.position, Vec3::new(1.0, 2.0, 3.0));
     }
 
     #[test]

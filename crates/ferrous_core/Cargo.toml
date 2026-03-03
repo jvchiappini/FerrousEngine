@@ -13,7 +13,7 @@ thiserror = "1.0"
 winit = "0.30"
 
 # used by camera uniform definitions
-bytemuck = "1.17"
+bytemuck = { version = "1.17", features = ["derive"] }
 
 # NOTE: we intentionally do *not* depend on `ferrous_renderer` here.  the
 # material handle/descriptor types used by the core scene live in this

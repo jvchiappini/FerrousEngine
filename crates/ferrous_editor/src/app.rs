@@ -341,6 +341,33 @@ impl FerrousApp for EditorApp {
         }
 
         self.gpu_backend = ctx.gpu_backend().to_string();
+
+        // ------------------------------------------------------------------
+        // Load a known test model if available.  the engine repository ships
+        // `DamagedHelmet.glb` under `assets/models`; when running from the
+        // workspace root this path is valid, so we simply try it first.  the
+        // previous demo logic (looking for `model.gltf`/`.glb` in the
+        // current directory) is still retained for ad-hoc tests.
+        let test_model = r"C:\Users\jvchi\CARPETAS\FerrousEngine\assets\models\DamagedHelmet.glb";
+        if std::path::Path::new(test_model).exists() {
+            if let Ok(handles) = ferrous_app::spawn_gltf(&mut ctx.world, &mut ctx.renderer, test_model) {
+                log::info!("spawned {} meshes from {}", handles.len(), test_model);
+            } else {
+                log::warn!("failed to load glTF from {}", test_model);
+            }
+        } else {
+            let demo_paths = ["model.gltf", "model.glb"];
+            for p in &demo_paths {
+                if std::path::Path::new(p).exists() {
+                    if let Ok(handles) = ferrous_app::spawn_gltf(&mut ctx.world, &mut ctx.renderer, p) {
+                        log::info!("spawned {} meshes from {}", handles.len(), p);
+                    } else {
+                        log::warn!("failed to load glTF from {}", p);
+                    }
+                    break;
+                }
+            }
+        }
     }
 
     fn update(&mut self, ctx: &mut AppContext) {

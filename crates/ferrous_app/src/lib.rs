@@ -32,6 +32,7 @@ pub mod context;
 mod graphics;
 mod runner;
 pub mod traits;
+mod asset_bridge;
 
 pub use builder::{App, AppConfig};
 pub use context::AppContext;
@@ -60,3 +61,6 @@ pub use ferrous_core::{RenderStats, Viewport};
 
 // Gizmo types — re-exported so app code doesn't need ferrous_renderer directly.
 pub use ferrous_renderer::scene::GizmoDraw;
+
+// helpers
+pub use crate::asset_bridge::spawn_gltf;

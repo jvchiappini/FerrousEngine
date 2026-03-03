@@ -146,6 +146,13 @@ pub struct Renderer {
     /// Lazily populated on first sphere spawn.
     shared_sphere_mesh: Option<(geometry::Mesh, u32, u32)>,
 
+    /// Cache of meshes that have been registered by asset loaders.  the
+    /// keys are arbitrary strings supplied by the caller (typically the
+    /// asset path plus a mesh index); the values are the corresponding
+    /// GPU `Mesh` objects.  `sync_world` consults this map when it sees an
+    /// `ElementKind::Mesh` element.
+    mesh_cache: std::collections::HashMap<String, geometry::Mesh>,
+
     /// Pipeline used for drawing gizmos (lines); created once at startup.
     gizmo_pipeline: GizmoPipeline,
 
@@ -347,6 +354,7 @@ impl Renderer {
             shared_cube_mesh: None,
             shared_quad_mesh: None,
             shared_sphere_mesh: None,
+            mesh_cache: std::collections::HashMap::new(),
             gizmo_pipeline,
             gizmo_draws: Vec::new(),
             draw_commands_cache: Vec::new(),
@@ -427,6 +435,22 @@ impl Renderer {
             &self.material_registry,
         );
         handle
+    }
+
+    /// Register a mesh under a string key so that world elements can refer to
+    /// it later.  This simply inserts the mesh into the renderer's internal
+    /// cache; calling `sync_world` will cause any `ElementKind::Mesh`
+    /// elements referencing `key` to use the provided geometry.  If a mesh
+    /// already existed at that key it is overwritten.
+    pub fn register_mesh(&mut self, key: &str, mesh: geometry::Mesh) {
+        self.mesh_cache.insert(key.to_string(), mesh);
+    }
+
+    /// Remove a previously-registered mesh.  Any world elements still
+    /// referring to the key will fall back to the cube primitive when the
+    /// next `sync_world` runs.
+    pub fn free_mesh(&mut self, key: &str) {
+        self.mesh_cache.remove(key);
     }
 
     /// Free a material slot so that the corresponding bind group may be
@@ -604,6 +628,7 @@ impl Renderer {
             &mut self.shared_cube_mesh,
             &mut self.shared_quad_mesh,
             &mut self.shared_sphere_mesh,
+            &mut self.mesh_cache,
         );
         if mutated {
             self.scene_dirty = true;

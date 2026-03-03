@@ -41,12 +41,34 @@ pub fn sync_world(
     // this allows us to reuse the same mesh for multiple spheres with the
     // same latitude/longitude counts.
     shared_sphere_mesh: &mut Option<(crate::geometry::Mesh, u32, u32)>,
+    // optional cache for arbitrary meshes keyed by asset string.  callers
+    // (typically `Renderer`) are responsible for populating entries via
+    // `Renderer::register_mesh` prior to the first sync.
+    mesh_cache: &mut std::collections::HashMap<String, crate::geometry::Mesh>,
 ) -> bool {
     let mut mutated = false;
 
     if objects.len() != world.capacity() {
         objects.resize_with(world.capacity(), || None);
         mutated = true;
+    }
+
+    // prune mesh cache of any keys that are no longer referenced by the
+    // world; this keeps the cache from growing unbounded as meshes are
+    // spawned/destroyed.  we compute the set lazily to avoid another hash
+    // lookup per element.
+    {
+        let live_keys: std::collections::HashSet<&str> = world
+            .iter()
+            .filter_map(|e| {
+                if let ElementKind::Mesh { asset_key } = &e.kind {
+                    Some(asset_key.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        mesh_cache.retain(|k, _| live_keys.contains(k.as_str()));
     }
 
     // ── Phase 1: remove stale objects ────────────────────────────────────────
@@ -88,9 +110,20 @@ pub fn sync_world(
         } else {
             // Phase 2 — spawn new object.
             let mesh = match &element.kind {
-                ElementKind::Cube { .. } | ElementKind::Mesh { .. } => shared_cube_mesh
+                ElementKind::Cube { .. } => shared_cube_mesh
                     .get_or_insert_with(|| create_cube(device))
                     .clone(),
+                ElementKind::Mesh { asset_key } => {
+                    // look up a previously registered mesh; fall back to the
+                    // unit cube if we haven't seen this key yet.
+                    if let Some(m) = mesh_cache.get(asset_key) {
+                        m.clone()
+                    } else {
+                        shared_cube_mesh
+                            .get_or_insert_with(|| create_cube(device))
+                            .clone()
+                    }
+                }
                 ElementKind::Quad { .. } => shared_quad_mesh
                     .get_or_insert_with(|| create_quad(device))
                     .clone(),

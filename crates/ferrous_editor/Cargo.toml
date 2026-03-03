@@ -10,6 +10,9 @@ ferrous_assets = { path = "../ferrous_assets" }
 ferrous_app = { path = "../ferrous_app" }
 rand = "0.8"
 
+# ── Additional Dependencies ───────────────────────────────────────────────
+log = "0.4"
+
 # ── wasm32 ────────────────────────────────────────────────────────────
 # rand uses getrandom under the hood; on wasm32 it must source entropy from
 # the browser's crypto API, which requires the "js" feature.
