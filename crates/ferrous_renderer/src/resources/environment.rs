@@ -30,6 +30,8 @@ pub struct Environment {
     irradiance_view: Arc<wgpu::TextureView>,
     prefilter_view: Arc<wgpu::TextureView>,
     brdf_view: Arc<wgpu::TextureView>,
+    shadow_sampler: Arc<wgpu::Sampler>,
+    shadow_view: Arc<wgpu::TextureView>,
 }
 
 impl Environment {
@@ -160,6 +162,34 @@ impl Environment {
             },
         );
 
+            // dummy shadow resources (1x1 depth texture + comparison sampler)
+            let shadow_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("DummyShadowSampler"),
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                compare: Some(wgpu::CompareFunction::LessEqual),
+                ..Default::default()
+            });
+            let shadow_desc = wgpu::TextureDescriptor {
+                label: Some("DummyShadow"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Depth32Float,
+                view_formats: &[],
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            };
+            let shadow_tex = device.create_texture(&shadow_desc);
+            let shadow_view = shadow_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
         // Initial point-light storage buffer: 8-light capacity, zero-initialised.
         let initial_pl_capacity: usize = 8;
         let point_light_buffer =
@@ -199,6 +229,14 @@ impl Environment {
                     binding: 5,
                     resource: point_light_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::Sampler(&shadow_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::TextureView(&shadow_view),
+                },
             ],
         }));
 
@@ -212,6 +250,8 @@ impl Environment {
             irradiance_view: Arc::new(irradiance_view),
             prefilter_view: Arc::new(prefilter_view),
             brdf_view: Arc::new(brdf_view),
+            shadow_sampler: Arc::new(shadow_sampler),
+            shadow_view: Arc::new(shadow_view),
         }
     }
 
@@ -223,6 +263,17 @@ impl Environment {
             0,
             bytemuck::bytes_of(&self.light_uniform),
         );
+    }
+
+    /// Update the shadow resources used by the bind group.
+    ///
+    /// `shadow` is typically the `ShadowResources` created by the world pass.
+    /// After updating the stored handles we rebuild the bind group so the
+    /// PBR pipeline can sample the real shadow map.
+    pub fn update_shadow(&mut self, device: &Device, layout: &wgpu::BindGroupLayout, shadow: &crate::resources::ShadowResources) {
+        self.shadow_sampler = Arc::clone(&shadow.sampler);
+        self.shadow_view = Arc::clone(&shadow.view);
+        self.rebuild_bind_group(device, layout);
     }
 
     /// Upload a list of `PointLightUniform` to the GPU storage buffer.
@@ -310,6 +361,14 @@ impl Environment {
                 wgpu::BindGroupEntry {
                     binding: 5,
                     resource: self.point_light_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::Sampler(&self.shadow_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::TextureView(&self.shadow_view),
                 },
             ],
         }));

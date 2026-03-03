@@ -49,9 +49,16 @@ struct DirectionalLight {
     _pad0     : f32,
     color     : vec3<f32>,
     intensity : f32,
+    light_view_proj : mat4x4<f32>,
 };
 @group(3) @binding(0)
 var<uniform> dir_light: DirectionalLight;
+
+// shadow map bindings (part of light group 3)
+@group(3) @binding(6)
+var shadow_sampler: sampler_comparison;
+@group(3) @binding(7)
+var shadow_map: texture_depth_2d;
 
 // ── Point Lights (Storage Buffer) ────────────────────────────────────────────
 struct PointLight {
@@ -92,6 +99,7 @@ struct VsOut {
     @location(3)       world_bitan : vec3<f32>,
     @location(4)       uv          : vec2<f32>,
     @location(5)       color       : vec3<f32>,
+    @location(6)       shadow_pos  : vec4<f32>,
 };
 
 @vertex
@@ -129,6 +137,7 @@ fn vs_main(in: VsIn, @builtin(instance_index) inst_idx: u32) -> VsOut {
 
     out.uv    = in.uv;
     out.color = in.color;
+    out.shadow_pos = dir_light.light_view_proj * world_pos;
     return out;
 }
 
@@ -171,12 +180,12 @@ fn fresnel_schlick(cosTheta: f32, F0: vec3<f32>) -> vec3<f32> {
 // ── fragment ──────────────────────────────────────────────────────────────────
 
 @fragment
-fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+fn fs_main(frag_in: VsOut) -> @location(0) vec4<f32> {
     // albedo
-    var albedo    = material.base_color.xyz * in.color;
+    var albedo    = material.base_color.xyz * frag_in.color;
     var out_alpha = material.base_color.w;
     if ((material.flags & 1u) != 0u) {
-        let s  = textureSample(tex_albedo, mat_sampler, in.uv);
+        let s  = textureSample(tex_albedo, mat_sampler, frag_in.uv);
         albedo    *= s.xyz;
         out_alpha *= s.a;
     }
@@ -184,17 +193,17 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // AO
     var ao_factor = material.metallic_roughness.z;  // ao_strength
     if ((material.flags & 16u) != 0u) {
-        ao_factor = textureSample(tex_ao, mat_sampler, in.uv).x * ao_factor;
+        ao_factor = textureSample(tex_ao, mat_sampler, frag_in.uv).x * ao_factor;
     }
 
     // normal
-    var N = normalize(in.world_normal);
+    var N = normalize(frag_in.world_normal);
     if ((material.flags & 2u) != 0u) {
-        var ns = textureSample(tex_normal, mat_sampler, in.uv).xyz * 2.0 - 1.0;
+        var ns = textureSample(tex_normal, mat_sampler, frag_in.uv).xyz * 2.0 - 1.0;
         ns.x *= material.normal_ao.x;
         ns.y *= material.normal_ao.x;
-        let T   = normalize(in.world_tan);
-        let B   = normalize(in.world_bitan);
+        let T   = normalize(frag_in.world_tan);
+        let B   = normalize(frag_in.world_bitan);
         let TBN = mat3x3<f32>(T, B, N);
         N = normalize(TBN * ns);
     }
@@ -203,7 +212,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var metallic  = material.metallic_roughness.x;
     var roughness = material.metallic_roughness.y;
     if ((material.flags & 4u) != 0u) {
-        let mr  = textureSample(tex_met_rough, mat_sampler, in.uv).xyz;
+        let mr  = textureSample(tex_met_rough, mat_sampler, frag_in.uv).xyz;
         roughness *= mr.y;
         metallic  *= mr.z;
     }
@@ -212,7 +221,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // For a perfect mirror set metallic=1, roughness=0 in the inspector.
     roughness = clamp(roughness, 0.001, 1.0);
 
-    let V    = normalize(camera.eye_pos.xyz - in.world_pos);
+    let V    = normalize(camera.eye_pos.xyz - frag_in.world_pos);
     let Ldir = normalize(-dir_light.direction);
     let H    = normalize(V + Ldir);
     // clamp NdotV to a small epsilon to avoid divide-by-zero in geometry term
@@ -230,7 +239,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // energy conservation: kD = 0 for metals
     let kD      = (vec3<f32>(1.0) - F) * (1.0 - metallic);
     let radiance = dir_light.color * dir_light.intensity;
-    var Lo      = (kD * albedo / PI + spec) * radiance * NdotL;
+    var shadow: f32 = 1.0;
+    let proj = frag_in.shadow_pos / frag_in.shadow_pos.w;
+    // NDC: X and Y in [-1,1] with Y+ = up; UV: X in [0,1] with V+ = down.
+    // Negate Y so that the shadow map is sampled right-side-up.
+    let uv   = vec2<f32>(proj.x * 0.5 + 0.5, -proj.y * 0.5 + 0.5);
+    if (uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0 && proj.z >= 0.0 && proj.z <= 1.0) {
+        shadow = textureSampleCompare(shadow_map, shadow_sampler, uv, proj.z);
+    }
+    var Lo      = (kD * albedo / PI + spec) * radiance * NdotL * shadow;
 
     // ── Point lights ─────────────────────────────────────────────────────────
     let light_count = min(point_lights.count, 1024u);
@@ -241,7 +258,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let light_color = pl.color_intensity.xyz;
         let pl_intensity = pl.color_intensity.w;
 
-        let to_light = light_pos - in.world_pos;
+        let to_light = light_pos - frag_in.world_pos;
         let pl_dist  = length(to_light);
         if (pl_dist > pl_radius) { continue; }
 
@@ -286,7 +303,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // emissive
     if ((material.flags & 8u) != 0u) {
         let emiss = material.emissive.xyz * material.emissive.w;
-        let es    = textureSample(tex_emissive, mat_sampler, in.uv);
+        let es    = textureSample(tex_emissive, mat_sampler, frag_in.uv);
         color += emiss * es.xyz;
     }
 

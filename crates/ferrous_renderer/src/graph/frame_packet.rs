@@ -100,6 +100,18 @@ pub struct FramePacket {
     pub scene_objects: Vec<DrawCommand>,
     /// Instanced draw calls assembled from World entities (one per unique mesh).
     pub instanced_objects: Vec<InstancedDrawCommand>,
+    /// Shadow-caster draw calls for the legacy (dynamic-uniform) path.
+    ///
+    /// These are NOT camera-frustum culled — every legacy object that falls
+    /// inside the light frustum is included so that objects behind the camera
+    /// can still cast shadows onto visible geometry.
+    pub shadow_scene_objects: Vec<DrawCommand>,
+    /// Shadow-caster instanced draw calls for World entities.
+    ///
+    /// These reference a separate section of the shadow instance buffer
+    /// (starting at `first_instance` offsets within that buffer), not the
+    /// main camera-visible instance buffer.
+    pub shadow_instanced_objects: Vec<InstancedDrawCommand>,
     /// Open-ended per-frame data keyed by `TypeId`.
     ///
     /// Any system inserts its batch/data here; any pass retrieves it by type.
@@ -115,6 +127,8 @@ impl FramePacket {
             camera,
             scene_objects: Vec::new(),
             instanced_objects: Vec::new(),
+            shadow_scene_objects: Vec::new(),
+            shadow_instanced_objects: Vec::new(),
             extras: HashMap::new(),
         }
     }

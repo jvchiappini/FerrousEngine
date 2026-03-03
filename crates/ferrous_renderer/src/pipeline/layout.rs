@@ -27,6 +27,13 @@ pub struct PipelineLayouts {
     pub material: Arc<wgpu::BindGroupLayout>,
     /// group(3) — directional light uniform buffer (one `UNIFORM` buffer at binding 0)
     pub lights: Arc<wgpu::BindGroupLayout>,
+    /// Minimal layout used exclusively by the shadow pass (group 1).
+    ///
+    /// Contains only binding 0 (directional light uniform).  This avoids
+    /// binding the shadow map texture as a `RESOURCE` while the same texture
+    /// is simultaneously used as `DEPTH_STENCIL_WRITE` — which wgpu forbids
+    /// as conflicting exclusive usages within a render pass.
+    pub shadow_lights: Arc<wgpu::BindGroupLayout>,
 }
 
 impl PipelineLayouts {
@@ -186,11 +193,15 @@ impl PipelineLayouts {
                     // binding 0: directional light uniform
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        // directional light is now read in both vertex (shadow
+                        // coordinate computation) and fragment stages.
+                        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(32),
+                            // size of DirectionalLightUniform after adding
+                            // light_view_proj (96 bytes)
+                            min_binding_size: wgpu::BufferSize::new(96),
                         },
                         count: None,
                     },
@@ -245,9 +256,49 @@ impl PipelineLayouts {
                         },
                         count: None,
                     },
+                    // binding 6: comparison sampler for shadow map
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 6,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                        count: None,
+                    },
+                    // binding 7: shadow depth texture
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 7,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Depth,
+                        },
+                        count: None,
+                    },
                 ],
             }),
         );
+
+        // Minimal layout for the shadow pass: only the directional light
+        // uniform at binding 0.  The shadow shaders only read `light_view_proj`
+        // from this buffer — they never sample the shadow map texture.
+        // Using this layout prevents wgpu from seeing the shadow-map texture
+        // bound as both DEPTH_STENCIL_WRITE (depth attachment) and RESOURCE
+        // (sampled texture) in the same render-pass scope.
+        let shadow_lights = Arc::new(device.create_bind_group_layout(
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("Layout: Shadow Lights (dir light only)"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(96),
+                    },
+                    count: None,
+                }],
+            },
+        ));
 
         Self {
             camera,
@@ -255,6 +306,7 @@ impl PipelineLayouts {
             instance,
             material,
             lights,
+            shadow_lights,
         }
     }
 }

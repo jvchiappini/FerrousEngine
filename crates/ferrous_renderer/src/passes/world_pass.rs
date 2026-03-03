@@ -28,9 +28,9 @@ use wgpu::{
 };
 
 use crate::graph::{FramePacket, RenderPass};
-use crate::pipeline::{InstancingPipeline, PbrPipeline, PipelineLayouts};
+use crate::pipeline::{InstancingPipeline, PbrPipeline, PipelineLayouts, ShadowPipeline};
 use crate::render_target::HdrTexture;
-use crate::resources::{DirectionalLightUniform, Environment, PointLightUniform};
+use crate::resources::{DirectionalLightUniform, Environment, PointLightUniform, ShadowResources};
 use crate::{DrawCommand, InstancedDrawCommand};
 use ferrous_core::scene::MaterialHandle;
 
@@ -51,6 +51,13 @@ pub struct WorldPass {
     instancing_pipeline_blend: InstancingPipeline,
     /// Double-sided blended instancing pipeline.
     instancing_pipeline_blend_double: InstancingPipeline,
+    /// Pipeline used to render the depth-only shadow map.
+    shadow_pipeline: ShadowPipeline,
+    /// Shadow pipeline variant which supports instanced vertex data.
+    shadow_pipeline_instanced: ShadowPipeline,
+    /// Shadow map texture + sampler.  Stored here so the world pass can write
+    /// to it before the main geometry pass.
+    pub shadow_resources: ShadowResources,
     camera_bind_group: Arc<wgpu::BindGroup>,
     /// Shared dynamic model-matrix bind group (legacy path).
     model_bind_group: Option<Arc<wgpu::BindGroup>>,
@@ -58,6 +65,10 @@ pub struct WorldPass {
     model_stride: u32,
     /// Bind group for the instance storage buffer.
     instance_bind_group: Option<Arc<wgpu::BindGroup>>,
+    /// Separate bind group pointing at the shadow-caster instance buffer.
+    /// This buffer contains ALL world-object matrices (not camera-culled),
+    /// so that objects behind the camera can still cast shadows.
+    shadow_instance_bind_group: Option<Arc<wgpu::BindGroup>>,
     /// Sky / clear color.
     pub clear_color: Color,
     /// Table of material bind groups, indexed by slot.  Populated by the
@@ -73,6 +84,14 @@ pub struct WorldPass {
     /// HDR off-screen render target. The world pass renders into this instead
     /// of the swapchain surface so values > 1.0 can be preserved.
     pub hdr_texture: HdrTexture,
+    /// Minimal bind group for the shadow pass (group 1).
+    ///
+    /// Contains only the directional light uniform buffer — no shadow map
+    /// texture.  Using the full `environment.bind_group` in the shadow pass
+    /// would cause a wgpu validation error because the shadow map texture
+    /// would be bound as both DEPTH_STENCIL_WRITE (depth attachment) and
+    /// RESOURCE (sampled texture) within the same render-pass scope.
+    shadow_light_bind_group: Arc<wgpu::BindGroup>,
 }
 
 impl WorldPass {
@@ -92,9 +111,31 @@ impl WorldPass {
         width: u32,
         height: u32,
     ) -> Self {
-        // environment bundle includes directional light and placeholder IBL
-        let environment = Environment::new_dummy(device, queue, &layouts.lights);
+        // environment bundle includes directional light, placeholder IBL and
+        // will later be updated with the shadow map.
+        let mut environment = Environment::new_dummy(device, queue, &layouts.lights);
         let hdr_texture = HdrTexture::new(device, width, height);
+
+        // create two shadow pipelines: one for regular objects and one for
+        // instanced geometry.  They differ only in the first bind-group
+        // layout (model vs instance).
+        let shadow_pipeline = crate::pipeline::ShadowPipeline::new(device, layouts.clone(), false);
+        let shadow_pipeline_instanced =
+            crate::pipeline::ShadowPipeline::new(device, layouts.clone(), true);
+        let shadow_resources = crate::resources::ShadowResources::new(device);
+        environment.update_shadow(device, &layouts.lights, &shadow_resources);
+
+        // Dedicated bind group for the shadow pass — only the directional
+        // light uniform, matched to `layouts.shadow_lights`.
+        let shadow_light_bind_group =
+            Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Shadow Light Bind Group"),
+                layout: &layouts.shadow_lights,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: environment.light_buffer.as_entire_binding(),
+                }],
+            }));
 
         Self {
             pbr_pipeline,
@@ -109,6 +150,7 @@ impl WorldPass {
             model_bind_group: None,
             model_stride: 256, // safe default; overwritten by set_model_buffer
             instance_bind_group: None,
+            shadow_instance_bind_group: None,
             clear_color: Color {
                 r: 0.1,
                 g: 0.2,
@@ -120,6 +162,10 @@ impl WorldPass {
             environment,
             lights_layout: Arc::clone(&layouts.lights),
             hdr_texture,
+            shadow_pipeline,
+            shadow_pipeline_instanced,
+            shadow_resources,
+            shadow_light_bind_group,
         }
     }
 
@@ -132,6 +178,11 @@ impl WorldPass {
     /// Called by `Renderer` whenever the `InstanceBuffer` is created or reallocated.
     pub fn set_instance_buffer(&mut self, bind_group: Arc<wgpu::BindGroup>) {
         self.instance_bind_group = Some(bind_group);
+    }
+
+    /// Called by `Renderer` whenever the shadow-caster `InstanceBuffer` is reallocated.
+    pub fn set_shadow_instance_buffer(&mut self, bind_group: Arc<wgpu::BindGroup>) {
+        self.shadow_instance_bind_group = Some(bind_group);
     }
 
     /// Update the material table used during draw.  The passed slice is
@@ -155,8 +206,31 @@ impl WorldPass {
     /// for providing a queue reference; the uniform struct will also be
     /// cached locally so that it may be inspected later if required.
     pub fn update_light(&mut self, queue: &wgpu::Queue, uniform: DirectionalLightUniform) {
+        // compute light view-projection matrix based on the given direction
+        // (simple orthographic camera centred on the origin and looking along
+        // the light direction).
+        let mut u = uniform;
+        {
+            let dir = glam::Vec3::new(u.direction[0], u.direction[1], u.direction[2]);
+            // pick an arbitrary up vector that is not parallel to the light dir
+            let up = if dir.abs().dot(glam::Vec3::Y) > 0.9 {
+                glam::Vec3::Z
+            } else {
+                glam::Vec3::Y
+            };
+            // Pull the shadow camera far enough back that the whole scene is
+            // within the depth range, even when the camera zooms out.
+            let eye = -dir * 50.0;
+            let view = glam::Mat4::look_at_rh(eye, glam::Vec3::ZERO, up);
+            // Large ortho volume covers the visible playfield.  near=1 avoids
+            // precision issues right at the shadow camera; far=200 ensures
+            // distant geometry still receives/casts shadows.
+            let proj = glam::Mat4::orthographic_rh(-50.0, 50.0, -50.0, 50.0, 1.0, 200.0);
+            let view_proj = proj * view;
+            u.light_view_proj = view_proj.to_cols_array_2d();
+        }
         // forward update to environment helper
-        self.environment.update_light(queue, uniform);
+        self.environment.update_light(queue, u);
     }
 
     /// Upload the list of point lights for this frame.
@@ -195,6 +269,62 @@ impl RenderPass for WorldPass {
         depth_view: Option<&TextureView>,
         packet: &FramePacket,
     ) {
+        // ── Shadow map pass ─────────────────────────────────────────────
+        // Render the scene from the light's point of view into a depth-only
+        // texture before doing the main world pass.  This cannot occur while
+        // a render pass is active on the encoder, so we perform it first.
+        {
+            let mut spass = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("Shadow Pass"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                    view: &self.shadow_resources.view,
+                    depth_ops: Some(Operations {
+                        load: LoadOp::Clear(1.0),
+                        store: StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                occlusion_query_set: None,
+                timestamp_writes: None,
+            });
+
+            // draw instanced objects first using the instanced shadow pipeline.
+            // Uses shadow_instanced_objects (all world objects, not camera-culled)
+            // and the dedicated shadow instance buffer.
+            if let Some(shadow_inst_bg) = &self.shadow_instance_bind_group {
+                if !packet.shadow_instanced_objects.is_empty() {
+                    spass.set_pipeline(&self.shadow_pipeline_instanced.inner);
+                    // group0 = shadow instance storage, group1 = dir-light only (no shadow map texture)
+                    spass.set_bind_group(0, shadow_inst_bg.as_ref(), &[]);
+                    spass.set_bind_group(1, &*self.shadow_light_bind_group, &[]);
+                    for cmd in &packet.shadow_instanced_objects {
+                        spass.set_vertex_buffer(0, cmd.vertex_buffer.slice(..));
+                        spass.set_index_buffer(cmd.index_buffer.slice(..), cmd.index_format);
+                        spass.draw_indexed(
+                            0..cmd.index_count,
+                            0,
+                            cmd.first_instance..cmd.first_instance + cmd.instance_count,
+                        );
+                    }
+                }
+            }
+
+            // then non-instanced (legacy) objects using the regular shadow pipeline.
+            // Uses shadow_scene_objects (all legacy objects, not camera-culled).
+            if let Some(model_bg) = &self.model_bind_group {
+                spass.set_pipeline(&self.shadow_pipeline.inner);
+                spass.set_bind_group(1, &*self.shadow_light_bind_group, &[]);
+                for cmd in &packet.shadow_scene_objects {
+                    let offset = (cmd.model_slot as u32).wrapping_mul(self.model_stride);
+                    spass.set_bind_group(0, model_bg.as_ref(), &[offset]);
+                    spass.set_vertex_buffer(0, cmd.vertex_buffer.slice(..));
+                    spass.set_index_buffer(cmd.index_buffer.slice(..), cmd.index_format);
+                    spass.draw_indexed(0..cmd.index_count, 0, 0..1);
+                }
+            }
+        }
+
         // Always render into the HDR texture, not the swapchain surface.
         // The post-process pass will read this and write to the final surface.
         let mut rpass = encoder.begin_render_pass(&RenderPassDescriptor {
@@ -290,6 +420,7 @@ impl RenderPass for WorldPass {
                         rpass.set_bind_group(2, mat_bg.as_ref(), &[]);
                     }
                     rpass.set_bind_group(3, self.environment.bind_group.as_ref(), &[]);
+                    // shadow map is now included in the environment bind group
                     rpass.set_vertex_buffer(0, cmd.vertex_buffer.slice(..));
                     rpass.set_index_buffer(cmd.index_buffer.slice(..), cmd.index_format);
                     rpass.draw_indexed(
@@ -320,6 +451,7 @@ impl RenderPass for WorldPass {
                         rpass.set_bind_group(2, mat_bg.as_ref(), &[]);
                     }
                     rpass.set_bind_group(3, self.environment.bind_group.as_ref(), &[]);
+                    // shadow map is now included in the environment bind group
                     rpass.set_vertex_buffer(0, cmd.vertex_buffer.slice(..));
                     rpass.set_index_buffer(cmd.index_buffer.slice(..), cmd.index_format);
                     rpass.draw_indexed(
@@ -354,6 +486,7 @@ impl RenderPass for WorldPass {
                         rpass.set_bind_group(2, mat_bg.as_ref(), &[]);
                     }
                     rpass.set_bind_group(3, self.environment.bind_group.as_ref(), &[]);
+                    // shadow map is now included in the environment bind group
                     let (alpha_mode, double_sided) = get_flags(cmd.material_slot, cmd.double_sided);
                     let pipeline_ref = match (alpha_mode, double_sided) {
                         (ferrous_core::scene::AlphaMode::Opaque, false) => &self.pbr_pipeline.inner,

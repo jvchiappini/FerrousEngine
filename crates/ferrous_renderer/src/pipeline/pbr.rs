@@ -27,9 +27,8 @@ impl PbrPipeline {
         blend: Option<wgpu::BlendState>,
         depth_write: bool,
     ) -> wgpu::RenderPipeline {
-        let shader = device.create_shader_module(wgpu::include_wgsl!(
-            "../../../../assets/shaders/pbr.wgsl"
-        ));
+        let shader =
+            device.create_shader_module(wgpu::include_wgsl!("../../../../assets/shaders/pbr.wgsl"));
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("PBR Pipeline Layout"),

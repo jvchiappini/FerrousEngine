@@ -4,6 +4,7 @@
 // constants
 const PI: f32 = 3.14159265359;
 
+
 // bind groups and structs
 
 struct Camera {
@@ -59,10 +60,19 @@ struct DirectionalLight {
     _pad0 : f32,
     color : vec3<f32>,
     intensity : f32,
+    // extra field populated by the CPU; used by the shadow pass and
+    // optionally sampled by the PBR shader to compute shadow coordinates.
+    light_view_proj : mat4x4<f32>,
 };
 
 @group(3) @binding(0)
 var<uniform> dir_light: DirectionalLight;
+
+// shadow map stored in the same bind group as lights (group 3)
+@group(3) @binding(6)
+var shadow_sampler: sampler_comparison;
+@group(3) @binding(7)
+var shadow_map: texture_depth_2d;
 
 // ── Point Lights (Storage Buffer) ────────────────────────────────────────────
 // binding(5) follows the four IBL resources at bindings 1-4.
@@ -108,6 +118,7 @@ struct VertexOutput {
     @location(3) world_bitangent : vec3<f32>,
     @location(4) uv : vec2<f32>,
     @location(5) color : vec3<f32>,
+    @location(6) shadow_pos : vec4<f32>,
 };
 
 // vertex shader
@@ -117,6 +128,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     let world_pos4 = model.model * vec4<f32>(in.position, 1.0);
     out.clip_pos = camera.view_proj * world_pos4;
     out.world_pos = world_pos4.xyz;
+    out.shadow_pos = dir_light.light_view_proj * world_pos4;
 
     // transform normals and tangents
     out.world_normal = (model.normal_mat * vec4<f32>(in.normal, 0.0)).xyz;
@@ -179,6 +191,7 @@ struct FragmentInput {
     @location(3) world_bitangent : vec3<f32>,
     @location(4) uv : vec2<f32>,
     @location(5) color : vec3<f32>,
+    @location(6) shadow_pos : vec4<f32>,
 };
 
 struct FragmentOutput {
@@ -187,30 +200,30 @@ struct FragmentOutput {
 
 // fragment shader
 @fragment
-fn fs_main(in: FragmentInput) -> FragmentOutput {
-    var albedo = material.base_color.xyz * in.color;
+fn fs_main(frag_in: FragmentInput) -> FragmentOutput {
+    var albedo = material.base_color.xyz * frag_in.color;
     // track alpha separately; start with material base alpha
     var out_alpha = material.base_color.w;
     if ((material.flags & 1u) != 0u) {
-        let sample = textureSample(tex_albedo, mat_sampler, in.uv);
+        let sample = textureSample(tex_albedo, mat_sampler, frag_in.uv);
         albedo *= sample.xyz;
         // modulate alpha by texture's alpha channel as well
         out_alpha *= sample.a;
     }
     var ao_factor = material.metallic_roughness.z;  // ao_strength
     if ((material.flags & 16u) != 0u) {
-        ao_factor = textureSample(tex_ao, mat_sampler, in.uv).x * ao_factor;
+        ao_factor = textureSample(tex_ao, mat_sampler, frag_in.uv).x * ao_factor;
     }
 
     // normal mapping
-    var N = normalize(in.world_normal);
+    var N = normalize(frag_in.world_normal);
     if ((material.flags & 2u) != 0u) {
-        var normal_sample = textureSample(tex_normal, mat_sampler, in.uv).xyz * 2.0 - vec3<f32>(1.0);
+        var normal_sample = textureSample(tex_normal, mat_sampler, frag_in.uv).xyz * 2.0 - vec3<f32>(1.0);
         // WGSL forbids writing to swizzles; expand manually.
         normal_sample.x = normal_sample.x * material.normal_ao.x;
         normal_sample.y = normal_sample.y * material.normal_ao.x;
-        let T = normalize(in.world_tangent);
-        let B = normalize(in.world_bitangent);
+        let T = normalize(frag_in.world_tangent);
+        let B = normalize(frag_in.world_bitangent);
         let TBN = mat3x3<f32>(T, B, N);
         N = normalize(TBN * normal_sample);
     }
@@ -219,7 +232,7 @@ fn fs_main(in: FragmentInput) -> FragmentOutput {
     var metallic = material.metallic_roughness.x;
     var roughness = material.metallic_roughness.y;
     if ((material.flags & 4u) != 0u) {
-        let mr = textureSample(tex_met_rough, mat_sampler, in.uv).xyz;
+        let mr = textureSample(tex_met_rough, mat_sampler, frag_in.uv).xyz;
         roughness *= mr.y;
         metallic *= mr.z;
     }
@@ -229,7 +242,7 @@ fn fs_main(in: FragmentInput) -> FragmentOutput {
     roughness = clamp(roughness, 0.001, 1.0);
 
     // View vector: world-space direction from fragment to camera eye.
-    let Vdir = normalize(camera.eye_pos.xyz - in.world_pos);
+    let Vdir = normalize(camera.eye_pos.xyz - frag_in.world_pos);
 
     let Ldir = normalize(-dir_light.direction);
     let H    = normalize(Vdir + Ldir);
@@ -252,7 +265,21 @@ fn fs_main(in: FragmentInput) -> FragmentOutput {
     let kD = (vec3<f32>(1.0) - F) * (1.0 - metallic);
 
     let radiance = dir_light.color * dir_light.intensity;
-    var Lo = (kD * albedo / PI + specular) * radiance * NdotL;
+    // shadow computation using the depth texture rendered earlier from the
+    // light's point of view.  We project the world position and compare the
+    // stored depth against the fragment's depth to get a visibility factor.
+    var shadow: f32 = 1.0;
+    let proj = frag_in.shadow_pos / frag_in.shadow_pos.w;
+    // NDC: X and Y in [-1,1] with Y+ = up; UV: X in [0,1] with V+ = down.
+    // Negate Y so that the shadow map is sampled right-side-up.
+    let uv = vec2<f32>(proj.x * 0.5 + 0.5, -proj.y * 0.5 + 0.5);
+    // only sample when inside the shadow map bounds; outside means the
+    // fragment is outside the light frustum and we conservatively treat it
+    // as lit.
+    if (uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0 && proj.z >= 0.0 && proj.z <= 1.0) {
+        shadow = textureSampleCompare(shadow_map, shadow_sampler, uv, proj.z);
+    }
+    var Lo = (kD * albedo / PI + specular) * radiance * NdotL * shadow;
 
     // ── Point lights ─────────────────────────────────────────────────────────
     let light_count = min(point_lights.count, 1024u);
@@ -263,7 +290,7 @@ fn fs_main(in: FragmentInput) -> FragmentOutput {
         let light_color = pl.color_intensity.xyz;
         let pl_intensity = pl.color_intensity.w;
 
-        let to_light = light_pos - in.world_pos;
+        let to_light = light_pos - frag_in.world_pos;
         let pl_dist  = length(to_light);
 
         // Early-out: fragment is beyond the light's influence radius.
@@ -315,7 +342,7 @@ fn fs_main(in: FragmentInput) -> FragmentOutput {
     // emissive
     if ((material.flags & 8u) != 0u) {
         let emiss = material.emissive.xyz * material.emissive.w;
-        let sample = textureSample(tex_emissive, mat_sampler, in.uv);
+        let sample = textureSample(tex_emissive, mat_sampler, frag_in.uv);
         color += emiss * sample.xyz;
     }
 

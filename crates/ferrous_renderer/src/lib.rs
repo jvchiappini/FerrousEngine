@@ -171,6 +171,14 @@ pub struct Renderer {
     instanced_commands_cache: Vec<InstancedDrawCommand>,
     /// Scratch buffer for matrices written to the instance buffer each frame.
     instance_matrix_scratch: Vec<glam::Mat4>,
+    /// Shadow-caster draw command list (legacy objects, all light-frustum visible).
+    shadow_scene_cache: Vec<DrawCommand>,
+    /// Shadow-caster instanced draw command list (world objects).
+    shadow_instanced_cache: Vec<InstancedDrawCommand>,
+    /// Scratch matrix buffer for the shadow instance buffer.
+    shadow_matrix_scratch: Vec<glam::Mat4>,
+    /// Separate instance buffer for shadow casters.  Not camera-culled.
+    shadow_instance_buf: InstanceBuffer,
 
     // -- Caching optimization flags -------------------------------------------
     prev_view_proj: Option<glam::Mat4>,
@@ -314,6 +322,10 @@ impl Renderer {
             width,
             height,
         );
+        // when the pass is created it will internally construct its own
+        // shadow pipeline and texture (2048² depth map).  no additional
+        // arguments are necessary since those objects only depend on the
+        // device and the common pipeline layouts that we already pass in.
         // create material registry (includes default white material)
         let material_registry = MaterialRegistry::new(device, &context.queue, &layouts);
         let mut world_pass = world_pass;
@@ -336,9 +348,12 @@ impl Renderer {
         // Create the shared dynamic model buffer and register it with WorldPass.
         let model_buf = ModelBuffer::new(&context.device, &layouts.model, 64);
         let instance_buf = InstanceBuffer::new(&context.device, &layouts.instance, 64);
+        // Separate instance buffer for shadow casters (all objects, not camera-culled).
+        let shadow_instance_buf = InstanceBuffer::new(&context.device, &layouts.instance, 64);
         let mut world_pass_init = world_pass;
         world_pass_init.set_model_buffer(model_buf.bind_group.clone(), model_buf.stride);
         world_pass_init.set_instance_buffer(instance_buf.bind_group.clone());
+        world_pass_init.set_shadow_instance_buffer(shadow_instance_buf.bind_group.clone());
 
         // gizmo pipeline writes to the HDR texture so that gizmos composite
         // over scene geometry *before* tone mapping.
@@ -373,6 +388,10 @@ impl Renderer {
             draw_commands_cache: Vec::new(),
             instanced_commands_cache: Vec::new(),
             instance_matrix_scratch: Vec::new(),
+            shadow_scene_cache: Vec::new(),
+            shadow_instanced_cache: Vec::new(),
+            shadow_matrix_scratch: Vec::new(),
+            shadow_instance_buf,
             prev_view_proj: None,
             scene_dirty: true,
 
@@ -540,12 +559,13 @@ impl Renderer {
     /// toward the scene.  Colour is linear RGB and `intensity` is a scalar
     /// multiplier.
     pub fn set_directional_light(&mut self, direction: [f32; 3], color: [f32; 3], intensity: f32) {
-        let uniform = crate::resources::light::DirectionalLightUniform {
-            direction,
-            color,
-            intensity,
-            _pad0: 0.0,
-        };
+        // start from the default so we automatically populate
+        // `light_view_proj` (it will be recalculated again by
+        // `WorldPass::update_light` below).
+        let mut uniform = crate::resources::light::DirectionalLightUniform::default();
+        uniform.direction = direction;
+        uniform.color = color;
+        uniform.intensity = intensity;
         // delegate to world pass so that the buffer is encapsulated
         self.world_pass.update_light(&self.context.queue, uniform);
     }
@@ -1239,6 +1259,14 @@ impl Renderer {
                 &mut packet.instanced_objects,
                 &mut self.instanced_commands_cache,
             );
+            std::mem::swap(
+                &mut packet.shadow_scene_objects,
+                &mut self.shadow_scene_cache,
+            );
+            std::mem::swap(
+                &mut packet.shadow_instanced_objects,
+                &mut self.shadow_instanced_cache,
+            );
             return packet;
         }
 
@@ -1248,8 +1276,27 @@ impl Renderer {
         self.draw_commands_cache.clear();
         self.instanced_commands_cache.clear();
         self.instance_matrix_scratch.clear();
+        self.shadow_scene_cache.clear();
+        self.shadow_instanced_cache.clear();
+        self.shadow_matrix_scratch.clear();
 
         let frustum = scene::Frustum::from_view_proj(&camera_packet.view_proj);
+
+        // Shadow casters: legacy objects — include ALL (no camera frustum test).
+        // Their matrices are already in the ModelBuffer from spawn/move time.
+        for obj in self.legacy_objects.values() {
+            self.shadow_scene_cache.push(DrawCommand {
+                vertex_buffer: obj.mesh.vertex_buffer.clone(),
+                index_buffer: obj.mesh.index_buffer.clone(),
+                index_count: obj.mesh.index_count,
+                vertex_count: obj.mesh.vertex_count,
+                index_format: obj.mesh.index_format,
+                model_slot: obj.slot,
+                double_sided: obj.double_sided,
+                material_slot: obj.material_slot,
+                distance_sq: 0.0,
+            });
+        }
 
         for obj in self.legacy_objects.values() {
             // Legacy manual object.
@@ -1395,6 +1442,71 @@ impl Renderer {
                 .write_slice(&self.context.queue, 0, &self.instance_matrix_scratch);
         }
 
+        // -- Shadow-caster instanced list (World objects, no camera cull) ----
+        // Group ALL world objects by mesh (same key as camera path) and write
+        // their matrices into the separate shadow_instance_buf.
+        {
+            use std::collections::HashMap;
+            let mut shadow_groups: HashMap<
+                (usize, usize, bool),
+                (geometry::Mesh, usize, Vec<glam::Mat4>),
+            > = HashMap::new();
+            for obj in self.world_objects.iter().flatten() {
+                let key = (
+                    Arc::as_ptr(&obj.mesh.vertex_buffer) as usize,
+                    obj.material_slot,
+                    obj.double_sided,
+                );
+                shadow_groups
+                    .entry(key)
+                    .or_insert_with(|| (obj.mesh.clone(), obj.material_slot, Vec::new()))
+                    .2
+                    .push(obj.matrix);
+            }
+
+            let total_shadow = shadow_groups
+                .values()
+                .map(|(_, _, m)| m.len())
+                .sum::<usize>();
+            if total_shadow > 0 {
+                let prev_bg = self.shadow_instance_buf.bind_group.clone();
+                self.shadow_instance_buf.reserve(
+                    &self.context.device,
+                    &self.instance_layout,
+                    total_shadow,
+                );
+                if !Arc::ptr_eq(&prev_bg, &self.shadow_instance_buf.bind_group) {
+                    self.world_pass
+                        .set_shadow_instance_buffer(self.shadow_instance_buf.bind_group.clone());
+                }
+
+                let mut offset = 0u32;
+                for ((_ptr, _mat, double_sided), (mesh, material_slot, mats)) in shadow_groups {
+                    let count = mats.len() as u32;
+                    self.shadow_matrix_scratch.extend_from_slice(&mats);
+                    self.shadow_instanced_cache.push(InstancedDrawCommand {
+                        vertex_buffer: mesh.vertex_buffer.clone(),
+                        index_buffer: mesh.index_buffer.clone(),
+                        index_count: mesh.index_count,
+                        vertex_count: mesh.vertex_count,
+                        index_format: mesh.index_format,
+                        first_instance: offset,
+                        instance_count: count,
+                        double_sided,
+                        material_slot,
+                        distance_sq: 0.0,
+                    });
+                    offset += count;
+                }
+
+                self.shadow_instance_buf.write_slice(
+                    &self.context.queue,
+                    0,
+                    &self.shadow_matrix_scratch,
+                );
+            }
+        }
+
         // -- Compute render statistics ----------------------------------------
         let mut stats = RenderStats::default();
         for cmd in &self.draw_commands_cache {
@@ -1416,6 +1528,14 @@ impl Renderer {
             &mut packet.instanced_objects,
             &mut self.instanced_commands_cache,
         );
+        std::mem::swap(
+            &mut packet.shadow_scene_objects,
+            &mut self.shadow_scene_cache,
+        );
+        std::mem::swap(
+            &mut packet.shadow_instanced_objects,
+            &mut self.shadow_instanced_cache,
+        );
         packet
     }
 
@@ -1428,6 +1548,14 @@ impl Renderer {
         std::mem::swap(
             &mut self.instanced_commands_cache,
             &mut packet.instanced_objects,
+        );
+        std::mem::swap(
+            &mut self.shadow_scene_cache,
+            &mut packet.shadow_scene_objects,
+        );
+        std::mem::swap(
+            &mut self.shadow_instanced_cache,
+            &mut packet.shadow_instanced_objects,
         );
         // `packet` is dropped here; Arc clones inside are cheap.
     }

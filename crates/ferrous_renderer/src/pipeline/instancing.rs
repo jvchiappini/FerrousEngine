@@ -31,12 +31,16 @@ impl InstancingPipeline {
             "../../../../assets/shaders/instanced.wgsl"
         ));
 
-        let pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Instancing Pipeline Layout"),
-                bind_group_layouts: &[&layouts.camera, &layouts.instance, &layouts.material, &layouts.lights],
-                push_constant_ranges: &[],
-            });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Instancing Pipeline Layout"),
+            bind_group_layouts: &[
+                &layouts.camera,
+                &layouts.instance,
+                &layouts.material,
+                &layouts.lights,
+            ],
+            push_constant_ranges: &[],
+        });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Instancing Render Pipeline"),
@@ -47,14 +51,14 @@ impl InstancingPipeline {
                 buffers: &[Vertex::layout()],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
-                fragment: Some(wgpu::FragmentState {
+            fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some("fs_main"),
-                        targets: &[Some(wgpu::ColorTargetState {
-                            format: target_format,
-                            blend,
-                            write_mask: wgpu::ColorWrites::ALL,
-                        })],
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    blend,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
             primitive: wgpu::PrimitiveState {
