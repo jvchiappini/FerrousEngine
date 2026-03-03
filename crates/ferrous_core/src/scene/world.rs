@@ -113,6 +113,17 @@ pub enum ElementKind {
         height: f32,
         double_sided: bool,
     },
+    /// A UV sphere defined by a radius and the number of latitude/longitude
+    /// subdivisions.  The mesh itself is generated as a unit sphere and the
+    /// transform's scale encodes the actual radius so that all spheres can
+    /// share the same underlying mesh buffer if desired.  `latitudes` is the
+    /// number of rings between the poles (including both poles) and
+    /// `longitudes` the number of segments around the equator.
+    Sphere {
+        radius: f32,
+        latitudes: u32,
+        longitudes: u32,
+    },
     /// An arbitrary triangle mesh identified by an asset path or key.
     Mesh { asset_key: String },
     /// A point light that illuminates the scene.
@@ -335,6 +346,33 @@ impl World {
             })
             .with_position(position)
             .with_scale(scale)
+            .build()
+    }
+
+    /// Convenience: spawn a UV sphere at the given position.
+    ///
+    /// `segments` is used for both latitude and longitude counts; callers may
+    /// increase it for higher quality.  The actual mesh is created with unit
+    /// radius and the entity's transform scale is set to `radius` so that
+    /// different-sized spheres can reuse the same GPU buffers if the
+    /// renderer chooses to cache them.
+    pub fn spawn_sphere(
+        &mut self,
+        name: impl Into<String>,
+        position: Vec3,
+        radius: f32,
+        segments: u32,
+    ) -> Handle {
+        let lat = segments.max(2);
+        let lon = segments.max(3);
+        self.spawn(name)
+            .with_kind(ElementKind::Sphere {
+                radius,
+                latitudes: lat,
+                longitudes: lon,
+            })
+            .with_position(position)
+            .with_scale(Vec3::splat(radius))
             .build()
     }
 
@@ -660,6 +698,34 @@ mod tests {
         } else {
             panic!("entity missing");
         }
+        assert_eq!(w.len(), 1);
+        assert!(w.despawn(h));
+    }
+
+    #[test]
+    fn spawn_sphere_behavior() {
+        let mut w = World::new();
+        let h = w.spawn_sphere("S", Vec3::ZERO, 2.0, 16);
+        assert!(w.contains(h));
+        // sphere record should carry correct radius and subdivisions
+        if let Some(Some(e)) = w.entities.get(h.0 as usize) {
+            if let ElementKind::Sphere {
+                radius,
+                latitudes,
+                longitudes,
+            } = e.kind.clone()
+            {
+                assert_eq!(radius, 2.0);
+                assert_eq!(latitudes, 16);
+                assert_eq!(longitudes, 16);
+            } else {
+                panic!("wrong kind");
+            }
+        } else {
+            panic!("entity missing");
+        }
+        // scale should match radius
+        assert_eq!(w.get(h).unwrap().transform.scale, Vec3::splat(2.0));
         assert_eq!(w.len(), 1);
         assert!(w.despawn(h));
     }

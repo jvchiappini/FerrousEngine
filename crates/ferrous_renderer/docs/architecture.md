@@ -149,7 +149,8 @@ Renderer::handle_input(input, dt)
                    camera.controller.direction(input)   ← key bindings
 
 Renderer::sync_world(world, ctx)
-    └── scene::sync_world(world, objects, device, queue, model_layout)
+    └── scene::sync_world(world, objects, device, shared_cube_mesh,
+        shared_quad_mesh, shared_sphere_mesh)
 
 ### Lighting
 

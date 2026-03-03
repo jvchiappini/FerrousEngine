@@ -299,6 +299,19 @@ impl FerrousApp for EditorApp {
             ctx.world.set_material_descriptor(h, desc);
         }
 
+        // ── Add a single sphere to exercise the UV-sphere primitive and
+        // verify reflections.  Place it to the right of the cube row.
+        {
+            let mut desc = MaterialDescriptor::default();
+            desc.metallic = 1.0; // ensure a mirror-like appearance
+            let mat = ctx.renderer.create_material(&desc);
+            let hs = ctx
+                .world
+                .spawn_sphere("Sphere", Vec3::new(2.0, 0.0, 0.0), 1.0, 32);
+            ctx.world.set_material_handle(hs, mat);
+            ctx.world.set_material_descriptor(hs, desc);
+        }
+
         // ── Directional light at a 45° angle for clear shading ────────────
         // Direction = from upper-right-front toward scene center.
         let ldir = Vec3::new(-0.6, -0.8, -0.4).normalize();

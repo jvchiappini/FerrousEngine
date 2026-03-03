@@ -20,4 +20,11 @@ impl Mesh {
     pub fn cube(device: &wgpu::Device) -> Self {
         super::primitives::cube(device)
     }
+
+    /// Convenience constructor for a UV sphere.  Arguments match the
+    /// `primitives::sphere` helper; radius is applied in the mesh itself
+    /// (typically callers will use a unit sphere and scale the transform).
+    pub fn sphere(device: &wgpu::Device, radius: f32, latitudes: u32, longitudes: u32) -> Self {
+        super::primitives::sphere(device, radius, latitudes, longitudes)
+    }
 }

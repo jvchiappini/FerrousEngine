@@ -113,7 +113,7 @@ flowchart TD
     File: ferrous_editor/src/main.rs (or any impl FerrousApp)
 
     fn setup(&mut self, ctx: &mut AppContext) {
-        ctx.world.spawn_sphere('Ball', Vec3::ZERO, 0.5);
+        ctx.world.spawn_sphere('Ball', Vec3::ZERO, 0.5, 32);
     }
     // → sync_world() picks it up automatically next frame
     // → sphere mesh is created once and inserted into objects map"]

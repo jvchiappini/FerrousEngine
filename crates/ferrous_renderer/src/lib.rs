@@ -142,6 +142,9 @@ pub struct Renderer {
     shared_cube_mesh: Option<geometry::Mesh>,
     /// Shared quad mesh, used for all quads irrespective of size.
     shared_quad_mesh: Option<geometry::Mesh>,
+    /// Shared sphere mesh plus the lat/long subdivisions used to create it.
+    /// Lazily populated on first sphere spawn.
+    shared_sphere_mesh: Option<(geometry::Mesh, u32, u32)>,
 
     /// Pipeline used for drawing gizmos (lines); created once at startup.
     gizmo_pipeline: GizmoPipeline,
@@ -343,6 +346,7 @@ impl Renderer {
             instance_layout: layouts.instance.clone(),
             shared_cube_mesh: None,
             shared_quad_mesh: None,
+            shared_sphere_mesh: None,
             gizmo_pipeline,
             gizmo_draws: Vec::new(),
             draw_commands_cache: Vec::new(),
@@ -599,6 +603,7 @@ impl Renderer {
             &self.context.device,
             &mut self.shared_cube_mesh,
             &mut self.shared_quad_mesh,
+            &mut self.shared_sphere_mesh,
         );
         if mutated {
             self.scene_dirty = true;
@@ -606,7 +611,8 @@ impl Renderer {
 
         // ensure our descriptor cache is large enough
         if self.world_material_descs.len() != world.capacity() {
-            self.world_material_descs.resize_with(world.capacity(), || None);
+            self.world_material_descs
+                .resize_with(world.capacity(), || None);
         }
 
         // iterate over every entity and propagate any descriptor changes
@@ -621,8 +627,11 @@ impl Renderer {
                 // push new parameters to GPU; `create_material` already wrote
                 // the initial state so this is safe even if the handle is
                 // MATERIAL_DEFAULT.
-                self.material_registry
-                    .update_params(&self.context.queue, element.material.handle, desc);
+                self.material_registry.update_params(
+                    &self.context.queue,
+                    element.material.handle,
+                    desc,
+                );
                 self.world_material_descs[idx] = Some(desc.clone());
                 self.scene_dirty = true;
             }
@@ -1143,14 +1152,21 @@ impl Renderer {
         use std::collections::HashMap;
 
         #[cfg(not(target_arch = "wasm32"))]
-        let visible_mesh_groups: HashMap<(usize, usize, bool), (geometry::Mesh, usize, Vec<glam::Mat4>)> = self
+        let visible_mesh_groups: HashMap<
+            (usize, usize, bool),
+            (geometry::Mesh, usize, Vec<glam::Mat4>),
+        > = self
             .world_objects
             .par_iter()
             .flatten()
             .filter(|obj| frustum.intersects_aabb(&obj.world_aabb()))
             .fold(
                 || HashMap::new(),
-                |mut map: HashMap<(usize, usize, bool), (geometry::Mesh, usize, Vec<glam::Mat4>)>, obj| {
+                |mut map: HashMap<
+                    (usize, usize, bool),
+                    (geometry::Mesh, usize, Vec<glam::Mat4>),
+                >,
+                 obj| {
                     let key = (
                         Arc::as_ptr(&obj.mesh.vertex_buffer) as usize,
                         obj.material_slot,
@@ -1177,7 +1193,10 @@ impl Renderer {
             );
 
         #[cfg(target_arch = "wasm32")]
-        let visible_mesh_groups: HashMap<(usize, usize, bool), (geometry::Mesh, usize, Vec<glam::Mat4>)> = self
+        let visible_mesh_groups: HashMap<
+            (usize, usize, bool),
+            (geometry::Mesh, usize, Vec<glam::Mat4>),
+        > = self
             .world_objects
             .iter()
             .flatten()

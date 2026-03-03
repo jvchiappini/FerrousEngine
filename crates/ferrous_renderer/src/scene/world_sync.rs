@@ -9,7 +9,9 @@
 /// Uses a `Vec<Option<RenderObject>>` for guaranteed sequential access.
 use ferrous_core::scene::{ElementKind, World};
 
-use crate::geometry::primitives::{cube::cube as create_cube, quad::quad as create_quad};
+use crate::geometry::primitives::{
+    cube::cube as create_cube, quad::quad as create_quad, sphere::sphere as create_sphere,
+};
 use crate::scene::RenderObject;
 
 /// Update `objects` so that it mirrors the renderable entities in `world`.
@@ -35,6 +37,10 @@ pub fn sync_world(
     device: &wgpu::Device,
     shared_cube_mesh: &mut Option<crate::geometry::Mesh>,
     shared_quad_mesh: &mut Option<crate::geometry::Mesh>,
+    // cache a sphere mesh along with the subdivisions used to create it.
+    // this allows us to reuse the same mesh for multiple spheres with the
+    // same latitude/longitude counts.
+    shared_sphere_mesh: &mut Option<(crate::geometry::Mesh, u32, u32)>,
 ) -> bool {
     let mut mutated = false;
 
@@ -55,7 +61,10 @@ pub fn sync_world(
     for element in world.iter() {
         let is_renderable = matches!(
             element.kind,
-            ElementKind::Cube { .. } | ElementKind::Mesh { .. } | ElementKind::Quad { .. }
+            ElementKind::Cube { .. }
+                | ElementKind::Mesh { .. }
+                | ElementKind::Quad { .. }
+                | ElementKind::Sphere { .. }
         );
         if !is_renderable || !element.visible {
             continue;
@@ -85,12 +94,37 @@ pub fn sync_world(
                 ElementKind::Quad { .. } => shared_quad_mesh
                     .get_or_insert_with(|| create_quad(device))
                     .clone(),
+                ElementKind::Sphere {
+                    latitudes,
+                    longitudes,
+                    ..
+                } => {
+                    let (lat, lon) = (*latitudes, *longitudes);
+                    // check cache
+                    let use_mesh = if let Some((m, l, o)) = shared_sphere_mesh {
+                        if *l == lat && *o == lon {
+                            Some(m.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some(m) = use_mesh {
+                        m
+                    } else {
+                        let new = create_sphere(device, 1.0, lat, lon);
+                        *shared_sphere_mesh = Some((new.clone(), lat, lon));
+                        new
+                    }
+                }
                 _ => unreachable!(),
             };
             let double_sided =
                 matches!(element.kind, ElementKind::Quad { double_sided, .. } if double_sided);
             let mat_slot = element.material.handle.0 as usize;
-            let mut obj = RenderObject::new(device, element.id, mesh, matrix, 0, double_sided, mat_slot);
+            let mut obj =
+                RenderObject::new(device, element.id, mesh, matrix, 0, double_sided, mat_slot);
             // Override AABB with per-axis half_extents when available.
             match element.kind {
                 ElementKind::Cube { half_extents } => {
@@ -104,6 +138,13 @@ pub fn sync_world(
                     let hh = height * 0.5;
                     obj.local_aabb =
                         Aabb::new(glam::Vec3::new(-hw, -hh, 0.0), glam::Vec3::new(hw, hh, 0.0));
+                    obj.cached_world_aabb = obj.local_aabb.transform(&matrix);
+                }
+                ElementKind::Sphere { radius, .. } => {
+                    use crate::scene::culling::Aabb;
+                    let r = radius;
+                    let v = glam::Vec3::splat(r);
+                    obj.local_aabb = Aabb::new(-v, v);
                     obj.cached_world_aabb = obj.local_aabb.transform(&matrix);
                 }
                 _ => {}

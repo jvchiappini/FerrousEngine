@@ -59,22 +59,22 @@
 
 ## 9. Material & Light Systems (PBR Core)
 
-* [ ] **BRDF Implementation:** Sombreadores basados en la función de distribución de microfaccetas (Cook-Torrance).
-* [ ] **Material Instance System:** Concepto de materiales "padre" y "copias" con diferentes parámetros (como en Unreal).
+* [x] **BRDF Implementation:** Sombreadores basados en la función de distribución de microfaccetas (Cook-Torrance).
+* [x] **Material Instance System:** Concepto de materiales "padre" y "copias" con diferentes parámetros (como en Unreal).
 * [ ] **Point, Directional & Spot Light Components:** Implementación de diferentes tipos de fuentes de luz en el shader.
 * [ ] **Shadow Map Atlas:** Gestión de texturas de sombra para múltiples luces en un solo atlas de textura.
 
 ## 10. Engine Tools & Debugging
 
 * [ ] **Wireframe Overlay:** Modo de visualización de mallas en modo líneas.
-* [ ] **Frame Time Profiler:** Visualización gráfica de los milisegundos que tarda cada sistema (CPU vs GPU).
-* [ ] **Visual Gizmos:** Implementación de ejes de movimiento, rotación y escala interactivos.
+* [x] **Frame Time Profiler:** Visualización gráfica de los milisegundos que tarda cada sistema (CPU vs GPU).
+* [x] **Visual Gizmos:** Implementación de ejes de movimiento, rotación y escala interactivos.
 * [ ] **Logger Sink:** Redirección de los `println!` y `log` de Rust hacia una consola visual dentro del editor.
 
 ## 11. Advanced Material System & PBR (Physically Based Rendering)
 
-* [ ] **Metallic-Roughness Workflow:** Implementación estándar de la industria para materiales realistas.
-* [ ] **Normal Mapping & Tangent Space:** Cálculo de vectores binormales en GPU para detalle superficial.
+* [x] **Metallic-Roughness Workflow:** Implementación estándar de la industria para materiales realistas.
+* [x] **Normal Mapping & Tangent Space:** Cálculo de vectores binormales en GPU para detalle superficial.
 * [ ] **IBL (Image-Based Lighting):** Uso de mapas de entorno (Equirectangular a Cubemap) para reflexiones realistas y luz difusa ambiental.
 * [ ] **Anisotropic Filtering:** Configuración de samplers para evitar distorsión de texturas en ángulos agudos.
 * [ ] **Material Graph (Visual Shader Editor):** Backend para un sistema de nodos que genere código WGSL dinámicamente.
@@ -89,9 +89,9 @@
 
 ## 13. High-Performance UI Framework (The Editor & Game UI)
 
-* [ ] **Retained vs Immediate Mode Hybrid:** Uso de `egui` para el editor y un sistema de UI retenido (nodos) para el juego final.
+* [x] **Retained vs Immediate Mode Hybrid:** Uso de `egui` para el editor y un sistema de UI retenido (nodos) para el juego final.
 * [ ] **SDF Text Rendering (Signed Distance Fields):** Renderizado de fuentes basado en vectores para mantener nitidez en cualquier resolución.
-* [ ] **Flexbox/Grid Layout Engine:** Implementación de algoritmos de posicionamiento automático de elementos de interfaz.
+* [x] **Flexbox/Grid Layout Engine:** Implementación de algoritmos de posicionamiento automático de elementos de interfaz.
 * [ ] **Event Bubbling System:** Propagación de eventos de clic y scroll a través de la jerarquía de la UI.
 * [ ] **Skinning & Theming:** Desacoplamiento de la lógica de UI de la apariencia visual mediante hojas de estilo.
 
