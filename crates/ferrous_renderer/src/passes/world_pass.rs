@@ -31,6 +31,7 @@ use crate::graph::{FramePacket, RenderPass};
 use crate::pipeline::{InstancingPipeline, PbrPipeline, PipelineLayouts};
 use crate::render_target::HdrTexture;
 use crate::resources::{DirectionalLightUniform, Environment, PointLightUniform};
+use crate::{DrawCommand, InstancedDrawCommand};
 use ferrous_core::scene::MaterialHandle;
 
 pub struct WorldPass {
@@ -230,50 +231,94 @@ impl RenderPass for WorldPass {
             rpass.set_scissor_rect(vp.x, vp.y, vp.width, vp.height);
         }
 
+        // helper: fetch material render flags, returning an owned AlphaMode so
+        // that callers can sort or compare without borrowing the registry.
+        let get_flags =
+            |slot: usize, fallback_double: bool| -> (ferrous_core::scene::AlphaMode, bool) {
+                if let Some(reg) = &self.material_registry {
+                    let (alpha_ref, dbl) = reg.get_render_flags(MaterialHandle(slot as u32));
+                    (alpha_ref.clone(), dbl)
+                } else {
+                    (ferrous_core::scene::AlphaMode::Opaque, fallback_double)
+                }
+            };
+
         // ── Instanced path (World entities) ──────────────────────────────────
         if let Some(inst_bg) = &self.instance_bind_group {
             if !packet.instanced_objects.is_empty() {
+                // render all instanced geometry in two passes (opaque then
+                // transparent).  we reuse the same bind groups for both.
                 rpass.set_bind_group(0, &*self.camera_bind_group, &[]);
                 rpass.set_bind_group(1, inst_bg.as_ref(), &[]);
 
-                for cmd in &packet.instanced_objects {
-                    // choose appropriate instancing pipeline based on material
-                    if let Some(reg) = &self.material_registry {
-                        let (alpha_mode, double_sided) =
-                            reg.get_render_flags(MaterialHandle(cmd.material_slot as u32));
-                        let pipe = match (alpha_mode, double_sided) {
-                            (ferrous_core::scene::AlphaMode::Opaque, false) => {
-                                &self.instancing_pipeline.inner
-                            }
-                            (ferrous_core::scene::AlphaMode::Opaque, true) => {
-                                &self.instancing_pipeline_double.inner
-                            }
-                            (ferrous_core::scene::AlphaMode::Mask { .. }, false) => {
-                                &self.instancing_pipeline.inner
-                            }
-                            (ferrous_core::scene::AlphaMode::Mask { .. }, true) => {
-                                &self.instancing_pipeline_double.inner
-                            }
-                            (ferrous_core::scene::AlphaMode::Blend, false) => {
-                                &self.instancing_pipeline_blend.inner
-                            }
-                            (ferrous_core::scene::AlphaMode::Blend, true) => {
-                                &self.instancing_pipeline_blend_double.inner
-                            }
-                        };
-                        rpass.set_pipeline(pipe);
-                    } else {
-                        if cmd.double_sided {
-                            rpass.set_pipeline(&self.instancing_pipeline_double.inner);
-                        } else {
-                            rpass.set_pipeline(&self.instancing_pipeline.inner);
+                // helper closure to choose an instancing pipeline from render
+                // flags.  we no longer consult `material_registry` here; the
+                // caller will supply the resolved alpha mode / sidedness.
+                let choose_inst_pipe = |alpha: &ferrous_core::scene::AlphaMode,
+                                        double_sided: bool|
+                 -> &wgpu::RenderPipeline {
+                    match (alpha, double_sided) {
+                        (ferrous_core::scene::AlphaMode::Opaque, false) => {
+                            &self.instancing_pipeline.inner
+                        }
+                        (ferrous_core::scene::AlphaMode::Opaque, true) => {
+                            &self.instancing_pipeline_double.inner
+                        }
+                        (ferrous_core::scene::AlphaMode::Mask { .. }, false) => {
+                            &self.instancing_pipeline.inner
+                        }
+                        (ferrous_core::scene::AlphaMode::Mask { .. }, true) => {
+                            &self.instancing_pipeline_double.inner
+                        }
+                        (ferrous_core::scene::AlphaMode::Blend, false) => {
+                            &self.instancing_pipeline_blend.inner
+                        }
+                        (ferrous_core::scene::AlphaMode::Blend, true) => {
+                            &self.instancing_pipeline_blend_double.inner
                         }
                     }
-                    // bind material if present
+                };
+
+                // first draw opaque/masked objects (order not critical)
+                for cmd in &packet.instanced_objects {
+                    let (alpha_mode, double_sided) = get_flags(cmd.material_slot, cmd.double_sided);
+                    if matches!(alpha_mode, ferrous_core::scene::AlphaMode::Blend) {
+                        continue;
+                    }
+                    rpass.set_pipeline(choose_inst_pipe(&alpha_mode, double_sided));
                     if let Some(mat_bg) = self.material_bind_groups.get(cmd.material_slot) {
                         rpass.set_bind_group(2, mat_bg.as_ref(), &[]);
                     }
-                    // bind directional light + IBL (group 3)
+                    rpass.set_bind_group(3, self.environment.bind_group.as_ref(), &[]);
+                    rpass.set_vertex_buffer(0, cmd.vertex_buffer.slice(..));
+                    rpass.set_index_buffer(cmd.index_buffer.slice(..), cmd.index_format);
+                    rpass.draw_indexed(
+                        0..cmd.index_count,
+                        0,
+                        cmd.first_instance..cmd.first_instance + cmd.instance_count,
+                    );
+                }
+
+                // then the transparent batches, sorted back-to-front
+                let mut transparent_cmds: Vec<&InstancedDrawCommand> = packet
+                    .instanced_objects
+                    .iter()
+                    .filter(|cmd| {
+                        let (alpha_mode, _) = get_flags(cmd.material_slot, cmd.double_sided);
+                        matches!(alpha_mode, ferrous_core::scene::AlphaMode::Blend)
+                    })
+                    .collect();
+                transparent_cmds.sort_by(|a, b| {
+                    b.distance_sq
+                        .partial_cmp(&a.distance_sq)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                for cmd in transparent_cmds {
+                    let (alpha_mode, double_sided) = get_flags(cmd.material_slot, cmd.double_sided);
+                    rpass.set_pipeline(choose_inst_pipe(&alpha_mode, double_sided));
+                    if let Some(mat_bg) = self.material_bind_groups.get(cmd.material_slot) {
+                        rpass.set_bind_group(2, mat_bg.as_ref(), &[]);
+                    }
                     rpass.set_bind_group(3, self.environment.bind_group.as_ref(), &[]);
                     rpass.set_vertex_buffer(0, cmd.vertex_buffer.slice(..));
                     rpass.set_index_buffer(cmd.index_buffer.slice(..), cmd.index_format);
@@ -291,48 +336,90 @@ impl RenderPass for WorldPass {
             if !packet.scene_objects.is_empty() {
                 rpass.set_bind_group(0, &*self.camera_bind_group, &[]);
 
-                for cmd in &packet.scene_objects {
+                // draw opaque / mask commands first
+                let mut opaque_cmds: Vec<&DrawCommand> = packet
+                    .scene_objects
+                    .iter()
+                    .filter(|cmd| {
+                        let (alpha_mode, _) = get_flags(cmd.material_slot, cmd.double_sided);
+                        !matches!(alpha_mode, ferrous_core::scene::AlphaMode::Blend)
+                    })
+                    .collect();
+                // optionally sort front-to-back for early-z (not required)
+                // opaque_cmds.sort_by(|a, b| a.distance_sq.partial_cmp(&b.distance_sq).unwrap_or(std::cmp::Ordering::Equal));
+                for cmd in opaque_cmds {
                     let offset = (cmd.model_slot as u32).wrapping_mul(self.model_stride);
                     rpass.set_bind_group(1, model_bg.as_ref(), &[offset]);
-                    // bind material group if available
                     if let Some(mat_bg) = self.material_bind_groups.get(cmd.material_slot) {
                         rpass.set_bind_group(2, mat_bg.as_ref(), &[]);
                     }
-                    // bind lights for PBR
                     rpass.set_bind_group(3, self.environment.bind_group.as_ref(), &[]);
-                    // pick pipeline based on material flags and sidedness
-                    if let Some(reg) = &self.material_registry {
-                        let (alpha_mode, double_sided) =
-                            reg.get_render_flags(MaterialHandle(cmd.material_slot as u32));
-                        let pipeline_ref = match (alpha_mode, double_sided) {
-                            (ferrous_core::scene::AlphaMode::Opaque, false) => {
-                                &self.pbr_pipeline.inner
-                            }
-                            (ferrous_core::scene::AlphaMode::Opaque, true) => {
-                                &self.pbr_pipeline_double.inner
-                            }
-                            (ferrous_core::scene::AlphaMode::Mask { .. }, false) => {
-                                &self.pbr_pipeline.inner
-                            }
-                            (ferrous_core::scene::AlphaMode::Mask { .. }, true) => {
-                                &self.pbr_pipeline_double.inner
-                            }
-                            (ferrous_core::scene::AlphaMode::Blend, false) => {
-                                &self.pbr_pipeline_blend.inner
-                            }
-                            (ferrous_core::scene::AlphaMode::Blend, true) => {
-                                &self.pbr_pipeline_blend_double.inner
-                            }
-                        };
-                        rpass.set_pipeline(pipeline_ref);
-                    } else {
-                        // fallback: use regular pipeline with culling as requested
-                        if cmd.double_sided {
-                            rpass.set_pipeline(&self.pbr_pipeline_double.inner);
-                        } else {
-                            rpass.set_pipeline(&self.pbr_pipeline.inner);
+                    let (alpha_mode, double_sided) = get_flags(cmd.material_slot, cmd.double_sided);
+                    let pipeline_ref = match (alpha_mode, double_sided) {
+                        (ferrous_core::scene::AlphaMode::Opaque, false) => &self.pbr_pipeline.inner,
+                        (ferrous_core::scene::AlphaMode::Opaque, true) => {
+                            &self.pbr_pipeline_double.inner
                         }
+                        (ferrous_core::scene::AlphaMode::Mask { .. }, false) => {
+                            &self.pbr_pipeline.inner
+                        }
+                        (ferrous_core::scene::AlphaMode::Mask { .. }, true) => {
+                            &self.pbr_pipeline_double.inner
+                        }
+                        (ferrous_core::scene::AlphaMode::Blend, false) => {
+                            &self.pbr_pipeline_blend.inner
+                        }
+                        (ferrous_core::scene::AlphaMode::Blend, true) => {
+                            &self.pbr_pipeline_blend_double.inner
+                        }
+                    };
+                    rpass.set_pipeline(pipeline_ref);
+                    rpass.set_vertex_buffer(0, cmd.vertex_buffer.slice(..));
+                    rpass.set_index_buffer(cmd.index_buffer.slice(..), cmd.index_format);
+                    rpass.draw_indexed(0..cmd.index_count, 0, 0..1);
+                }
+
+                // now collect, sort and draw transparent commands
+                let mut transparent_cmds: Vec<&DrawCommand> = packet
+                    .scene_objects
+                    .iter()
+                    .filter(|cmd| {
+                        let (alpha_mode, _) = get_flags(cmd.material_slot, cmd.double_sided);
+                        matches!(alpha_mode, ferrous_core::scene::AlphaMode::Blend)
+                    })
+                    .collect();
+                transparent_cmds.sort_by(|a, b| {
+                    b.distance_sq
+                        .partial_cmp(&a.distance_sq)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                for cmd in transparent_cmds {
+                    let offset = (cmd.model_slot as u32).wrapping_mul(self.model_stride);
+                    rpass.set_bind_group(1, model_bg.as_ref(), &[offset]);
+                    if let Some(mat_bg) = self.material_bind_groups.get(cmd.material_slot) {
+                        rpass.set_bind_group(2, mat_bg.as_ref(), &[]);
                     }
+                    rpass.set_bind_group(3, self.environment.bind_group.as_ref(), &[]);
+                    let (alpha_mode, double_sided) = get_flags(cmd.material_slot, cmd.double_sided);
+                    let pipeline_ref = match (alpha_mode, double_sided) {
+                        (ferrous_core::scene::AlphaMode::Opaque, false) => &self.pbr_pipeline.inner,
+                        (ferrous_core::scene::AlphaMode::Opaque, true) => {
+                            &self.pbr_pipeline_double.inner
+                        }
+                        (ferrous_core::scene::AlphaMode::Mask { .. }, false) => {
+                            &self.pbr_pipeline.inner
+                        }
+                        (ferrous_core::scene::AlphaMode::Mask { .. }, true) => {
+                            &self.pbr_pipeline_double.inner
+                        }
+                        (ferrous_core::scene::AlphaMode::Blend, false) => {
+                            &self.pbr_pipeline_blend.inner
+                        }
+                        (ferrous_core::scene::AlphaMode::Blend, true) => {
+                            &self.pbr_pipeline_blend_double.inner
+                        }
+                    };
+                    rpass.set_pipeline(pipeline_ref);
                     rpass.set_vertex_buffer(0, cmd.vertex_buffer.slice(..));
                     rpass.set_index_buffer(cmd.index_buffer.slice(..), cmd.index_format);
                     rpass.draw_indexed(0..cmd.index_count, 0, 0..1);

@@ -1254,6 +1254,9 @@ impl Renderer {
         for obj in self.legacy_objects.values() {
             // Legacy manual object.
             if frustum.intersects_aabb(&obj.world_aabb()) {
+                let pos = obj.matrix.w_axis.truncate();
+                let diff = pos - camera_packet.eye;
+                let dist_sq = diff.length_squared();
                 self.draw_commands_cache.push(DrawCommand {
                     vertex_buffer: obj.mesh.vertex_buffer.clone(),
                     index_buffer: obj.mesh.index_buffer.clone(),
@@ -1263,6 +1266,7 @@ impl Renderer {
                     model_slot: obj.slot,
                     double_sided: obj.double_sided,
                     material_slot: obj.material_slot,
+                    distance_sq: dist_sq,
                 });
             }
         }
@@ -1358,6 +1362,19 @@ impl Renderer {
                 let count = mats.len() as u32;
                 self.instance_matrix_scratch.extend_from_slice(&mats);
 
+                // compute a representative distance for the entire batch; we
+                // use the maximum squared distance of any matrix in the group
+                // to ensure that the farthest geometry is drawn first.
+                let mut max_dist_sq = 0.0;
+                for m in &mats {
+                    let pos = m.w_axis.truncate();
+                    let diff = pos - camera_packet.eye;
+                    let d = diff.length_squared();
+                    if d > max_dist_sq {
+                        max_dist_sq = d;
+                    }
+                }
+
                 self.instanced_commands_cache.push(InstancedDrawCommand {
                     vertex_buffer: mesh.vertex_buffer.clone(),
                     index_buffer: mesh.index_buffer.clone(),
@@ -1368,6 +1385,7 @@ impl Renderer {
                     instance_count: count,
                     double_sided,
                     material_slot,
+                    distance_sq: max_dist_sq,
                 });
 
                 offset += count;

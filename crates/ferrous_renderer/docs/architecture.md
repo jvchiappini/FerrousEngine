@@ -189,6 +189,10 @@ pub struct FramePacket {
     /// carry a flag in both command types; the `WorldPass` uses that flag
     /// to pick a pipeline variant with `cull_mode = None`.  Instanced groups
     /// are split on the flag so mixed batches never occur.
+    ///
+    /// Each draw command also carries a `distance_sq` value computed when the
+    /// packet is built.  Transparent geometry is sorted back‑to‑front using
+    /// this field so that alpha blending produces correct results.
     // ... open-ended extras map
 }
 ```

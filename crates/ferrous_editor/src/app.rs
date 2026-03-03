@@ -5,7 +5,7 @@ use ferrous_app::{
     App, AppContext, Color, FerrousApp, Handle, MouseButton, RenderStats, Vec3, Viewport,
 };
 use ferrous_assets::font::Font;
-use ferrous_core::scene::MaterialDescriptor;
+use ferrous_core::scene::{AlphaMode, MaterialDescriptor};
 use ferrous_core::scene::{Axis, GizmoMode};
 use ferrous_gui::{GuiBatch, InteractiveButton, Slider, TextBatch, Ui, ViewportWidget};
 use glam::Quat;
@@ -351,15 +351,15 @@ impl FerrousApp for EditorApp {
         // current directory) is still retained for ad-hoc tests.
         let test_model = r"C:\Users\jvchi\CARPETAS\FerrousEngine\assets\models\DamagedHelmet.glb";
         if std::path::Path::new(test_model).exists() {
-            if let Ok(handles) = ferrous_app::spawn_gltf(&mut ctx.world, &mut ctx.renderer, test_model) {
+            if let Ok(handles) =
+                ferrous_app::spawn_gltf(&mut ctx.world, &mut ctx.renderer, test_model)
+            {
                 log::info!("spawned {} meshes from {}", handles.len(), test_model);
-                // Position the helmet above the ground and rotate it to face
-                // the camera (90° around Y).
+                // Moved to the side so the transparency test scene is front-and-centre.
                 for h in &handles {
-                    ctx.world.set_position(*h, Vec3::new(0.0, 2.5, 0.0));
-                    ctx.world.set_rotation(*h, Quat::from_rotation_y(
-                        std::f32::consts::FRAC_PI_2,
-                    ));
+                    ctx.world.set_position(*h, Vec3::new(5.0, 2.5, 0.0));
+                    ctx.world
+                        .set_rotation(*h, Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
                 }
             } else {
                 log::warn!("failed to load glTF from {}", test_model);
@@ -368,7 +368,9 @@ impl FerrousApp for EditorApp {
             let demo_paths = ["model.gltf", "model.glb"];
             for p in &demo_paths {
                 if std::path::Path::new(p).exists() {
-                    if let Ok(handles) = ferrous_app::spawn_gltf(&mut ctx.world, &mut ctx.renderer, p) {
+                    if let Ok(handles) =
+                        ferrous_app::spawn_gltf(&mut ctx.world, &mut ctx.renderer, p)
+                    {
                         log::info!("spawned {} meshes from {}", handles.len(), p);
                     } else {
                         log::warn!("failed to load glTF from {}", p);
@@ -390,32 +392,107 @@ impl FerrousApp for EditorApp {
         let offset = 1.5_f32; // closer to the helmet surface
         ctx.world.spawn_point_light(
             "PointLight Red",
-            helmet_center + Vec3::new( offset, 0.0,  0.0),
-            [1.0, 0.05, 0.05],  // red
+            helmet_center + Vec3::new(offset, 0.0, 0.0),
+            [1.0, 0.05, 0.05], // red
             80.0,
             8.0,
         );
         ctx.world.spawn_point_light(
             "PointLight Blue",
-            helmet_center + Vec3::new(-offset, 0.0,  0.0),
-            [0.05, 0.1, 1.0],   // blue
+            helmet_center + Vec3::new(-offset, 0.0, 0.0),
+            [0.05, 0.1, 1.0], // blue
             80.0,
             8.0,
         );
         ctx.world.spawn_point_light(
             "PointLight Green",
-            helmet_center + Vec3::new(0.0, 0.0,  offset),
-            [0.05, 1.0, 0.05],  // green
+            helmet_center + Vec3::new(0.0, 0.0, offset),
+            [0.05, 1.0, 0.05], // green
             80.0,
             8.0,
         );
         ctx.world.spawn_point_light(
             "PointLight Yellow",
             helmet_center + Vec3::new(0.0, 0.0, -offset),
-            [1.0, 0.9, 0.1],    // yellow
+            [1.0, 0.9, 0.1], // yellow
             60.0,
             7.0,
         );
+
+        // ── Module 5: Transparency & Back-to-Front Sorting test scene ─────────
+        //
+        // Camera looks toward -Z.  Layout along the Z axis (closest → farthest):
+        //
+        //   z =  0.0  Cube  – Red   semi-transparent (AlphaMode::Blend, α=0.5)  [Frente]
+        //   z = -2.0  Sphere – Cyan  semi-transparent (AlphaMode::Blend, α=0.5)  [Medio]
+        //   z = -4.0  Cubes – Red / Green / Blue opaque (AlphaMode::Opaque)       [Fondo]
+        //
+        // Expected result: looking through the red cube → through the cyan sphere
+        // → the green opaque cube in the background is visible (correct blending
+        // and back-to-front depth sorting).
+
+        // ── Background: 3 fully opaque cubes ─────────────────────────────────
+        for (name, color, x_pos) in &[
+            ("BG Cube Red", [1.0_f32, 0.0, 0.0, 1.0], -2.0_f32),
+            ("BG Cube Green", [0.0_f32, 1.0, 0.0, 1.0], 0.0_f32),
+            ("BG Cube Blue", [0.0_f32, 0.0, 1.0, 1.0], 2.0_f32),
+        ] {
+            let mut desc = MaterialDescriptor::default();
+            desc.base_color = *color;
+            desc.metallic = 0.0;
+            desc.roughness = 0.8;
+            desc.alpha_mode = AlphaMode::Opaque;
+            let mat = ctx.renderer.create_material(&desc);
+            let h = ctx
+                .world
+                .spawn(*name)
+                .with_position(Vec3::new(*x_pos, 0.0, -4.0))
+                .with_kind(ferrous_core::scene::ElementKind::Cube {
+                    half_extents: Vec3::splat(0.5),
+                })
+                .with_scale(Vec3::splat(0.5))
+                .with_material_handle(mat)
+                .build();
+            ctx.world.set_material_descriptor(h, desc);
+        }
+
+        // ── Mid layer: cyan semi-transparent sphere (z = -2.0) ────────────────
+        {
+            let mut desc = MaterialDescriptor::default();
+            desc.base_color = [0.2, 0.8, 1.0, 0.5]; // celeste, α = 0.5
+            desc.metallic = 0.0;
+            desc.roughness = 0.1;
+            desc.alpha_mode = AlphaMode::Blend;
+            desc.double_sided = true;
+            let mat = ctx.renderer.create_material(&desc);
+            let hs =
+                ctx.world
+                    .spawn_sphere("Glass Sphere (Cyan)", Vec3::new(0.0, 0.0, -2.0), 0.6, 32);
+            ctx.world.set_material_handle(hs, mat);
+            ctx.world.set_material_descriptor(hs, desc);
+        }
+
+        // ── Front layer: red semi-transparent cube (z = 0.0) ─────────────────
+        {
+            let mut desc = MaterialDescriptor::default();
+            desc.base_color = [1.0, 0.2, 0.2, 0.5]; // rojo, α = 0.5
+            desc.metallic = 0.0;
+            desc.roughness = 0.1;
+            desc.alpha_mode = AlphaMode::Blend;
+            desc.double_sided = true;
+            let mat = ctx.renderer.create_material(&desc);
+            let h = ctx
+                .world
+                .spawn("Glass Cube (Red)")
+                .with_position(Vec3::new(0.0, 0.0, 0.0))
+                .with_kind(ferrous_core::scene::ElementKind::Cube {
+                    half_extents: Vec3::splat(0.5),
+                })
+                .with_scale(Vec3::splat(0.5))
+                .with_material_handle(mat)
+                .build();
+            ctx.world.set_material_descriptor(h, desc);
+        }
     }
 
     fn update(&mut self, ctx: &mut AppContext) {

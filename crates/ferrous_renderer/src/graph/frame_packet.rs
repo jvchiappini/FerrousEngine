@@ -51,6 +51,9 @@ pub struct DrawCommand {
     pub material_slot: usize,
     /// Indicates whether the object should be drawn with back-face culling disabled.
     pub double_sided: bool,
+    /// Squared distance from the camera at the time the packet was built.
+    /// Used for sorting transparent objects back-to-front.
+    pub distance_sq: f32,
 }
 
 /// One instanced draw call: all instances share the same mesh buffers and
@@ -74,6 +77,11 @@ pub struct InstancedDrawCommand {
     /// per-instance materials the caller must split them into multiple
     /// batches (current implementation doesn't support an array of materials).
     pub material_slot: usize,
+    /// Representative squared distance from the camera for this batch of
+    /// instances.  When building the packet we compute the maximum distance
+    /// of any instance in the batch; this gives a safe ordering for
+    /// translucent instanced geometry (farther batches are drawn first).
+    pub distance_sq: f32,
 }
 
 // ── Viewport ──────────────────────────────────────────────────────────────────
