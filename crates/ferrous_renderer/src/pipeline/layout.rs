@@ -31,7 +31,7 @@ pub struct PipelineLayouts {
 
 impl PipelineLayouts {
     pub fn new(device: &wgpu::Device) -> Self {
-        let static_uniform_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
+        let _static_uniform_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::VERTEX,
             ty: wgpu::BindingType::Buffer {
@@ -45,7 +45,17 @@ impl PipelineLayouts {
         let camera = Arc::new(
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Layout: Camera"),
-                entries: &[static_uniform_entry(0)],
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    // eye_pos is read in the fragment shader for PBR view vector.
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
             }),
         );
 

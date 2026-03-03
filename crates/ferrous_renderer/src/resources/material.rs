@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use wgpu::util::DeviceExt;
 
-use crate::resources::{TEXTURE_BLACK, TEXTURE_NORMAL, TEXTURE_WHITE, TextureHandle};
+use crate::resources::{TextureHandle, TEXTURE_BLACK, TEXTURE_NORMAL, TEXTURE_WHITE};
 
 /// Simple GPU-backed texture with associated view and sampler.
 #[derive(Clone)]
@@ -15,6 +15,8 @@ pub struct Texture {
 impl Texture {
     /// Create a texture from raw RGBA8 data.  `data` must be `width*height*4`
     /// bytes long.  The resulting texture is immediately uploaded to the GPU.
+    /// Create an sRGB texture from raw RGBA8 data (use for albedo / color data).
+    /// The GPU will automatically linearize samples from this texture.
     pub fn from_rgba8(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -22,8 +24,37 @@ impl Texture {
         height: u32,
         data: &[u8],
     ) -> Self {
+        Self::from_rgba8_internal(device, queue, width, height, data, true)
+    }
+
+    /// Create a **linear** texture from raw RGBA8 data.
+    /// Use this for non-color data: normal maps, metallic-roughness, AO, emissive.
+    /// The GPU will NOT apply any gamma correction when sampling.
+    pub fn from_rgba8_linear(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        data: &[u8],
+    ) -> Self {
+        Self::from_rgba8_internal(device, queue, width, height, data, false)
+    }
+
+    fn from_rgba8_internal(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        data: &[u8],
+        srgb: bool,
+    ) -> Self {
         assert_eq!(data.len(), (width * height * 4) as usize);
         let mip_level_count = (width.max(height) as f32).log2().floor() as u32 + 1;
+        let format = if srgb {
+            wgpu::TextureFormat::Rgba8UnormSrgb
+        } else {
+            wgpu::TextureFormat::Rgba8Unorm
+        };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Texture::from_rgba8"),
             size: wgpu::Extent3d {
@@ -35,7 +66,7 @@ impl Texture {
             mip_level_count,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -170,6 +201,11 @@ impl Material {
         // renderer's `TextureHandle` wrapper before looking up the texture.
         let albedo_handle = TextureHandle(desc.albedo_tex.unwrap_or(TEXTURE_WHITE.0));
         let normal_handle = TextureHandle(desc.normal_tex.unwrap_or(TEXTURE_NORMAL.0));
+        // MR fallback: white (metallic=1 in B, roughness=1 in G when no texture) but
+        // we default to white=all-ones so metallic/roughness come from the uniform.
+        // AO fallback: white = no occlusion (AO=1).
+        // These three slots carry linear data; their fallback handles already point
+        // to linear textures in the registry (TEXTURE_BLACK / TEXTURE_WHITE are linear).
         let mr_handle = TextureHandle(desc.metallic_roughness_tex.unwrap_or(TEXTURE_WHITE.0));
         let emissive_handle = TextureHandle(desc.emissive_tex.unwrap_or(TEXTURE_BLACK.0));
         let ao_handle = TextureHandle(desc.ao_tex.unwrap_or(TEXTURE_WHITE.0));

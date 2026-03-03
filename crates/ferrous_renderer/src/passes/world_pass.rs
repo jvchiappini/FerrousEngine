@@ -236,6 +236,8 @@ impl RenderPass for WorldPass {
                     if let Some(mat_bg) = self.material_bind_groups.get(cmd.material_slot) {
                         rpass.set_bind_group(2, mat_bg.as_ref(), &[]);
                     }
+                    // bind directional light + IBL (group 3)
+                    rpass.set_bind_group(3, self.environment.bind_group.as_ref(), &[]);
                     rpass.set_vertex_buffer(0, cmd.vertex_buffer.slice(..));
                     rpass.set_index_buffer(cmd.index_buffer.slice(..), cmd.index_format);
                     rpass.draw_indexed(

@@ -2,6 +2,7 @@
 // All application logic lives in `app.rs`.
 
 mod app;
+mod ui;
 
 /// wasm32 entry point called from JavaScript: `ferrous_editor.run()`.
 #[cfg(target_arch = "wasm32")]

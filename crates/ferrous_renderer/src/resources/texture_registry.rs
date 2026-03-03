@@ -42,7 +42,9 @@ impl TextureRegistry {
         let mut textures = Vec::new();
         let free_slots = Vec::new();
 
-        // white pixel
+        // white pixel — used as albedo fallback (sRGB slot; value [1,1,1] is
+        // the same in both colour spaces, so the format doesn't matter here
+        // but we keep it sRGB to match how albedo textures are stored).
         textures.push(Some(Texture::from_rgba8(
             device,
             queue,
@@ -51,8 +53,8 @@ impl TextureRegistry {
             &[255, 255, 255, 255],
         )));
 
-        // flat normal map (0,0,1) encoded in tangent space
-        textures.push(Some(Texture::from_rgba8(
+        // flat normal map (0,0,1) encoded in tangent space — linear data!
+        textures.push(Some(Texture::from_rgba8_linear(
             device,
             queue,
             1,
@@ -60,8 +62,8 @@ impl TextureRegistry {
             &[127, 127, 255, 255],
         )));
 
-        // black pixel
-        textures.push(Some(Texture::from_rgba8(
+        // black pixel — used as emissive/AO fallback — linear data.
+        textures.push(Some(Texture::from_rgba8_linear(
             device,
             queue,
             1,
@@ -75,7 +77,10 @@ impl TextureRegistry {
         }
     }
 
-    /// Register raw RGBA8 data as a new texture and return its handle.
+    /// Register raw RGBA8 **sRGB** color data as a new texture and return its handle.
+    /// The GPU will linearize samples automatically.  Use this for albedo/color images.
+    /// For non-color data (normal maps, metallic-roughness, AO) use
+    /// [`register_rgba8_linear`] instead.
     pub fn register_rgba8(
         &mut self,
         device: &wgpu::Device,
@@ -83,6 +88,32 @@ impl TextureRegistry {
         width: u32,
         height: u32,
         data: &[u8],
+    ) -> TextureHandle {
+        self.register_rgba8_impl(device, queue, width, height, data, true)
+    }
+
+    /// Register raw RGBA8 **linear** data as a new texture and return its handle.
+    /// The GPU will NOT apply gamma correction.  Use this for normal maps,
+    /// metallic-roughness, AO, and any other non-color data.
+    pub fn register_rgba8_linear(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        data: &[u8],
+    ) -> TextureHandle {
+        self.register_rgba8_impl(device, queue, width, height, data, false)
+    }
+
+    fn register_rgba8_impl(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        data: &[u8],
+        srgb: bool,
     ) -> TextureHandle {
         // compute mip count even if we don't generate them; the `Texture`
         // helper already does this for us, but we still need to upload each
@@ -94,6 +125,11 @@ impl TextureRegistry {
                 .expect("register_rgba8 data length mismatch");
             let mip_level_count = (width.max(height) as f32).log2().floor() as u32 + 1;
 
+            let tex_format = if srgb {
+                wgpu::TextureFormat::Rgba8UnormSrgb
+            } else {
+                wgpu::TextureFormat::Rgba8Unorm
+            };
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("Texture::from_rgba8"),
                 size: wgpu::Extent3d {
@@ -104,7 +140,7 @@ impl TextureRegistry {
                 mip_level_count,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                format: tex_format,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             });
@@ -170,7 +206,11 @@ impl TextureRegistry {
         #[cfg(not(feature = "image"))]
         {
             // fallback: just create a texture with the correct number of mips
-            let tex = Texture::from_rgba8(device, queue, width, height, data);
+            let tex = if srgb {
+                Texture::from_rgba8(device, queue, width, height, data)
+            } else {
+                Texture::from_rgba8_linear(device, queue, width, height, data)
+            };
             if let Some(slot) = self.free_slots.pop() {
                 let idx = slot as usize;
                 self.textures[idx] = Some(tex);

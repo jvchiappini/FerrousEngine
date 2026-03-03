@@ -10,6 +10,8 @@ use ferrous_core::scene::{Axis, GizmoMode};
 use ferrous_gui::{GuiBatch, InteractiveButton, Slider, TextBatch, Ui, ViewportWidget};
 use rand::Rng;
 
+use crate::ui::{GlobalLightPanel, MaterialInspector};
+
 /// How many cubos se spawnean por frame durante el benchmark.
 const BENCHMARK_BATCH: u32 = 200;
 /// FPS mínimo antes de parar el benchmark (se evalúa sobre la media).
@@ -60,6 +62,12 @@ pub struct EditorApp {
     /// Backend GPU activo (WebGPU, WebGL2, Vulkan, etc.), detectado en setup.
     gpu_backend: String,
     selected: Option<Handle>,
+    /// Previously selected handle — used to detect selection changes.
+    prev_selected: Option<Handle>,
+    /// Phase-13: PBR material inspector panel.
+    inspector: MaterialInspector,
+    /// Phase-13: Global directional light control panel.
+    light_panel: GlobalLightPanel,
     gizmo: ferrous_core::scene::GizmoState,
     /// Secondary gizmo used to reposition the rotation pivot point.
     pivot_gizmo: ferrous_core::scene::GizmoState,
@@ -87,21 +95,21 @@ impl Default for EditorApp {
             bench_peak_cubes: 0,
             bench_stopped_fps: 0.0,
             selected: None,
+            prev_selected: None,
+            inspector: MaterialInspector::new(),
+            light_panel: GlobalLightPanel::new(),
             gizmo: ferrous_core::scene::GizmoState::default(),
             pivot_gizmo: {
                 let mut g = ferrous_core::scene::GizmoState::default();
                 // Slightly smaller + white/grey palette so it's visually distinct.
                 g.style.arm_length = 0.8;
                 g.style.show_planes = false;
-                g.style.x_axis = ferrous_core::scene::AxisColors::new(
-                    [1.0, 0.6, 0.6], [1.0, 1.0, 0.0],
-                );
-                g.style.y_axis = ferrous_core::scene::AxisColors::new(
-                    [0.6, 1.0, 0.6], [1.0, 1.0, 0.0],
-                );
-                g.style.z_axis = ferrous_core::scene::AxisColors::new(
-                    [0.6, 0.8, 1.0], [1.0, 1.0, 0.0],
-                );
+                g.style.x_axis =
+                    ferrous_core::scene::AxisColors::new([1.0, 0.6, 0.6], [1.0, 1.0, 0.0]);
+                g.style.y_axis =
+                    ferrous_core::scene::AxisColors::new([0.6, 1.0, 0.6], [1.0, 1.0, 0.0]);
+                g.style.z_axis =
+                    ferrous_core::scene::AxisColors::new([0.6, 0.8, 1.0], [1.0, 1.0, 0.0]);
                 g
             },
             show_pivot_gizmo: false,
@@ -143,34 +151,182 @@ impl FerrousApp for EditorApp {
         ui.add(self.slider_w.clone());
         ui.add(self.slider_h.clone());
         ui.add(self.slider_d.clone());
+        // Phase-13 panels.
+        self.inspector.configure_ui(ui);
+        self.light_panel.configure_ui(ui);
     }
 
     fn setup(&mut self, ctx: &mut AppContext) {
-        // create a default material and assign it to both primitives; the
-        // renderer owns the GPU handle and we keep the descriptor in the
-        // world for editing later.
-        let desc = MaterialDescriptor::default();
-        let default_mat = ctx.renderer.create_material(&desc);
-        let _cube = ctx
-            .world
-            .spawn("Default Cube")
-            .with_position(Vec3::ZERO)
-            .with_kind(ferrous_core::scene::ElementKind::Cube { half_extents: Vec3::splat(0.5) })
-            .with_scale(Vec3::splat(0.5))
-            .with_material_handle(default_mat)
-            .build();
-        let _quad = ctx
-            .world
-            .spawn("Default Quad")
-            .with_position(Vec3::new(2.0, 0.0, 0.0))
-            .with_kind(ferrous_core::scene::ElementKind::Quad {
-                width: 1.0,
-                height: 1.0,
-                double_sided: false,
-            })
-            .with_scale(Vec3::new(0.5, 0.5, 1.0))
-            .with_material_handle(default_mat)
-            .build();
+        // ── PBR test scene ────────────────────────────────────────────────────
+        // A row of 7 cubes covering the full PBR parameter space:
+        //
+        //  0  Dielectric matte      (metallic=0, roughness=1.0)  grey
+        //  1  Dielectric semi-rough (metallic=0, roughness=0.5)  grey
+        //  2  Dielectric smooth     (metallic=0, roughness=0.1)  grey
+        //  3  Metal rough           (metallic=1, roughness=0.8)  gold
+        //  4  Metal semi-rough      (metallic=1, roughness=0.4)  gold
+        //  5  Metal smooth          (metallic=1, roughness=0.1)  gold
+        //  6  Metal mirror          (metallic=1, roughness=0.0)  gold
+        //
+        // A red and blue colored dielectric pair sit below the row for
+        // quick color-tinting checks.
+
+        struct Preset {
+            name: &'static str,
+            base_color: [f32; 4],
+            metallic: f32,
+            roughness: f32,
+            emissive_strength: f32,
+        }
+
+        let presets: &[Preset] = &[
+            // ── Dielectrics (metallic = 0) ────────────────────────────────
+            Preset {
+                name: "Dielectric Matte",
+                base_color: [0.8, 0.8, 0.8, 1.0],
+                metallic: 0.0,
+                roughness: 1.0,
+                emissive_strength: 0.0,
+            },
+            Preset {
+                name: "Dielectric Semi-rough",
+                base_color: [0.8, 0.8, 0.8, 1.0],
+                metallic: 0.0,
+                roughness: 0.5,
+                emissive_strength: 0.0,
+            },
+            Preset {
+                name: "Dielectric Smooth",
+                base_color: [0.8, 0.8, 0.8, 1.0],
+                metallic: 0.0,
+                roughness: 0.1,
+                emissive_strength: 0.0,
+            },
+            // ── Metals (metallic = 1, gold-ish albedo) ────────────────────
+            Preset {
+                name: "Metal Rough",
+                base_color: [1.0, 0.76, 0.33, 1.0],
+                metallic: 1.0,
+                roughness: 0.8,
+                emissive_strength: 0.0,
+            },
+            Preset {
+                name: "Metal Semi-rough",
+                base_color: [1.0, 0.76, 0.33, 1.0],
+                metallic: 1.0,
+                roughness: 0.4,
+                emissive_strength: 0.0,
+            },
+            Preset {
+                name: "Metal Smooth",
+                base_color: [1.0, 0.76, 0.33, 1.0],
+                metallic: 1.0,
+                roughness: 0.1,
+                emissive_strength: 0.0,
+            },
+            Preset {
+                name: "Metal Mirror",
+                base_color: [1.0, 0.76, 0.33, 1.0],
+                metallic: 1.0,
+                roughness: 0.0,
+                emissive_strength: 0.0,
+            },
+        ];
+
+        // Helper to convert typical sRGB hex/colors to Linear for the PBR uniform buffer
+        fn to_linear(c: [f32; 4]) -> [f32; 4] {
+            [
+                c[0].powf(2.2),
+                c[1].powf(2.2),
+                c[2].powf(2.2),
+                c[3], // alpha is linear
+            ]
+        }
+
+        let spacing = 1.6_f32;
+        let total = presets.len() as f32;
+        let x_start = -(total - 1.0) * spacing * 0.5;
+
+        for (i, preset) in presets.iter().enumerate() {
+            let x = x_start + i as f32 * spacing;
+            let mut desc = MaterialDescriptor::default();
+            desc.base_color = to_linear(preset.base_color);
+            desc.metallic = preset.metallic;
+            desc.roughness = preset.roughness;
+            desc.emissive_strength = preset.emissive_strength;
+            if preset.emissive_strength > 0.0 {
+                desc.emissive = [1.0, 0.4, 0.1];
+            }
+            let mat = ctx.renderer.create_material(&desc);
+            let h = ctx
+                .world
+                .spawn(preset.name)
+                .with_position(Vec3::new(x, 0.0, 0.0))
+                .with_kind(ferrous_core::scene::ElementKind::Cube {
+                    half_extents: Vec3::splat(0.5),
+                })
+                .with_scale(Vec3::splat(0.5))
+                .with_material_handle(mat)
+                .build();
+            ctx.world.set_material_descriptor(h, desc);
+            // keep last cube selectable
+            self.last_cube = Some(h);
+        }
+
+        // ── Color pair (row below) ─────────────────────────────────────────
+        // Red plastic (dielectric smooth) and blue plastic (dielectric smooth)
+        // to verify that colored dielectrics show correct colored diffuse +
+        // white specular highlight.
+        for (name, col, x_off) in &[
+            ("Red Plastic", [0.9_f32, 0.1, 0.1, 1.0], -1.0_f32),
+            ("Blue Plastic", [0.1_f32, 0.3, 0.9, 1.0], 1.0_f32),
+        ] {
+            let mut desc = MaterialDescriptor::default();
+            desc.base_color = to_linear(*col);
+            desc.metallic = 0.0;
+            desc.roughness = 0.3;
+            let mat = ctx.renderer.create_material(&desc);
+            let h = ctx
+                .world
+                .spawn(*name)
+                .with_position(Vec3::new(*x_off, -1.6, 0.0))
+                .with_kind(ferrous_core::scene::ElementKind::Cube {
+                    half_extents: Vec3::splat(0.5),
+                })
+                .with_scale(Vec3::splat(0.5))
+                .with_material_handle(mat)
+                .build();
+            ctx.world.set_material_descriptor(h, desc);
+        }
+
+        // ── Directional light at a 45° angle for clear shading ────────────
+        // Direction = from upper-right-front toward scene center.
+        let ldir = Vec3::new(-0.6, -0.8, -0.4).normalize();
+        ctx.renderer.set_directional_light(
+            [ldir.x, ldir.y, ldir.z],
+            [1.0, 0.97, 0.90], // warm white
+            3.5,
+        );
+
+        // ── Camera: start at a slight 3/4 angle so cubes look 3-D ─────────
+        // yaw=-30°, pitch=20° — shows top/right faces clearly.
+        ctx.renderer.orbit.yaw = -0.52; // ≈ -30°
+        ctx.renderer.orbit.pitch = 0.35; // ≈  20°
+        {
+            let yaw = ctx.renderer.orbit.yaw;
+            let pitch = ctx.renderer.orbit.pitch;
+            let dist = ctx.renderer.camera.controller.orbit_distance;
+            // Manually compute orbit eye from yaw/pitch angles:
+            //   forward = (sin(yaw)*cos(pitch), sin(pitch), cos(yaw)*cos(pitch))
+            // eye = target + dist * forward
+            let cy = pitch.cos();
+            let sy = pitch.sin();
+            let cx = yaw.cos();
+            let sx = yaw.sin();
+            let offset = Vec3::new(sx * cy, sy, cx * cy) * dist;
+            ctx.renderer.camera.eye = ctx.renderer.camera.target + offset;
+        }
+
         self.gpu_backend = ctx.gpu_backend().to_string();
     }
 
@@ -285,7 +441,7 @@ impl FerrousApp for EditorApp {
 
     fn draw_ui(
         &mut self,
-        _gui: &mut GuiBatch,
+        gui: &mut GuiBatch,
         text: &mut TextBatch,
         font: Option<&Font>,
         ctx: &mut AppContext,
@@ -344,13 +500,13 @@ impl FerrousApp for EditorApp {
             if self.selected.is_some() {
                 let mode_label = match self.gizmo.mode {
                     GizmoMode::Translate => "Translate  [T]",
-                    GizmoMode::Rotate    => "Rotate     [R]",
-                    GizmoMode::Scale     => "Scale",
+                    GizmoMode::Rotate => "Rotate     [R]",
+                    GizmoMode::Scale => "Scale",
                 };
                 let mode_color: [f32; 4] = match self.gizmo.mode {
                     GizmoMode::Translate => [0.4, 0.9, 1.0, 1.0],
-                    GizmoMode::Rotate    => [0.9, 0.5, 1.0, 1.0],
-                    GizmoMode::Scale     => [1.0, 0.8, 0.2, 1.0],
+                    GizmoMode::Rotate => [0.9, 0.5, 1.0, 1.0],
+                    GizmoMode::Scale => [1.0, 0.8, 0.2, 1.0],
                 };
                 text.draw_text(
                     font,
@@ -386,10 +542,7 @@ impl FerrousApp for EditorApp {
                     let piv_str = if off == Vec3::ZERO {
                         "Pivot: origin  [P] move".to_string()
                     } else {
-                        format!(
-                            "Pivot offset ({:.2},{:.2},{:.2})  [P]",
-                            off.x, off.y, off.z
-                        )
+                        format!("Pivot offset ({:.2},{:.2},{:.2})  [P]", off.x, off.y, off.z)
                     };
                     let piv_color: [f32; 4] = if self.show_pivot_gizmo {
                         [1.0, 1.0, 0.4, 1.0]
@@ -458,6 +611,24 @@ impl FerrousApp for EditorApp {
                 );
             }
         }
+
+        // ── Phase-13: Material Inspector (right panel) ─────────────────────
+        // Sync widgets when the selection changes.
+        if self.selected != self.prev_selected {
+            if let Some(h) = self.selected {
+                if let Some(elem) = ctx.world.get(h) {
+                    self.inspector
+                        .sync_from_descriptor(&elem.material.descriptor);
+                }
+            }
+            self.prev_selected = self.selected;
+        }
+
+        self.inspector.draw(self.selected, gui, text, font, ctx);
+
+        // ── Phase-13: Global Light Panel (below the inspector) ─────────────
+        let win_h = ctx.window_size.1 as f32;
+        self.light_panel.draw(gui, text, font, ctx, win_h - 140.0);
     }
 
     fn draw_3d(&mut self, ctx: &mut AppContext) {
@@ -511,8 +682,7 @@ impl FerrousApp for EditorApp {
         if let Some(sel) = self.selected {
             // When the pivot gizmo is active and dragging, give it priority
             // so its mouse-pick wins over the rotation gizmo.
-            let pivot_active = self.show_pivot_gizmo
-                && self.gizmo.mode == GizmoMode::Rotate;
+            let pivot_active = self.show_pivot_gizmo && self.gizmo.mode == GizmoMode::Rotate;
 
             if pivot_active {
                 // Borrow split: update_pivot_gizmo needs both &mut pivot_gizmo

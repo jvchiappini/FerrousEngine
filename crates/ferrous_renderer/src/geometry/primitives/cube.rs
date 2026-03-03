@@ -17,52 +17,61 @@ pub fn cube(device: &wgpu::Device) -> Mesh {
         vert
     };
 
-    // one constant per face color for readability
-    const RED: [f32; 3] = [1.0, 0.0, 0.0];
-    const GREEN: [f32; 3] = [0.0, 1.0, 0.0];
-    const BLUE: [f32; 3] = [0.0, 0.0, 1.0];
-    const YELLOW: [f32; 3] = [1.0, 1.0, 0.0];
-    const MAGENTA: [f32; 3] = [1.0, 0.0, 1.0];
-    const CYAN: [f32; 3] = [0.0, 1.0, 1.0];
+    // All faces use white so the material base_color is not tinted.
+    const WHITE: [f32; 3] = [1.0, 1.0, 1.0];
 
-    // helper to compute UV coordinates based on face index; the texture is
-    // assumed to be laid out as a horizontal strip of six regions.  this way
-    // each cube face can sample a different portion of the same texture.
-    let uv_for = |face: usize, u: f32, v: f32| -> [f32; 2] {
-        let region = face as f32 / 6.0;
-        [region + u / 6.0, v]
-    };
+    // Each face uses its own [0,1]×[0,1] UV space so that:
+    //   1. Normal-map sampling is correct (full-range UVs).
+    //   2. compute_tangents produces well-conditioned tangents (no 1/6 compression).
+    //
+    // Winding rule: CCW when viewed from outside (from the direction the normal points).
+    // All quads use the same index pattern 0→1→2, 2→3→0.
+    // Vertex layout per face: bottom-left, bottom-right, top-right, top-left
+    // (matching UV [0,0],[1,0],[1,1],[0,1]).
 
     #[rustfmt::skip]
     let vertices: Vec<Vertex> = vec![
-        // front  (z+)
-        v([-1.0, -1.0,  1.0], [0.0,0.0,1.0], RED,     uv_for(0, 0.0, 0.0)), v([ 1.0, -1.0,  1.0], [0.0,0.0,1.0], RED,     uv_for(0, 1.0, 0.0)),
-        v([ 1.0,  1.0,  1.0], [0.0,0.0,1.0], RED,     uv_for(0, 1.0, 1.0)), v([-1.0,  1.0,  1.0], [0.0,0.0,1.0], RED,     uv_for(0, 0.0, 1.0)),
-        // back   (z-)
-        v([-1.0, -1.0, -1.0], [0.0,0.0,-1.0], GREEN,   uv_for(1, 0.0, 0.0)), v([ 1.0, -1.0, -1.0], [0.0,0.0,-1.0], GREEN,   uv_for(1, 1.0, 0.0)),
-        v([ 1.0,  1.0, -1.0], [0.0,0.0,-1.0], GREEN,   uv_for(1, 1.0, 1.0)), v([-1.0,  1.0, -1.0], [0.0,0.0,-1.0], GREEN,   uv_for(1, 0.0, 1.0)),
-        // left   (x-)
-        v([-1.0, -1.0, -1.0], [-1.0,0.0,0.0], BLUE,    uv_for(2, 0.0, 0.0)), v([-1.0, -1.0,  1.0], [-1.0,0.0,0.0], BLUE,    uv_for(2, 1.0, 0.0)),
-        v([-1.0,  1.0,  1.0], [-1.0,0.0,0.0], BLUE,    uv_for(2, 1.0, 1.0)), v([-1.0,  1.0, -1.0], [-1.0,0.0,0.0], BLUE,    uv_for(2, 0.0, 1.0)),
-        // right  (x+)
-        v([ 1.0, -1.0, -1.0], [1.0,0.0,0.0], YELLOW,  uv_for(3, 0.0, 0.0)), v([ 1.0, -1.0,  1.0], [1.0,0.0,0.0], YELLOW,  uv_for(3, 1.0, 0.0)),
-        v([ 1.0,  1.0,  1.0], [1.0,0.0,0.0], YELLOW,  uv_for(3, 1.0, 1.0)), v([ 1.0,  1.0, -1.0], [1.0,0.0,0.0], YELLOW,  uv_for(3, 0.0, 1.0)),
-        // top    (y+)
-        v([-1.0,  1.0, -1.0], [0.0,1.0,0.0], MAGENTA,uv_for(4, 0.0, 0.0)), v([-1.0,  1.0,  1.0], [0.0,1.0,0.0], MAGENTA,uv_for(4, 1.0, 0.0)),
-        v([ 1.0,  1.0,  1.0], [0.0,1.0,0.0], MAGENTA,uv_for(4, 1.0, 1.0)), v([ 1.0,  1.0, -1.0], [0.0,1.0,0.0], MAGENTA,uv_for(4, 0.0, 1.0)),
-        // bottom (y-)
-        v([-1.0, -1.0, -1.0], [0.0,-1.0,0.0], CYAN,   uv_for(5, 0.0, 0.0)), v([-1.0, -1.0,  1.0], [0.0,-1.0,0.0], CYAN,   uv_for(5, 1.0, 0.0)),
-        v([ 1.0, -1.0,  1.0], [0.0,-1.0,0.0], CYAN,   uv_for(5, 1.0, 1.0)), v([ 1.0, -1.0, -1.0], [0.0,-1.0,0.0], CYAN,   uv_for(5, 0.0, 1.0)),
+        // front  (z+)  — viewed from +Z: X right, Y up
+        v([-1.0, -1.0,  1.0], [0.0, 0.0, 1.0], WHITE, [0.0, 1.0]),
+        v([ 1.0, -1.0,  1.0], [0.0, 0.0, 1.0], WHITE, [1.0, 1.0]),
+        v([ 1.0,  1.0,  1.0], [0.0, 0.0, 1.0], WHITE, [1.0, 0.0]),
+        v([-1.0,  1.0,  1.0], [0.0, 0.0, 1.0], WHITE, [0.0, 0.0]),
+        // back   (z-)  — viewed from -Z: X left, Y up  → flip X order
+        v([ 1.0, -1.0, -1.0], [0.0, 0.0,-1.0], WHITE, [0.0, 1.0]),
+        v([-1.0, -1.0, -1.0], [0.0, 0.0,-1.0], WHITE, [1.0, 1.0]),
+        v([-1.0,  1.0, -1.0], [0.0, 0.0,-1.0], WHITE, [1.0, 0.0]),
+        v([ 1.0,  1.0, -1.0], [0.0, 0.0,-1.0], WHITE, [0.0, 0.0]),
+        // left   (x-)  — viewed from -X: Z right (toward +Z), Y up → -Z first
+        v([-1.0, -1.0, -1.0], [-1.0, 0.0, 0.0], WHITE, [0.0, 1.0]),
+        v([-1.0, -1.0,  1.0], [-1.0, 0.0, 0.0], WHITE, [1.0, 1.0]),
+        v([-1.0,  1.0,  1.0], [-1.0, 0.0, 0.0], WHITE, [1.0, 0.0]),
+        v([-1.0,  1.0, -1.0], [-1.0, 0.0, 0.0], WHITE, [0.0, 0.0]),
+        // right  (x+)  — viewed from +X: Z left (toward -Z), Y up → +Z first
+        v([ 1.0, -1.0,  1.0], [1.0, 0.0, 0.0], WHITE, [0.0, 1.0]),
+        v([ 1.0, -1.0, -1.0], [1.0, 0.0, 0.0], WHITE, [1.0, 1.0]),
+        v([ 1.0,  1.0, -1.0], [1.0, 0.0, 0.0], WHITE, [1.0, 0.0]),
+        v([ 1.0,  1.0,  1.0], [1.0, 0.0, 0.0], WHITE, [0.0, 0.0]),
+        // top    (y+)  — viewed from +Y: X right, Z down (toward -Z)
+        v([-1.0,  1.0,  1.0], [0.0, 1.0, 0.0], WHITE, [0.0, 1.0]),
+        v([ 1.0,  1.0,  1.0], [0.0, 1.0, 0.0], WHITE, [1.0, 1.0]),
+        v([ 1.0,  1.0, -1.0], [0.0, 1.0, 0.0], WHITE, [1.0, 0.0]),
+        v([-1.0,  1.0, -1.0], [0.0, 1.0, 0.0], WHITE, [0.0, 0.0]),
+        // bottom (y-)  — viewed from -Y: X right, Z up (toward +Z)
+        v([-1.0, -1.0, -1.0], [0.0,-1.0, 0.0], WHITE, [0.0, 1.0]),
+        v([ 1.0, -1.0, -1.0], [0.0,-1.0, 0.0], WHITE, [1.0, 1.0]),
+        v([ 1.0, -1.0,  1.0], [0.0,-1.0, 0.0], WHITE, [1.0, 0.0]),
+        v([-1.0, -1.0,  1.0], [0.0,-1.0, 0.0], WHITE, [0.0, 0.0]),
     ];
 
+    // Uniform pattern: every quad is two CCW triangles 0→1→2 and 2→3→0
     #[rustfmt::skip]
     let indices: &[u16] = &[
-        0,  1,  2,  2,  3,  0,  // front
-        4,  6,  5,  4,  7,  6,  // back  (CCW flip)
-        8,  9,  10, 8,  10, 11, // left
-        12, 14, 13, 12, 15, 14, // right (CCW flip)
-        16, 17, 18, 16, 18, 19, // top
-        20, 22, 21, 20, 23, 22, // bottom (CCW flip)
+         0,  1,  2,  2,  3,  0,  // front
+         4,  5,  6,  6,  7,  4,  // back
+         8,  9, 10, 10, 11,  8,  // left
+        12, 13, 14, 14, 15, 12,  // right
+        16, 17, 18, 18, 19, 16,  // top
+        20, 21, 22, 22, 23, 20,  // bottom
     ];
 
     // compute tangents before uploading

@@ -1,48 +1,60 @@
-// Shader de instanced rendering.
+// Instanced PBR shader.
 //
-// Todas las matrices de modelo viven en un array<mat4x4<f32>> en un
-// storage buffer.  El índice de la instancia activa se obtiene de
-// @builtin(instance_index), que wgpu proporciona gratuitamente cuando
-// se emite draw_indexed(..., first_instance..first_instance+count).
+// Each instance reads its model matrix from a storage buffer using
+// @builtin(instance_index).  Full PBR lighting (Cook-Torrance BRDF) is
+// performed in the fragment stage using the same directional light that the
+// legacy per-object path uses (group 3).
 
-struct VsOut {
-    @builtin(position) clip_pos : vec4<f32>,
-    @location(0) color : vec3<f32>,
-    @location(1) uv : vec2<f32>,
-};
+const PI: f32 = 3.14159265359;
 
-// material definitions (same as base.wgsl)
-struct Material {
-    base_color : vec4<f32>,
-    emissive : vec4<f32>,
-    metallic_roughness : vec4<f32>,
-    normal_ao : vec4<f32>,
-    flags : u32,
-    _pad0 : u32,
-    _pad1 : u32,
-    _pad2 : u32,
-};
-
-@group(2) @binding(0)
-var<uniform> material : Material;
-@group(2) @binding(1)
-var texture_sampler : sampler;
-@group(2) @binding(2)
-var texture : texture_2d<f32>;
+// ── bind groups ──────────────────────────────────────────────────────────────
 
 struct Camera {
     view_proj : mat4x4<f32>,
+    eye_pos   : vec4<f32>,   // xyz = world-space camera position, w = padding
 };
-
 @group(0) @binding(0)
-var<uniform> camera : Camera;
+var<uniform> camera: Camera;
 
-// Array de matrices de modelo — una por instancia.
+// Array of model matrices — one per instance.
 @group(1) @binding(0)
-var<storage, read> instances : array<mat4x4<f32>>;
+var<storage, read> instances: array<mat4x4<f32>>;
 
-// NOTE: we keep the same ordering as base.wgsl to match the buffer layout
-// used by the renderer.
+struct MaterialUniform {
+    base_color          : vec4<f32>,
+    emissive            : vec4<f32>,  // w == strength
+    metallic_roughness  : vec4<f32>,  // x=met, y=rough, z=ao_strength
+    normal_ao           : vec4<f32>,  // x = normal_scale
+    flags               : u32,
+    alpha_cutoff        : f32,
+    _pad                : vec2<u32>,
+};
+@group(2) @binding(0)
+var<uniform> material: MaterialUniform;
+@group(2) @binding(1)
+var mat_sampler: sampler;
+@group(2) @binding(2)
+var tex_albedo: texture_2d<f32>;
+@group(2) @binding(3)
+var tex_normal: texture_2d<f32>;
+@group(2) @binding(4)
+var tex_met_rough: texture_2d<f32>;
+@group(2) @binding(5)
+var tex_emissive: texture_2d<f32>;
+@group(2) @binding(6)
+var tex_ao: texture_2d<f32>;
+
+struct DirectionalLight {
+    direction : vec3<f32>,
+    _pad0     : f32,
+    color     : vec3<f32>,
+    intensity : f32,
+};
+@group(3) @binding(0)
+var<uniform> dir_light: DirectionalLight;
+
+// ── vertex ────────────────────────────────────────────────────────────────────
+
 struct VsIn {
     @location(0) position : vec3<f32>,
     @location(1) normal   : vec3<f32>,
@@ -51,31 +63,191 @@ struct VsIn {
     @location(4) uv       : vec2<f32>,
 };
 
+struct VsOut {
+    @builtin(position) clip_pos    : vec4<f32>,
+    @location(0)       world_pos   : vec3<f32>,
+    @location(1)       world_normal: vec3<f32>,
+    @location(2)       world_tan   : vec3<f32>,
+    @location(3)       world_bitan : vec3<f32>,
+    @location(4)       uv          : vec2<f32>,
+    @location(5)       color       : vec3<f32>,
+};
+
 @vertex
-fn vs_main(
-    in            : VsIn,
-    @builtin(instance_index) inst_idx : u32,
-) -> VsOut {
-    var out : VsOut;
-    // inst_idx is the absolute instance index (includes first_instance offset
-    // from draw_indexed).  It indexes directly into the instances storage buffer
-    // where matrices are packed contiguously starting at slot `first_instance`.
+fn vs_main(in: VsIn, @builtin(instance_index) inst_idx: u32) -> VsOut {
+    var out: VsOut;
     let model     = instances[inst_idx];
     let world_pos = model * vec4<f32>(in.position, 1.0);
-    out.clip_pos  = camera.view_proj * world_pos;
-    out.color     = in.color;
-    out.uv        = in.uv;
+    out.clip_pos    = camera.view_proj * world_pos;
+    out.world_pos   = world_pos.xyz;
+
+    // Build the normal matrix as transpose(inverse(M3)) using cofactors.
+    // This is correct even for non-uniform scale, unlike a plain mat3 extract.
+    let m3 = mat3x3<f32>(model[0].xyz, model[1].xyz, model[2].xyz);
+    // cofactor matrix (== adjugate transposed) — cheaper than full inverse
+    let c00 = m3[1][1] * m3[2][2] - m3[2][1] * m3[1][2];
+    let c01 = m3[2][1] * m3[0][2] - m3[0][1] * m3[2][2];
+    let c02 = m3[0][1] * m3[1][2] - m3[1][1] * m3[0][2];
+    let c10 = m3[2][0] * m3[1][2] - m3[1][0] * m3[2][2];
+    let c11 = m3[0][0] * m3[2][2] - m3[2][0] * m3[0][2];
+    let c12 = m3[1][0] * m3[0][2] - m3[0][0] * m3[1][2];
+    let c20 = m3[1][0] * m3[2][1] - m3[2][0] * m3[1][1];
+    let c21 = m3[2][0] * m3[0][1] - m3[0][0] * m3[2][1];
+    let c22 = m3[0][0] * m3[1][1] - m3[1][0] * m3[0][1];
+    // adjugate = transpose of cofactor matrix = normal matrix (direction preserved)
+    let normal_mat = mat3x3<f32>(
+        vec3<f32>(c00, c10, c20),
+        vec3<f32>(c01, c11, c21),
+        vec3<f32>(c02, c12, c22),
+    );
+    out.world_normal = normalize(normal_mat * in.normal);
+    out.world_tan    = normalize(normal_mat * in.tangent.xyz);
+    let n = normalize(out.world_normal);
+    let t = normalize(out.world_tan);
+    out.world_bitan  = normalize(cross(n, t) * in.tangent.w);
+
+    out.uv    = in.uv;
+    out.color = in.color;
     return out;
 }
 
+// ── PBR utilities ─────────────────────────────────────────────────────────────
+
+fn distribution_ggx(NdotH: f32, roughness: f32) -> f32 {
+    let a  = roughness * roughness;
+    let a2 = a * a;
+    let d  = (NdotH * NdotH) * (a2 - 1.0) + 1.0;
+    return a2 / (PI * d * d + 0.0001);
+}
+
+fn geometry_schlick_ggx(NdotV: f32, roughness: f32) -> f32 {
+    let r = roughness + 1.0;
+    let k = (r * r) / 8.0;
+    return NdotV / (NdotV * (1.0 - k) + k + 0.0001);
+}
+
+fn geometry_smith(NdotV: f32, NdotL: f32, roughness: f32) -> f32 {
+    return geometry_schlick_ggx(NdotV, roughness)
+         * geometry_schlick_ggx(NdotL, roughness);
+}
+
+// Geometry term for IBL/ambient: k = roughness² / 2
+fn geometry_schlick_ggx_ibl(NdotV: f32, roughness: f32) -> f32 {
+    let a = roughness * roughness;
+    let k = a / 2.0;
+    return NdotV / (NdotV * (1.0 - k) + k + 0.0001);
+}
+
+// Smith geometry for ambient/IBL
+fn geometry_smith_ibl(NdotV: f32, roughness: f32) -> f32 {
+    return geometry_schlick_ggx_ibl(NdotV, roughness);
+}
+
+fn fresnel_schlick(cosTheta: f32, F0: vec3<f32>) -> vec3<f32> {
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+// ── fragment ──────────────────────────────────────────────────────────────────
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    // material uniforms declared globally
-
-    var color : vec4<f32> = material.base_color * vec4<f32>(in.color, 1.0);
+    // albedo
+    var albedo    = material.base_color.xyz * in.color;
+    var out_alpha = material.base_color.w;
     if ((material.flags & 1u) != 0u) {
-        let texel = textureSample(texture, texture_sampler, in.uv);
-        color = color * texel;
+        let s  = textureSample(tex_albedo, mat_sampler, in.uv);
+        albedo    *= s.xyz;
+        out_alpha *= s.a;
     }
-    return color;
+
+    // AO
+    var ao_factor = material.metallic_roughness.z;  // ao_strength
+    if ((material.flags & 16u) != 0u) {
+        ao_factor = textureSample(tex_ao, mat_sampler, in.uv).x * ao_factor;
+    }
+
+    // normal
+    var N = normalize(in.world_normal);
+    if ((material.flags & 2u) != 0u) {
+        var ns = textureSample(tex_normal, mat_sampler, in.uv).xyz * 2.0 - 1.0;
+        ns.x *= material.normal_ao.x;
+        ns.y *= material.normal_ao.x;
+        let T   = normalize(in.world_tan);
+        let B   = normalize(in.world_bitan);
+        let TBN = mat3x3<f32>(T, B, N);
+        N = normalize(TBN * ns);
+    }
+
+    // metallic / roughness
+    var metallic  = material.metallic_roughness.x;
+    var roughness = material.metallic_roughness.y;
+    if ((material.flags & 4u) != 0u) {
+        let mr  = textureSample(tex_met_rough, mat_sampler, in.uv).xyz;
+        roughness *= mr.y;
+        metallic  *= mr.z;
+    }
+    metallic  = clamp(metallic,  0.0,  1.0);
+    // 0.001 minimum: avoids GGX singularity while still allowing near-mirror surfaces.
+    // For a perfect mirror set metallic=1, roughness=0 in the inspector.
+    roughness = clamp(roughness, 0.001, 1.0);
+
+    let V    = normalize(camera.eye_pos.xyz - in.world_pos);
+    let Ldir = normalize(-dir_light.direction);
+    let H    = normalize(V + Ldir);
+    // clamp NdotV to a small epsilon to avoid divide-by-zero in geometry term
+    let NdotV = max(dot(N, V),    0.0001);
+    let NdotL = max(dot(N, Ldir), 0.0);
+    let NdotH = max(dot(N, H),    0.0);
+    let VdotH = max(dot(V, H),    0.0);
+
+    // F0: dielectrics use 0.04, metals use albedo
+    let F0      = mix(vec3<f32>(0.04), albedo, metallic);
+    let D       = distribution_ggx(NdotH, roughness);
+    let G       = geometry_smith(NdotV, NdotL, roughness);
+    let F       = fresnel_schlick(VdotH, F0);
+    let spec    = (D * G * F) / (4.0 * NdotV * NdotL + 0.0001);
+    // energy conservation: kD = 0 for metals
+    let kD      = (vec3<f32>(1.0) - F) * (1.0 - metallic);
+    let radiance = dir_light.color * dir_light.intensity;
+    let Lo      = (kD * albedo / PI + spec) * radiance * NdotL;
+
+    // Ambient: Fake Hemisphere / IBL Environment
+    let F_ambient  = fresnel_schlick(max(dot(N, V), 0.0), F0);
+    let kD_ambient = (vec3<f32>(1.0) - F_ambient) * (1.0 - metallic);
+    
+    let sky_color = vec3<f32>(0.5, 0.7, 1.0) * 1.2;
+    let ground_color = vec3<f32>(0.2, 0.15, 0.1);
+    
+    // Diffuse ambient (Irradiance) based on surface normal
+    let irradiance = mix(ground_color, sky_color, N.y * 0.5 + 0.5);
+    let diffuse_ambient = kD_ambient * albedo * irradiance;
+
+    // Specular ambient (Radiance) based on reflection vector
+    let R = reflect(-V, N);
+    let R_blend = mix(N.y, R.y, 1.0 - roughness); // blur for rough materials
+    let specular_radiance = mix(ground_color, sky_color, R_blend * 0.5 + 0.5);
+
+    let G_ambient  = geometry_smith_ibl(max(dot(N, V), 0.0001), roughness);
+    let specular_ambient = F_ambient * G_ambient * specular_radiance;
+    
+    let ambient    = (diffuse_ambient + specular_ambient) * ao_factor * 0.8; // intensidad global
+    var color   = ambient + Lo;
+
+    // emissive
+    if ((material.flags & 8u) != 0u) {
+        let emiss = material.emissive.xyz * material.emissive.w;
+        let es    = textureSample(tex_emissive, mat_sampler, in.uv);
+        color += emiss * es.xyz;
+    }
+
+    // tone mapping
+    color = color / (color + vec3<f32>(1.0));
+    // Hardware applies sRGB gamma correction for us
+
+    var result = vec4<f32>(color, out_alpha);
+    // alpha mask
+    if ((material.flags & 32u) != 0u) {
+        if (result.a < material.alpha_cutoff) { discard; }
+    }
+    return result;
 }

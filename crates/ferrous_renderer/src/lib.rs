@@ -1143,21 +1143,22 @@ impl Renderer {
         use std::collections::HashMap;
 
         #[cfg(not(target_arch = "wasm32"))]
-        let visible_mesh_groups: HashMap<(usize, bool), (geometry::Mesh, Vec<glam::Mat4>)> = self
+        let visible_mesh_groups: HashMap<(usize, usize, bool), (geometry::Mesh, usize, Vec<glam::Mat4>)> = self
             .world_objects
             .par_iter()
             .flatten()
             .filter(|obj| frustum.intersects_aabb(&obj.world_aabb()))
             .fold(
                 || HashMap::new(),
-                |mut map: HashMap<(usize, bool), (geometry::Mesh, Vec<glam::Mat4>)>, obj| {
+                |mut map: HashMap<(usize, usize, bool), (geometry::Mesh, usize, Vec<glam::Mat4>)>, obj| {
                     let key = (
                         Arc::as_ptr(&obj.mesh.vertex_buffer) as usize,
+                        obj.material_slot,
                         obj.double_sided,
                     );
                     map.entry(key)
-                        .or_insert_with(|| (obj.mesh.clone(), Vec::new()))
-                        .1
+                        .or_insert_with(|| (obj.mesh.clone(), obj.material_slot, Vec::new()))
+                        .2
                         .push(obj.matrix);
                     map
                 },
@@ -1165,10 +1166,10 @@ impl Renderer {
             .reduce(
                 || HashMap::new(),
                 |mut a, b| {
-                    for (k, (mesh, mats)) in b {
+                    for (k, (mesh, mat_slot, mats)) in b {
                         a.entry(k)
-                            .or_insert_with(|| (mesh.clone(), Vec::new()))
-                            .1
+                            .or_insert_with(|| (mesh.clone(), mat_slot, Vec::new()))
+                            .2
                             .extend(mats);
                     }
                     a
@@ -1176,7 +1177,7 @@ impl Renderer {
             );
 
         #[cfg(target_arch = "wasm32")]
-        let visible_mesh_groups: HashMap<(usize, bool), (geometry::Mesh, Vec<glam::Mat4>)> = self
+        let visible_mesh_groups: HashMap<(usize, usize, bool), (geometry::Mesh, usize, Vec<glam::Mat4>)> = self
             .world_objects
             .iter()
             .flatten()
@@ -1184,17 +1185,18 @@ impl Renderer {
             .fold(HashMap::new(), |mut map, obj| {
                 let key = (
                     Arc::as_ptr(&obj.mesh.vertex_buffer) as usize,
+                    obj.material_slot,
                     obj.double_sided,
                 );
                 map.entry(key)
-                    .or_insert_with(|| (obj.mesh.clone(), Vec::new()))
-                    .1
+                    .or_insert_with(|| (obj.mesh.clone(), obj.material_slot, Vec::new()))
+                    .2
                     .push(obj.matrix);
                 map
             });
 
         let mut total_visible = 0;
-        for (_, (_, mats)) in &visible_mesh_groups {
+        for (_, (_, _, mats)) in &visible_mesh_groups {
             total_visible += mats.len();
         }
 
@@ -1212,7 +1214,7 @@ impl Renderer {
             let mut offset = 0;
             self.instance_matrix_scratch.reserve(total_visible);
 
-            for ((_key, double_sided), (mesh, mats)) in visible_mesh_groups {
+            for ((_key, _mat, double_sided), (mesh, material_slot, mats)) in visible_mesh_groups {
                 let count = mats.len() as u32;
                 self.instance_matrix_scratch.extend_from_slice(&mats);
 
@@ -1225,7 +1227,7 @@ impl Renderer {
                     first_instance: offset,
                     instance_count: count,
                     double_sided,
-                    material_slot: 0,
+                    material_slot,
                 });
 
                 offset += count;

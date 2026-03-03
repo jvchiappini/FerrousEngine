@@ -8,6 +8,7 @@ const PI: f32 = 3.14159265359;
 
 struct Camera {
     view_proj : mat4x4<f32>,
+    eye_pos   : vec4<f32>,   // xyz = world-space camera position, w = padding
 };
 
 @group(0) @binding(0)
@@ -112,20 +113,34 @@ fn distribution_ggx(NdotH: f32, roughness: f32) -> f32 {
     return a2 / (PI * denom * denom + 0.0001);
 }
 
-fn geometry_schlick_ggx(NdotV: f32, roughness: f32) -> f32 {
-    let r = (roughness + 1.0);
+// Geometry term for direct lighting: k = (roughness+1)² / 8
+fn geometry_schlick_ggx_direct(NdotV: f32, roughness: f32) -> f32 {
+    let r = roughness + 1.0;
     let k = (r * r) / 8.0;
     return NdotV / (NdotV * (1.0 - k) + k + 0.0001);
 }
 
+// Geometry term for IBL/ambient: k = roughness² / 2
+fn geometry_schlick_ggx_ibl(NdotV: f32, roughness: f32) -> f32 {
+    let a = roughness * roughness;
+    let k = a / 2.0;
+    return NdotV / (NdotV * (1.0 - k) + k + 0.0001);
+}
+
+// Smith geometry for direct lighting
 fn geometry_smith(NdotV: f32, NdotL: f32, roughness: f32) -> f32 {
-    let ggx1 = geometry_schlick_ggx(NdotV, roughness);
-    let ggx2 = geometry_schlick_ggx(NdotL, roughness);
+    let ggx1 = geometry_schlick_ggx_direct(NdotV, roughness);
+    let ggx2 = geometry_schlick_ggx_direct(NdotL, roughness);
     return ggx1 * ggx2;
 }
 
+// Smith geometry for ambient/IBL
+fn geometry_smith_ibl(NdotV: f32, roughness: f32) -> f32 {
+    return geometry_schlick_ggx_ibl(NdotV, roughness);
+}
+
 fn fresnel_schlick(cosTheta: f32, F0: vec3<f32>) -> vec3<f32> {
-    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
 // fragment input / output
@@ -154,9 +169,9 @@ fn fs_main(in: FragmentInput) -> FragmentOutput {
         // modulate alpha by texture's alpha channel as well
         out_alpha *= sample.a;
     }
-    var ao_factor = 1.0;
+    var ao_factor = material.metallic_roughness.z;  // ao_strength
     if ((material.flags & 16u) != 0u) {
-        ao_factor = textureSample(tex_ao, mat_sampler, in.uv).x * material.metallic_roughness.z;
+        ao_factor = textureSample(tex_ao, mat_sampler, in.uv).x * ao_factor;
     }
 
     // normal mapping
@@ -180,39 +195,57 @@ fn fs_main(in: FragmentInput) -> FragmentOutput {
         roughness *= mr.y;
         metallic *= mr.z;
     }
-    roughness = clamp(roughness, 0.04, 1.0);
+    metallic  = clamp(metallic,  0.0,  1.0);
+    // 0.001 minimum: avoids GGX singularity while still allowing near-mirror surfaces.
+    // For a perfect mirror set metallic=1, roughness=0 in the inspector.
+    roughness = clamp(roughness, 0.001, 1.0);
 
-    // View vector: we don't yet have world-space camera position available
-    // so approximate by treating the camera as if at origin.
-    let Vdir = normalize(-in.world_pos);
+    // View vector: world-space direction from fragment to camera eye.
+    let Vdir = normalize(camera.eye_pos.xyz - in.world_pos);
 
     let Ldir = normalize(-dir_light.direction);
-    let H = normalize(Vdir + Ldir);
-    let NdotV = max(dot(N, Vdir), 0.0);
+    let H    = normalize(Vdir + Ldir);
+    // clamp NdotV to a small epsilon to avoid divide-by-zero in geometry term
+    let NdotV = max(dot(N, Vdir), 0.0001);
     let NdotL = max(dot(N, Ldir), 0.0);
-    let NdotH = max(dot(N, H), 0.0);
+    let NdotH = max(dot(N, H),    0.0);
     let VdotH = max(dot(Vdir, H), 0.0);
 
-    // compute F0
+    // F0: dielectrics use 0.04, metals use albedo
     let F0 = mix(vec3<f32>(0.04), albedo, metallic);
 
-    // Cook-Torrance BRDF
-    let D = distribution_ggx(NdotH, roughness);
-    let G = geometry_smith(NdotV, NdotL, roughness);
-    let F = fresnel_schlick(VdotH, F0);
-    let numerator = D * G * F;
-    let denominator = 4.0 * NdotV * NdotL + 0.0001;
-    let specular = numerator / denominator;
+    // Cook-Torrance specular BRDF
+    let D       = distribution_ggx(NdotH, roughness);
+    let G       = geometry_smith(NdotV, NdotL, roughness);
+    let F       = fresnel_schlick(VdotH, F0);
+    let specular = (D * G * F) / (4.0 * NdotV * NdotL + 0.0001);
 
-    let kS = F;
-    // diffuse component: (1 - F0) scaled by (1 - metallic)
-    let kD = (vec3<f32>(1.0) - kS) * (1.0 - metallic);
+    // energy conservation: kD = 0 for metals (all energy goes to specular)
+    let kD = (vec3<f32>(1.0) - F) * (1.0 - metallic);
 
     let radiance = dir_light.color * dir_light.intensity;
     let Lo = (kD * albedo / PI + specular) * radiance * NdotL;
 
-    // ambient
-    let ambient = vec3<f32>(0.03) * albedo * ao_factor;
+    // Ambient: Fake Hemisphere / IBL Environment
+    let F_ambient = fresnel_schlick(max(dot(N, Vdir), 0.0), F0);
+    let kD_ambient = (vec3<f32>(1.0) - F_ambient) * (1.0 - metallic);
+    
+    let sky_color = vec3<f32>(0.5, 0.7, 1.0) * 1.2;
+    let ground_color = vec3<f32>(0.2, 0.15, 0.1);
+    
+    // Diffuse ambient (Irradiance) based on surface normal
+    let irradiance = mix(ground_color, sky_color, N.y * 0.5 + 0.5);
+    let diffuse_ambient = kD_ambient * albedo * irradiance;
+    
+    // Specular ambient (Radiance) based on reflection vector
+    let R = reflect(-Vdir, N);
+    let R_blend = mix(N.y, R.y, 1.0 - roughness); // difuminar hacia la normal si es rugoso
+    let specular_radiance = mix(ground_color, sky_color, R_blend * 0.5 + 0.5);
+    
+    let G_ambient = geometry_smith_ibl(max(dot(N, Vdir), 0.0001), roughness);
+    let specular_ambient = F_ambient * G_ambient * specular_radiance;
+
+    let ambient = (diffuse_ambient + specular_ambient) * ao_factor * 0.8; // intensidad global del ambiente
 
     var color = ambient + Lo;
 
@@ -223,9 +256,9 @@ fn fs_main(in: FragmentInput) -> FragmentOutput {
         color += emiss * sample.xyz;
     }
 
-    // tone mapping and gamma
+    // tone mapping 
     color = color / (color + vec3<f32>(1.0));
-    color = pow(color, vec3<f32>(1.0 / 2.2));
+    // The surface format is sRGB, so the hardware handles gamma correction.
 
     var out: FragmentOutput;
     out.frag_color = vec4<f32>(color, out_alpha);
