@@ -167,7 +167,7 @@ impl TextureRegistry {
             );
             // generate the remaining levels using our helper; this also makes
             // hot-reload behave identically.
-            generate_mipmaps_cpu(queue, &texture, current, mip_level_count);
+            generate_mipmaps_cpu(queue, &texture, current, mip_level_count, srgb);
 
             let view = texture.create_view(&wgpu::TextureViewDescriptor {
                 base_mip_level: 0,
@@ -182,6 +182,7 @@ impl TextureRegistry {
                 mag_filter: wgpu::FilterMode::Linear,
                 min_filter: wgpu::FilterMode::Linear,
                 mipmap_filter: wgpu::FilterMode::Linear,
+                lod_max_clamp: 32.0,
                 ..Default::default()
             });
             let tex = Texture {
@@ -276,8 +277,9 @@ impl TextureRegistry {
             },
         );
 
-        // generate and upload mipmaps on the CPU side
-        generate_mipmaps_cpu(queue, &texture, current_img, mip_level_count);
+        // generate and upload mipmaps on the CPU side (sRGB=true: this path
+        // is always for color textures loaded from disk)
+        generate_mipmaps_cpu(queue, &texture, current_img, mip_level_count, true);
 
         // create a Texture wrapper identical to Texture::from_rgba8 but
         // matching the descriptor we just built.  we intentionally duplicate
@@ -403,10 +405,17 @@ impl TextureRegistry {
             #[cfg(feature = "image")]
             {
                 // reuse the same helper used during creation
-                let mut current = image::RgbaImage::from_raw(width, height, data.to_vec())
+                let current = image::RgbaImage::from_raw(width, height, data.to_vec())
                     .expect("update_texture_data length mismatch");
                 let mip_level_count = (width.max(height) as f32).log2().floor() as u32 + 1;
-                generate_mipmaps_cpu(queue, &*tex.texture, current, mip_level_count);
+                // detect whether this texture uses a sRGB format so we can
+                // linearize before downsampling.
+                let is_srgb = matches!(
+                    tex.texture.format(),
+                    wgpu::TextureFormat::Rgba8UnormSrgb
+                        | wgpu::TextureFormat::Bgra8UnormSrgb
+                );
+                generate_mipmaps_cpu(queue, &*tex.texture, current, mip_level_count, is_srgb);
             }
         }
     }
@@ -419,17 +428,54 @@ fn generate_mipmaps_cpu(
     texture: &wgpu::Texture,
     mut current: image::RgbaImage,
     mip_level_count: u32,
+    srgb: bool,
 ) {
+    // For sRGB textures the raw bytes are gamma-encoded.  Downsampling in
+    // gamma space produces overly-dark mipmaps (the classic "darkening at
+    // distance" artifact).  We linearize before resizing and re-encode
+    // afterward.  For linear textures (normal/MR/AO) we skip this step.
+    #[inline]
+    fn srgb_to_linear(v: u8) -> f32 {
+        let s = v as f32 / 255.0;
+        if s <= 0.04045 { s / 12.92 } else { ((s + 0.055) / 1.055_f32).powf(2.4) }
+    }
+    #[inline]
+    fn linear_to_srgb(v: f32) -> u8 {
+        let c = v.clamp(0.0, 1.0);
+        let s = if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 };
+        (s * 255.0 + 0.5) as u8
+    }
+
     let (width, height) = current.dimensions();
     for mip in 1..mip_level_count {
         let mip_w = (width >> mip).max(1);
         let mip_h = (height >> mip).max(1);
-        let resized = image::imageops::resize(
-            &current,
-            mip_w,
-            mip_h,
-            image::imageops::FilterType::Lanczos3,
-        );
+
+        let resized = if srgb {
+            // Linearize → resize → re-encode
+            let mut linear = image::RgbaImage::new(current.width(), current.height());
+            for (src, dst) in current.pixels().zip(linear.pixels_mut()) {
+                dst[0] = (srgb_to_linear(src[0]) * 255.0 + 0.5) as u8;
+                dst[1] = (srgb_to_linear(src[1]) * 255.0 + 0.5) as u8;
+                dst[2] = (srgb_to_linear(src[2]) * 255.0 + 0.5) as u8;
+                dst[3] = src[3]; // alpha stays linear
+            }
+            let resized_linear = image::imageops::resize(
+                &linear, mip_w, mip_h, image::imageops::FilterType::Lanczos3,
+            );
+            let mut out = image::RgbaImage::new(mip_w, mip_h);
+            for (src, dst) in resized_linear.pixels().zip(out.pixels_mut()) {
+                dst[0] = linear_to_srgb(src[0] as f32 / 255.0);
+                dst[1] = linear_to_srgb(src[1] as f32 / 255.0);
+                dst[2] = linear_to_srgb(src[2] as f32 / 255.0);
+                dst[3] = src[3];
+            }
+            out
+        } else {
+            image::imageops::resize(
+                &current, mip_w, mip_h, image::imageops::FilterType::Lanczos3,
+            )
+        };
 
         queue.write_texture(
             wgpu::ImageCopyTexture {

@@ -100,7 +100,9 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     let b = normalize(cross(n, t) * in.tangent.w);
     out.world_bitangent = b;
 
-    out.uv = in.uv;
+    // glTF stores UVs with V=0 at the bottom (OpenGL convention).
+    // wgpu/Vulkan expect V=0 at the top, so we flip the V axis here.
+    out.uv = vec2<f32>(in.uv.x, 1.0 - in.uv.y);
     out.color = in.color;
     return out;
 }

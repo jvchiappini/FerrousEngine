@@ -1,5 +1,5 @@
-use std::path::Path;
 use anyhow::{Context, Result};
+use std::path::Path;
 
 /// "Raw" material description produced by the asset loader.  We keep this
 /// independent of the renderer's `MaterialDescriptor` type so that the
@@ -59,82 +59,115 @@ pub fn load_gltf(path: &Path) -> Result<AssetModel> {
 
     // --- images -------------------------------------------------------------
     let mut out_images = Vec::with_capacity(images.len());
+    use gltf::image::Format as GltfFormat;
     for img in images.iter() {
-        // gltf::image::Data reports the nominal width/height but when the
-        // source is a PNG/JPEG the pixel buffer is compressed.  attempt to
-        // decode using the `image` crate to get the true dimensions; if the
-        // decoder fails we fall back to the metadata and warn so we can
-        // diagnose mismatches later.
-        let (width, height, pixels) = match image::load_from_memory(&img.pixels) {
-            Ok(dyn_img) => {
-                let rgba = dyn_img.to_rgba8();
-                (rgba.width(), rgba.height(), rgba.into_raw())
+        // diagnostic: print format/size so we can reason about failures
+        eprintln!(
+            "gltf image @{}x{} format={:?} bytes={}",
+            img.width,
+            img.height,
+            img.format,
+            img.pixels.len(),
+        );
+        let mut width = img.width;
+        let mut height = img.height;
+        let mut pixels = match img.format {
+            GltfFormat::R8G8B8 => {
+                let mut rgba = Vec::with_capacity((width as usize) * (height as usize) * 4);
+                for chunk in img.pixels.chunks(3) {
+                    rgba.extend_from_slice(chunk);
+                    rgba.push(255);
+                }
+                rgba
             }
-            Err(err) => {
-                eprintln!(
-                    "warning: failed to decode glTF image ({}x{}) {} bytes: {}",
-                    img.width,
-                    img.height,
-                    img.pixels.len(),
-                    err
-                );
-                // treat the buffer as raw RGBA8; attempt to guess the correct
-                // dimensions in case the metadata is wrong.  this is necessary
-                // for some exporters which report the full mipchain size but
-                // only supply a subset of the levels.
-                let mut w = img.width;
-                let mut h = img.height;
-                let mut data = img.pixels.to_vec();
-                let expected = (w as usize) * (h as usize) * 4;
-                if data.len() != expected {
-                    if w > 0 && data.len() % ((w as usize) * 4) == 0 {
-                        h = (data.len() / ((w as usize) * 4)) as u32;
-                    } else if h > 0 && data.len() % ((h as usize) * 4) == 0 {
-                        w = (data.len() / ((h as usize) * 4)) as u32;
-                    } else {
-                        // fallback: assume square
-                        let area = data.len() / 4;
-                        let side = (area as f32).sqrt() as u32;
-                        if (side as usize) * (side as usize) == area {
-                            w = side;
-                            h = side;
-                        }
-                    }
+            GltfFormat::R8G8B8A8 => img.pixels.clone(),
+            _ => match image::load_from_memory(&img.pixels) {
+                Ok(dyn_img) => {
+                    let rgba = dyn_img.to_rgba8();
+                    width = rgba.width();
+                    height = rgba.height();
+                    rgba.into_raw()
+                }
+                Err(err) => {
                     eprintln!(
-                        "adjusted raw image dims from {}x{} to {}x{}",
+                        "warning: failed to decode glTF image ({}x{}) {} bytes: {}",
                         img.width,
                         img.height,
-                        w,
-                        h
+                        img.pixels.len(),
+                        err
                     );
+                    let mut data = img.pixels.to_vec();
+                    if data.len() == (width as usize) * (height as usize) * 3 {
+                        let mut rgba = Vec::with_capacity((width as usize) * (height as usize) * 4);
+                        for chunk in data.chunks(3) {
+                            rgba.extend_from_slice(chunk);
+                            rgba.push(255);
+                        }
+                        data = rgba;
+                    }
+                    let expected = (width as usize) * (height as usize) * 4;
+                    if data.len() != expected {
+                        if width > 0 && data.len() % ((width as usize) * 4) == 0 {
+                            height = (data.len() / ((width as usize) * 4)) as u32;
+                        } else if height > 0 && data.len() % ((height as usize) * 4) == 0 {
+                            width = (data.len() / ((height as usize) * 4)) as u32;
+                        } else {
+                            let area = data.len() / 4;
+                            let side = (area as f32).sqrt() as u32;
+                            if (side as usize) * (side as usize) == area {
+                                width = side;
+                                height = side;
+                            }
+                        }
+                        eprintln!(
+                            "adjusted raw image dims from {}x{} to {}x{}",
+                            img.width, img.height, width, height
+                        );
+                    }
+                    data
                 }
-                (w, h, data)
-            }
+            },
         };
+        // compute simple average colour for debugging
+        if !pixels.is_empty() {
+            let mut sum = [0u64; 3];
+            let mut count = 0u64;
+            for chunk in pixels.chunks(4) {
+                sum[0] += chunk[0] as u64;
+                sum[1] += chunk[1] as u64;
+                sum[2] += chunk[2] as u64;
+                count += 1;
+            }
+            if count > 0 {
+                eprintln!(
+                    " -> avg color = ({:.1},{:.1},{:.1})",
+                    sum[0] as f32 / count as f32,
+                    sum[1] as f32 / count as f32,
+                    sum[2] as f32 / count as f32
+                );
+            }
+        }
         out_images.push((width, height, pixels));
     }
-
     // --- materials ----------------------------------------------------------
-    let mut out_materials = Vec::new();
+    let mut out_materials = Vec::with_capacity(document.materials().len());
     for mat in document.materials() {
         let pbr = mat.pbr_metallic_roughness();
-        let base_color = pbr.base_color_factor();
         let alpha_mode = match mat.alpha_mode() {
             gltf::material::AlphaMode::Opaque => ferrous_core::scene::AlphaMode::Opaque,
-            // `Mask` variant carries no data in the gltf crate; the actual
-            // cutoff value lives on the material itself (`.alpha_cutoff()`).
-            // fall back to the value reported by the API or the glTF default
-            // of 0.5 if not present.
-            gltf::material::AlphaMode::Mask => {
-                let cutoff = mat.alpha_cutoff().unwrap_or(0.5);
-                ferrous_core::scene::AlphaMode::Mask { cutoff }
-            }
+            gltf::material::AlphaMode::Mask => ferrous_core::scene::AlphaMode::Mask {
+                cutoff: mat.alpha_cutoff().unwrap_or(0.5),
+            },
             gltf::material::AlphaMode::Blend => ferrous_core::scene::AlphaMode::Blend,
         };
-        let mut raw = RawMaterial {
-            base_color,
+        let raw = RawMaterial {
+            base_color: pbr.base_color_factor(),
             emissive: mat.emissive_factor(),
-            emissive_strength: mat.emissive_factor().iter().copied().fold(0.0, |a, b| a.max(b)),
+            emissive_strength: mat
+                .emissive_factor()
+                .iter()
+                .copied()
+                .fold(0.0, |a, b| a.max(b)),
             metallic: pbr.metallic_factor(),
             roughness: pbr.roughness_factor(),
             normal_scale: mat.normal_texture().map(|n| n.scale()).unwrap_or(1.0),
@@ -142,14 +175,18 @@ pub fn load_gltf(path: &Path) -> Result<AssetModel> {
             base_color_tex: pbr
                 .base_color_texture()
                 .map(|info| info.texture().source().index()),
-            normal_tex: mat.normal_texture().map(|info| info.texture().source().index()),
+            normal_tex: mat
+                .normal_texture()
+                .map(|info| info.texture().source().index()),
             metallic_roughness_tex: pbr
                 .metallic_roughness_texture()
                 .map(|info| info.texture().source().index()),
             emissive_tex: mat
                 .emissive_texture()
                 .map(|info| info.texture().source().index()),
-            ao_tex: mat.occlusion_texture().map(|info| info.texture().source().index()),
+            ao_tex: mat
+                .occlusion_texture()
+                .map(|info| info.texture().source().index()),
             alpha_mode,
             double_sided: mat.double_sided(),
         };
@@ -278,6 +315,20 @@ pub fn load_gltf(path: &Path) -> Result<AssetModel> {
                 .read_tex_coords(0)
                 .map(|t| t.into_f32().collect())
                 .unwrap_or_default();
+            if !uvs.is_empty() {
+                let (mut min_u, mut max_u) = (uvs[0][0], uvs[0][0]);
+                let (mut min_v, mut max_v) = (uvs[0][1], uvs[0][1]);
+                for uv in &uvs {
+                    min_u = min_u.min(uv[0]);
+                    max_u = max_u.max(uv[0]);
+                    min_v = min_v.min(uv[1]);
+                    max_v = max_v.max(uv[1]);
+                }
+                eprintln!(
+                    "    uv range = u[{:.3},{:.3}] v[{:.3},{:.3}]",
+                    min_u, max_u, min_v, max_v
+                );
+            }
             let colors: Vec<[f32; 3]> = reader
                 .read_colors(0)
                 .map(|c| c.into_rgba_f32().map(|c| [c[0], c[1], c[2]]).collect())
@@ -312,6 +363,11 @@ pub fn load_gltf(path: &Path) -> Result<AssetModel> {
                 indices,
                 material_idx: primitive.material().index(),
             };
+            if mesh.uvs.is_empty() {
+                eprintln!("warning: primitive has no UV coordinates");
+            } else {
+                eprintln!("first uv = {:?}", mesh.uvs[0]);
+            }
             out_meshes.push(mesh);
         }
     }

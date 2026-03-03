@@ -9,6 +9,7 @@ ferrous_gui = { path = "../ferrous_gui" }
 ferrous_assets = { path = "../ferrous_assets" }
 ferrous_app = { path = "../ferrous_app" }
 rand = "0.8"
+glam = "0.29"
 
 # ── Additional Dependencies ───────────────────────────────────────────────
 log = "0.4"

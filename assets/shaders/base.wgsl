@@ -64,10 +64,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // material uniforms and bindings are declared at global scope above
 
     // simple albedo sampling for now; only the ALBEDO_TEX bit is observed.
-    var color : vec4<f32> = material.base_color * vec4<f32>(in.color, 1.0);
+    // debug: if we have an albedo texture, show it directly so we can rule
+    // out shader/UV issues.  Otherwise fall back to the usual base_color
+    // multiplication.
     if ((material.flags & 1u) != 0u) {
         let texel = textureSample(texture, texture_sampler, in.uv);
-        color = color * texel;
+        return texel; // return raw texture color
+    } else {
+        return material.base_color * vec4<f32>(in.color, 1.0);
     }
-    return color;
 }

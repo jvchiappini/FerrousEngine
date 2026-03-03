@@ -49,7 +49,14 @@ impl Texture {
         srgb: bool,
     ) -> Self {
         assert_eq!(data.len(), (width * height * 4) as usize);
-        let mip_level_count = (width.max(height) as f32).log2().floor() as u32 + 1;
+        // Only allocate a single mip level here.  The mip chain is
+        // intentionally omitted for in-memory textures created by this helper
+        // (fallbacks, procedural data, etc.) because we do not have the image
+        // crate available here to generate the remaining levels.  The GPU will
+        // clamp the sampler LOD to 0 for a single-mip texture, which is
+        // correct.  Textures loaded from files go through TextureRegistry
+        // which generates the full mip chain on the CPU.
+        let mip_level_count = 1;
         let format = if srgb {
             wgpu::TextureFormat::Rgba8UnormSrgb
         } else {
@@ -268,7 +275,8 @@ impl Material {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             mipmap_filter: wgpu::FilterMode::Linear,
-            anisotropy_clamp: 16,
+            lod_min_clamp: 0.0,
+            lod_max_clamp: 32.0,
             ..Default::default()
         });
 

@@ -20,7 +20,6 @@ use crate::resources::{Material, TextureHandle, TextureRegistry};
 // `lib.rs` so clients can continue to import from either crate.
 use ferrous_core::scene::{AlphaMode, MaterialDescriptor, MaterialHandle, MATERIAL_DEFAULT};
 
-
 /// Manages materials, texture handles and the resulting bind groups.  All
 /// materials are built from a [`MaterialDescriptor`] and may refer to
 /// textures by handle; the registry owns the underlying GPU textures so
@@ -74,6 +73,8 @@ impl MaterialRegistry {
 
     /// Convenience wrapper around [`TextureRegistry::register_rgba8`].
     /// Returns a handle that may later be used in a material descriptor.
+    /// Use this for **color** data (albedo, emissive) — the GPU will apply
+    /// gamma correction automatically.
     pub fn register_texture_rgba8(
         &mut self,
         device: &wgpu::Device,
@@ -84,6 +85,22 @@ impl MaterialRegistry {
     ) -> TextureHandle {
         self.tex_registry
             .register_rgba8(device, queue, width, height, data)
+    }
+
+    /// Convenience wrapper around [`TextureRegistry::register_rgba8_linear`].
+    /// Returns a handle that may later be used in a material descriptor.
+    /// Use this for **non-color** data (normal maps, metallic-roughness, AO)
+    /// where no gamma correction should be applied.
+    pub fn register_texture_rgba8_linear(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        data: &[u8],
+    ) -> TextureHandle {
+        self.tex_registry
+            .register_rgba8_linear(device, queue, width, height, data)
     }
 
     /// Delegate to the underlying texture registry to free a texture slot.

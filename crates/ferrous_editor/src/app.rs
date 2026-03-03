@@ -8,6 +8,7 @@ use ferrous_assets::font::Font;
 use ferrous_core::scene::MaterialDescriptor;
 use ferrous_core::scene::{Axis, GizmoMode};
 use ferrous_gui::{GuiBatch, InteractiveButton, Slider, TextBatch, Ui, ViewportWidget};
+use glam::Quat;
 use rand::Rng;
 
 use crate::ui::{GlobalLightPanel, MaterialInspector};
@@ -352,6 +353,14 @@ impl FerrousApp for EditorApp {
         if std::path::Path::new(test_model).exists() {
             if let Ok(handles) = ferrous_app::spawn_gltf(&mut ctx.world, &mut ctx.renderer, test_model) {
                 log::info!("spawned {} meshes from {}", handles.len(), test_model);
+                // Position the helmet above the ground and rotate it to face
+                // the camera (90° around Y).
+                for h in &handles {
+                    ctx.world.set_position(*h, Vec3::new(0.0, 2.5, 0.0));
+                    ctx.world.set_rotation(*h, Quat::from_rotation_y(
+                        std::f32::consts::FRAC_PI_2,
+                    ));
+                }
             } else {
                 log::warn!("failed to load glTF from {}", test_model);
             }

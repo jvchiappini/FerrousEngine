@@ -394,6 +394,8 @@ impl Renderer {
     /// Register a GPU texture from raw RGBA8 bytes and return a
     /// [`TextureHandle`] that can later be plugged into a
     /// [`MaterialDescriptor`].
+    /// The texture is treated as **sRGB** color data (albedo, emissive).
+    /// For non-color data use [`register_texture_linear`] instead.
     pub fn register_texture(&mut self, width: u32, height: u32, data: &[u8]) -> TextureHandle {
         let handle = self.material_registry.register_texture_rgba8(
             &self.context.device,
@@ -406,6 +408,30 @@ impl Renderer {
         // even though the material bind groups are unchanged by adding a
         // standalone texture.  this keeps external code from implicitly
         // depending on the side‑effect.
+        self.world_pass.set_material_table(
+            &self.material_registry.bind_group_table(),
+            &self.material_registry,
+        );
+        handle
+    }
+
+    /// Register a GPU texture from raw RGBA8 **linear** bytes and return a
+    /// [`TextureHandle`].  Use this for non-color data such as normal maps,
+    /// metallic-roughness and AO textures — the GPU will NOT apply gamma
+    /// correction when sampling these.
+    pub fn register_texture_linear(
+        &mut self,
+        width: u32,
+        height: u32,
+        data: &[u8],
+    ) -> TextureHandle {
+        let handle = self.material_registry.register_texture_rgba8_linear(
+            &self.context.device,
+            &self.context.queue,
+            width,
+            height,
+            data,
+        );
         self.world_pass.set_material_table(
             &self.material_registry.bind_group_table(),
             &self.material_registry,
