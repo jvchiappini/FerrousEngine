@@ -37,6 +37,7 @@ pub use graph::frame_packet::Viewport;
 pub use graph::{FramePacket, InstancedDrawCommand, RenderPass};
 pub use pipeline::InstancingPipeline;
 pub use render_stats::RenderStats;
+pub use render_target::HdrTexture;
 pub use render_target::RenderTarget;
 pub use resources::InstanceBuffer;
 pub use scene::{Aabb, Frustum, RenderObject};
@@ -68,7 +69,7 @@ use ferrous_gui::TextBatch;
 
 use camera::controller::OrbitState;
 use graph::frame_packet::{CameraPacket, DrawCommand};
-use passes::{UiPass, WorldPass};
+use passes::{PostProcessPass, UiPass, WorldPass};
 use pipeline::GizmoPipeline;
 use pipeline::{PbrPipeline, PipelineLayouts};
 use resources::ModelBuffer;
@@ -105,6 +106,8 @@ pub struct Renderer {
     // -- Built-in passes (direct typed access, zero-cost) --------------------
     pub world_pass: WorldPass,
     pub ui_pass: UiPass,
+    /// Post-process pass: tone mapping + gamma correction.
+    pub post_process_pass: PostProcessPass,
     /// Additional user-supplied passes executed after the built-ins.
     pub extra_passes: Vec<Box<dyn RenderPass>>,
 
@@ -207,10 +210,12 @@ impl Renderer {
         let rt = RenderTarget::new(device, width, height, format, sample_count);
 
         let layouts = PipelineLayouts::new(device);
-        // pbr pipelines use the same layout plus a light bind group
+        // pbr pipelines write to the HDR texture (Rgba16Float) so values > 1.0
+        // are preserved; tone mapping happens in the post-process pass.
+        let hdr_format = crate::render_target::HdrTexture::FORMAT;
         let pbr_pipeline = PbrPipeline::new(
             device,
-            format,
+            hdr_format,
             rt.sample_count(),
             layouts.clone(),
             Some(wgpu::Face::Back),
@@ -219,7 +224,7 @@ impl Renderer {
         );
         let pbr_pipeline_double = PbrPipeline::new(
             device,
-            format,
+            hdr_format,
             rt.sample_count(),
             layouts.clone(),
             None,
@@ -228,7 +233,7 @@ impl Renderer {
         );
         let pbr_pipeline_blend = PbrPipeline::new(
             device,
-            format,
+            hdr_format,
             rt.sample_count(),
             layouts.clone(),
             Some(wgpu::Face::Back),
@@ -237,7 +242,7 @@ impl Renderer {
         );
         let pbr_pipeline_blend_double = PbrPipeline::new(
             device,
-            format,
+            hdr_format,
             rt.sample_count(),
             layouts.clone(),
             None,
@@ -246,7 +251,7 @@ impl Renderer {
         );
         let instancing_pipeline = InstancingPipeline::new(
             device,
-            format,
+            hdr_format,
             rt.sample_count(),
             layouts.clone(),
             Some(wgpu::Face::Back),
@@ -255,7 +260,7 @@ impl Renderer {
         );
         let instancing_pipeline_double = InstancingPipeline::new(
             device,
-            format,
+            hdr_format,
             rt.sample_count(),
             layouts.clone(),
             None,
@@ -264,7 +269,7 @@ impl Renderer {
         );
         let instancing_pipeline_blend = InstancingPipeline::new(
             device,
-            format,
+            hdr_format,
             rt.sample_count(),
             layouts.clone(),
             Some(wgpu::Face::Back),
@@ -273,7 +278,7 @@ impl Renderer {
         );
         let instancing_pipeline_blend_double = InstancingPipeline::new(
             device,
-            format,
+            hdr_format,
             rt.sample_count(),
             layouts.clone(),
             None,
@@ -306,6 +311,8 @@ impl Renderer {
             device,
             &context.queue,
             &layouts,
+            width,
+            height,
         );
         // create material registry (includes default white material)
         let material_registry = MaterialRegistry::new(device, &context.queue, &layouts);
@@ -321,6 +328,11 @@ impl Renderer {
         );
         let ui_pass = UiPass::new(ui_renderer);
 
+        // create the post-process pass; on_attach sets up its pipeline
+        // using the swapchain surface format.
+        let mut post_process_pass = PostProcessPass::new();
+        post_process_pass.on_attach(device, &context.queue, format, 1);
+
         // Create the shared dynamic model buffer and register it with WorldPass.
         let model_buf = ModelBuffer::new(&context.device, &layouts.model, 64);
         let instance_buf = InstanceBuffer::new(&context.device, &layouts.instance, 64);
@@ -328,16 +340,17 @@ impl Renderer {
         world_pass_init.set_model_buffer(model_buf.bind_group.clone(), model_buf.stride);
         world_pass_init.set_instance_buffer(instance_buf.bind_group.clone());
 
-        // gizmo pipeline may be created once now that we know the target
-        // format/sample count.  create it before we move `context` or `rt`
-        // into the returned struct so we can still borrow them.
-        let gizmo_pipeline = GizmoPipeline::new(device, format, rt.sample_count(), layouts.clone());
+        // gizmo pipeline writes to the HDR texture so that gizmos composite
+        // over scene geometry *before* tone mapping.
+        let gizmo_pipeline =
+            GizmoPipeline::new(device, hdr_format, rt.sample_count(), layouts.clone());
 
         Self {
             context,
             render_target: rt,
             world_pass: world_pass_init,
             ui_pass,
+            post_process_pass,
             extra_passes: Vec::new(),
             camera,
             orbit: OrbitState::default(),
@@ -537,6 +550,15 @@ impl Renderer {
         self.world_pass.update_light(&self.context.queue, uniform);
     }
 
+    /// Upload an explicit list of point lights to the GPU storage buffer.
+    ///
+    /// Call this if you manage lights outside of the `World` ECS (e.g. from a
+    /// custom system).  For the automatic path see `sync_world`.
+    pub fn set_point_lights(&mut self, lights: &[crate::resources::PointLightUniform]) {
+        self.world_pass
+            .update_point_lights(&self.context.device, &self.context.queue, lights);
+    }
+
     /// Set the material for a previously‑spawned legacy object.
     pub fn set_object_material(&mut self, id: u64, material: MaterialHandle) {
         if let Some(obj) = self.legacy_objects.get_mut(&id) {
@@ -687,6 +709,27 @@ impl Renderer {
                 self.scene_dirty = true;
             }
         }
+
+        // ── Collect point lights from World entities ──────────────────────
+        // Gather every element that has a PointLightComponent and convert it
+        // into a PointLightUniform using the entity's world-space position.
+        let mut point_light_uniforms: Vec<crate::resources::PointLightUniform> = Vec::new();
+        for element in world.iter() {
+            if let Some(pl) = &element.point_light {
+                let pos = element.transform.position;
+                point_light_uniforms.push(crate::resources::PointLightUniform::new(
+                    [pos.x, pos.y, pos.z],
+                    pl.radius,
+                    pl.color,
+                    pl.intensity,
+                ));
+            }
+        }
+        self.world_pass.update_point_lights(
+            &self.context.device,
+            &self.context.queue,
+            &point_light_uniforms,
+        );
     } // -- Pass management ------------------------------------------------------
 
     /// Queue a gizmo for rendering this frame.
@@ -714,27 +757,9 @@ impl Renderer {
     /// so that gizmos respect scene occlusion.
     ///
     /// After drawing, `gizmo_draws` is cleared ready for the next frame.
-    fn execute_gizmo_pass(&mut self, encoder: &mut wgpu::CommandEncoder, dest: &RenderDest<'_>) {
-        // reconstruct the texture views from the destination
-        // compute views early; these borrow self temporarily
-        // initial views used for the world pass (and possibly gizmo pass)
-        let (color_view, resolve_target) = match dest {
-            RenderDest::Target => self.render_target.color_views(),
-            RenderDest::View(v) => {
-                // `v` has type `&&TextureView` because `dest` is a & reference;
-                // dereference once to get `&TextureView` for use below.
-                let vv: &wgpu::TextureView = *v;
-                if self.render_target.sample_count() > 1 {
-                    (
-                        self.render_target.color.msaa_view.as_ref().unwrap(),
-                        Some(vv),
-                    )
-                } else {
-                    (vv, None)
-                }
-            }
-        };
-        // depth_view is always present (non-optional)
+    fn execute_gizmo_pass(&mut self, encoder: &mut wgpu::CommandEncoder, _dest: &RenderDest<'_>) {
+        // Gizmos compose over the HDR scene (before tone mapping), so we always
+        // render into world_pass.hdr_texture — never the swapchain surface.
         let depth_view = self.render_target.depth_view();
         use wgpu::util::DeviceExt;
         use wgpu::{
@@ -901,12 +926,21 @@ impl Renderer {
                 usage: wgpu::BufferUsages::VERTEX,
             });
 
-        // begin a second render pass that loads existing contents
+        // begin a second render pass that loads existing contents.
+        // Gizmos render into the HDR texture (same as the world pass) so they
+        // are tone-mapped along with the rest of the scene.
+        // We need an owned wgpu::TextureView; recreate it from the underlying
+        // texture so that we avoid a split-borrow across self fields.
+        let hdr_view_owned = self
+            .world_pass
+            .hdr_texture
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
         let mut rpass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("Gizmo Pass"),
             color_attachments: &[Some(RenderPassColorAttachment {
-                view: color_view,
-                resolve_target,
+                view: &hdr_view_owned,
+                resolve_target: None,
                 ops: Operations {
                     load: LoadOp::Load,
                     store: StoreOp::Store,
@@ -1043,112 +1077,148 @@ impl Renderer {
             packet.insert(b);
         }
 
-        let (color_view, resolve_target) = match dest {
-            RenderDest::Target => self.render_target.color_views(),
-            RenderDest::View(v) => {
-                if self.render_target.sample_count() > 1 {
-                    (
-                        self.render_target.color.msaa_view.as_ref().unwrap(),
-                        Some(v),
-                    )
-                } else {
-                    (v, None)
-                }
-            }
-        };
+        // ── 1. World pass: renders the 3-D scene into the HDR texture ─────────
+        // color_view is ignored by WorldPass (it writes to hdr_texture internally),
+        // but the trait signature still requires one.
         let depth_view = self.render_target.depth_view();
+        let dummy_view = self.render_target.color_view();
 
-        // avoid holding immutable borrow of self across calls to execute_gizmo_pass
-        // by passing the device/queue directly where needed
-
-        // Built-in passes first
         self.world_pass
             .prepare(&self.context.device, &self.context.queue, &packet);
         self.world_pass.execute(
             &self.context.device,
             &self.context.queue,
             encoder,
-            color_view,
-            resolve_target,
+            dummy_view,
+            None,
             Some(depth_view),
             &packet,
         );
 
-        // after the opaque world pass we may have gizmos queued; draw them in
-        // a lightweight line-only pass.  drop the borrowed views first so the
-        // mutable borrow in `execute_gizmo_pass` is allowed.
+        // ── 2. Gizmo pass (if any): also writes into the HDR texture ─────────
         if !self.gizmo_draws.is_empty() {
-            let _ = color_view;
-            let _ = resolve_target;
-            let _ = depth_view;
             self.execute_gizmo_pass(encoder, &dest);
-            // recompute views for the UI/extra passes since we dropped the old
-            // ones above.
-            let (color_view, resolve_target) = match dest {
-                RenderDest::Target => self.render_target.color_views(),
-                RenderDest::View(v) => {
-                    if self.render_target.sample_count() > 1 {
-                        (
-                            self.render_target.color.msaa_view.as_ref().unwrap(),
-                            Some(v),
-                        )
-                    } else {
-                        (v, None)
-                    }
-                }
+        }
+
+        // ── 3. Post-process pass: tone-maps the HDR texture → final surface ───
+        // Build a fresh TextureView for the HDR source (avoids split-borrow).
+        let hdr_view_pp = self
+            .world_pass
+            .hdr_texture
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        // Determine the destination view for the post-process output.
+        let owned_pp_target: Option<wgpu::TextureView>;
+        let pp_target_view: &wgpu::TextureView = match &dest {
+            RenderDest::Target => {
+                owned_pp_target = Some(
+                    self.render_target
+                        .color
+                        .texture
+                        .create_view(&wgpu::TextureViewDescriptor::default()),
+                );
+                owned_pp_target.as_ref().unwrap()
+            }
+            RenderDest::View(v) => {
+                owned_pp_target = None;
+                let _ = &owned_pp_target; // suppress unused_assignments lint
+                v
+            }
+        };
+
+        {
+            let pipeline = self
+                .post_process_pass
+                .pipeline
+                .as_ref()
+                .expect("PostProcessPass not initialised — missing on_attach");
+            let bgl = self
+                .post_process_pass
+                .bind_group_layout
+                .as_ref()
+                .expect("PostProcessPass BGL not initialised");
+
+            use wgpu::{BindGroupDescriptor, BindGroupEntry, BindingResource};
+            let bind_group = self.context.device.create_bind_group(&BindGroupDescriptor {
+                label: Some("PostProcess BindGroup"),
+                layout: bgl,
+                entries: &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: BindingResource::TextureView(&hdr_view_pp),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: BindingResource::Sampler(&self.world_pass.hdr_texture.sampler),
+                    },
+                ],
+            });
+
+            use wgpu::{
+                LoadOp, Operations, RenderPassColorAttachment, RenderPassDescriptor, StoreOp,
             };
-            let depth_view = self.render_target.depth_view();
+            let mut rpass = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("Post-Process Pass"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: pp_target_view,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Clear(wgpu::Color::BLACK),
+                        store: StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+            });
+            rpass.set_pipeline(pipeline);
+            rpass.set_bind_group(0, &bind_group, &[]);
+            rpass.draw(0..3, 0..1);
+        }
 
-            self.ui_pass
-                .prepare(&self.context.device, &self.context.queue, &packet);
-            self.ui_pass.execute(
+        // ── 4. UI pass and extra passes: composite on top of the final surface ─
+        // These passes use the same swapchain/render-target view as the post-process output.
+        let (ui_color_view, ui_resolve_target, ui_depth_view) = match &dest {
+            RenderDest::Target => {
+                let (cv, rt) = self.render_target.color_views();
+                (cv, rt, self.render_target.depth_view())
+            }
+            RenderDest::View(v) => {
+                if self.render_target.sample_count() > 1 {
+                    (
+                        self.render_target.color.msaa_view.as_ref().unwrap(),
+                        Some(*v),
+                        self.render_target.depth_view(),
+                    )
+                } else {
+                    (*v, None, self.render_target.depth_view())
+                }
+            }
+        };
+
+        self.ui_pass
+            .prepare(&self.context.device, &self.context.queue, &packet);
+        self.ui_pass.execute(
+            &self.context.device,
+            &self.context.queue,
+            encoder,
+            ui_color_view,
+            ui_resolve_target,
+            None,
+            &packet,
+        );
+
+        for pass in &mut self.extra_passes {
+            pass.prepare(&self.context.device, &self.context.queue, &packet);
+            pass.execute(
                 &self.context.device,
                 &self.context.queue,
                 encoder,
-                color_view,
-                resolve_target,
-                None,
+                ui_color_view,
+                ui_resolve_target,
+                Some(ui_depth_view),
                 &packet,
             );
-
-            // User-supplied passes
-            for pass in &mut self.extra_passes {
-                pass.prepare(&self.context.device, &self.context.queue, &packet);
-                pass.execute(
-                    &self.context.device,
-                    &self.context.queue,
-                    encoder,
-                    color_view,
-                    resolve_target,
-                    Some(depth_view),
-                    &packet,
-                );
-            }
-        } else {
-            // no gizmos, just run UI/extra passes once using the original views
-            self.ui_pass
-                .prepare(&self.context.device, &self.context.queue, &packet);
-            self.ui_pass.execute(
-                &self.context.device,
-                &self.context.queue,
-                encoder,
-                color_view,
-                resolve_target,
-                None,
-                &packet,
-            );
-            for pass in &mut self.extra_passes {
-                pass.prepare(&self.context.device, &self.context.queue, &packet);
-                pass.execute(
-                    &self.context.device,
-                    &self.context.queue,
-                    encoder,
-                    color_view,
-                    resolve_target,
-                    Some(depth_view),
-                    &packet,
-                );
-            }
         }
 
         // Reclaim the Vec<DrawCommand> allocation back into cache for next frame.

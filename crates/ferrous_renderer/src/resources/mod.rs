@@ -1,17 +1,17 @@
 pub mod buffer;
+pub mod environment;
 pub mod instance_buffer;
+pub mod light;
 pub mod material;
 pub mod model_buffer;
-pub mod light;
-pub mod environment;
 pub mod texture;
 pub mod texture_registry;
 
+pub use environment::Environment;
 pub use instance_buffer::InstanceBuffer;
+pub use light::{DirectionalLightUniform, LightStorageHeader, PointLightUniform, MAX_POINT_LIGHTS};
 pub use material::{Material, Texture};
 pub use model_buffer::ModelBuffer;
-pub use light::DirectionalLightUniform;
-pub use environment::Environment;
 
 // registry exports
 pub use texture_registry::{

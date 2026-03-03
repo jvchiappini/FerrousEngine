@@ -64,6 +64,32 @@ struct DirectionalLight {
 @group(3) @binding(0)
 var<uniform> dir_light: DirectionalLight;
 
+// ── Point Lights (Storage Buffer) ────────────────────────────────────────────
+// binding(5) follows the four IBL resources at bindings 1-4.
+// STD430 layout: a 16-byte header (count + 12 bytes padding) followed by
+// a runtime-sized array of PointLight structs (each 32 bytes / 2x vec4).
+struct PointLight {
+    position_radius: vec4<f32>, // xyz = world pos, w = radius
+    color_intensity: vec4<f32>, // xyz = linear RGB, w = intensity
+};
+struct LightStorage {
+    count: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+    lights: array<PointLight>,
+};
+@group(3) @binding(5) var<storage, read> point_lights: LightStorage;
+
+// Physical inverse-square falloff with smooth cutoff at the light radius.
+// Formula: saturate(1 - (d/r)^4)^2 / (d^2 + 1)
+// The + 1 in the denominator prevents the singularity at d=0.
+fn point_attenuation(dist: f32, radius: f32) -> f32 {
+    let d_over_r = dist / radius;
+    let numerator = saturate(1.0 - d_over_r * d_over_r * d_over_r * d_over_r);
+    return (numerator * numerator) / (dist * dist + 1.0);
+}
+
 
 // vertex input / output
 struct VertexInput {
@@ -226,7 +252,42 @@ fn fs_main(in: FragmentInput) -> FragmentOutput {
     let kD = (vec3<f32>(1.0) - F) * (1.0 - metallic);
 
     let radiance = dir_light.color * dir_light.intensity;
-    let Lo = (kD * albedo / PI + specular) * radiance * NdotL;
+    var Lo = (kD * albedo / PI + specular) * radiance * NdotL;
+
+    // ── Point lights ─────────────────────────────────────────────────────────
+    let light_count = min(point_lights.count, 1024u);
+    for (var i: u32 = 0u; i < light_count; i = i + 1u) {
+        let pl = point_lights.lights[i];
+        let light_pos   = pl.position_radius.xyz;
+        let pl_radius   = pl.position_radius.w;
+        let light_color = pl.color_intensity.xyz;
+        let pl_intensity = pl.color_intensity.w;
+
+        let to_light = light_pos - in.world_pos;
+        let pl_dist  = length(to_light);
+
+        // Early-out: fragment is beyond the light's influence radius.
+        if (pl_dist > pl_radius) {
+            continue;
+        }
+
+        let Lpl   = to_light / pl_dist; // normalised light direction
+        let Hpl   = normalize(Vdir + Lpl);
+        let NdotL_pl = max(dot(N, Lpl),    0.0);
+        let NdotH_pl = max(dot(N, Hpl),    0.0);
+        let VdotH_pl = max(dot(Vdir, Hpl), 0.0);
+
+        let D_pl = distribution_ggx(NdotH_pl, roughness);
+        let G_pl = geometry_smith(NdotV, NdotL_pl, roughness);
+        let F_pl = fresnel_schlick(VdotH_pl, F0);
+        let specular_pl = (D_pl * G_pl * F_pl) / (4.0 * NdotV * NdotL_pl + 0.0001);
+
+        let kD_pl = (vec3<f32>(1.0) - F_pl) * (1.0 - metallic);
+
+        let atten    = point_attenuation(pl_dist, pl_radius);
+        let radiance_pl = light_color * pl_intensity * atten;
+        Lo += (kD_pl * albedo / PI + specular_pl) * radiance_pl * NdotL_pl;
+    }
 
     // Ambient: Fake Hemisphere / IBL Environment
     let F_ambient = fresnel_schlick(max(dot(N, Vdir), 0.0), F0);
@@ -258,9 +319,11 @@ fn fs_main(in: FragmentInput) -> FragmentOutput {
         color += emiss * sample.xyz;
     }
 
-    // tone mapping 
-    color = color / (color + vec3<f32>(1.0));
-    // The surface format is sRGB, so the hardware handles gamma correction.
+    // ── No tone mapping or gamma correction here ──────────────────────────
+    // This pass writes to a Rgba16Float HDR texture.  Values may exceed 1.0
+    // — that is intentional and correct.  All colour grading (ACES tone
+    // mapping + sRGB gamma correction) is performed by the post-process pass
+    // that reads this texture and writes to the final swapchain surface.
 
     var out: FragmentOutput;
     out.frag_color = vec4<f32>(color, out_alpha);

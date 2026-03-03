@@ -53,6 +53,27 @@ struct DirectionalLight {
 @group(3) @binding(0)
 var<uniform> dir_light: DirectionalLight;
 
+// ── Point Lights (Storage Buffer) ────────────────────────────────────────────
+struct PointLight {
+    position_radius: vec4<f32>, // xyz = world pos, w = radius
+    color_intensity: vec4<f32>, // xyz = linear RGB, w = intensity
+};
+struct LightStorage {
+    count: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+    lights: array<PointLight>,
+};
+@group(3) @binding(5) var<storage, read> point_lights: LightStorage;
+
+// Physical inverse-square falloff with smooth cutoff at the light radius.
+fn point_attenuation(dist: f32, radius: f32) -> f32 {
+    let d_over_r = dist / radius;
+    let numerator = saturate(1.0 - d_over_r * d_over_r * d_over_r * d_over_r);
+    return (numerator * numerator) / (dist * dist + 1.0);
+}
+
 // ── vertex ────────────────────────────────────────────────────────────────────
 
 struct VsIn {
@@ -209,7 +230,36 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // energy conservation: kD = 0 for metals
     let kD      = (vec3<f32>(1.0) - F) * (1.0 - metallic);
     let radiance = dir_light.color * dir_light.intensity;
-    let Lo      = (kD * albedo / PI + spec) * radiance * NdotL;
+    var Lo      = (kD * albedo / PI + spec) * radiance * NdotL;
+
+    // ── Point lights ─────────────────────────────────────────────────────────
+    let light_count = min(point_lights.count, 1024u);
+    for (var i: u32 = 0u; i < light_count; i = i + 1u) {
+        let pl          = point_lights.lights[i];
+        let light_pos   = pl.position_radius.xyz;
+        let pl_radius   = pl.position_radius.w;
+        let light_color = pl.color_intensity.xyz;
+        let pl_intensity = pl.color_intensity.w;
+
+        let to_light = light_pos - in.world_pos;
+        let pl_dist  = length(to_light);
+        if (pl_dist > pl_radius) { continue; }
+
+        let Lpl      = to_light / pl_dist;
+        let Hpl      = normalize(V + Lpl);
+        let NdotL_pl = max(dot(N, Lpl),    0.0);
+        let NdotH_pl = max(dot(N, Hpl),    0.0);
+        let VdotH_pl = max(dot(V, Hpl),    0.0);
+
+        let D_pl = distribution_ggx(NdotH_pl, roughness);
+        let G_pl = geometry_smith(NdotV, NdotL_pl, roughness);
+        let F_pl = fresnel_schlick(VdotH_pl, F0);
+        let spec_pl  = (D_pl * G_pl * F_pl) / (4.0 * NdotV * NdotL_pl + 0.0001);
+        let kD_pl    = (vec3<f32>(1.0) - F_pl) * (1.0 - metallic);
+        let atten    = point_attenuation(pl_dist, pl_radius);
+        let radiance_pl = light_color * pl_intensity * atten;
+        Lo += (kD_pl * albedo / PI + spec_pl) * radiance_pl * NdotL_pl;
+    }
 
     // Ambient: Fake Hemisphere / IBL Environment
     let F_ambient  = fresnel_schlick(max(dot(N, V), 0.0), F0);

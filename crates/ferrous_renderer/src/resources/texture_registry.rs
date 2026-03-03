@@ -412,8 +412,7 @@ impl TextureRegistry {
                 // linearize before downsampling.
                 let is_srgb = matches!(
                     tex.texture.format(),
-                    wgpu::TextureFormat::Rgba8UnormSrgb
-                        | wgpu::TextureFormat::Bgra8UnormSrgb
+                    wgpu::TextureFormat::Rgba8UnormSrgb | wgpu::TextureFormat::Bgra8UnormSrgb
                 );
                 generate_mipmaps_cpu(queue, &*tex.texture, current, mip_level_count, is_srgb);
             }
@@ -437,12 +436,20 @@ fn generate_mipmaps_cpu(
     #[inline]
     fn srgb_to_linear(v: u8) -> f32 {
         let s = v as f32 / 255.0;
-        if s <= 0.04045 { s / 12.92 } else { ((s + 0.055) / 1.055_f32).powf(2.4) }
+        if s <= 0.04045 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055_f32).powf(2.4)
+        }
     }
     #[inline]
     fn linear_to_srgb(v: f32) -> u8 {
         let c = v.clamp(0.0, 1.0);
-        let s = if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 };
+        let s = if c <= 0.0031308 {
+            c * 12.92
+        } else {
+            1.055 * c.powf(1.0 / 2.4) - 0.055
+        };
         (s * 255.0 + 0.5) as u8
     }
 
@@ -461,7 +468,10 @@ fn generate_mipmaps_cpu(
                 dst[3] = src[3]; // alpha stays linear
             }
             let resized_linear = image::imageops::resize(
-                &linear, mip_w, mip_h, image::imageops::FilterType::Lanczos3,
+                &linear,
+                mip_w,
+                mip_h,
+                image::imageops::FilterType::Lanczos3,
             );
             let mut out = image::RgbaImage::new(mip_w, mip_h);
             for (src, dst) in resized_linear.pixels().zip(out.pixels_mut()) {
@@ -473,7 +483,10 @@ fn generate_mipmaps_cpu(
             out
         } else {
             image::imageops::resize(
-                &current, mip_w, mip_h, image::imageops::FilterType::Lanczos3,
+                &current,
+                mip_w,
+                mip_h,
+                image::imageops::FilterType::Lanczos3,
             )
         };
 

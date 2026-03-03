@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use wgpu::{Device, Queue};
 
-use crate::resources::light::DirectionalLightUniform;
+use crate::resources::light::{
+    DirectionalLightUniform, LightStorageHeader, PointLightUniform, MAX_POINT_LIGHTS,
+};
 
 /// Simple container for environment-related GPU resources.
 ///
@@ -16,6 +18,18 @@ pub struct Environment {
     pub light_uniform: DirectionalLightUniform,
     /// Buffer holding the directional light data.
     pub light_buffer: Arc<wgpu::Buffer>,
+
+    // ── Point lights ──────────────────────────────────────────────────────
+    /// GPU storage buffer: 16-byte header + array of PointLightUniform.
+    pub point_light_buffer: Arc<wgpu::Buffer>,
+    /// Number of PointLightUniform slots currently allocated in the buffer.
+    pub point_light_capacity: usize,
+
+    // ── IBL resources kept so we can rebuild the bind group on resize ─────
+    sampler: Arc<wgpu::Sampler>,
+    irradiance_view: Arc<wgpu::TextureView>,
+    prefilter_view: Arc<wgpu::TextureView>,
+    brdf_view: Arc<wgpu::TextureView>,
 }
 
 impl Environment {
@@ -146,6 +160,17 @@ impl Environment {
             },
         );
 
+        // Initial point-light storage buffer: 8-light capacity, zero-initialised.
+        let initial_pl_capacity: usize = 8;
+        let point_light_buffer =
+            Arc::new(Self::create_point_light_buffer(device, initial_pl_capacity));
+        // Write a zeroed header so the shader sees count = 0.
+        let zero_header = LightStorageHeader {
+            count: 0,
+            _pad: [0u32; 3],
+        };
+        queue.write_buffer(&point_light_buffer, 0, bytemuck::bytes_of(&zero_header));
+
         let bind_group = Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Environment Bind Group"),
             layout,
@@ -170,6 +195,10 @@ impl Environment {
                     binding: 4,
                     resource: wgpu::BindingResource::TextureView(&brdf_view),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: point_light_buffer.as_entire_binding(),
+                },
             ],
         }));
 
@@ -177,6 +206,12 @@ impl Environment {
             bind_group,
             light_uniform,
             light_buffer,
+            point_light_buffer,
+            point_light_capacity: initial_pl_capacity,
+            sampler: Arc::new(sampler),
+            irradiance_view: Arc::new(irradiance_view),
+            prefilter_view: Arc::new(prefilter_view),
+            brdf_view: Arc::new(brdf_view),
         }
     }
 
@@ -188,5 +223,95 @@ impl Environment {
             0,
             bytemuck::bytes_of(&self.light_uniform),
         );
+    }
+
+    /// Upload a list of `PointLightUniform` to the GPU storage buffer.
+    ///
+    /// If the list exceeds the current buffer capacity the buffer is
+    /// recreated (doubling the capacity) and the bind group is rebuilt.
+    /// The `layout` argument must be the same `BindGroupLayout` used to
+    /// create this `Environment`.
+    pub fn update_point_lights(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        layout: &wgpu::BindGroupLayout,
+        lights: &[PointLightUniform],
+    ) {
+        let count = lights.len().min(MAX_POINT_LIGHTS);
+
+        // Resize (recreate) the buffer if it is too small.
+        if count > self.point_light_capacity {
+            let new_capacity = (count * 2).max(8);
+            self.point_light_buffer =
+                Arc::new(Self::create_point_light_buffer(device, new_capacity));
+            self.point_light_capacity = new_capacity;
+            // Rebuild the bind group so it references the new buffer.
+            self.rebuild_bind_group(device, layout);
+        }
+
+        // Write header (count + padding).
+        let header = LightStorageHeader {
+            count: count as u32,
+            _pad: [0u32; 3],
+        };
+        queue.write_buffer(&self.point_light_buffer, 0, bytemuck::bytes_of(&header));
+
+        // Write the light array immediately after the 16-byte header.
+        if count > 0 {
+            queue.write_buffer(
+                &self.point_light_buffer,
+                16, // sizeof(LightStorageHeader)
+                bytemuck::cast_slice(&lights[..count]),
+            );
+        }
+    }
+
+    // ─── Private helpers ─────────────────────────────────────────────────────
+
+    /// Allocates a zero-initialised point-light storage buffer for
+    /// `capacity` lights (16-byte header + `capacity * 32` bytes for lights).
+    fn create_point_light_buffer(device: &Device, capacity: usize) -> wgpu::Buffer {
+        let size = 16 + capacity * std::mem::size_of::<PointLightUniform>();
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("PointLight Storage Buffer"),
+            size: size.max(32) as u64, // wgpu requires at least one binding unit
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
+    /// Rebuilds the bind group after the point-light buffer has been replaced.
+    fn rebuild_bind_group(&mut self, device: &Device, layout: &wgpu::BindGroupLayout) {
+        self.bind_group = Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Environment Bind Group"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.light_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&self.irradiance_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&self.prefilter_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&self.brdf_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: self.point_light_buffer.as_entire_binding(),
+                },
+            ],
+        }));
     }
 }

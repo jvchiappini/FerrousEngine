@@ -377,6 +377,45 @@ impl FerrousApp for EditorApp {
                 }
             }
         }
+
+        // ── Module 4: HDR stress-test ────────────────────────────────────────
+        // Point lights with extreme intensities (> 1.0 is fine — HDR texture
+        // preserves values, ACES compresses them in the post-process pass).
+        //
+        //   Red   (+X)   intensity 80, radius 8
+        //   Blue  (-X)   intensity 80, radius 8
+        //   Green (+Z)   intensity 80, radius 8
+        //   Yellow (-Z)  intensity 60, radius 7  (warm fill)
+        let helmet_center = Vec3::new(0.0, 2.5, 0.0);
+        let offset = 1.5_f32; // closer to the helmet surface
+        ctx.world.spawn_point_light(
+            "PointLight Red",
+            helmet_center + Vec3::new( offset, 0.0,  0.0),
+            [1.0, 0.05, 0.05],  // red
+            80.0,
+            8.0,
+        );
+        ctx.world.spawn_point_light(
+            "PointLight Blue",
+            helmet_center + Vec3::new(-offset, 0.0,  0.0),
+            [0.05, 0.1, 1.0],   // blue
+            80.0,
+            8.0,
+        );
+        ctx.world.spawn_point_light(
+            "PointLight Green",
+            helmet_center + Vec3::new(0.0, 0.0,  offset),
+            [0.05, 1.0, 0.05],  // green
+            80.0,
+            8.0,
+        );
+        ctx.world.spawn_point_light(
+            "PointLight Yellow",
+            helmet_center + Vec3::new(0.0, 0.0, -offset),
+            [1.0, 0.9, 0.1],    // yellow
+            60.0,
+            7.0,
+        );
     }
 
     fn update(&mut self, ctx: &mut AppContext) {

@@ -234,6 +234,17 @@ impl PipelineLayouts {
                         },
                         count: None,
                     },
+                    // binding 5: point lights storage buffer (read-only)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
                 ],
             }),
         );

@@ -29,8 +29,9 @@ use wgpu::{
 
 use crate::graph::{FramePacket, RenderPass};
 use crate::pipeline::{InstancingPipeline, PbrPipeline, PipelineLayouts};
+use crate::render_target::HdrTexture;
+use crate::resources::{DirectionalLightUniform, Environment, PointLightUniform};
 use ferrous_core::scene::MaterialHandle;
-use crate::resources::{DirectionalLightUniform, Environment};
 
 pub struct WorldPass {
     /// PBR pipeline used for opaque geometry.
@@ -66,6 +67,11 @@ pub struct WorldPass {
     /// Light data and bind group for PBR shading.
     /// encapsulates light data plus IBL resources
     environment: Environment,
+    /// Kept for environment bind-group reconstruction when point-light buffer grows.
+    lights_layout: Arc<wgpu::BindGroupLayout>,
+    /// HDR off-screen render target. The world pass renders into this instead
+    /// of the swapchain surface so values > 1.0 can be preserved.
+    pub hdr_texture: HdrTexture,
 }
 
 impl WorldPass {
@@ -82,9 +88,12 @@ impl WorldPass {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         layouts: &PipelineLayouts,
+        width: u32,
+        height: u32,
     ) -> Self {
         // environment bundle includes directional light and placeholder IBL
         let environment = Environment::new_dummy(device, queue, &layouts.lights);
+        let hdr_texture = HdrTexture::new(device, width, height);
 
         Self {
             pbr_pipeline,
@@ -108,6 +117,8 @@ impl WorldPass {
             material_bind_groups: Vec::new(),
             material_registry: None,
             environment,
+            lights_layout: Arc::clone(&layouts.lights),
+            hdr_texture,
         }
     }
 
@@ -146,11 +157,29 @@ impl WorldPass {
         // forward update to environment helper
         self.environment.update_light(queue, uniform);
     }
+
+    /// Upload the list of point lights for this frame.
+    ///
+    /// If the count exceeds the current storage-buffer capacity the buffer is
+    /// reallocated automatically and the bind group is rebuilt.
+    pub fn update_point_lights(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        lights: &[PointLightUniform],
+    ) {
+        self.environment
+            .update_point_lights(device, queue, &self.lights_layout, lights);
+    }
 }
 
 impl RenderPass for WorldPass {
     fn name(&self) -> &str {
         "World Pass"
+    }
+
+    fn on_resize(&mut self, device: &Device, _queue: &Queue, width: u32, height: u32) {
+        self.hdr_texture.resize(device, width, height);
     }
 
     fn prepare(&mut self, _device: &Device, _queue: &Queue, _packet: &FramePacket) {}
@@ -160,16 +189,18 @@ impl RenderPass for WorldPass {
         _device: &Device,
         _queue: &Queue,
         encoder: &mut CommandEncoder,
-        color_view: &TextureView,
-        resolve_target: Option<&TextureView>,
+        _color_view: &TextureView,
+        _resolve_target: Option<&TextureView>,
         depth_view: Option<&TextureView>,
         packet: &FramePacket,
     ) {
+        // Always render into the HDR texture, not the swapchain surface.
+        // The post-process pass will read this and write to the final surface.
         let mut rpass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some(self.name()),
             color_attachments: &[Some(RenderPassColorAttachment {
-                view: color_view,
-                resolve_target,
+                view: &self.hdr_texture.view,
+                resolve_target: None,
                 ops: Operations {
                     load: LoadOp::Clear(self.clear_color),
                     store: StoreOp::Store,
@@ -211,18 +242,24 @@ impl RenderPass for WorldPass {
                         let (alpha_mode, double_sided) =
                             reg.get_render_flags(MaterialHandle(cmd.material_slot as u32));
                         let pipe = match (alpha_mode, double_sided) {
-                            (ferrous_core::scene::AlphaMode::Opaque, false) =>
-                                &self.instancing_pipeline.inner,
-                            (ferrous_core::scene::AlphaMode::Opaque, true) =>
-                                &self.instancing_pipeline_double.inner,
-                            (ferrous_core::scene::AlphaMode::Mask { .. }, false) =>
-                                &self.instancing_pipeline.inner,
-                            (ferrous_core::scene::AlphaMode::Mask { .. }, true) =>
-                                &self.instancing_pipeline_double.inner,
-                            (ferrous_core::scene::AlphaMode::Blend, false) =>
-                                &self.instancing_pipeline_blend.inner,
-                            (ferrous_core::scene::AlphaMode::Blend, true) =>
-                                &self.instancing_pipeline_blend_double.inner,
+                            (ferrous_core::scene::AlphaMode::Opaque, false) => {
+                                &self.instancing_pipeline.inner
+                            }
+                            (ferrous_core::scene::AlphaMode::Opaque, true) => {
+                                &self.instancing_pipeline_double.inner
+                            }
+                            (ferrous_core::scene::AlphaMode::Mask { .. }, false) => {
+                                &self.instancing_pipeline.inner
+                            }
+                            (ferrous_core::scene::AlphaMode::Mask { .. }, true) => {
+                                &self.instancing_pipeline_double.inner
+                            }
+                            (ferrous_core::scene::AlphaMode::Blend, false) => {
+                                &self.instancing_pipeline_blend.inner
+                            }
+                            (ferrous_core::scene::AlphaMode::Blend, true) => {
+                                &self.instancing_pipeline_blend_double.inner
+                            }
                         };
                         rpass.set_pipeline(pipe);
                     } else {
@@ -263,26 +300,39 @@ impl RenderPass for WorldPass {
                     }
                     // bind lights for PBR
                     rpass.set_bind_group(3, self.environment.bind_group.as_ref(), &[]);
-                        // pick pipeline based on material flags and sidedness
-                        if let Some(reg) = &self.material_registry {
-                            let (alpha_mode, double_sided) = reg.get_render_flags(MaterialHandle(cmd.material_slot as u32));
-                            let pipeline_ref = match (alpha_mode, double_sided) {
-                                (ferrous_core::scene::AlphaMode::Opaque, false) => &self.pbr_pipeline.inner,
-                                (ferrous_core::scene::AlphaMode::Opaque, true) => &self.pbr_pipeline_double.inner,
-                                (ferrous_core::scene::AlphaMode::Mask { .. }, false) => &self.pbr_pipeline.inner,
-                                (ferrous_core::scene::AlphaMode::Mask { .. }, true) => &self.pbr_pipeline_double.inner,
-                                (ferrous_core::scene::AlphaMode::Blend, false) => &self.pbr_pipeline_blend.inner,
-                                (ferrous_core::scene::AlphaMode::Blend, true) => &self.pbr_pipeline_blend_double.inner,
-                            };
-                            rpass.set_pipeline(pipeline_ref);
-                        } else {
-                            // fallback: use regular pipeline with culling as requested
-                            if cmd.double_sided {
-                                rpass.set_pipeline(&self.pbr_pipeline_double.inner);
-                            } else {
-                                rpass.set_pipeline(&self.pbr_pipeline.inner);
+                    // pick pipeline based on material flags and sidedness
+                    if let Some(reg) = &self.material_registry {
+                        let (alpha_mode, double_sided) =
+                            reg.get_render_flags(MaterialHandle(cmd.material_slot as u32));
+                        let pipeline_ref = match (alpha_mode, double_sided) {
+                            (ferrous_core::scene::AlphaMode::Opaque, false) => {
+                                &self.pbr_pipeline.inner
                             }
+                            (ferrous_core::scene::AlphaMode::Opaque, true) => {
+                                &self.pbr_pipeline_double.inner
+                            }
+                            (ferrous_core::scene::AlphaMode::Mask { .. }, false) => {
+                                &self.pbr_pipeline.inner
+                            }
+                            (ferrous_core::scene::AlphaMode::Mask { .. }, true) => {
+                                &self.pbr_pipeline_double.inner
+                            }
+                            (ferrous_core::scene::AlphaMode::Blend, false) => {
+                                &self.pbr_pipeline_blend.inner
+                            }
+                            (ferrous_core::scene::AlphaMode::Blend, true) => {
+                                &self.pbr_pipeline_blend_double.inner
+                            }
+                        };
+                        rpass.set_pipeline(pipeline_ref);
+                    } else {
+                        // fallback: use regular pipeline with culling as requested
+                        if cmd.double_sided {
+                            rpass.set_pipeline(&self.pbr_pipeline_double.inner);
+                        } else {
+                            rpass.set_pipeline(&self.pbr_pipeline.inner);
                         }
+                    }
                     rpass.set_vertex_buffer(0, cmd.vertex_buffer.slice(..));
                     rpass.set_index_buffer(cmd.index_buffer.slice(..), cmd.index_format);
                     rpass.draw_indexed(0..cmd.index_count, 0, 0..1);

@@ -46,6 +46,32 @@ use crate::transform::Transform;
 // descriptors.
 use crate::color::Color;
 
+/// Component attached to entities that emit point light.
+///
+/// The renderer collects all entities with this component each frame and
+/// uploads their data to the point-light storage buffer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PointLightComponent {
+    /// Linear RGB colour of the light (no gamma correction needed — PBR pipeline
+    /// expects linear values).
+    pub color: [f32; 3],
+    /// Intensity multiplier.
+    pub intensity: f32,
+    /// Maximum influence radius in world-space metres.  Fragments beyond this
+    /// distance receive zero contribution from this light.
+    pub radius: f32,
+}
+
+impl Default for PointLightComponent {
+    fn default() -> Self {
+        Self {
+            color: [1.0, 1.0, 1.0],
+            intensity: 5.0,
+            radius: 10.0,
+        }
+    }
+}
+
 /// Holds the material handle and CPU-side descriptor attached to an entity.
 ///
 /// The handle is expected to be allocated by the renderer; the descriptor
@@ -166,6 +192,9 @@ pub struct Element {
     /// Optional handle back into the renderer's object list (set by
     /// `Renderer::sync_world`; applications should not touch this field).
     pub render_handle: Option<usize>,
+    /// Optional point-light component.  When `Some`, the entity emits point
+    /// light and is collected each frame by the renderer's sync pass.
+    pub point_light: Option<PointLightComponent>,
 }
 
 impl Element {
@@ -179,6 +208,7 @@ impl Element {
             visible: true,
             tags: Vec::new(),
             render_handle: None,
+            point_light: None,
         }
     }
 }
@@ -248,6 +278,12 @@ impl<'a> EntityBuilder<'a> {
 
     pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
         self.element.tags.push(tag.into());
+        self
+    }
+
+    /// Attach a point-light component to this entity.
+    pub fn with_point_light(mut self, comp: PointLightComponent) -> Self {
+        self.element.point_light = Some(comp);
         self
     }
 
@@ -373,6 +409,26 @@ impl World {
             })
             .with_position(position)
             .with_scale(Vec3::splat(radius))
+            .build()
+    }
+
+    /// Spawn an invisible point-light entity at `position`.
+    ///
+    /// The entity has `ElementKind::Empty` and `visible = false` so the
+    /// renderer does not try to draw any geometry for it; only its
+    /// `PointLightComponent` is used during the lighting pass.
+    pub fn spawn_point_light(
+        &mut self,
+        name: impl Into<String>,
+        position: Vec3,
+        color: [f32; 3],
+        intensity: f32,
+        radius: f32,
+    ) -> Handle {
+        self.spawn(name)
+            .with_position(position)
+            .with_point_light(PointLightComponent { color, intensity, radius })
+            .invisible()
             .build()
     }
 

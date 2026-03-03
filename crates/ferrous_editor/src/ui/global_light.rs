@@ -21,7 +21,7 @@ use crate::ui::material_inspector::PANEL_W;
 
 const MARGIN: f32 = 10.0;
 const SLIDER_H: f32 = 14.0;
-const MAX_INTENSITY: f32 = 4.0;
+const MAX_INTENSITY: f32 = 50.0;
 
 /// Panel that controls the single global directional light.
 pub struct GlobalLightPanel {

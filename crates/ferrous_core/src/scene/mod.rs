@@ -7,7 +7,7 @@ pub mod material;
 pub mod world;
 
 // World types
-pub use world::{Element, ElementKind, Handle, World};
+pub use world::{Element, ElementKind, Handle, PointLightComponent, World};
 
 // Camera
 pub use camera::{Camera, CameraUniform};
