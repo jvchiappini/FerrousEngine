@@ -22,7 +22,7 @@ use crate::graph::frame_packet::{
     CameraPacket, DrawCommand, FramePacket, InstancedDrawCommand, Viewport,
 };
 use crate::render_stats::RenderStats;
-use crate::resources::{InstanceBuffer, ModelBuffer};
+use crate::resources::InstanceBuffer;
 use crate::scene::{Frustum, RenderObject};
 
 /// All per-frame scratch state that `FrameBuilder` needs to track between calls.
@@ -84,20 +84,28 @@ impl FrameBuilder {
         legacy_objects: &HashMap<u64, RenderObject>,
         world_objects: &[Option<RenderObject>],
         instance_buf: &mut InstanceBuffer,
-        instance_layout: &Arc<wgpu::BindGroupLayout>,
+        instance_layout: &wgpu::BindGroupLayout,
         shadow_instance_buf: &mut InstanceBuffer,
-        // Callback to notify WorldPass of new instance buffer bind group
-        on_instance_buf_changed: &mut dyn FnMut(Arc<wgpu::BindGroup>),
-        on_shadow_instance_buf_changed: &mut dyn FnMut(Arc<wgpu::BindGroup>),
+        // Callbacks to notify passes of new instance buffer bind groups
+        instance_callback: &mut dyn FnMut(Arc<wgpu::BindGroup>, Arc<wgpu::BindGroup>),
     ) -> (FramePacket, RenderStats) {
         // -- Fast path: scene unchanged + camera unchanged --------------------
         if !self.scene_dirty && self.prev_view_proj == Some(camera_packet.view_proj) {
             let mut packet = FramePacket::new(Some(viewport), camera_packet);
             std::mem::swap(&mut packet.scene_objects, &mut self.draw_commands_cache);
-            std::mem::swap(&mut packet.instanced_objects, &mut self.instanced_commands_cache);
-            std::mem::swap(&mut packet.shadow_scene_objects, &mut self.shadow_scene_cache);
-            std::mem::swap(&mut packet.shadow_instanced_objects, &mut self.shadow_instanced_cache);
-            // Stats are preserved from last real build
+            std::mem::swap(
+                &mut packet.instanced_objects,
+                &mut self.instanced_commands_cache,
+            );
+            std::mem::swap(
+                &mut packet.shadow_scene_objects,
+                &mut self.shadow_scene_cache,
+            );
+            std::mem::swap(
+                &mut packet.shadow_instanced_objects,
+                &mut self.shadow_instanced_cache,
+            );
+            // Stats are recalculated for simplicity in this path too.
             let stats = self.compute_stats();
             return (packet, stats);
         }
@@ -159,21 +167,18 @@ impl FrameBuilder {
             .par_iter()
             .flatten()
             .filter(|obj| frustum.intersects_aabb(&obj.world_aabb()))
-            .fold(
-                HashMap::new,
-                |mut map: HashMap<MeshGroupKey, MeshGroupVal>, obj| {
-                    let key = (
-                        Arc::as_ptr(&obj.mesh.vertex_buffer) as usize,
-                        obj.material_slot,
-                        obj.double_sided,
-                    );
-                    map.entry(key)
-                        .or_insert_with(|| (obj.mesh.clone(), obj.material_slot, Vec::new()))
-                        .2
-                        .push(obj.matrix);
-                    map
-                },
-            )
+            .fold(HashMap::new, |mut map: HashMap<MeshGroupKey, MeshGroupVal>, obj| {
+                let key = (
+                    Arc::as_ptr(&obj.mesh.vertex_buffer) as usize,
+                    obj.material_slot,
+                    obj.double_sided,
+                );
+                map.entry(key)
+                    .or_insert_with(|| (obj.mesh.clone(), obj.material_slot, Vec::new()))
+                    .2
+                    .push(obj.matrix);
+                map
+            })
             .reduce(HashMap::new, |mut a, b| {
                 for (k, (mesh, mat, mats)) in b {
                     a.entry(k)
@@ -202,29 +207,37 @@ impl FrameBuilder {
                 map
             });
 
-        let total_visible: usize = visible_mesh_groups.values().map(|(_, _, m)| m.len()).sum();
+        let mut total_visible = 0;
+        for (_, (_, _, mats)) in &visible_mesh_groups {
+            total_visible += mats.len();
+        }
 
+        // Upload visible matrices
         if total_visible > 0 {
             let prev_bg = instance_buf.bind_group.clone();
             instance_buf.reserve(device, instance_layout, total_visible);
             if !Arc::ptr_eq(&prev_bg, &instance_buf.bind_group) {
-                on_instance_buf_changed(instance_buf.bind_group.clone());
+                instance_callback(instance_buf.bind_group.clone(), shadow_instance_buf.bind_group.clone());
             }
 
-            let mut offset = 0u32;
+            let mut offset = 0;
+            self.instance_matrix_scratch.clear();
             self.instance_matrix_scratch.reserve(total_visible);
 
             for ((_key, _mat, double_sided), (mesh, material_slot, mats)) in visible_mesh_groups {
                 let count = mats.len() as u32;
-                let mut max_dist_sq = 0.0f32;
+                self.instance_matrix_scratch.extend_from_slice(&mats);
+
+                let mut max_dist_sq = 0.0;
                 for m in &mats {
                     let pos = m.w_axis.truncate();
-                    let d = (pos - camera_packet.eye).length_squared();
+                    let diff = pos - camera_packet.eye;
+                    let d = diff.length_squared();
                     if d > max_dist_sq {
                         max_dist_sq = d;
                     }
                 }
-                self.instance_matrix_scratch.extend_from_slice(&mats);
+
                 self.instanced_commands_cache.push(InstancedDrawCommand {
                     vertex_buffer: mesh.vertex_buffer.clone(),
                     index_buffer: mesh.index_buffer.clone(),
@@ -237,13 +250,16 @@ impl FrameBuilder {
                     material_slot,
                     distance_sq: max_dist_sq,
                 });
+
                 offset += count;
             }
+
             instance_buf.write_slice(queue, 0, &self.instance_matrix_scratch);
         }
 
-        // -- Shadow instanced list (all world objects, no cull) ---------------
+        // -- Shadow-caster instanced list (World objects, no camera cull) ----
         {
+            self.shadow_matrix_scratch.clear();
             let mut shadow_groups: HashMap<MeshGroupKey, MeshGroupVal> = HashMap::new();
             for obj in world_objects.iter().flatten() {
                 let key = (
@@ -258,12 +274,12 @@ impl FrameBuilder {
                     .push(obj.matrix);
             }
 
-            let total_shadow: usize = shadow_groups.values().map(|(_, _, m)| m.len()).sum();
+            let total_shadow = shadow_groups.values().map(|(_, _, m)| m.len()).sum::<usize>();
             if total_shadow > 0 {
                 let prev_bg = shadow_instance_buf.bind_group.clone();
                 shadow_instance_buf.reserve(device, instance_layout, total_shadow);
                 if !Arc::ptr_eq(&prev_bg, &shadow_instance_buf.bind_group) {
-                    on_shadow_instance_buf_changed(shadow_instance_buf.bind_group.clone());
+                    instance_callback(instance_buf.bind_group.clone(), shadow_instance_buf.bind_group.clone());
                 }
 
                 let mut offset = 0u32;
@@ -284,6 +300,7 @@ impl FrameBuilder {
                     });
                     offset += count;
                 }
+
                 shadow_instance_buf.write_slice(queue, 0, &self.shadow_matrix_scratch);
             }
         }
@@ -292,35 +309,50 @@ impl FrameBuilder {
 
         let mut packet = FramePacket::new(Some(viewport), camera_packet);
         std::mem::swap(&mut packet.scene_objects, &mut self.draw_commands_cache);
-        std::mem::swap(&mut packet.instanced_objects, &mut self.instanced_commands_cache);
-        std::mem::swap(&mut packet.shadow_scene_objects, &mut self.shadow_scene_cache);
-        std::mem::swap(&mut packet.shadow_instanced_objects, &mut self.shadow_instanced_cache);
+        std::mem::swap(
+            &mut packet.instanced_objects,
+            &mut self.instanced_commands_cache,
+        );
+        std::mem::swap(
+            &mut packet.shadow_scene_objects,
+            &mut self.shadow_scene_cache,
+        );
+        std::mem::swap(
+            &mut packet.shadow_instanced_objects,
+            &mut self.shadow_instanced_cache,
+        );
+
         (packet, stats)
     }
 
-    /// Reclaim the Vec allocations from a completed `FramePacket` for the next frame.
+    /// Reclaim the internal caches from a used `FramePacket`.
+    #[inline]
     pub fn reclaim(&mut self, mut packet: FramePacket) {
         std::mem::swap(&mut self.draw_commands_cache, &mut packet.scene_objects);
-        std::mem::swap(&mut self.instanced_commands_cache, &mut packet.instanced_objects);
+        std::mem::swap(
+            &mut self.instanced_commands_cache,
+            &mut packet.instanced_objects,
+        );
         std::mem::swap(&mut self.shadow_scene_cache, &mut packet.shadow_scene_objects);
-        std::mem::swap(&mut self.shadow_instanced_cache, &mut packet.shadow_instanced_objects);
+        std::mem::swap(
+            &mut self.shadow_instanced_cache,
+            &mut packet.shadow_instanced_objects,
+        );
     }
 
-    // -----------------------------------------------------------------------
-    // Private
-
+    /// Internal helper to calculate statistics based on current caches.
     fn compute_stats(&self) -> RenderStats {
         let mut stats = RenderStats::default();
         for cmd in &self.draw_commands_cache {
-            stats.vertex_count   += cmd.vertex_count as u64;
+            stats.vertex_count += cmd.vertex_count as u64;
             stats.triangle_count += (cmd.index_count / 3) as u64;
-            stats.draw_calls     += 1;
+            stats.draw_calls += 1;
         }
         for cmd in &self.instanced_commands_cache {
             let inst = cmd.instance_count as u64;
-            stats.vertex_count   += cmd.vertex_count as u64 * inst;
+            stats.vertex_count += cmd.vertex_count as u64 * inst;
             stats.triangle_count += (cmd.index_count / 3) as u64 * inst;
-            stats.draw_calls     += 1;
+            stats.draw_calls += 1;
         }
         stats
     }

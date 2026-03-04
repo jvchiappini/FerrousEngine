@@ -169,6 +169,7 @@ pub struct PrePass {
     #[allow(dead_code)]
     model_layout: Arc<BindGroupLayout>,
     /// BGL for the instanced storage-buffer path (group 1 = instance array).
+    #[allow(dead_code)]
     instance_layout: Arc<BindGroupLayout>,
 
     /// Camera resources (separate from the main camera BG because we need

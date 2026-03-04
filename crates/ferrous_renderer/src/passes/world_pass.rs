@@ -315,7 +315,7 @@ impl RenderPass for WorldPass {
         _device: &Device,
         _queue: &Queue,
         encoder: &mut CommandEncoder,
-        color_view: &TextureView,
+        _color_view: &TextureView,
         resolve_target: Option<&TextureView>,
         depth_view: Option<&TextureView>,
         packet: &FramePacket,
@@ -541,7 +541,7 @@ impl RenderPass for WorldPass {
                 rpass.set_bind_group(0, &*self.camera_bind_group, &[]);
 
                 // draw opaque / mask commands first
-                let mut opaque_cmds: Vec<&DrawCommand> = packet
+                let opaque_cmds: Vec<&DrawCommand> = packet
                     .scene_objects
                     .iter()
                     .filter(|cmd| {

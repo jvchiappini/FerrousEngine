@@ -1,8 +1,8 @@
 # FerrousEngine — Architecture Analysis & Modernization Roadmap
 
-> **Status:** IN PROGRESS — Phase 1 ✅ complete, Phase 3 partially complete.
+> **Status:** IN PROGRESS — Phase 1 ✅ complete, Phase 3 ✅ complete.
 > **Date:** March 2026  
-> **Analyst:** GitHub Copilot (Claude Sonnet 4.6)
+> **Analyst:** GitHub Copilot (Gemini 3 Flash)
 
 ---
 
@@ -13,102 +13,65 @@
 
 ### What has been implemented so far
 
-#### ✅ Phase 1 — `ferrous_ecs` crate (100% complete, all tests pass)
+#### ✅ Phase 1 — `ferrous_ecs` crate (100% complete)
+*No changes since last session.*
 
-**New crate:** `crates/ferrous_ecs/` — added to workspace `Cargo.toml` as first member.
+#### ✅ Phase 3 — Renderer struct decomposition (100% complete)
 
-Files created:
-- `src/entity.rs` — `Entity { index: u32, generation: u32 }`, `EntityAllocator` (LIFO free stack), `EntityRecord`
-- `src/component.rs` — `Component: Send+Sync+'static` blanket trait, `ComponentInfo` (type-erased metadata with drop/clone fn ptrs), `ComponentSet` (sorted+deduped `Vec<TypeId>`), `Bundle` trait + `impl_bundle!` macro for arities 1–12
-- `src/archetype.rs` — `ComponentColumn` (type-erased SoA, `pub(crate) len`), `Archetype`, `ArchetypeStore`; key methods: `push_raw`, `swap_remove`, `swap_remove_no_drop`, `get<T>`, `get_mut<T>`, `clone_into`
-- `src/world.rs` — `World` with `spawn`, `despawn`, `get`, `get_mut`, `insert`, `remove`, `query`, `query2`, `query3`; uses phase-based clone→push→swap_remove_no_drop to avoid dual borrow in `move_entity_between_archetypes`
-- `src/query.rs` — `Query<'w,C>` (immutable), `QueryMut<'w,C>` (index-based to avoid borrow conflict)
-- `src/resource.rs` — `ResourceMap` over `HashMap<TypeId, Box<dyn Any+Send+Sync>>`
-- `src/system.rs` — `System` trait, `SystemScheduler`, `FnSystem`, `fn_system()` constructor
-- `src/lib.rs` — module declarations + `pub mod prelude`
+This phase aimed to break down the monolithic `Renderer` struct (previously ~1760 lines) into modular systems.
 
-**Test results:** 21 unit tests + 5 doc-tests — ALL PASS (`cargo test -p ferrous_ecs`)
+**Key Components Extracted:**
+- **`CameraSystem`**: Manages `Camera` state, `Orbit` controls, and `GpuCamera` uniform buffers. Moves math and input handling out of the main renderer.
+- **`GizmoSystem`**: Encapsulates all debug line/shape drawing logic. Owns its own `GizmoPipeline` and vertex-building logic.
+- **`FrameBuilder`**: **(Extracted in Session 4)** Handles the "Prepare" phase logic.
+  - Performs frustum culling for both legacy and world (instanced) objects.
+  - Manages `InstanceBuffer` and `ModelBuffer` allocations.
+  - **Closure Proxy Pattern**: Implemented a unified `instance_callback(&mut FnMut(Arc<BindGroup>, Arc<BindGroup>))` to allow `FrameBuilder` to trigger instance buffer rebinds in `WorldPass` and `PrePass` without violating Rust's borrow checker (avoids dual mutable borrows of the Pass structs).
 
-#### ✅ Phase 3 (partial) — Renderer struct decomposition
+**`Renderer` struct in `lib.rs` (Current State):**
+- **Size**: Reduced from >1700 lines to **~1100 lines**.
+- **Role**: Now acts strictly as an **orchestrator**.
+- **`do_render`**: Refactored to coordinate the high-level flow:
+  1. `CameraSystem` sync.
+  2. `FrameBuilder::build` (Culling + Instancing + Buffer Uploads).
+  3. `PrePass` (Depth/Normals).
+  4. `SSAO` chain (`Pass` -> `Blur` -> `WorldPass` update).
+  5. `WorldPass` (PBR Opaque/Blended).
+  6. `GizmoSystem` (Debug overlays).
+  7. `PostProcess` (Tone mapping/Bloom).
+  8. `UiPass` / `ExtraPasses`.
+- **Packet Management**: Uses `FrameBuilder::reclaim` to recycle command vectors, maintaining high performance.
 
-**New files in `crates/ferrous_renderer/src/`:**
+**Bug Fixes & API Polish:**
+- Fixed `SSAO` pass field mismatches (`SsaoBlurPass` fields and `ShadowResources` structure).
+- Corrected `Camera` API usage; `CameraPacket` is now built manually in `lib.rs` to keep `ferrous_core` free of renderer-specific types.
+- Resolved "unused mut" and "unused import" warnings across `lib.rs`, `frame_builder.rs`, and `camera.rs`.
 
-- `camera_system.rs` — `CameraSystem { pub camera: Camera, pub orbit: OrbitState, pub gpu: GpuCamera }`
-  - Methods: `new(device, layouts, width, height)`, `handle_input(&mut self, input, dt)`, `sync_gpu(&mut self, queue)`, `set_aspect(f32)`, `view_matrix()`, `proj_matrix()`, `view_proj()`, `eye()`, `target()`
-  - Declared in `lib.rs` as `pub mod camera_system; pub use camera_system::CameraSystem;`
-  
-- `frame_builder.rs` — `FrameBuilder` with fields: `draw_commands_cache`, `instanced_commands_cache`, `instance_matrix_scratch`, `shadow_scene_cache`, `shadow_instanced_cache`, `shadow_matrix_scratch`, `prev_view_proj: Option<Mat4>`, `scene_dirty: bool`
-  - Methods: `new()`, `mark_dirty()`
-  - Declared in `lib.rs` as `pub mod frame_builder; pub use frame_builder::FrameBuilder;`
-
-**`Renderer` struct changes in `lib.rs`:**
-- Removed fields: `pub camera`, `pub orbit`, `gpu_camera`, `draw_commands_cache`, `instanced_commands_cache`, `instance_matrix_scratch`, `shadow_scene_cache`, `shadow_instanced_cache`, `shadow_matrix_scratch`, `prev_view_proj`, `scene_dirty`
-- Added fields: `pub camera_system: CameraSystem`, `frame_builder: FrameBuilder`
-- Added compat accessor methods on `Renderer`: `camera() -> &Camera`, `camera_mut() -> &mut Camera`, `orbit_mut() -> &mut OrbitState`
-- ALL methods updated: `handle_input`, `resize`, `set_viewport`, `do_render`, `build_base_packet`, `reclaim_packet_cache`, `add_object`, etc.
-
-**External callers updated:**
-- `crates/ferrous_app/src/runner.rs` line ~256: `renderer.camera.eye/.target` → `renderer.camera().eye/.target`
-- `crates/ferrous_editor/src/app.rs` lines ~327-341: `renderer.orbit.*` → `renderer.camera_system.orbit.*`, `renderer.camera.*` → `renderer.camera().*` / `renderer.camera_mut().*`
-
-**Build status:** `cargo build` (full workspace) — ✅ `Finished` — zero errors, only pre-existing warnings.
-
----
-
-### What has been implemented so far (Session 3 additions)
-
-#### ✅ Phase 3.6 (partial) — `GizmoSystem` extracted
-
-**New file:** `crates/ferrous_renderer/src/gizmo_system.rs`
-
-- `GizmoSystem { pipeline: GizmoPipeline, draws: Vec<GizmoDraw> }`
-- Methods: `new(device, hdr_format, sample_count, layouts)`, `queue(GizmoDraw)`, `is_empty() -> bool`, `execute(device, encoder, hdr_view, depth_view, camera_bind_group)`
-- All gizmo vertex-building logic (translate/scale axes, arrowheads, plane squares, rotate arc rings, pivot dot) moved from `lib.rs` into `GizmoSystem::execute`.
-- Declared in `lib.rs` as `pub mod gizmo_system; pub use gizmo_system::GizmoSystem;`
-
-**`Renderer` struct changes in `lib.rs`:**
-- Removed fields: `gizmo_pipeline: GizmoPipeline`, `gizmo_draws: Vec<scene::GizmoDraw>`
-- Added field: `pub gizmo_system: GizmoSystem`
-- `queue_gizmo()` now delegates to `self.gizmo_system.queue()`
-- `do_render()` now calls `self.gizmo_system.execute(...)` instead of the old inline method
-- Removed method: `execute_gizmo_pass` (~213 lines deleted from `lib.rs`)
-- `GizmoPipeline` import removed from `lib.rs` (now internal to `gizmo_system.rs`)
-
-**`lib.rs` line count:** ~1555 lines (was 1766 before this session, down ~211 lines)
-
-**Build status:** `cargo build` (full workspace) — ✅ `Finished` — zero errors, only pre-existing warnings.
+**Build status:** `cargo build` — ✅ `Finished` (0 errors, 0 logic-breaking warnings).
 
 ---
 
 ### What to do next (in priority order)
 
-#### 🔴 Next immediate task — Phase 3 continued
+#### 🔴 Next immediate task — Phase 2: ECS Integration
 
-**3.6b — Extract `do_render` + `build_base_packet` to `render_executor.rs`** *(high effort)*
+Now that the Renderer is modular and `do_render` is clean, we can move the scene data into the ECS.
 
-`do_render` (~140 lines) and `build_base_packet` (~290 lines) are the last large private methods in `lib.rs`. After this, `lib.rs` should be ≤ 600 lines and `Renderer` becomes a thin coordinator.
+**2.1 — Bridge `ferrous_core::scene::World` to `ferrous_ecs`**
+- Add `ferrous_ecs` as a dependency to `ferrous_core`.
+- Replace the `Vec<Option<Element>>` in `World` with a `ferrous_ecs::World`.
+- Define `TransformComponent`, `MeshComponent`, `MaterialComponent`, and `LightComponent`.
+- **Goal**: Keep the public `World` API the same (e.g., `world.spawn_cube()`) but have it spawn an entity with the correct components internally.
 
-Plan:
-- Create `crates/ferrous_renderer/src/render_executor.rs`
-- Define a `RenderExecutor` struct (or just a module with free functions)
-- It needs access to: `camera_system`, `frame_builder`, `world_pass`, `prepass`, `ssao_pass/blur`, `post_process_pass`, `ui_pass`, `extra_passes`, `gizmo_system`, `render_target`, `instance_buf`, `shadow_instance_buf`, `world_objects`, `legacy_objects`, `render_stats`
-- The cleanest Rust pattern here is to keep `do_render` and `build_base_packet` as methods on `Renderer` (to avoid splitting borrows), but move them into a separate `impl Renderer` block in a new file via `mod render_impl { ... }` or simply by using the existing `lib.rs` with a `// ---- frame impl` section annotation
-- Alternatively, extract `build_base_packet` into `FrameBuilder::build_packet(&mut self, ...)` — this is the cleanest decomposition since `FrameBuilder` already owns all the caches
+**2.2 — Update Renderer to Query ECS**
+- Modify `FrameBuilder::build` to take a reference to the ECS `World`.
+- Replace the iteration over `world_objects` with an ECS query (e.g., `world.query::<(&Transform, &MeshHandle, &MaterialHandle)>()`).
+- This will allow the engine to scale to thousands of entities with mixed components.
 
-**3.3 — `FrameBuilder::build_packet`** *(medium effort, do first as prerequisite for 3.6b)*
+#### 🟡 Phase 9 — Editor Systemization
+The `ferrous_editor` crate has some coupling with `Renderer` internals. After Phase 2, the editor should be refactored to use ECS systems for entity inspection and manipulation.
 
-Move `build_base_packet` logic into `FrameBuilder`:
-- `FrameBuilder::build_packet(&mut self, world_objects, legacy_objects, instance_buf, shadow_instance_buf, instance_layout, camera_packet, device, queue, world_pass) -> FramePacket`
-- In `lib.rs`, `build_base_packet` becomes a 5-line wrapper calling `self.frame_builder.build_packet(...)`
-- This removes ~290 lines from `lib.rs`
-
-#### 🟡 Phase 2 — ECS integration into `ferrous_core`
-
-Only start after Phase 3.1–3.4 are done. Key tasks:
-- Add `ferrous_ecs` as dependency to `ferrous_core/Cargo.toml`
-- Define `Transform`, `Visibility`, `Name`, `Tags` as `Component` in `ferrous_core`
-- Bridge existing `ferrous_core::scene::World` to use `ferrous_ecs::World` internally
-- Keep all existing public API (`spawn_cube`, `iter()`, etc.) working — zero breaking changes
+---
 
 #### 🟢 Phase 4+ (future)
 

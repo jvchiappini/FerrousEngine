@@ -18,7 +18,6 @@ use wgpu::{
 
 use crate::passes::ssao_pass::SsaoTexture;
 use crate::passes::prepass::NormalDepthTexture;
-use crate::resources::texture;
 
 // ── Blur params (matches ssao_blur.wgsl) ──────────────────────────────────────
 

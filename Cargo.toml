@@ -17,3 +17,4 @@ glam = { version = "0.29", features = ["bytemuck"] }
 winit = "0.30"
 log = "0.4"
 pollster = "0.3"
+ferrous_ecs = { path = "crates/ferrous_ecs" }

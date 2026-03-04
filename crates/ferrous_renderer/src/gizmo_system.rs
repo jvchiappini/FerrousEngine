@@ -226,6 +226,10 @@ impl GizmoSystem {
         }
 
         // -- Upload transient vertex buffer -----------------------------------
+        if vertices.is_empty() {
+            return;
+        }
+
         let vb = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("gizmo vertex buffer"),
             contents: bytemuck::cast_slice(&vertices),

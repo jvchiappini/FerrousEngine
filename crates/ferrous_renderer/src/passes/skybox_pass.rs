@@ -134,7 +134,7 @@ impl RenderPass for SkyboxPass {
         color_view: &TextureView,
         _resolve_target: Option<&TextureView>,
         depth_view: Option<&TextureView>,
-        packet: &FramePacket,
+        _packet: &FramePacket,
     ) {
         let mut rpass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("SkyboxRenderPass"),
