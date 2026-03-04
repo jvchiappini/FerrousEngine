@@ -4,6 +4,7 @@ pub mod instance_buffer;
 pub mod light;
 pub mod material;
 pub mod model_buffer;
+pub mod ssao;
 pub mod texture;
 pub mod texture_registry;
 pub mod shadow;
@@ -14,6 +15,7 @@ pub use light::{DirectionalLightUniform, LightStorageHeader, PointLightUniform, 
 pub use material::{Material, Texture};
 pub use model_buffer::ModelBuffer;
 pub use shadow::ShadowResources;
+pub use ssao::SsaoResources;
 
 // registry exports
 pub use texture_registry::{

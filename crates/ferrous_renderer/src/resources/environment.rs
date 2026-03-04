@@ -32,6 +32,10 @@ pub struct Environment {
     brdf_view: Arc<wgpu::TextureView>,
     shadow_sampler: Arc<wgpu::Sampler>,
     shadow_view: Arc<wgpu::TextureView>,
+    /// SSAO blurred texture (R8Unorm, half-res).  Defaults to a 1×1 white
+    /// texture so the PBR shader gets ssao_factor = 1 until SSAO is ready.
+    ssao_view: Arc<wgpu::TextureView>,
+    ssao_sampler: Arc<wgpu::Sampler>,
 }
 
 impl Environment {
@@ -201,6 +205,33 @@ impl Environment {
         };
         queue.write_buffer(&point_light_buffer, 0, bytemuck::bytes_of(&zero_header));
 
+        // 1×1 white SSAO dummy (ssao_factor = 1 → no occlusion until SSAO is on)
+        let ssao_dummy_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("DummySSAO"),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            view_formats: &[],
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        });
+        queue.write_texture(
+            ssao_dummy_tex.as_image_copy(),
+            &[255u8], // fully lit
+            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(1), rows_per_image: Some(1) },
+            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        );
+        let ssao_view = ssao_dummy_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let ssao_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("DummySSAOSampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            ..Default::default()
+        });
+
         let bind_group = Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Environment Bind Group"),
             layout,
@@ -237,6 +268,14 @@ impl Environment {
                     binding: 7,
                     resource: wgpu::BindingResource::TextureView(&shadow_view),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::TextureView(&ssao_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: wgpu::BindingResource::Sampler(&ssao_sampler),
+                },
             ],
         }));
 
@@ -252,6 +291,8 @@ impl Environment {
             brdf_view: Arc::new(brdf_view),
             shadow_sampler: Arc::new(shadow_sampler),
             shadow_view: Arc::new(shadow_view),
+            ssao_view: Arc::new(ssao_view),
+            ssao_sampler: Arc::new(ssao_sampler),
         }
     }
 
@@ -706,6 +747,33 @@ impl Environment {
         let shadow_tex = device.create_texture(&shadow_desc);
         let shadow_view = shadow_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
+        // 1×1 white SSAO dummy
+        let ssao_dummy_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("DummySSAO"),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            view_formats: &[],
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        });
+        queue.write_texture(
+            ssao_dummy_tex.as_image_copy(),
+            &[255u8],
+            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(1), rows_per_image: Some(1) },
+            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        );
+        let ssao_view_hdri = ssao_dummy_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let ssao_sampler_hdri = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("DummySSAOSampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            ..Default::default()
+        });
+
         let bind_group = Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Environment Bind Group"),
             layout,
@@ -742,6 +810,14 @@ impl Environment {
                     binding: 7,
                     resource: wgpu::BindingResource::TextureView(&shadow_view),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::TextureView(&ssao_view_hdri),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: wgpu::BindingResource::Sampler(&ssao_sampler_hdri),
+                },
             ],
         }));
 
@@ -757,6 +833,8 @@ impl Environment {
             brdf_view: Arc::new(brdf_view),
             shadow_sampler: Arc::new(shadow_sampler),
             shadow_view: Arc::new(shadow_view),
+            ssao_view: Arc::new(ssao_view_hdri),
+            ssao_sampler: Arc::new(ssao_sampler_hdri),
         })
     }
 
@@ -880,7 +958,30 @@ impl Environment {
                     binding: 7,
                     resource: wgpu::BindingResource::TextureView(&self.shadow_view),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::TextureView(&self.ssao_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: wgpu::BindingResource::Sampler(&self.ssao_sampler),
+                },
             ],
         }));
+    }
+
+    /// Plug in the blurred SSAO texture so the PBR shader can read it.
+    /// Call this every frame after the SSAO blur pass has finished writing
+    /// its output texture.
+    pub fn update_ssao(
+        &mut self,
+        device: &Device,
+        layout: &wgpu::BindGroupLayout,
+        ssao_view: Arc<wgpu::TextureView>,
+        ssao_sampler: Arc<wgpu::Sampler>,
+    ) {
+        self.ssao_view    = ssao_view;
+        self.ssao_sampler = ssao_sampler;
+        self.rebuild_bind_group(device, layout);
     }
 }

@@ -85,6 +85,13 @@ var shadow_sampler: sampler_comparison;
 @group(3) @binding(7)
 var shadow_map: texture_depth_2d;
 
+// SSAO (Screen Space Ambient Occlusion) — blurred, half-resolution.
+// Binding 8: the texture.  Binding 9: a linear sampler.
+@group(3) @binding(8)
+var ssao_tex: texture_2d<f32>;
+@group(3) @binding(9)
+var ssao_sampler: sampler;
+
 // ── Point Lights (Storage Buffer) ────────────────────────────────────────────
 // binding(5) follows the four IBL resources at bindings 1-4.
 // STD430 layout: a 16-byte header (count + 12 bytes padding) followed by
@@ -359,7 +366,19 @@ fn fs_main(frag_in: FragmentInput) -> FragmentOutput {
     let brdf = textureSample(tex_brdf, mat_sampler, vec2<f32>(max(dot(N, Vdir),0.0), roughness)).xy;
     let specular_ambient = prefiltered * (F_ambient * brdf.x + brdf.y);
 
-    let ambient = (diffuse_ambient + specular_ambient) * ao_factor * 0.8; // intensidad global del ambiente
+    // Sample the blurred SSAO texture using the fragment's NDC position.
+    // clip_pos carries the fragment coordinates in window space; dividing by
+    // the render target size gives us UV coordinates in [0, 1].
+    // Because this is a built-in we can't read it in a fragment shader after
+    // interpolation — instead we compute the screen UV from world_pos via the
+    // view-projection matrix embedded in the camera uniform.
+    // NOTE: ssao_factor defaults to 1.0 (no occlusion) when SSAO is disabled.
+    let clip_ssao = camera.view_proj * vec4<f32>(frag_in.world_pos, 1.0);
+    let ndc_ssao  = clip_ssao.xyz / clip_ssao.w;
+    let ssao_uv   = vec2<f32>(ndc_ssao.x * 0.5 + 0.5, -ndc_ssao.y * 0.5 + 0.5);
+    let ssao_factor = textureSample(ssao_tex, ssao_sampler, ssao_uv).r;
+
+    let ambient = (diffuse_ambient + specular_ambient) * ao_factor * ssao_factor * 0.8;
 
     var color = ambient + Lo;
 

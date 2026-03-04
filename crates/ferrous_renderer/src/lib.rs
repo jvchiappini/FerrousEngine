@@ -69,10 +69,11 @@ use ferrous_gui::TextBatch;
 
 use camera::controller::OrbitState;
 use graph::frame_packet::{CameraPacket, DrawCommand};
-use passes::{PostProcessPass, UiPass, WorldPass};
+use passes::{PostProcessPass, PrePass, SsaoBlurPass, SsaoPass, UiPass, WorldPass};
 use pipeline::GizmoPipeline;
 use pipeline::{PbrPipeline, PipelineLayouts};
 use resources::ModelBuffer;
+use resources::SsaoResources;
 
 // -- RenderDest ---------------------------------------------------------------
 
@@ -200,6 +201,18 @@ pub struct Renderer {
     /// Statistics from the most recently completed frame (vertices, triangles,
     /// draw calls).  Updated by `build_base_packet` every frame.
     pub render_stats: RenderStats,
+
+    // -- SSAO -----------------------------------------------------------------
+    /// Depth-normal prepass (runs before WorldPass).
+    pub prepass: PrePass,
+    /// SSAO generation pass (half-resolution).
+    pub ssao_pass: SsaoPass,
+    /// SSAO bilateral blur pass.
+    pub ssao_blur_pass: SsaoBlurPass,
+    /// CPU-side SSAO resources (kernel, noise, params buffers).
+    pub ssao_resources: SsaoResources,
+    /// When true, SSAO is computed and applied to the IBL ambient term.
+    pub ssao_enabled: bool,
 }
 
 impl Renderer {
@@ -368,6 +381,14 @@ impl Renderer {
         let gizmo_pipeline =
             GizmoPipeline::new(device, hdr_format, rt.sample_count(), layouts.clone());
 
+        // ── SSAO: build passes before the Self literal consumes the buffers ──
+        let mut prepass = PrePass::new(device, layouts.model.clone(), layouts.instance.clone(), width, height);
+        prepass.set_model_buffer(model_buf.bind_group.clone(), model_buf.stride);
+        prepass.set_instance_buffer(instance_buf.bind_group.clone());
+        let ssao_pass       = SsaoPass::new(device, width, height);
+        let ssao_blur_pass  = SsaoBlurPass::new(device, width, height);
+        let ssao_resources  = SsaoResources::new(device, &context.queue);
+
         Self {
             context,
             render_target: rt,
@@ -415,6 +436,13 @@ impl Renderer {
             width,
             height,
             render_stats: RenderStats::default(),
+
+            // ── SSAO ─────────────────────────────────────────────────────────
+            prepass,
+            ssao_pass,
+            ssao_blur_pass,
+            ssao_resources,
+            ssao_enabled: true,
         }
     }
 
@@ -651,6 +679,8 @@ impl Renderer {
             .ensure_capacity(&self.context.device, &self.model_layout, slot + 1);
         if !Arc::ptr_eq(&prev_bg, &self.model_buf.bind_group) {
             self.world_pass
+                .set_model_buffer(self.model_buf.bind_group.clone(), self.model_buf.stride);
+            self.prepass
                 .set_model_buffer(self.model_buf.bind_group.clone(), self.model_buf.stride);
         }
         self.model_buf.write(&self.context.queue, slot, &matrix);
@@ -1041,6 +1071,10 @@ impl Renderer {
             new_width,
             new_height,
         );
+        // SSAO passes
+        self.prepass.on_resize(&self.context.device, &self.context.queue, new_width, new_height);
+        self.ssao_pass.on_resize(&self.context.device, new_width, new_height);
+        self.ssao_blur_pass.on_resize(&self.context.device, new_width, new_height);
         // post-process pass owns bloom textures which also depend on size
         self.post_process_pass.on_resize(
             &self.context.device,
@@ -1111,11 +1145,105 @@ impl Renderer {
             packet.insert(b);
         }
 
-        // ── 1. World pass: renders the 3-D scene into the HDR texture ─────────
+        // Shared TextureView placeholder: some RenderPass::execute signatures require
+        // a color_view even when the pass ignores it (e.g. PrePass, WorldPass writes to
+        // its own HDR target).  We create a single dummy view once per frame.
+        let dummy_view = self
+            .render_target
+            .color
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        // ── 1. Depth-Normal Prepass (required by SSAO) ────────────────────────
+        // Sync the prepass camera with the current main camera matrices.
+        {
+            let view = glam::Mat4::look_at_rh(
+                self.camera.eye,
+                self.camera.target,
+                self.camera.up,
+            );
+            let proj = glam::Mat4::perspective_rh(
+                self.camera.fovy,
+                self.camera.aspect,
+                self.camera.znear,
+                self.camera.zfar,
+            );
+            self.prepass.update_camera(&self.context.queue, view, proj, self.camera.eye);
+            self.prepass.prepare(&self.context.device, &self.context.queue, &packet);
+            self.prepass.execute(
+                &self.context.device,
+                &self.context.queue,
+                encoder,
+                &dummy_view,
+                None,
+                None,
+                &packet,
+            );
+        }
+
+        // ── 2. SSAO passes (only when enabled) ────────────────────────────────
+        if self.ssao_enabled {
+            // Upload camera matrices and screen dimensions to the params buffer.
+            let proj = glam::Mat4::perspective_rh(
+                self.camera.fovy,
+                self.camera.aspect,
+                self.camera.znear,
+                self.camera.zfar,
+            );
+            let inv_proj = proj.inverse();
+            let ssao_w = self.ssao_pass.ssao_texture.width;
+            let ssao_h = self.ssao_pass.ssao_texture.height;
+            self.ssao_resources.update_params(
+                &self.context.queue,
+                ssao_w,
+                ssao_h,
+                proj,
+                inv_proj,
+            );
+
+            // Generate raw SSAO
+            self.ssao_pass.run(
+                &self.context.device,
+                encoder,
+                &self.ssao_resources,
+                &self.prepass.normal_depth,
+            );
+
+            // Blur raw SSAO
+            self.ssao_blur_pass.run(
+                &self.context.device,
+                encoder,
+                &self.ssao_pass.ssao_texture,
+                &self.prepass.normal_depth,
+            );
+
+            // Plug the blurred SSAO texture into the environment bind group
+            // so the PBR shader samples it this frame.
+            let ssao_view = Arc::new(
+                self.ssao_blur_pass.blurred.texture
+                    .create_view(&wgpu::TextureViewDescriptor::default())
+            );
+            let ssao_sampler = Arc::new(self.context.device.create_sampler(
+                &wgpu::SamplerDescriptor {
+                    label: Some("SSAO Result Sampler"),
+                    mag_filter: wgpu::FilterMode::Linear,
+                    min_filter: wgpu::FilterMode::Linear,
+                    address_mode_u: wgpu::AddressMode::ClampToEdge,
+                    address_mode_v: wgpu::AddressMode::ClampToEdge,
+                    ..Default::default()
+                },
+            ));
+            self.world_pass.update_ssao(
+                &self.context.device,
+                ssao_view,
+                ssao_sampler,
+            );
+        }
+
+        // ── 3. World pass: renders the 3-D scene into the HDR texture ─────────
         // color_view is ignored by WorldPass (it writes to hdr_texture internally),
         // but the trait signature still requires one.
         let depth_view = self.render_target.depth_view();
-        let dummy_view = self.render_target.color_view();
 
         self.world_pass
             .prepare(&self.context.device, &self.context.queue, &packet);
@@ -1123,18 +1251,18 @@ impl Renderer {
             &self.context.device,
             &self.context.queue,
             encoder,
-            dummy_view,
+            &dummy_view,
             None,
             Some(depth_view),
             &packet,
         );
 
-        // ── 2. Gizmo pass (if any): also writes into the HDR texture ─────────
+        // ── 4. Gizmo pass (if any): also writes into the HDR texture ─────────
         if !self.gizmo_draws.is_empty() {
             self.execute_gizmo_pass(encoder, &dest);
         }
 
-        // ── 3. Post-process pass: tone-maps the HDR texture → final surface ───
+        // ── 5. Post-process pass: tone-maps the HDR texture → final surface ───
         // Build a fresh TextureView for the HDR source (avoids split-borrow).
         let hdr_view_pp = self
             .world_pass

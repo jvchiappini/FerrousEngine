@@ -274,6 +274,24 @@ impl PipelineLayouts {
                         },
                         count: None,
                     },
+                    // binding 8: SSAO (blurred, half-resolution R8Unorm)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 8,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    // binding 9: SSAO sampler
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 9,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
                 ],
             }),
         );

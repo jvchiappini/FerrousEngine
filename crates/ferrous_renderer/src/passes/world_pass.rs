@@ -281,6 +281,22 @@ impl WorldPass {
             sky.set_env_bind_group(self.environment.bind_group.clone());
         }
     }
+
+    /// Plug the blurred SSAO texture into the environment bind group so the
+    /// PBR shader samples it this frame.  Also propagates the updated bind
+    /// group to the skybox pass (which uses the same group).
+    pub fn update_ssao(
+        &mut self,
+        device: &wgpu::Device,
+        ssao_view: Arc<wgpu::TextureView>,
+        ssao_sampler: Arc<wgpu::Sampler>,
+    ) {
+        self.environment
+            .update_ssao(device, &self.lights_layout, ssao_view, ssao_sampler);
+        if let Some(sky) = &mut self.skybox_pass {
+            sky.set_env_bind_group(self.environment.bind_group.clone());
+        }
+    }
 }
 
 impl RenderPass for WorldPass {
