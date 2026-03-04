@@ -7,12 +7,15 @@
 /// 3. **Update** the transform of all surviving objects.
 ///
 /// Uses a `Vec<Option<RenderObject>>` for guaranteed sequential access.
-use ferrous_core::scene::{ElementKind, World};
+use ferrous_core::scene::{ElementKind, World, Element};
+use ferrous_core::scene::world::MaterialComponent;
+use ferrous_core::transform::Transform;
 
 use crate::geometry::primitives::{
     cube::cube as create_cube, quad::quad as create_quad, sphere::sphere as create_sphere,
 };
 use crate::scene::RenderObject;
+use crate::scene::object::RenderObject as Object; // just in case for disambiguation if needed
 
 /// Update `objects` so that it mirrors the renderable entities in `world`.
 ///
@@ -80,7 +83,7 @@ pub fn sync_world(
     }
 
     // ── Phase 2 & 3: spawn or update ─────────────────────────────────────────
-    for element in world.iter() {
+    for (_entity, element, transform, material) in world.ecs.query3::<Element, Transform, MaterialComponent>() {
         let is_renderable = matches!(
             element.kind,
             ElementKind::Cube { .. }
@@ -92,7 +95,7 @@ pub fn sync_world(
             continue;
         }
 
-        let matrix = element.transform.matrix();
+        let matrix = transform.matrix();
         let idx = element.id as usize;
 
         if let Some(ref mut obj) = objects[idx] {
@@ -102,21 +105,25 @@ pub fn sync_world(
                 mutated = true;
             }
             // update material slot if the world descriptor changed
-            let slot = element.material.handle.0 as usize;
+            let slot = material.handle.0 as usize;
             if obj.material_slot != slot {
                 obj.material_slot = slot;
                 mutated = true;
             }
         } else {
             // Phase 2 — spawn new object.
+            let is_double_sided = if let ElementKind::Quad { double_sided, .. } = element.kind {
+                double_sided
+            } else {
+                false
+            };
+
             let mesh = match &element.kind {
                 ElementKind::Cube { .. } => shared_cube_mesh
                     .get_or_insert_with(|| create_cube(device))
                     .clone(),
                 ElementKind::Mesh { asset_key } => {
-                    // look up a previously registered mesh; fall back to the
-                    // unit cube if we haven't seen this key yet.
-                    if let Some(m) = mesh_cache.get(asset_key) {
+                    if let Some(m) = mesh_cache.get(asset_key.as_str()) {
                         m.clone()
                     } else {
                         shared_cube_mesh
@@ -132,10 +139,11 @@ pub fn sync_world(
                     longitudes,
                     ..
                 } => {
-                    let (lat, lon) = (*latitudes, *longitudes);
-                    // check cache
+                    let lat = latitudes;
+                    let lon = longitudes;
+                    
                     let use_mesh = if let Some((m, l, o)) = shared_sphere_mesh {
-                        if *l == lat && *o == lon {
+                        if l == lat && o == lon {
                             Some(m.clone())
                         } else {
                             None
@@ -143,45 +151,27 @@ pub fn sync_world(
                     } else {
                         None
                     };
+
                     if let Some(m) = use_mesh {
                         m
                     } else {
-                        let new = create_sphere(device, 1.0, lat, lon);
-                        *shared_sphere_mesh = Some((new.clone(), lat, lon));
+                        let new = create_sphere(device, 1.0, *lat, *lon);
+                        *shared_sphere_mesh = Some((new.clone(), *lat, *lon));
                         new
                     }
                 }
-                _ => unreachable!(),
+                _ => continue,
             };
-            let double_sided =
-                matches!(element.kind, ElementKind::Quad { double_sided, .. } if double_sided);
-            let mat_slot = element.material.handle.0 as usize;
-            let mut obj =
-                RenderObject::new(device, element.id, mesh, matrix, 0, double_sided, mat_slot);
-            // Override AABB with per-axis half_extents when available.
-            match element.kind {
-                ElementKind::Cube { half_extents } => {
-                    use crate::scene::culling::Aabb;
-                    obj.local_aabb = Aabb::new(-half_extents, half_extents);
-                    obj.cached_world_aabb = obj.local_aabb.transform(&matrix);
-                }
-                ElementKind::Quad { width, height, .. } => {
-                    use crate::scene::culling::Aabb;
-                    let hw = width * 0.5;
-                    let hh = height * 0.5;
-                    obj.local_aabb =
-                        Aabb::new(glam::Vec3::new(-hw, -hh, 0.0), glam::Vec3::new(hw, hh, 0.0));
-                    obj.cached_world_aabb = obj.local_aabb.transform(&matrix);
-                }
-                ElementKind::Sphere { radius, .. } => {
-                    use crate::scene::culling::Aabb;
-                    let r = radius;
-                    let v = glam::Vec3::splat(r);
-                    obj.local_aabb = Aabb::new(-v, v);
-                    obj.cached_world_aabb = obj.local_aabb.transform(&matrix);
-                }
-                _ => {}
-            }
+            
+            let obj = RenderObject::new(
+                device,
+                element.id,
+                mesh,
+                matrix,
+                idx, // Using idx as slot for now
+                is_double_sided,
+                material.handle.0 as usize,
+            );
             objects[idx] = Some(obj);
             mutated = true;
         }

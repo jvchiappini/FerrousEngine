@@ -46,9 +46,11 @@ pub struct ComponentInfo {
 impl std::fmt::Debug for ComponentInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ComponentInfo")
+            .field("type_id", &self.type_id)
             .field("name", &self.name)
             .field("size", &self.size)
             .field("align", &self.align)
+            .field("has_drop", &self.drop_fn.is_some())
             .finish()
     }
 }

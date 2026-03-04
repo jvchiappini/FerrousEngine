@@ -33,6 +33,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use glam::{Quat, Vec3};
+use ferrous_ecs::prelude::{Component, World as EcsWorld, Entity};
 
 // colour utilities remain available for auxiliary code (UI, helpers), but
 // the scene elements no longer store a simple `Color`.  PBR materials have
@@ -62,6 +63,8 @@ pub struct PointLightComponent {
     pub radius: f32,
 }
 
+impl Component for PointLightComponent {}
+
 impl Default for PointLightComponent {
     fn default() -> Self {
         Self {
@@ -84,6 +87,8 @@ pub struct MaterialComponent {
     pub handle: MaterialHandle,
     pub descriptor: MaterialDescriptor,
 }
+
+impl Component for MaterialComponent {}
 
 impl Default for MaterialComponent {
     fn default() -> Self {
@@ -158,6 +163,8 @@ pub enum ElementKind {
     Empty,
 }
 
+impl ferrous_ecs::prelude::Component for ElementKind {}
+
 impl Default for ElementKind {
     fn default() -> Self {
         ElementKind::Empty
@@ -196,6 +203,8 @@ pub struct Element {
     /// light and is collected each frame by the renderer's sync pass.
     pub point_light: Option<PointLightComponent>,
 }
+
+impl Component for Element {}
 
 impl Element {
     fn new(id: u64, name: impl Into<String>) -> Self {
@@ -295,11 +304,26 @@ impl<'a> EntityBuilder<'a> {
     /// Finalise the builder, insert the entity, and return its handle.
     pub fn build(self) -> Handle {
         let id = self.element.id;
+        
+        // Spawn in ECS with initial components
+        let entity = self.world.ecs.spawn((
+            self.element.transform,
+            self.element.material.clone(),
+            self.element.clone(),
+        ));
+
+        // Add optional components
+        if let Some(pl) = self.element.point_light {
+            self.world.ecs.insert(entity, pl);
+        }
+        
+        // Internal mapping
         let idx = id as usize;
         if idx >= self.world.entities.len() {
             self.world.entities.resize(idx + 1, None);
         }
         self.world.entities[idx] = Some(self.element);
+        self.world.ecs_mapping.insert(id, entity);
         self.world.count += 1;
         Handle(id)
     }
@@ -310,10 +334,21 @@ impl<'a> EntityBuilder<'a> {
 ///
 /// Store one `World` on your application state, mutate it in `update()`,
 /// and pass it to `renderer.sync_world(&world)` once per frame.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct World {
     entities: Vec<Option<Element>>,
     count: usize,
+    
+    /// The new ECS world!
+    pub ecs: EcsWorld,
+    /// Map from legacy Handle ID to ECS Entity.
+    pub ecs_mapping: std::collections::HashMap<u64, Entity>,
+}
+
+impl Default for World {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl World {
@@ -322,6 +357,8 @@ impl World {
         Self {
             entities: Vec::new(),
             count: 0,
+            ecs: EcsWorld::new(),
+            ecs_mapping: std::collections::HashMap::new(),
         }
     }
 
@@ -468,6 +505,9 @@ impl World {
         let idx = handle.0 as usize;
         if idx < self.entities.len() && self.entities[idx].is_some() {
             self.entities[idx] = None;
+            if let Some(entity) = self.ecs_mapping.remove(&handle.0) {
+                self.ecs.despawn(entity);
+            }
             self.count -= 1;
             true
         } else {
@@ -480,6 +520,15 @@ impl World {
     pub fn set_position(&mut self, handle: Handle, pos: Vec3) {
         if let Some(Some(e)) = self.entities.get_mut(handle.0 as usize) {
             e.transform.position = pos;
+            if let Some(entity) = self.ecs_mapping.get(&handle.0) {
+                if let Some(t) = self.ecs.get_mut::<Transform>(*entity) {
+                    t.position = pos;
+                }
+                // Also update the full element component
+                if let Some(elem) = self.ecs.get_mut::<Element>(*entity) {
+                    elem.transform.position = pos;
+                }
+            }
         }
     }
 
@@ -593,7 +642,15 @@ impl World {
     /// the data in the world.
     pub fn set_material_descriptor(&mut self, handle: Handle, desc: MaterialDescriptor) {
         if let Some(Some(e)) = self.entities.get_mut(handle.0 as usize) {
-            e.material.descriptor = desc;
+            e.material.descriptor = desc.clone();
+            if let Some(entity) = self.ecs_mapping.get(&handle.0) {
+                if let Some(m) = self.ecs.get_mut::<MaterialComponent>(*entity) {
+                    m.descriptor = desc.clone();
+                }
+                if let Some(elem) = self.ecs.get_mut::<Element>(*entity) {
+                    elem.material.descriptor = desc;
+                }
+            }
         }
     }
 
@@ -602,6 +659,14 @@ impl World {
     pub fn set_material_handle(&mut self, handle: Handle, mat: MaterialHandle) {
         if let Some(Some(e)) = self.entities.get_mut(handle.0 as usize) {
             e.material.handle = mat;
+            if let Some(entity) = self.ecs_mapping.get(&handle.0) {
+                if let Some(m) = self.ecs.get_mut::<MaterialComponent>(*entity) {
+                    m.handle = mat;
+                }
+                if let Some(elem) = self.ecs.get_mut::<Element>(*entity) {
+                    elem.material.handle = mat;
+                }
+            }
         }
     }
 

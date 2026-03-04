@@ -975,12 +975,8 @@ impl Renderer {
         {
             let view = self.camera_system.view_matrix();
             let proj = self.camera_system.proj_matrix();
-            self.prepass.update_camera(
-                &self.context.queue,
-                view,
-                proj,
-                self.camera_system.eye(),
-            );
+            self.prepass
+                .update_camera(&self.context.queue, view, proj, self.camera_system.eye());
             self.prepass
                 .prepare(&self.context.device, &self.context.queue, &packet);
             self.prepass.execute(
@@ -1023,14 +1019,16 @@ impl Renderer {
                     .texture
                     .create_view(&wgpu::TextureViewDescriptor::default()),
             );
-            let ssao_sampler = Arc::new(self.context.device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some("SSAO Result Sampler"),
-                mag_filter: wgpu::FilterMode::Linear,
-                min_filter: wgpu::FilterMode::Linear,
-                address_mode_u: wgpu::AddressMode::ClampToEdge,
-                address_mode_v: wgpu::AddressMode::ClampToEdge,
-                ..Default::default()
-            }));
+            let ssao_sampler = Arc::new(self.context.device.create_sampler(
+                &wgpu::SamplerDescriptor {
+                    label: Some("SSAO Result Sampler"),
+                    mag_filter: wgpu::FilterMode::Linear,
+                    min_filter: wgpu::FilterMode::Linear,
+                    address_mode_u: wgpu::AddressMode::ClampToEdge,
+                    address_mode_v: wgpu::AddressMode::ClampToEdge,
+                    ..Default::default()
+                },
+            ));
             self.world_pass
                 .update_ssao(&self.context.device, ssao_view, ssao_sampler);
         }

@@ -5,6 +5,7 @@
 //! to the GPU.
 
 use glam::{Mat4, Quat, Vec3};
+use ferrous_ecs::prelude::Component;
 
 /// World-space transform component.
 ///
@@ -25,6 +26,8 @@ pub struct Transform {
     /// Non-uniform scale factor.
     pub scale: Vec3,
 }
+
+impl Component for Transform {}
 
 impl Default for Transform {
     fn default() -> Self {

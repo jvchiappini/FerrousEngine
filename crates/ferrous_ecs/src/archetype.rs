@@ -20,6 +20,7 @@ use crate::entity::Entity;
 ///
 /// Internally it is a raw byte array with a known stride (`info.size`).
 /// Capacity grows like a `Vec` (doubling).
+#[derive(Debug)]
 pub(crate) struct ComponentColumn {
     pub(crate) info: ComponentInfo,
     /// Raw byte storage.  Length == `len * info.size`.
@@ -200,6 +201,7 @@ impl Drop for ComponentColumn {
 /// Stores all entities that share the same component set.
 ///
 /// Row `i` across all columns corresponds to `entities[i]`.
+#[derive(Debug)]
 pub struct Archetype {
     /// The unique component-set signature for this archetype.
     pub(crate) signature: ComponentSet,
@@ -339,7 +341,7 @@ impl Archetype {
 // ArchetypeStore — the set of all archetypes
 
 /// Manages all archetypes in the world.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct ArchetypeStore {
     pub(crate) archetypes: Vec<Archetype>,
     /// Map from `ComponentSet` → archetype index.

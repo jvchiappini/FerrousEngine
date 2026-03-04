@@ -20,6 +20,7 @@ bytemuck = { version = "1.17", features = ["derive"] }
 # crate instead so that we avoid a cyclic dependency (the renderer already
 # depends on `ferrous_core`).  `ferrous_renderer` will re-export these types
 # for convenience.
+ferrous_ecs = { workspace = true }
 # ── desktop-only (process metrics via OS APIs) ────────────────────────────
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 once_cell = "1.18"

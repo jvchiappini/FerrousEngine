@@ -167,18 +167,21 @@ impl FrameBuilder {
             .par_iter()
             .flatten()
             .filter(|obj| frustum.intersects_aabb(&obj.world_aabb()))
-            .fold(HashMap::new, |mut map: HashMap<MeshGroupKey, MeshGroupVal>, obj| {
-                let key = (
-                    Arc::as_ptr(&obj.mesh.vertex_buffer) as usize,
-                    obj.material_slot,
-                    obj.double_sided,
-                );
-                map.entry(key)
-                    .or_insert_with(|| (obj.mesh.clone(), obj.material_slot, Vec::new()))
-                    .2
-                    .push(obj.matrix);
-                map
-            })
+            .fold(
+                HashMap::new,
+                |mut map: HashMap<MeshGroupKey, MeshGroupVal>, obj| {
+                    let key = (
+                        Arc::as_ptr(&obj.mesh.vertex_buffer) as usize,
+                        obj.material_slot,
+                        obj.double_sided,
+                    );
+                    map.entry(key)
+                        .or_insert_with(|| (obj.mesh.clone(), obj.material_slot, Vec::new()))
+                        .2
+                        .push(obj.matrix);
+                    map
+                },
+            )
             .reduce(HashMap::new, |mut a, b| {
                 for (k, (mesh, mat, mats)) in b {
                     a.entry(k)
@@ -217,7 +220,10 @@ impl FrameBuilder {
             let prev_bg = instance_buf.bind_group.clone();
             instance_buf.reserve(device, instance_layout, total_visible);
             if !Arc::ptr_eq(&prev_bg, &instance_buf.bind_group) {
-                instance_callback(instance_buf.bind_group.clone(), shadow_instance_buf.bind_group.clone());
+                instance_callback(
+                    instance_buf.bind_group.clone(),
+                    shadow_instance_buf.bind_group.clone(),
+                );
             }
 
             let mut offset = 0;
@@ -274,12 +280,18 @@ impl FrameBuilder {
                     .push(obj.matrix);
             }
 
-            let total_shadow = shadow_groups.values().map(|(_, _, m)| m.len()).sum::<usize>();
+            let total_shadow = shadow_groups
+                .values()
+                .map(|(_, _, m)| m.len())
+                .sum::<usize>();
             if total_shadow > 0 {
                 let prev_bg = shadow_instance_buf.bind_group.clone();
                 shadow_instance_buf.reserve(device, instance_layout, total_shadow);
                 if !Arc::ptr_eq(&prev_bg, &shadow_instance_buf.bind_group) {
-                    instance_callback(instance_buf.bind_group.clone(), shadow_instance_buf.bind_group.clone());
+                    instance_callback(
+                        instance_buf.bind_group.clone(),
+                        shadow_instance_buf.bind_group.clone(),
+                    );
                 }
 
                 let mut offset = 0u32;
@@ -333,7 +345,10 @@ impl FrameBuilder {
             &mut self.instanced_commands_cache,
             &mut packet.instanced_objects,
         );
-        std::mem::swap(&mut self.shadow_scene_cache, &mut packet.shadow_scene_objects);
+        std::mem::swap(
+            &mut self.shadow_scene_cache,
+            &mut packet.shadow_scene_objects,
+        );
         std::mem::swap(
             &mut self.shadow_instanced_cache,
             &mut packet.shadow_instanced_objects,

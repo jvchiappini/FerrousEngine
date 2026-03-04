@@ -14,6 +14,7 @@ use crate::entity::{Entity, EntityAllocator};
 /// # Panics
 /// Most methods panic in debug builds on bad inputs (stale entity handles, etc.)
 /// and are no-ops or return `None` in release.
+#[derive(Debug)]
 pub struct World {
     pub(crate) entities: EntityAllocator,
     pub(crate) archetypes: ArchetypeStore,
@@ -80,23 +81,23 @@ impl World {
         }
 
         // Build sorted column pointer array (one *mut u8 per component)
-        // We call write_into which places each component into the provided slot.
-        // Strategy: use a per-column temp buffer on the stack isn't possible for
-        // arbitrary sizes, so we use the actual column storage directly.
         let row = arch.entities.len() - 1;
-        let mut ptrs: Vec<*mut u8> = arch
-            .columns
-            .iter_mut()
-            .map(|col| unsafe { col.get_raw_mut(row) })
-            .collect();
+        
+        // Match the order of B::type_ids() which write_into expects.
+        // B::type_ids() returns them in tuple order (0, 1, 2...).
+        let bundle_types = B::type_ids();
+        let mut ptrs: Vec<*mut u8> = Vec::with_capacity(bundle_types.len());
+        
+        for tid in bundle_types {
+            let col = arch.columns.iter_mut().find(|c| c.info.type_id == tid).unwrap();
+            unsafe {
+                ptrs.push(col.get_raw_mut(row));
+                col.len += 1;
+            }
+        }
 
         // SAFETY: we just reserved space for `row`, ptrs are valid write targets
         unsafe {
-            // Adjust each column length before write (write_into will write-init)
-            for col in &mut arch.columns {
-                // Already reserved; increment len since push_raw would do it
-                col.len += 1;
-            }
             bundle.write_into(&mut ptrs);
         }
 
