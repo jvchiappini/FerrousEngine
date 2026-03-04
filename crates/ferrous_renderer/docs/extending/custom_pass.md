@@ -237,6 +237,7 @@ let world_pass = ferrous_renderer::passes::world_pass::WorldPass::new(
     &ctx.device,
     &ctx.queue,            // new parameter: queue reference is required for environment
     &pipeline_layouts,
+    /* hdri_path */ None,
 );
 renderer.add_pass(Box::new(world_pass));
 

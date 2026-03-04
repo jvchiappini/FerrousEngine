@@ -345,12 +345,13 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let mut gfx = pollster::block_on(GraphicsState::new(
-                &window,
-                self.config.width,
-                self.config.height,
-                self.config.vsync,
-                self.config.sample_count,
-            ));
+                    &window,
+                    self.config.width,
+                    self.config.height,
+                    self.config.vsync,
+                    self.config.sample_count,
+                    self.config.hdri_path.clone(),
+                ));
             gfx.renderer.set_viewport(self.viewport);
             gfx.renderer
                 .set_clear_color(self.config.background_color.to_wgpu());
@@ -428,6 +429,7 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
             let bg = self.config.background_color.to_wgpu();
             let vp = self.viewport;
             let font_bytes = self.config.font_bytes;
+            let hdri_path = self.config.hdri_path.clone();
 
             // Clone the font out of the runner so we can set it from the async block.
             // We use a second Rc<RefCell> slot to pass the font back.
@@ -436,7 +438,16 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
 
             let window_for_closure = window.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                let mut gfx = GraphicsState::new(&window_for_closure, w, h, vsync, samples).await;
+                let mut gfx = GraphicsState::new(
+                    &window_for_closure,
+                    w,
+                    h,
+                    vsync,
+                    samples,
+                    // pass HDRI path along (clone moved above)
+                    hdri_path.clone(),
+                )
+                .await;
                 gfx.renderer.set_clear_color(bg);
                 gfx.renderer.set_viewport(vp);
 

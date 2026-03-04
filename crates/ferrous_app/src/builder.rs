@@ -38,6 +38,9 @@ pub struct AppConfig {
     /// Higher values improve edge quality but multiply GPU raster work.
     /// Default: `1` (no MSAA) — enable explicitly when needed.
     pub sample_count: u32,
+    /// Optional path to an HDR environment map.  If provided the renderer
+    /// will initialise its IBL resources from this file.
+    pub hdri_path: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -54,6 +57,7 @@ impl Default for AppConfig {
             target_fps: Some(60),
             idle_timeout: None,
             sample_count: 1,
+            hdri_path: None,
         }
     }
 }
@@ -130,6 +134,13 @@ impl<A: FerrousApp + 'static> App<A> {
     /// Colour used to clear the 3-D viewport before each frame (default: dark gray).
     pub fn with_background_color(mut self, color: Color) -> Self {
         self.config.background_color = color;
+        self
+    }
+
+    /// Set the HDRI file path used for image-based lighting.
+    /// Path is resolved relative to the working directory at runtime.
+    pub fn with_hdri(mut self, path: &str) -> Self {
+        self.config.hdri_path = Some(path.to_string());
         self
     }
 

@@ -1,3 +1,4 @@
+use log::warn;
 /// 3-D / 2-D opaque geometry pass.
 ///
 /// Clears color + depth, binds the camera and the shared model-matrix buffer,
@@ -81,6 +82,8 @@ pub struct WorldPass {
     environment: Environment,
     /// Kept for environment bind-group reconstruction when point-light buffer grows.
     lights_layout: Arc<wgpu::BindGroupLayout>,
+    /// Optional skybox pass drawn before geometry.
+    skybox_pass: Option<crate::passes::SkyboxPass>,
     /// HDR off-screen render target. The world pass renders into this instead
     /// of the swapchain surface so values > 1.0 can be preserved.
     pub hdr_texture: HdrTexture,
@@ -110,10 +113,25 @@ impl WorldPass {
         layouts: &PipelineLayouts,
         width: u32,
         height: u32,
+        hdri_path: Option<&std::path::Path>,
     ) -> Self {
-        // environment bundle includes directional light, placeholder IBL and
-        // will later be updated with the shadow map.
-        let mut environment = Environment::new_dummy(device, queue, &layouts.lights);
+        // environment bundle includes directional light and IBL textures. if
+        // caller supplied an HDRI path we perform the expensive compute
+        // precomputation once; otherwise fall back to the dummy grey maps.
+        let mut environment = if let Some(path) = hdri_path {
+            match Environment::from_hdri(device, queue, &layouts.lights, path) {
+                Ok(env) => env,
+                Err(e) => {
+                    warn!(
+                        "Failed to load HDRI {:?}, falling back to dummy: {}",
+                        path, e
+                    );
+                    Environment::new_dummy(device, queue, &layouts.lights)
+                }
+            }
+        } else {
+            Environment::new_dummy(device, queue, &layouts.lights)
+        };
         let hdr_texture = HdrTexture::new(device, width, height);
 
         // create two shadow pipelines: one for regular objects and one for
@@ -124,6 +142,16 @@ impl WorldPass {
             crate::pipeline::ShadowPipeline::new(device, layouts.clone(), true);
         let shadow_resources = crate::resources::ShadowResources::new(device);
         environment.update_shadow(device, &layouts.lights, &shadow_resources);
+
+        // create skybox pass now that we have a valid environment bind group
+        let skybox_pass = Some(crate::passes::SkyboxPass::new(
+            device,
+            &layouts,
+            camera_bind_group.clone(),
+            environment.bind_group.clone(),
+            HdrTexture::FORMAT,
+            1, // HDR texture uses single sample count
+        ));
 
         // Dedicated bind group for the shadow pass — only the directional
         // light uniform, matched to `layouts.shadow_lights`.
@@ -161,6 +189,7 @@ impl WorldPass {
             material_registry: None,
             environment,
             lights_layout: Arc::clone(&layouts.lights),
+            skybox_pass,
             hdr_texture,
             shadow_pipeline,
             shadow_pipeline_instanced,
@@ -247,6 +276,10 @@ impl WorldPass {
     ) {
         self.environment
             .update_point_lights(device, queue, &self.lights_layout, lights);
+        // if the bind group changed, propagate to the skybox pass
+        if let Some(sky) = &mut self.skybox_pass {
+            sky.set_env_bind_group(self.environment.bind_group.clone());
+        }
     }
 }
 
@@ -266,11 +299,25 @@ impl RenderPass for WorldPass {
         _device: &Device,
         _queue: &Queue,
         encoder: &mut CommandEncoder,
-        _color_view: &TextureView,
-        _resolve_target: Option<&TextureView>,
+        color_view: &TextureView,
+        resolve_target: Option<&TextureView>,
         depth_view: Option<&TextureView>,
         packet: &FramePacket,
     ) {
+        // draw skybox before everything else (ignores depth writes)
+        // Must render into the HDR texture, not the swapchain surface, so that
+        // the skybox format matches the pipeline (Rgba16Float).
+        if let Some(sky) = &mut self.skybox_pass {
+            sky.execute(
+                _device,
+                _queue,
+                encoder,
+                &self.hdr_texture.view,
+                resolve_target,
+                depth_view,
+                packet,
+            );
+        }
         // ── Shadow map pass ─────────────────────────────────────────────
         // Render the scene from the light's point of view into a depth-only
         // texture before doing the main world pass.  This cannot occur while
@@ -329,13 +376,20 @@ impl RenderPass for WorldPass {
 
         // Always render into the HDR texture, not the swapchain surface.
         // The post-process pass will read this and write to the final surface.
+        // If the skybox already cleared and wrote to the HDR texture, use Load
+        // so we preserve the skybox background.
+        let hdr_load_op = if self.skybox_pass.is_some() {
+            LoadOp::Load
+        } else {
+            LoadOp::Clear(self.clear_color)
+        };
         let mut rpass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some(self.name()),
             color_attachments: &[Some(RenderPassColorAttachment {
                 view: &self.hdr_texture.view,
                 resolve_target: None,
                 ops: Operations {
-                    load: LoadOp::Clear(self.clear_color),
+                    load: hdr_load_op,
                     store: StoreOp::Store,
                 },
             })],

@@ -68,6 +68,17 @@ struct DirectionalLight {
 @group(3) @binding(0)
 var<uniform> dir_light: DirectionalLight;
 
+// IBL resources bound alongside the directional light.  sampler at 1,
+// irradiance cube at 2, prefiltered specular cube at 3, BRDF LUT at 4.
+@group(3) @binding(1)
+var env_sampler: sampler;
+@group(3) @binding(2)
+var tex_irradiance: texture_cube<f32>;
+@group(3) @binding(3)
+var tex_prefilter: texture_cube<f32>;
+@group(3) @binding(4)
+var tex_brdf: texture_2d<f32>;
+
 // shadow map stored in the same bind group as lights (group 3)
 @group(3) @binding(6)
 var shadow_sampler: sampler_comparison;
@@ -331,20 +342,22 @@ fn fs_main(frag_in: FragmentInput) -> FragmentOutput {
     let F_ambient = fresnel_schlick(max(dot(N, Vdir), 0.0), F0);
     let kD_ambient = (vec3<f32>(1.0) - F_ambient) * (1.0 - metallic);
     
-    let sky_color = vec3<f32>(0.5, 0.7, 1.0) * 1.2;
-    let ground_color = vec3<f32>(0.2, 0.15, 0.1);
-    
-    // Diffuse ambient (Irradiance) based on surface normal
-    let irradiance = mix(ground_color, sky_color, N.y * 0.5 + 0.5);
-    let diffuse_ambient = kD_ambient * albedo * irradiance;
-    
-    // Specular ambient (Radiance) based on reflection vector
+    // Sample IBL textures rather than fake hemisphere colors.
+    // irradiance map stores diffuse lighting.
+    let irr = textureSample(tex_irradiance, mat_sampler, N).xyz;
+    let diffuse_ambient = kD_ambient * albedo * irr;
+
+    // specular prefiltered environment map: choose mip based on roughness
     let R = reflect(-Vdir, N);
-    let R_blend = mix(N.y, R.y, 1.0 - roughness); // difuminar hacia la normal si es rugoso
-    let specular_radiance = mix(ground_color, sky_color, R_blend * 0.5 + 0.5);
-    
-    let G_ambient = geometry_smith_ibl(max(dot(N, Vdir), 0.0001), roughness);
-    let specular_ambient = F_ambient * G_ambient * specular_radiance;
+    // roughness -> mip level (0 = crisp, max = rough)
+    // `textureNumMipLevels` is not available on all backends; use the
+    // WGSL built-in `textureNumLevels` which returns the total number of
+    // mipmap levels for a sampled texture.
+    let maxMip = textureNumLevels(tex_prefilter);
+    let mip = roughness * f32(maxMip - 1);
+    let prefiltered = textureSampleLevel(tex_prefilter, mat_sampler, R, mip).xyz;
+    let brdf = textureSample(tex_brdf, mat_sampler, vec2<f32>(max(dot(N, Vdir),0.0), roughness)).xy;
+    let specular_ambient = prefiltered * (F_ambient * brdf.x + brdf.y);
 
     let ambient = (diffuse_ambient + specular_ambient) * ao_factor * 0.8; // intensidad global del ambiente
 

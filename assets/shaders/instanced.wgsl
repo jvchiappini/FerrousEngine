@@ -307,9 +307,9 @@ fn fs_main(frag_in: VsOut) -> @location(0) vec4<f32> {
         color += emiss * es.xyz;
     }
 
-    // tone mapping
-    color = color / (color + vec3<f32>(1.0));
-    // Hardware applies sRGB gamma correction for us
+    // No tone mapping or gamma correction here — this pass writes to the
+    // Rgba16Float HDR texture.  The post-process pass applies ACES tone
+    // mapping and gamma correction for all geometry + skybox uniformly.
 
     var result = vec4<f32>(color, out_alpha);
     // alpha mask

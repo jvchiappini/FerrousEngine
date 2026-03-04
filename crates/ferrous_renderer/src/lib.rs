@@ -212,6 +212,7 @@ impl Renderer {
         height: u32,
         format: wgpu::TextureFormat,
         sample_count: u32,
+        hdri_path: Option<&std::path::Path>,
     ) -> Self {
         let device = &context.device;
 
@@ -305,7 +306,11 @@ impl Renderer {
             controller: Controller::with_default_wasd(),
         };
         let gpu_camera = GpuCamera::new(device, &camera, &layouts.camera);
-
+        // built-in passes will be created after the GUI renderer below
+        // create the world pass, forwarding the optional HDRI path from the
+        // caller.  the pass will internally build its own shadow pipeline and
+        // texture (2048² depth map) and keep the cubemaps for image-based
+        // lighting if an HDRI was provided.
         let world_pass = WorldPass::new(
             pbr_pipeline,
             pbr_pipeline_double,
@@ -321,6 +326,7 @@ impl Renderer {
             &layouts,
             width,
             height,
+            hdri_path,
         );
         // when the pass is created it will internally construct its own
         // shadow pipeline and texture (2048² depth map).  no additional
@@ -331,21 +337,21 @@ impl Renderer {
         let mut world_pass = world_pass;
         world_pass.set_material_table(&material_registry.bind_group_table(), &material_registry);
         let ui_renderer = ferrous_gui::GuiRenderer::new(
-            context.device.clone(),
+            device.clone(),
             format,
-            1024,
+            1024, // initial max instances
             width,
             height,
-            rt.sample_count(),
+            sample_count,
         );
-        let ui_pass = UiPass::new(ui_renderer);
 
-        // create the post-process pass; on_attach sets up its pipeline
-        // using the swapchain surface format.
+        // now that we have a GUI renderer instance, create the corresponding
+        // UI pass and the post-process (tone-mapping) pass
+        let ui_pass = UiPass::new(ui_renderer);
         let mut post_process_pass = PostProcessPass::new();
-        post_process_pass.on_attach(device, &context.queue, format, 1);
-        // initial size of bloom textures must match the target we render to.
-        post_process_pass.on_resize(device, &context.queue, width, height);
+        // on_attach builds the bloom pipelines (and the tone-mapping pipeline
+        // keyed to the swapchain format); must be called before on_resize.
+        post_process_pass.on_attach(device, &context.queue, format, sample_count);
 
         // Create the shared dynamic model buffer and register it with WorldPass.
         let model_buf = ModelBuffer::new(&context.device, &layouts.model, 64);
@@ -425,7 +431,6 @@ impl Renderer {
 
     /// Renders into the internal off-screen [`RenderTarget`].
 
-    /// Register a GPU texture from raw RGBA8 bytes and return a
     /// [`TextureHandle`] that can later be plugged into a
     /// [`MaterialDescriptor`].
     /// The texture is treated as **sRGB** color data (albedo, emissive).
@@ -1157,9 +1162,11 @@ impl Renderer {
 
         // 3a. run bloom chain and obtain the level-0 view containing the
         // accumulated bloom contribution.
-        let bloom_view = self
-            .post_process_pass
-            .run_bloom(&self.context.device, encoder, &self.world_pass.hdr_texture);
+        let bloom_view = self.post_process_pass.run_bloom(
+            &self.context.device,
+            encoder,
+            &self.world_pass.hdr_texture,
+        );
 
         {
             let pipeline = self
@@ -1192,12 +1199,14 @@ impl Renderer {
                     },
                     BindGroupEntry {
                         binding: 3,
-                        resource: BindingResource::Sampler(&self
-                            .post_process_pass
-                            .bloom_textures
-                            .as_ref()
-                            .unwrap()
-                            .sampler),
+                        resource: BindingResource::Sampler(
+                            &self
+                                .post_process_pass
+                                .bloom_textures
+                                .as_ref()
+                                .unwrap()
+                                .sampler,
+                        ),
                     },
                 ],
             });

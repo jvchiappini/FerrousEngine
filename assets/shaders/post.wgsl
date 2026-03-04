@@ -52,18 +52,18 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // level-0 of the bloom chain to already contain the accumulated result.
     let bloom_color = textureSample(t_bloom, s_bloom, in.uv).rgb;
 
-    // 2. ACES filmic tone mapping — compresses the HDR range to [0, 1].
-    //    we add the bloom before tone mapping so that the bright bleed
-    //    affects the final tonemapped colour.
-    let mixed_color = hdr_color + bloom_color * 0.15; // bloom intensity
-    let mapped = aces_tone_mapping(mixed_color);
+    // 2. Exposure — multiply before tone mapping to control overall brightness.
+    //    Outdoor HDRIs are typically very bright (sky > 1.0), so an exposure
+    //    value < 1.0 brings the scene into a nicer range for ACES.
+    let exposure = 0.5;
+    let exposed = (hdr_color + bloom_color * 0.15) * exposure;
 
-    // 3. Gamma correction — convert from linear to sRGB (gamma ≈ 2.2).
-    //    We do this explicitly because the HDR texture is Rgba16Float (linear),
-    //    and the swapchain target may be Bgra8UnormSrgb which would double-apply
-    //    gamma if we relied on hardware conversion. By writing a pre-corrected
-    //    value we are correct for both Srgb and Unorm swapchain formats.
-    let gamma_corrected = pow(mapped, vec3<f32>(1.0 / 2.2));
+    // 3. ACES filmic tone mapping — compresses the HDR range to [0, 1].
+    let mapped = aces_tone_mapping(exposed);
 
-    return vec4<f32>(gamma_corrected, 1.0);
+    // 4. Write the linear tonemapped value directly to the swapchain surface.
+    //    The surface is Bgra8UnormSrgb, so the hardware automatically applies
+    //    the linear→sRGB conversion when storing the pixel.  We must NOT do a
+    //    manual pow(x, 1/2.2) here or gamma would be applied twice.
+    return vec4<f32>(mapped, 1.0);
 }

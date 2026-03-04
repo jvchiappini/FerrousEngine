@@ -15,6 +15,7 @@ impl GraphicsState {
         height: u32,
         vsync: bool,
         sample_count: u32,
+        hdri_path: Option<String>,
     ) -> Self {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             // On wasm32 we must request the WebGPU (or WebGL2) backend.
@@ -86,6 +87,8 @@ impl GraphicsState {
             config.height,
             config.format,
             sample_count,
+            // convert Option<String> -> Option<&Path>
+            hdri_path.as_ref().map(|s| std::path::Path::new(s)),
         );
 
         Self {

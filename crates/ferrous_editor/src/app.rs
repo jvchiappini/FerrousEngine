@@ -883,7 +883,11 @@ pub fn build_app() -> App<EditorApp> {
         .with_msaa(1)
         .with_title("Ferrous Engine — Editor")
         .with_size(1280, 720)
-        .with_background_color(Color::rgb(0.08, 0.08, 0.10));
+        .with_background_color(Color::rgb(0.08, 0.08, 0.10))
+        // load the sample HDRI for the editor; path is relative to the
+        // working directory and lives in the top-level `assets/skybox`
+        // folder.
+        .with_hdri("assets/skybox/citrus_orchard_road_puresky_4k.exr");
 
     #[cfg(not(target_arch = "wasm32"))]
     let base = base
