@@ -18,6 +18,7 @@ pub mod camera_system;
 pub mod context;
 pub mod frame_builder;
 pub mod geometry;
+pub mod gizmo_system;
 pub mod graph;
 pub mod materials;
 pub mod passes;
@@ -37,6 +38,7 @@ pub use camera_system::CameraSystem;
 pub use ferrous_core::input::{KeyCode, MouseButton};
 pub use frame_builder::FrameBuilder;
 pub use geometry::{Mesh, Vertex};
+pub use gizmo_system::GizmoSystem;
 pub use graph::frame_packet::Viewport;
 pub use graph::{FramePacket, InstancedDrawCommand, RenderPass};
 pub use pipeline::InstancingPipeline;
@@ -74,7 +76,6 @@ use ferrous_gui::TextBatch;
 use camera::controller::OrbitState;
 use graph::frame_packet::{CameraPacket, DrawCommand};
 use passes::{PostProcessPass, PrePass, SsaoBlurPass, SsaoPass, UiPass, WorldPass};
-use pipeline::GizmoPipeline;
 use pipeline::{PbrPipeline, PipelineLayouts};
 use resources::ModelBuffer;
 use resources::SsaoResources;
@@ -156,11 +157,9 @@ pub struct Renderer {
     /// Cache of meshes that have been registered by asset loaders.
     mesh_cache: std::collections::HashMap<String, geometry::Mesh>,
 
-    /// Pipeline used for drawing gizmos (lines); created once at startup.
-    gizmo_pipeline: GizmoPipeline,
-
-    /// Queued gizmos for the current frame.
-    gizmo_draws: Vec<scene::GizmoDraw>,
+    // -- Gizmo system (Phase 3: extracted to GizmoSystem) -------------------
+    /// Owns the line-list GPU pipeline and per-frame draw queue.
+    pub gizmo_system: GizmoSystem,
 
     // -- Per-frame state (Fase 3: extracted to FrameBuilder) ------------------
     frame_builder: FrameBuilder,
@@ -388,10 +387,8 @@ impl Renderer {
         world_pass_init.set_instance_buffer(instance_buf.bind_group.clone());
         world_pass_init.set_shadow_instance_buffer(shadow_instance_buf.bind_group.clone());
 
-        // gizmo pipeline writes to the HDR texture so that gizmos composite
-        // over scene geometry *before* tone mapping.
-        let gizmo_pipeline =
-            GizmoPipeline::new(device, hdr_format, rt.sample_count(), layouts.clone());
+        // gizmo system: owns the GPU pipeline and the per-frame draw queue.
+        let gizmo_system = GizmoSystem::new(device, hdr_format, rt.sample_count(), layouts.clone());
 
         // -- SSAO: build passes before the Self literal consumes the buffers --
         let mut prepass = PrePass::new(
@@ -428,8 +425,7 @@ impl Renderer {
             shared_quad_mesh: None,
             shared_sphere_mesh: None,
             mesh_cache: std::collections::HashMap::new(),
-            gizmo_pipeline,
-            gizmo_draws: Vec::new(),
+            gizmo_system,
             frame_builder: FrameBuilder::new(),
             shadow_instance_buf,
             material_registry,
@@ -802,235 +798,14 @@ impl Renderer {
     /// should push to `ctx.gizmos` rather than calling this directly.
     ///
     /// The gizmo list is automatically cleared after
-    /// [`execute_gizmo_pass`](Self::execute_gizmo_pass) runs, so there is no
-    /// need to manage lifetime manually.
+    /// [`GizmoSystem::execute`] runs, so there is no need to manage lifetime
+    /// manually.
     pub fn queue_gizmo(&mut self, gizmo: scene::GizmoDraw) {
-        self.gizmo_draws.push(gizmo);
+        self.gizmo_system.queue(gizmo);
         // mark scene dirty so that the world pass will rebuild the packet; the
         // gizmos are drawn separately but the packet cache logic should reset
         // when an unrelated draw request arrives.
         self.frame_builder.scene_dirty = true;
-    }
-
-    /// Builds vertex data for all queued [`GizmoDraw`] instances and emits a
-    /// dedicated line-list render pass on top of the world pass.
-    ///
-    /// The pass uses `LoadOp::Load` on both the colour and depth attachments so
-    /// gizmos composite correctly over the 3-D scene.  Depth writes are enabled
-    /// so that gizmos respect scene occlusion.
-    ///
-    /// After drawing, `gizmo_draws` is cleared ready for the next frame.
-    fn execute_gizmo_pass(&mut self, encoder: &mut wgpu::CommandEncoder, _dest: &RenderDest<'_>) {
-        // Gizmos compose over the HDR scene (before tone mapping), so we always
-        // render into world_pass.hdr_texture � never the swapchain surface.
-        let depth_view = self.render_target.depth_view();
-        use wgpu::util::DeviceExt;
-        use wgpu::{
-            LoadOp, Operations, RenderPassColorAttachment, RenderPassDepthStencilAttachment,
-            RenderPassDescriptor, StoreOp,
-        };
-
-        // build a flat list of vertices; each pair forms one line segment.
-        let mut vertices: Vec<Vertex> = Vec::new();
-        // helper for gizmo lines: provide a dummy normal and default tangent
-        let mut push_line = |pos: [f32; 3], col: [f32; 3]| {
-            let mut vert = Vertex::new(pos, [0.0, 0.0, 1.0], [0.0, 0.0]);
-            vert.color = col;
-            vertices.push(vert);
-        };
-        for gizmo in &self.gizmo_draws {
-            use ferrous_core::scene::{GizmoMode, Plane};
-            let st = &gizmo.style;
-
-            // -- Derived sizes from style -----------------------------------
-            let arm = st.arm_length;
-            let p_off = st.plane_offset();
-            let p_size = st.plane_size();
-            let arr_len = st.arrow_length();
-            let arr_half = st.arrow_half_angle_deg.to_radians();
-
-            let m = gizmo.transform;
-
-            match gizmo.mode {
-                GizmoMode::Translate | GizmoMode::Scale => {
-                    // -- Axis arms + optional arrowheads ---------------------------
-                    for &(axis_vec, axis_enum) in &[
-                        (glam::Vec3::X, ferrous_core::scene::Axis::X),
-                        (glam::Vec3::Y, ferrous_core::scene::Axis::Y),
-                        (glam::Vec3::Z, ferrous_core::scene::Axis::Z),
-                    ] {
-                        let c = if gizmo.highlighted_axis == Some(axis_enum) {
-                            st.axis_highlight(axis_enum)
-                        } else {
-                            st.axis_color(axis_enum)
-                        };
-
-                        let p0 = m.transform_point3(glam::Vec3::ZERO);
-                        let p1 = m.transform_point3(axis_vec * arm);
-
-                        // Shaft line
-                        push_line(p0.into(), c);
-                        push_line(p1.into(), c);
-
-                        // Arrowhead
-                        if st.show_arrows && arr_len > 1e-4 {
-                            let perp = if axis_vec.dot(glam::Vec3::Y).abs() < 0.9 {
-                                axis_vec.cross(glam::Vec3::Y).normalize()
-                            } else {
-                                axis_vec.cross(glam::Vec3::X).normalize()
-                            };
-                            let base_local = axis_vec * (arm - arr_len);
-                            let up2 = perp;
-                            let side = axis_vec.cross(perp).normalize();
-                            for &fin_dir in &[up2, -up2, side, -side] {
-                                let fin_tip = axis_vec * arm;
-                                let fin_base = base_local + fin_dir * (arr_len * arr_half.tan());
-                                push_line(m.transform_point3(fin_tip).into(), c);
-                                push_line(m.transform_point3(fin_base).into(), c);
-                            }
-                        }
-                    }
-
-                    // -- Plane square outlines -------------------------------------
-                    if st.show_planes {
-                        for &plane in &[Plane::XY, Plane::XZ, Plane::YZ] {
-                            let rgba = if gizmo.highlighted_plane == Some(plane) {
-                                st.plane_highlight(plane)
-                            } else {
-                                st.plane_color(plane)
-                            };
-                            let c = [rgba[0], rgba[1], rgba[2]];
-                            let (a, b) = plane.axes();
-                            let c0 = a * p_off + b * p_off;
-                            let c1 = a * (p_off + p_size) + b * p_off;
-                            let c2 = a * (p_off + p_size) + b * (p_off + p_size);
-                            let c3 = a * p_off + b * (p_off + p_size);
-                            let corners = [
-                                m.transform_point3(c0),
-                                m.transform_point3(c1),
-                                m.transform_point3(c2),
-                                m.transform_point3(c3),
-                            ];
-                            for i in 0..4 {
-                                let j = (i + 1) % 4;
-                                push_line(corners[i].into(), c);
-                                push_line(corners[j].into(), c);
-                            }
-                        }
-                    }
-                }
-
-                GizmoMode::Rotate => {
-                    // -- Rotation arc rings � one full circle per axis --------------
-                    // Each ring lives in the plane perpendicular to the axis.
-                    const ARC_SEGS: usize = 48;
-                    let origin = m.transform_point3(glam::Vec3::ZERO);
-
-                    for &(axis_vec, axis_enum) in &[
-                        (glam::Vec3::X, ferrous_core::scene::Axis::X),
-                        (glam::Vec3::Y, ferrous_core::scene::Axis::Y),
-                        (glam::Vec3::Z, ferrous_core::scene::Axis::Z),
-                    ] {
-                        let c = if gizmo.highlighted_axis == Some(axis_enum) {
-                            st.axis_highlight(axis_enum)
-                        } else {
-                            st.axis_color(axis_enum)
-                        };
-
-                        // Two stable perpendiculars in the ring's plane.
-                        let perp1 = if axis_vec.dot(glam::Vec3::Y).abs() < 0.9 {
-                            axis_vec.cross(glam::Vec3::Y).normalize()
-                        } else {
-                            axis_vec.cross(glam::Vec3::X).normalize()
-                        };
-                        let perp2 = axis_vec.cross(perp1).normalize();
-
-                        // Generate ring vertices in world space (m is translation-only).
-                        let mut ring: Vec<[f32; 3]> = Vec::with_capacity(ARC_SEGS);
-                        for i in 0..ARC_SEGS {
-                            let theta = (i as f32 / ARC_SEGS as f32) * std::f32::consts::TAU;
-                            let local = (perp1 * theta.cos() + perp2 * theta.sin()) * arm;
-                            ring.push((origin + local).into());
-                        }
-
-                        // Emit line segments forming the closed ring.
-                        for i in 0..ARC_SEGS {
-                            let j = (i + 1) % ARC_SEGS;
-                            push_line(ring[i], c);
-                            push_line(ring[j], c);
-                        }
-                    }
-
-                    // Small dot (cross) at the pivot origin so users can see it.
-                    let dot_size = arm * 0.06;
-                    let pivot_c = [1.0_f32, 1.0, 0.4];
-                    for &dir in &[
-                        glam::Vec3::X,
-                        glam::Vec3::NEG_X,
-                        glam::Vec3::Y,
-                        glam::Vec3::NEG_Y,
-                        glam::Vec3::Z,
-                        glam::Vec3::NEG_Z,
-                    ] {
-                        push_line(origin.into(), pivot_c);
-                        push_line((origin + dir * dot_size).into(), pivot_c);
-                    }
-                }
-            }
-        }
-
-        // upload vertex buffer
-        let vb = self
-            .context
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("gizmo vertex buffer"),
-                contents: bytemuck::cast_slice(&vertices),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
-
-        // begin a second render pass that loads existing contents.
-        // Gizmos render into the HDR texture (same as the world pass) so they
-        // are tone-mapped along with the rest of the scene.
-        // We need an owned wgpu::TextureView; recreate it from the underlying
-        // texture so that we avoid a split-borrow across self fields.
-        let hdr_view_owned = self
-            .world_pass
-            .hdr_texture
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut rpass = encoder.begin_render_pass(&RenderPassDescriptor {
-            label: Some("Gizmo Pass"),
-            color_attachments: &[Some(RenderPassColorAttachment {
-                view: &hdr_view_owned,
-                resolve_target: None,
-                ops: Operations {
-                    load: LoadOp::Load,
-                    store: StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
-                view: depth_view,
-                depth_ops: Some(Operations {
-                    load: LoadOp::Load,
-                    store: StoreOp::Store,
-                }),
-                stencil_ops: None,
-            }),
-            occlusion_query_set: None,
-            timestamp_writes: None,
-        });
-        rpass.set_pipeline(&self.gizmo_pipeline.inner);
-        // bind the camera uniform from the shared GpuCamera, not the layout
-        rpass.set_bind_group(0, &*self.camera_system.gpu.bind_group, &[]);
-        rpass.set_vertex_buffer(0, vb.slice(..));
-        let vertex_count = vertices.len() as u32;
-        if vertex_count > 0 {
-            rpass.draw(0..vertex_count, 0..1);
-        }
-
-        // clear for next frame
-        self.gizmo_draws.clear();
     }
 
     /// Appends a custom pass after the built-in ones.
@@ -1273,8 +1048,20 @@ impl Renderer {
         );
 
         // -- 4. Gizmo pass (if any): also writes into the HDR texture ---------
-        if !self.gizmo_draws.is_empty() {
-            self.execute_gizmo_pass(encoder, &dest);
+        if !self.gizmo_system.is_empty() {
+            let hdr_view = self
+                .world_pass
+                .hdr_texture
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+            let depth_view = self.render_target.depth_view();
+            self.gizmo_system.execute(
+                &self.context.device,
+                encoder,
+                &hdr_view,
+                depth_view,
+                &self.camera_system.gpu.bind_group,
+            );
         }
 
         // -- 5. Post-process pass: tone-maps the HDR texture ? final surface ---

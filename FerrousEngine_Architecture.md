@@ -55,28 +55,52 @@ Files created:
 
 ---
 
+### What has been implemented so far (Session 3 additions)
+
+#### ✅ Phase 3.6 (partial) — `GizmoSystem` extracted
+
+**New file:** `crates/ferrous_renderer/src/gizmo_system.rs`
+
+- `GizmoSystem { pipeline: GizmoPipeline, draws: Vec<GizmoDraw> }`
+- Methods: `new(device, hdr_format, sample_count, layouts)`, `queue(GizmoDraw)`, `is_empty() -> bool`, `execute(device, encoder, hdr_view, depth_view, camera_bind_group)`
+- All gizmo vertex-building logic (translate/scale axes, arrowheads, plane squares, rotate arc rings, pivot dot) moved from `lib.rs` into `GizmoSystem::execute`.
+- Declared in `lib.rs` as `pub mod gizmo_system; pub use gizmo_system::GizmoSystem;`
+
+**`Renderer` struct changes in `lib.rs`:**
+- Removed fields: `gizmo_pipeline: GizmoPipeline`, `gizmo_draws: Vec<scene::GizmoDraw>`
+- Added field: `pub gizmo_system: GizmoSystem`
+- `queue_gizmo()` now delegates to `self.gizmo_system.queue()`
+- `do_render()` now calls `self.gizmo_system.execute(...)` instead of the old inline method
+- Removed method: `execute_gizmo_pass` (~213 lines deleted from `lib.rs`)
+- `GizmoPipeline` import removed from `lib.rs` (now internal to `gizmo_system.rs`)
+
+**`lib.rs` line count:** ~1555 lines (was 1766 before this session, down ~211 lines)
+
+**Build status:** `cargo build` (full workspace) — ✅ `Finished` — zero errors, only pre-existing warnings.
+
+---
+
 ### What to do next (in priority order)
 
 #### 🔴 Next immediate task — Phase 3 continued
 
-**3.1 — Extract `MaterialRegistry` module** *(medium effort)*
+**3.6b — Extract `do_render` + `build_base_packet` to `render_executor.rs`** *(high effort)*
 
-The `MaterialRegistry` struct is currently defined inside `lib.rs`. It should be moved to `crates/ferrous_renderer/src/material_registry.rs`:
-- Search for `struct MaterialRegistry` in `lib.rs` — find the struct definition + all `impl MaterialRegistry` blocks
-- Create `src/material_registry.rs`, move code there
-- Add `pub mod material_registry; pub use material_registry::MaterialRegistry;` to `lib.rs`
-- Fix all `use` imports in the new file (it will need `wgpu`, `Arc`, `PipelineLayouts`, etc.)
-- Run `cargo build -p ferrous_renderer` to verify
+`do_render` (~140 lines) and `build_base_packet` (~290 lines) are the last large private methods in `lib.rs`. After this, `lib.rs` should be ≤ 600 lines and `Renderer` becomes a thin coordinator.
 
-**3.4 — Extract `sync_world` to `world_sync.rs`** *(medium effort)*
+Plan:
+- Create `crates/ferrous_renderer/src/render_executor.rs`
+- Define a `RenderExecutor` struct (or just a module with free functions)
+- It needs access to: `camera_system`, `frame_builder`, `world_pass`, `prepass`, `ssao_pass/blur`, `post_process_pass`, `ui_pass`, `extra_passes`, `gizmo_system`, `render_target`, `instance_buf`, `shadow_instance_buf`, `world_objects`, `legacy_objects`, `render_stats`
+- The cleanest Rust pattern here is to keep `do_render` and `build_base_packet` as methods on `Renderer` (to avoid splitting borrows), but move them into a separate `impl Renderer` block in a new file via `mod render_impl { ... }` or simply by using the existing `lib.rs` with a `// ---- frame impl` section annotation
+- Alternatively, extract `build_base_packet` into `FrameBuilder::build_packet(&mut self, ...)` — this is the cleanest decomposition since `FrameBuilder` already owns all the caches
 
-The method `Renderer::sync_world` is a large method in `lib.rs` that bridges `ferrous_core::World` → renderer internal objects. Extract it to `src/world_sync.rs` as a free function or impl block on a new `WorldSync` struct. Key dependencies it uses: `world_objects`, `model_buf`, `context.device/queue`, `material_registry`, `mesh_cache`.
+**3.3 — `FrameBuilder::build_packet`** *(medium effort, do first as prerequisite for 3.6b)*
 
-**3.6 — `Renderer` as thin coordinator** *(high effort, do last in Phase 3)*
-
-After 3.1 and 3.4 are done, `lib.rs` should be < 600 lines. Then:
-- Move `gizmo_pipeline` + `execute_gizmo_pass` to a `GizmoSystem` struct
-- `Renderer::do_render` delegates to `RenderGraph::execute` instead of inline pass calls
+Move `build_base_packet` logic into `FrameBuilder`:
+- `FrameBuilder::build_packet(&mut self, world_objects, legacy_objects, instance_buf, shadow_instance_buf, instance_layout, camera_packet, device, queue, world_pass) -> FramePacket`
+- In `lib.rs`, `build_base_packet` becomes a 5-line wrapper calling `self.frame_builder.build_packet(...)`
+- This removes ~290 lines from `lib.rs`
 
 #### 🟡 Phase 2 — ECS integration into `ferrous_core`
 
@@ -97,9 +121,10 @@ Phases 4–11 not yet started. See roadmap below.
 | File | Purpose |
 |------|---------|
 | `crates/ferrous_ecs/src/` | New ECS crate — complete |
-| `crates/ferrous_renderer/src/lib.rs` | ~1730 lines — main renderer, still needs decomposition |
+| `crates/ferrous_renderer/src/lib.rs` | ~1555 lines — main renderer, still needs decomposition |
 | `crates/ferrous_renderer/src/camera_system.rs` | NEW — CameraSystem |
 | `crates/ferrous_renderer/src/frame_builder.rs` | NEW — FrameBuilder (per-frame caches) |
+| `crates/ferrous_renderer/src/gizmo_system.rs` | NEW — GizmoSystem (pipeline + vertex baking + render pass) |
 | `crates/ferrous_renderer/src/passes/world_pass.rs` | PBR world rendering pass |
 | `crates/ferrous_renderer/src/passes/prepass.rs` | Depth+normal prepass |
 | `crates/ferrous_core/src/scene/world.rs` | Old entity container (~923 lines) — will be wrapped |
