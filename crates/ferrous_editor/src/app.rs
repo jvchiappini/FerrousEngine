@@ -324,12 +324,12 @@ impl FerrousApp for EditorApp {
 
         // ── Camera: start at a slight 3/4 angle so cubes look 3-D ─────────
         // yaw=-30°, pitch=20° — shows top/right faces clearly.
-        ctx.renderer.orbit.yaw = -0.52; // ≈ -30°
-        ctx.renderer.orbit.pitch = 0.35; // ≈  20°
+        ctx.renderer.camera_system.orbit.yaw = -0.52; // ≈ -30°
+        ctx.renderer.camera_system.orbit.pitch = 0.35; // ≈  20°
         {
-            let yaw = ctx.renderer.orbit.yaw;
-            let pitch = ctx.renderer.orbit.pitch;
-            let dist = ctx.renderer.camera.controller.orbit_distance;
+            let yaw = ctx.renderer.camera_system.orbit.yaw;
+            let pitch = ctx.renderer.camera_system.orbit.pitch;
+            let dist = ctx.renderer.camera().controller.orbit_distance;
             // Manually compute orbit eye from yaw/pitch angles:
             //   forward = (sin(yaw)*cos(pitch), sin(pitch), cos(yaw)*cos(pitch))
             // eye = target + dist * forward
@@ -338,7 +338,8 @@ impl FerrousApp for EditorApp {
             let cx = yaw.cos();
             let sx = yaw.sin();
             let offset = Vec3::new(sx * cy, sy, cx * cy) * dist;
-            ctx.renderer.camera.eye = ctx.renderer.camera.target + offset;
+            let target = ctx.renderer.camera().target;
+            ctx.renderer.camera_mut().eye = target + offset;
         }
 
         self.gpu_backend = ctx.gpu_backend().to_string();

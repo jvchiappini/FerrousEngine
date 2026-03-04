@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/ferrous_ecs",
     "crates/ferrous_core",
     "crates/ferrous_renderer",
     "crates/ferrous_editor",

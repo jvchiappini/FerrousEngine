@@ -1,4 +1,4 @@
-﻿/// `ferrous_renderer` -- modular, extensible GPU rendering for Ferrous Engine.
+/// `ferrous_renderer` -- modular, extensible GPU rendering for Ferrous Engine.
 ///
 /// # Module layout
 ///
@@ -14,7 +14,9 @@
 /// | `graph`         | `RenderPass` trait + `FramePacket`                   |
 /// | `passes`        | Built-in passes: `WorldPass`, `UiPass`               |
 pub mod camera;
+pub mod camera_system;
 pub mod context;
+pub mod frame_builder;
 pub mod geometry;
 pub mod graph;
 pub mod materials;
@@ -31,7 +33,9 @@ pub use ferrous_gui::{GuiBatch, GuiQuad};
 pub use glam;
 
 pub use camera::{Camera, Controller, GpuCamera};
+pub use camera_system::CameraSystem;
 pub use ferrous_core::input::{KeyCode, MouseButton};
+pub use frame_builder::FrameBuilder;
 pub use geometry::{Mesh, Vertex};
 pub use graph::frame_packet::Viewport;
 pub use graph::{FramePacket, InstancedDrawCommand, RenderPass};
@@ -112,17 +116,16 @@ pub struct Renderer {
     /// Additional user-supplied passes executed after the built-ins.
     pub extra_passes: Vec<Box<dyn RenderPass>>,
 
-    // -- Camera ---------------------------------------------------------------
-    pub camera: Camera,
-    pub orbit: OrbitState,
-    gpu_camera: GpuCamera,
+    // -- Camera (Fase 3: delegated to CameraSystem) ---------------------------
+    /// All camera state: CPU camera, orbit controller, GPU uniform.
+    pub camera_system: CameraSystem,
 
     // -- Scene (O(1) lookup by id) --------------------------------------------
     /// Legacy manual objects (started at u64::MAX and descending)
     legacy_objects: HashMap<u64, RenderObject>,
     /// World objects mirrored from `ferrous_core::scene::World` (indices match World IDs)
     world_objects: Vec<Option<RenderObject>>,
-    /// CPU-side copy of each object’s material descriptor.  Used during
+    /// CPU-side copy of each object�s material descriptor.  Used during
     /// `sync_world` to detect when the core has modified a material and
     /// therefore we need to call `material_registry.update_material_params`.
     world_material_descs: Vec<Option<ferrous_core::scene::MaterialDescriptor>>,
@@ -140,7 +143,7 @@ pub struct Renderer {
     /// A copy of the pipeline bind-group layouts; needed when creating
     /// new materials or other GPU resources that rely on them.
 
-    /// Shared cube mesh — lazily created on first World spawn so that every
+    /// Shared cube mesh � lazily created on first World spawn so that every
     /// cube RenderObject carries the same Arc<Buffer> pointers, enabling
     /// instanced grouping by vertex-buffer pointer in build_base_packet.
     shared_cube_mesh: Option<geometry::Mesh>,
@@ -150,40 +153,19 @@ pub struct Renderer {
     /// Lazily populated on first sphere spawn.
     shared_sphere_mesh: Option<(geometry::Mesh, u32, u32)>,
 
-    /// Cache of meshes that have been registered by asset loaders.  the
-    /// keys are arbitrary strings supplied by the caller (typically the
-    /// asset path plus a mesh index); the values are the corresponding
-    /// GPU `Mesh` objects.  `sync_world` consults this map when it sees an
-    /// `ElementKind::Mesh` element.
+    /// Cache of meshes that have been registered by asset loaders.
     mesh_cache: std::collections::HashMap<String, geometry::Mesh>,
 
     /// Pipeline used for drawing gizmos (lines); created once at startup.
     gizmo_pipeline: GizmoPipeline,
 
-    /// Queued gizmos for the current frame.  Cleared each time `do_render`
-    /// finishes so clients only need to push as part of their `draw_3d`
-    /// implementation.
+    /// Queued gizmos for the current frame.
     gizmo_draws: Vec<scene::GizmoDraw>,
 
-    // -- Per-frame caches (reused across frames, zero heap alloc/frame) -------
-    /// Reusable `DrawCommand` list — cleared and filled each frame.
-    draw_commands_cache: Vec<DrawCommand>,
-    /// Reusable `InstancedDrawCommand` list — cleared and filled each frame.
-    instanced_commands_cache: Vec<InstancedDrawCommand>,
-    /// Scratch buffer for matrices written to the instance buffer each frame.
-    instance_matrix_scratch: Vec<glam::Mat4>,
-    /// Shadow-caster draw command list (legacy objects, all light-frustum visible).
-    shadow_scene_cache: Vec<DrawCommand>,
-    /// Shadow-caster instanced draw command list (world objects).
-    shadow_instanced_cache: Vec<InstancedDrawCommand>,
-    /// Scratch matrix buffer for the shadow instance buffer.
-    shadow_matrix_scratch: Vec<glam::Mat4>,
+    // -- Per-frame state (Fase 3: extracted to FrameBuilder) ------------------
+    frame_builder: FrameBuilder,
     /// Separate instance buffer for shadow casters.  Not camera-culled.
     shadow_instance_buf: InstanceBuffer,
-
-    // -- Caching optimization flags -------------------------------------------
-    prev_view_proj: Option<glam::Mat4>,
-    scene_dirty: bool,
 
     /// Material manager handling textures and bind groups.
     material_registry: MaterialRegistry,
@@ -213,6 +195,31 @@ pub struct Renderer {
     pub ssao_resources: SsaoResources,
     /// When true, SSAO is computed and applied to the IBL ambient term.
     pub ssao_enabled: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Compatibility accessors � allow existing code that uses `renderer.camera`
+// and `renderer.orbit` to keep working without re-writing every call site.
+// These are zero-cost inline forwards.
+
+impl Renderer {
+    /// Direct reference to the CPU camera state (read-only).
+    #[inline]
+    pub fn camera(&self) -> &Camera {
+        &self.camera_system.camera
+    }
+
+    /// Mutable reference to the CPU camera state.
+    #[inline]
+    pub fn camera_mut(&mut self) -> &mut Camera {
+        &mut self.camera_system.camera
+    }
+
+    /// Mutable reference to the orbit controller.
+    #[inline]
+    pub fn orbit_mut(&mut self) -> &mut OrbitState {
+        &mut self.camera_system.orbit
+    }
 }
 
 impl Renderer {
@@ -319,10 +326,15 @@ impl Renderer {
             controller: Controller::with_default_wasd(),
         };
         let gpu_camera = GpuCamera::new(device, &camera, &layouts.camera);
+        let camera_system = CameraSystem {
+            camera,
+            orbit: OrbitState::default(),
+            gpu: gpu_camera,
+        };
         // built-in passes will be created after the GUI renderer below
         // create the world pass, forwarding the optional HDRI path from the
         // caller.  the pass will internally build its own shadow pipeline and
-        // texture (2048² depth map) and keep the cubemaps for image-based
+        // texture (2048� depth map) and keep the cubemaps for image-based
         // lighting if an HDRI was provided.
         let world_pass = WorldPass::new(
             pbr_pipeline,
@@ -333,7 +345,7 @@ impl Renderer {
             instancing_pipeline_double,
             instancing_pipeline_blend,
             instancing_pipeline_blend_double,
-            gpu_camera.bind_group.clone(),
+            camera_system.gpu.bind_group.clone(),
             device,
             &context.queue,
             &layouts,
@@ -342,7 +354,7 @@ impl Renderer {
             hdri_path,
         );
         // when the pass is created it will internally construct its own
-        // shadow pipeline and texture (2048² depth map).  no additional
+        // shadow pipeline and texture (2048� depth map).  no additional
         // arguments are necessary since those objects only depend on the
         // device and the common pipeline layouts that we already pass in.
         // create material registry (includes default white material)
@@ -381,13 +393,19 @@ impl Renderer {
         let gizmo_pipeline =
             GizmoPipeline::new(device, hdr_format, rt.sample_count(), layouts.clone());
 
-        // ── SSAO: build passes before the Self literal consumes the buffers ──
-        let mut prepass = PrePass::new(device, layouts.model.clone(), layouts.instance.clone(), width, height);
+        // -- SSAO: build passes before the Self literal consumes the buffers --
+        let mut prepass = PrePass::new(
+            device,
+            layouts.model.clone(),
+            layouts.instance.clone(),
+            width,
+            height,
+        );
         prepass.set_model_buffer(model_buf.bind_group.clone(), model_buf.stride);
         prepass.set_instance_buffer(instance_buf.bind_group.clone());
-        let ssao_pass       = SsaoPass::new(device, width, height);
-        let ssao_blur_pass  = SsaoBlurPass::new(device, width, height);
-        let ssao_resources  = SsaoResources::new(device, &context.queue);
+        let ssao_pass = SsaoPass::new(device, width, height);
+        let ssao_blur_pass = SsaoBlurPass::new(device, width, height);
+        let ssao_resources = SsaoResources::new(device, &context.queue);
 
         Self {
             context,
@@ -396,9 +414,7 @@ impl Renderer {
             ui_pass,
             post_process_pass,
             extra_passes: Vec::new(),
-            camera,
-            orbit: OrbitState::default(),
-            gpu_camera,
+            camera_system,
             legacy_objects: HashMap::new(),
             world_objects: Vec::new(),
             world_material_descs: Vec::new(),
@@ -414,16 +430,8 @@ impl Renderer {
             mesh_cache: std::collections::HashMap::new(),
             gizmo_pipeline,
             gizmo_draws: Vec::new(),
-            draw_commands_cache: Vec::new(),
-            instanced_commands_cache: Vec::new(),
-            instance_matrix_scratch: Vec::new(),
-            shadow_scene_cache: Vec::new(),
-            shadow_instanced_cache: Vec::new(),
-            shadow_matrix_scratch: Vec::new(),
+            frame_builder: FrameBuilder::new(),
             shadow_instance_buf,
-            prev_view_proj: None,
-            scene_dirty: true,
-
             material_registry,
             format,
             sample_count,
@@ -436,8 +444,6 @@ impl Renderer {
             width,
             height,
             render_stats: RenderStats::default(),
-
-            // ── SSAO ─────────────────────────────────────────────────────────
             prepass,
             ssao_pass,
             ssao_blur_pass,
@@ -474,7 +480,7 @@ impl Renderer {
         // maintain the old behaviour of refreshing the world-pass table
         // even though the material bind groups are unchanged by adding a
         // standalone texture.  this keeps external code from implicitly
-        // depending on the side‑effect.
+        // depending on the side-effect.
         self.world_pass.set_material_table(
             &self.material_registry.bind_group_table(),
             &self.material_registry,
@@ -484,7 +490,7 @@ impl Renderer {
 
     /// Register a GPU texture from raw RGBA8 **linear** bytes and return a
     /// [`TextureHandle`].  Use this for non-color data such as normal maps,
-    /// metallic-roughness and AO textures — the GPU will NOT apply gamma
+    /// metallic-roughness and AO textures � the GPU will NOT apply gamma
     /// correction when sampling these.
     pub fn register_texture_linear(
         &mut self,
@@ -520,7 +526,7 @@ impl Renderer {
         let handle = self
             .material_registry
             .create(&self.context.device, &self.context.queue, desc);
-        // sync the world pass table so newly‑created slot is available to
+        // sync the world pass table so newly-created slot is available to
         // shaders immediately; forgetting this leads to panics when the
         // pass tries to index past the end of its internal array.
         self.world_pass.set_material_table(
@@ -569,7 +575,7 @@ impl Renderer {
     }
 
     /// Overwrite the contents of a texture handle with new RGBA8 data.  This
-    /// is the hot‑reload API; it does not allocate a new GPU texture but
+    /// is the hot-reload API; it does not allocate a new GPU texture but
     /// instead writes directly into the existing one.  Materials already
     /// pointing at the handle will observe the update automatically.
     pub fn update_texture_data(
@@ -614,7 +620,7 @@ impl Renderer {
             .update_point_lights(&self.context.device, &self.context.queue, lights);
     }
 
-    /// Set the material for a previously‑spawned legacy object.
+    /// Set the material for a previously-spawned legacy object.
     pub fn set_object_material(&mut self, id: u64, material: MaterialHandle) {
         if let Some(obj) = self.legacy_objects.get_mut(&id) {
             obj.material_slot = material.0 as usize;
@@ -695,7 +701,7 @@ impl Renderer {
             material.0 as usize,
         );
         self.legacy_objects.insert(id, obj);
-        self.scene_dirty = true;
+        self.frame_builder.scene_dirty = true;
         id
     }
 
@@ -705,7 +711,7 @@ impl Renderer {
             let matrix = glam::Mat4::from_translation(pos);
             obj.set_matrix(matrix);
             self.model_buf.write(&self.context.queue, obj.slot, &matrix);
-            self.scene_dirty = true;
+            self.frame_builder.scene_dirty = true;
         }
     }
 
@@ -720,7 +726,7 @@ impl Renderer {
     /// Removes a manually-spawned object. No-op if unknown.
     pub fn remove_object(&mut self, id: u64) {
         if self.legacy_objects.remove(&id).is_some() {
-            self.scene_dirty = true;
+            self.frame_builder.scene_dirty = true;
         }
     }
 
@@ -736,7 +742,7 @@ impl Renderer {
             &mut self.mesh_cache,
         );
         if mutated {
-            self.scene_dirty = true;
+            self.frame_builder.scene_dirty = true;
         }
 
         // ensure our descriptor cache is large enough
@@ -763,11 +769,11 @@ impl Renderer {
                     desc,
                 );
                 self.world_material_descs[idx] = Some(desc.clone());
-                self.scene_dirty = true;
+                self.frame_builder.scene_dirty = true;
             }
         }
 
-        // ── Collect point lights from World entities ──────────────────────
+        // -- Collect point lights from World entities ----------------------
         // Gather every element that has a PointLightComponent and convert it
         // into a PointLightUniform using the entity's world-space position.
         let mut point_light_uniforms: Vec<crate::resources::PointLightUniform> = Vec::new();
@@ -792,7 +798,7 @@ impl Renderer {
     /// Queue a gizmo for rendering this frame.
     ///
     /// Typically called by the `ferrous_app` runner which drains
-    /// `AppContext::gizmos` after `FerrousApp::draw_3d` returns — app code
+    /// `AppContext::gizmos` after `FerrousApp::draw_3d` returns � app code
     /// should push to `ctx.gizmos` rather than calling this directly.
     ///
     /// The gizmo list is automatically cleared after
@@ -803,7 +809,7 @@ impl Renderer {
         // mark scene dirty so that the world pass will rebuild the packet; the
         // gizmos are drawn separately but the packet cache logic should reset
         // when an unrelated draw request arrives.
-        self.scene_dirty = true;
+        self.frame_builder.scene_dirty = true;
     }
 
     /// Builds vertex data for all queued [`GizmoDraw`] instances and emits a
@@ -816,7 +822,7 @@ impl Renderer {
     /// After drawing, `gizmo_draws` is cleared ready for the next frame.
     fn execute_gizmo_pass(&mut self, encoder: &mut wgpu::CommandEncoder, _dest: &RenderDest<'_>) {
         // Gizmos compose over the HDR scene (before tone mapping), so we always
-        // render into world_pass.hdr_texture — never the swapchain surface.
+        // render into world_pass.hdr_texture � never the swapchain surface.
         let depth_view = self.render_target.depth_view();
         use wgpu::util::DeviceExt;
         use wgpu::{
@@ -836,7 +842,7 @@ impl Renderer {
             use ferrous_core::scene::{GizmoMode, Plane};
             let st = &gizmo.style;
 
-            // ── Derived sizes from style ───────────────────────────────────
+            // -- Derived sizes from style -----------------------------------
             let arm = st.arm_length;
             let p_off = st.plane_offset();
             let p_size = st.plane_size();
@@ -847,7 +853,7 @@ impl Renderer {
 
             match gizmo.mode {
                 GizmoMode::Translate | GizmoMode::Scale => {
-                    // ── Axis arms + optional arrowheads ───────────────────────────
+                    // -- Axis arms + optional arrowheads ---------------------------
                     for &(axis_vec, axis_enum) in &[
                         (glam::Vec3::X, ferrous_core::scene::Axis::X),
                         (glam::Vec3::Y, ferrous_core::scene::Axis::Y),
@@ -885,7 +891,7 @@ impl Renderer {
                         }
                     }
 
-                    // ── Plane square outlines ─────────────────────────────────────
+                    // -- Plane square outlines -------------------------------------
                     if st.show_planes {
                         for &plane in &[Plane::XY, Plane::XZ, Plane::YZ] {
                             let rgba = if gizmo.highlighted_plane == Some(plane) {
@@ -915,7 +921,7 @@ impl Renderer {
                 }
 
                 GizmoMode::Rotate => {
-                    // ── Rotation arc rings — one full circle per axis ──────────────
+                    // -- Rotation arc rings � one full circle per axis --------------
                     // Each ring lives in the plane perpendicular to the axis.
                     const ARC_SEGS: usize = 48;
                     let origin = m.transform_point3(glam::Vec3::ZERO);
@@ -1016,7 +1022,7 @@ impl Renderer {
         });
         rpass.set_pipeline(&self.gizmo_pipeline.inner);
         // bind the camera uniform from the shared GpuCamera, not the layout
-        rpass.set_bind_group(0, &*self.gpu_camera.bind_group, &[]);
+        rpass.set_bind_group(0, &*self.camera_system.gpu.bind_group, &[]);
         rpass.set_vertex_buffer(0, vb.slice(..));
         let vertex_count = vertices.len() as u32;
         if vertex_count > 0 {
@@ -1058,7 +1064,8 @@ impl Renderer {
         if self.viewport.width == self.width && self.viewport.height == self.height {
             self.viewport.width = new_width;
             self.viewport.height = new_height;
-            self.camera.set_aspect(new_width as f32 / new_height as f32);
+            self.camera_system
+                .set_aspect(new_width as f32 / new_height as f32);
         }
 
         self.width = new_width;
@@ -1072,9 +1079,16 @@ impl Renderer {
             new_height,
         );
         // SSAO passes
-        self.prepass.on_resize(&self.context.device, &self.context.queue, new_width, new_height);
-        self.ssao_pass.on_resize(&self.context.device, new_width, new_height);
-        self.ssao_blur_pass.on_resize(&self.context.device, new_width, new_height);
+        self.prepass.on_resize(
+            &self.context.device,
+            &self.context.queue,
+            new_width,
+            new_height,
+        );
+        self.ssao_pass
+            .on_resize(&self.context.device, new_width, new_height);
+        self.ssao_blur_pass
+            .on_resize(&self.context.device, new_width, new_height);
         // post-process pass owns bloom textures which also depend on size
         self.post_process_pass.on_resize(
             &self.context.device,
@@ -1102,7 +1116,8 @@ impl Renderer {
     /// Explicitly sets the viewport rectangle and updates the camera aspect ratio.
     pub fn set_viewport(&mut self, vp: Viewport) {
         self.viewport = vp;
-        self.camera.set_aspect(vp.width as f32 / vp.height as f32);
+        self.camera_system
+            .set_aspect(vp.width as f32 / vp.height as f32);
     }
 
     // -- Configuration helpers (direct typed access, zero-cost) ---------------
@@ -1123,7 +1138,7 @@ impl Renderer {
 
     /// Applies keyboard/mouse input to the orbit camera. `dt` is seconds elapsed.
     pub fn handle_input(&mut self, input: &mut ferrous_core::input::InputState, dt: f32) {
-        self.orbit.update(&mut self.camera, input, dt);
+        self.camera_system.handle_input(input, dt);
     }
 
     // -- Private helpers ------------------------------------------------------
@@ -1135,7 +1150,7 @@ impl Renderer {
         ui_batch: Option<GuiBatch>,
         text_batch: Option<TextBatch>,
     ) {
-        self.gpu_camera.sync(&self.context.queue, &self.camera);
+        self.camera_system.sync_gpu(&self.context.queue);
 
         let mut packet = self.build_base_packet();
         if let Some(b) = ui_batch {
@@ -1154,22 +1169,28 @@ impl Renderer {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        // ── 1. Depth-Normal Prepass (required by SSAO) ────────────────────────
+        // -- 1. Depth-Normal Prepass (required by SSAO) ------------------------
         // Sync the prepass camera with the current main camera matrices.
         {
             let view = glam::Mat4::look_at_rh(
-                self.camera.eye,
-                self.camera.target,
-                self.camera.up,
+                self.camera_system.camera.eye,
+                self.camera_system.camera.target,
+                self.camera_system.camera.up,
             );
             let proj = glam::Mat4::perspective_rh(
-                self.camera.fovy,
-                self.camera.aspect,
-                self.camera.znear,
-                self.camera.zfar,
+                self.camera_system.camera.fovy,
+                self.camera_system.camera.aspect,
+                self.camera_system.camera.znear,
+                self.camera_system.camera.zfar,
             );
-            self.prepass.update_camera(&self.context.queue, view, proj, self.camera.eye);
-            self.prepass.prepare(&self.context.device, &self.context.queue, &packet);
+            self.prepass.update_camera(
+                &self.context.queue,
+                view,
+                proj,
+                self.camera_system.camera.eye,
+            );
+            self.prepass
+                .prepare(&self.context.device, &self.context.queue, &packet);
             self.prepass.execute(
                 &self.context.device,
                 &self.context.queue,
@@ -1181,25 +1202,20 @@ impl Renderer {
             );
         }
 
-        // ── 2. SSAO passes (only when enabled) ────────────────────────────────
+        // -- 2. SSAO passes (only when enabled) --------------------------------
         if self.ssao_enabled {
             // Upload camera matrices and screen dimensions to the params buffer.
             let proj = glam::Mat4::perspective_rh(
-                self.camera.fovy,
-                self.camera.aspect,
-                self.camera.znear,
-                self.camera.zfar,
+                self.camera_system.camera.fovy,
+                self.camera_system.camera.aspect,
+                self.camera_system.camera.znear,
+                self.camera_system.camera.zfar,
             );
             let inv_proj = proj.inverse();
             let ssao_w = self.ssao_pass.ssao_texture.width;
             let ssao_h = self.ssao_pass.ssao_texture.height;
-            self.ssao_resources.update_params(
-                &self.context.queue,
-                ssao_w,
-                ssao_h,
-                proj,
-                inv_proj,
-            );
+            self.ssao_resources
+                .update_params(&self.context.queue, ssao_w, ssao_h, proj, inv_proj);
 
             // Generate raw SSAO
             self.ssao_pass.run(
@@ -1220,8 +1236,10 @@ impl Renderer {
             // Plug the blurred SSAO texture into the environment bind group
             // so the PBR shader samples it this frame.
             let ssao_view = Arc::new(
-                self.ssao_blur_pass.blurred.texture
-                    .create_view(&wgpu::TextureViewDescriptor::default())
+                self.ssao_blur_pass
+                    .blurred
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor::default()),
             );
             let ssao_sampler = Arc::new(self.context.device.create_sampler(
                 &wgpu::SamplerDescriptor {
@@ -1233,14 +1251,11 @@ impl Renderer {
                     ..Default::default()
                 },
             ));
-            self.world_pass.update_ssao(
-                &self.context.device,
-                ssao_view,
-                ssao_sampler,
-            );
+            self.world_pass
+                .update_ssao(&self.context.device, ssao_view, ssao_sampler);
         }
 
-        // ── 3. World pass: renders the 3-D scene into the HDR texture ─────────
+        // -- 3. World pass: renders the 3-D scene into the HDR texture ---------
         // color_view is ignored by WorldPass (it writes to hdr_texture internally),
         // but the trait signature still requires one.
         let depth_view = self.render_target.depth_view();
@@ -1257,12 +1272,12 @@ impl Renderer {
             &packet,
         );
 
-        // ── 4. Gizmo pass (if any): also writes into the HDR texture ─────────
+        // -- 4. Gizmo pass (if any): also writes into the HDR texture ---------
         if !self.gizmo_draws.is_empty() {
             self.execute_gizmo_pass(encoder, &dest);
         }
 
-        // ── 5. Post-process pass: tone-maps the HDR texture → final surface ───
+        // -- 5. Post-process pass: tone-maps the HDR texture ? final surface ---
         // Build a fresh TextureView for the HDR source (avoids split-borrow).
         let hdr_view_pp = self
             .world_pass
@@ -1301,7 +1316,7 @@ impl Renderer {
                 .post_process_pass
                 .pipeline
                 .as_ref()
-                .expect("PostProcessPass not initialised — missing on_attach");
+                .expect("PostProcessPass not initialised � missing on_attach");
             let bgl = self
                 .post_process_pass
                 .bind_group_layout
@@ -1361,7 +1376,7 @@ impl Renderer {
             rpass.draw(0..3, 0..1);
         }
 
-        // ── 4. UI pass and extra passes: composite on top of the final surface ─
+        // -- 4. UI pass and extra passes: composite on top of the final surface -
         // These passes use the same swapchain/render-target view as the post-process output.
         let (ui_color_view, ui_resolve_target, ui_depth_view) = match &dest {
             RenderDest::Target => {
@@ -1412,45 +1427,50 @@ impl Renderer {
 
     fn build_base_packet(&mut self) -> FramePacket {
         let camera_packet = CameraPacket {
-            view_proj: glam::Mat4::from_cols_array_2d(&self.gpu_camera.uniform.view_proj),
-            eye: self.camera.eye,
+            view_proj: glam::Mat4::from_cols_array_2d(&self.camera_system.gpu.uniform.view_proj),
+            eye: self.camera_system.camera.eye,
         };
 
         // If the scene hasn't mutated and the camera hasn't moved, we can reuse the cached draw commands.
-        if !self.scene_dirty && self.prev_view_proj == Some(camera_packet.view_proj) {
+        if !self.frame_builder.scene_dirty
+            && self.frame_builder.prev_view_proj == Some(camera_packet.view_proj)
+        {
             let mut packet = FramePacket::new(Some(self.viewport), camera_packet);
-            std::mem::swap(&mut packet.scene_objects, &mut self.draw_commands_cache);
+            std::mem::swap(
+                &mut packet.scene_objects,
+                &mut self.frame_builder.draw_commands_cache,
+            );
             std::mem::swap(
                 &mut packet.instanced_objects,
-                &mut self.instanced_commands_cache,
+                &mut self.frame_builder.instanced_commands_cache,
             );
             std::mem::swap(
                 &mut packet.shadow_scene_objects,
-                &mut self.shadow_scene_cache,
+                &mut self.frame_builder.shadow_scene_cache,
             );
             std::mem::swap(
                 &mut packet.shadow_instanced_objects,
-                &mut self.shadow_instanced_cache,
+                &mut self.frame_builder.shadow_instanced_cache,
             );
             return packet;
         }
 
-        self.scene_dirty = false;
-        self.prev_view_proj = Some(camera_packet.view_proj);
+        self.frame_builder.scene_dirty = false;
+        self.frame_builder.prev_view_proj = Some(camera_packet.view_proj);
 
-        self.draw_commands_cache.clear();
-        self.instanced_commands_cache.clear();
-        self.instance_matrix_scratch.clear();
-        self.shadow_scene_cache.clear();
-        self.shadow_instanced_cache.clear();
-        self.shadow_matrix_scratch.clear();
+        self.frame_builder.draw_commands_cache.clear();
+        self.frame_builder.instanced_commands_cache.clear();
+        self.frame_builder.instance_matrix_scratch.clear();
+        self.frame_builder.shadow_scene_cache.clear();
+        self.frame_builder.shadow_instanced_cache.clear();
+        self.frame_builder.shadow_matrix_scratch.clear();
 
         let frustum = scene::Frustum::from_view_proj(&camera_packet.view_proj);
 
-        // Shadow casters: legacy objects — include ALL (no camera frustum test).
+        // Shadow casters: legacy objects � include ALL (no camera frustum test).
         // Their matrices are already in the ModelBuffer from spawn/move time.
         for obj in self.legacy_objects.values() {
-            self.shadow_scene_cache.push(DrawCommand {
+            self.frame_builder.shadow_scene_cache.push(DrawCommand {
                 vertex_buffer: obj.mesh.vertex_buffer.clone(),
                 index_buffer: obj.mesh.index_buffer.clone(),
                 index_count: obj.mesh.index_count,
@@ -1469,7 +1489,7 @@ impl Renderer {
                 let pos = obj.matrix.w_axis.truncate();
                 let diff = pos - camera_packet.eye;
                 let dist_sq = diff.length_squared();
-                self.draw_commands_cache.push(DrawCommand {
+                self.frame_builder.draw_commands_cache.push(DrawCommand {
                     vertex_buffer: obj.mesh.vertex_buffer.clone(),
                     index_buffer: obj.mesh.index_buffer.clone(),
                     index_count: obj.mesh.index_count,
@@ -1568,11 +1588,15 @@ impl Renderer {
 
             // Flatten clustered matrices sequentially into scratch buffer
             let mut offset = 0;
-            self.instance_matrix_scratch.reserve(total_visible);
+            self.frame_builder
+                .instance_matrix_scratch
+                .reserve(total_visible);
 
             for ((_key, _mat, double_sided), (mesh, material_slot, mats)) in visible_mesh_groups {
                 let count = mats.len() as u32;
-                self.instance_matrix_scratch.extend_from_slice(&mats);
+                self.frame_builder
+                    .instance_matrix_scratch
+                    .extend_from_slice(&mats);
 
                 // compute a representative distance for the entire batch; we
                 // use the maximum squared distance of any matrix in the group
@@ -1587,24 +1611,29 @@ impl Renderer {
                     }
                 }
 
-                self.instanced_commands_cache.push(InstancedDrawCommand {
-                    vertex_buffer: mesh.vertex_buffer.clone(),
-                    index_buffer: mesh.index_buffer.clone(),
-                    index_count: mesh.index_count,
-                    vertex_count: mesh.vertex_count,
-                    index_format: mesh.index_format,
-                    first_instance: offset,
-                    instance_count: count,
-                    double_sided,
-                    material_slot,
-                    distance_sq: max_dist_sq,
-                });
+                self.frame_builder
+                    .instanced_commands_cache
+                    .push(InstancedDrawCommand {
+                        vertex_buffer: mesh.vertex_buffer.clone(),
+                        index_buffer: mesh.index_buffer.clone(),
+                        index_count: mesh.index_count,
+                        vertex_count: mesh.vertex_count,
+                        index_format: mesh.index_format,
+                        first_instance: offset,
+                        instance_count: count,
+                        double_sided,
+                        material_slot,
+                        distance_sq: max_dist_sq,
+                    });
 
                 offset += count;
             }
 
-            self.instance_buf
-                .write_slice(&self.context.queue, 0, &self.instance_matrix_scratch);
+            self.instance_buf.write_slice(
+                &self.context.queue,
+                0,
+                &self.frame_builder.instance_matrix_scratch,
+            );
         }
 
         // -- Shadow-caster instanced list (World objects, no camera cull) ----
@@ -1648,38 +1677,42 @@ impl Renderer {
                 let mut offset = 0u32;
                 for ((_ptr, _mat, double_sided), (mesh, material_slot, mats)) in shadow_groups {
                     let count = mats.len() as u32;
-                    self.shadow_matrix_scratch.extend_from_slice(&mats);
-                    self.shadow_instanced_cache.push(InstancedDrawCommand {
-                        vertex_buffer: mesh.vertex_buffer.clone(),
-                        index_buffer: mesh.index_buffer.clone(),
-                        index_count: mesh.index_count,
-                        vertex_count: mesh.vertex_count,
-                        index_format: mesh.index_format,
-                        first_instance: offset,
-                        instance_count: count,
-                        double_sided,
-                        material_slot,
-                        distance_sq: 0.0,
-                    });
+                    self.frame_builder
+                        .shadow_matrix_scratch
+                        .extend_from_slice(&mats);
+                    self.frame_builder
+                        .shadow_instanced_cache
+                        .push(InstancedDrawCommand {
+                            vertex_buffer: mesh.vertex_buffer.clone(),
+                            index_buffer: mesh.index_buffer.clone(),
+                            index_count: mesh.index_count,
+                            vertex_count: mesh.vertex_count,
+                            index_format: mesh.index_format,
+                            first_instance: offset,
+                            instance_count: count,
+                            double_sided,
+                            material_slot,
+                            distance_sq: 0.0,
+                        });
                     offset += count;
                 }
 
                 self.shadow_instance_buf.write_slice(
                     &self.context.queue,
                     0,
-                    &self.shadow_matrix_scratch,
+                    &self.frame_builder.shadow_matrix_scratch,
                 );
             }
         }
 
         // -- Compute render statistics ----------------------------------------
         let mut stats = RenderStats::default();
-        for cmd in &self.draw_commands_cache {
+        for cmd in &self.frame_builder.draw_commands_cache {
             stats.vertex_count += cmd.vertex_count as u64;
             stats.triangle_count += (cmd.index_count / 3) as u64;
             stats.draw_calls += 1;
         }
-        for cmd in &self.instanced_commands_cache {
+        for cmd in &self.frame_builder.instanced_commands_cache {
             let inst = cmd.instance_count as u64;
             stats.vertex_count += cmd.vertex_count as u64 * inst;
             stats.triangle_count += (cmd.index_count / 3) as u64 * inst;
@@ -1688,18 +1721,21 @@ impl Renderer {
         self.render_stats = stats;
 
         let mut packet = FramePacket::new(Some(self.viewport), camera_packet);
-        std::mem::swap(&mut packet.scene_objects, &mut self.draw_commands_cache);
+        std::mem::swap(
+            &mut packet.scene_objects,
+            &mut self.frame_builder.draw_commands_cache,
+        );
         std::mem::swap(
             &mut packet.instanced_objects,
-            &mut self.instanced_commands_cache,
+            &mut self.frame_builder.instanced_commands_cache,
         );
         std::mem::swap(
             &mut packet.shadow_scene_objects,
-            &mut self.shadow_scene_cache,
+            &mut self.frame_builder.shadow_scene_cache,
         );
         std::mem::swap(
             &mut packet.shadow_instanced_objects,
-            &mut self.shadow_instanced_cache,
+            &mut self.frame_builder.shadow_instanced_cache,
         );
         packet
     }
@@ -1709,17 +1745,20 @@ impl Renderer {
     #[inline]
     fn reclaim_packet_cache(&mut self, mut packet: FramePacket) {
         // Swap the (now-empty after execute) Vecs back into the caches.
-        std::mem::swap(&mut self.draw_commands_cache, &mut packet.scene_objects);
         std::mem::swap(
-            &mut self.instanced_commands_cache,
+            &mut self.frame_builder.draw_commands_cache,
+            &mut packet.scene_objects,
+        );
+        std::mem::swap(
+            &mut self.frame_builder.instanced_commands_cache,
             &mut packet.instanced_objects,
         );
         std::mem::swap(
-            &mut self.shadow_scene_cache,
+            &mut self.frame_builder.shadow_scene_cache,
             &mut packet.shadow_scene_objects,
         );
         std::mem::swap(
-            &mut self.shadow_instanced_cache,
+            &mut self.frame_builder.shadow_instanced_cache,
             &mut packet.shadow_instanced_objects,
         );
         // `packet` is dropped here; Arc clones inside are cheap.

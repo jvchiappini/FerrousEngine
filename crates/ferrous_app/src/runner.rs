@@ -109,7 +109,7 @@ impl<A: FerrousApp> Runner<A> {
                         if let (Some(gfx), Some(window)) = (&mut self.graphics, &self.window) {
                             gfx.renderer.set_viewport(self.viewport);
                             let time = self.clock.peek();
-                                let mut ctx = AppContext {
+                            let mut ctx = AppContext {
                                 input: &self.input,
                                 time,
                                 window_size: self.window_size,
@@ -122,7 +122,7 @@ impl<A: FerrousApp> Runner<A> {
                                 world: &mut self.world,
                                 exit_requested: false,
                                 _gpu_backend: gfx.renderer.context.backend,
-                                    renderer: &mut gfx.renderer,
+                                renderer: &mut gfx.renderer,
                             };
                             self.app.setup(&mut ctx);
                             self.viewport = ctx.viewport;
@@ -253,8 +253,8 @@ impl<A: FerrousApp> Runner<A> {
         let mut encoder = gfx.renderer.begin_frame();
         {
             let render_stats = gfx.renderer.render_stats;
-            let camera_eye = gfx.renderer.camera.eye;
-            let camera_target = gfx.renderer.camera.target;
+            let camera_eye = gfx.renderer.camera().eye;
+            let camera_target = gfx.renderer.camera().target;
             let backend = gfx.renderer.context.backend;
             let mut ctx = AppContext {
                 input: &self.input,
@@ -345,13 +345,13 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let mut gfx = pollster::block_on(GraphicsState::new(
-                    &window,
-                    self.config.width,
-                    self.config.height,
-                    self.config.vsync,
-                    self.config.sample_count,
-                    self.config.hdri_path.clone(),
-                ));
+                &window,
+                self.config.width,
+                self.config.height,
+                self.config.vsync,
+                self.config.sample_count,
+                self.config.hdri_path.clone(),
+            ));
             gfx.renderer.set_viewport(self.viewport);
             gfx.renderer
                 .set_clear_color(self.config.background_color.to_wgpu());

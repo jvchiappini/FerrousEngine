@@ -1,0 +1,13 @@
+[package]
+name = "ferrous_ecs"
+version = "0.1.0"
+edition = "2021"
+description = "Archetype-based Entity Component System for Ferrous Engine"
+
+[dependencies]
+# Compact type-erased storage key
+# No wgpu deps — ECS is pure data, no GPU
+glam = { workspace = true }
+
+[dev-dependencies]
+# nothing yet
