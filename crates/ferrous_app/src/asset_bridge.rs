@@ -1,6 +1,6 @@
+use crate::Vec3;
 use anyhow::Result;
 use std::path::Path;
-use crate::Vec3;
 
 /// Helper that loads a GLTF/GLB file via `ferrous_assets`, registers the
 /// resulting textures, materials and meshes with the renderer, and spawns an
@@ -35,9 +35,21 @@ pub fn spawn_gltf(
     // true = must be registered as linear (non-color data)
     let mut linear_flag = vec![false; n_images];
     for raw in &model.materials {
-        if let Some(i) = raw.normal_tex            { if i < n_images { linear_flag[i] = true; } }
-        if let Some(i) = raw.metallic_roughness_tex { if i < n_images { linear_flag[i] = true; } }
-        if let Some(i) = raw.ao_tex               { if i < n_images { linear_flag[i] = true; } }
+        if let Some(i) = raw.normal_tex {
+            if i < n_images {
+                linear_flag[i] = true;
+            }
+        }
+        if let Some(i) = raw.metallic_roughness_tex {
+            if i < n_images {
+                linear_flag[i] = true;
+            }
+        }
+        if let Some(i) = raw.ao_tex {
+            if i < n_images {
+                linear_flag[i] = true;
+            }
+        }
     }
 
     // Register images with the renderer, choosing the correct format for
@@ -83,7 +95,10 @@ pub fn spawn_gltf(
         if let Some(idx) = raw.metallic_roughness_tex {
             if let Some(tex) = tex_handles.get(idx) {
                 desc.metallic_roughness_tex = Some(tex.0);
-                eprintln!(" material metallic_roughness_tex -> image {} handle {}", idx, tex.0);
+                eprintln!(
+                    " material metallic_roughness_tex -> image {} handle {}",
+                    idx, tex.0
+                );
             }
         }
         if let Some(idx) = raw.emissive_tex {
@@ -111,21 +126,27 @@ pub fn spawn_gltf(
 
     let mut out_handles = Vec::new();
     for (i, mesh) in model.meshes.into_iter().enumerate() {
-        eprintln!(" mesh {}: {} vertices {} indices mat_idx={:?}",
-            i, mesh.positions.len(), mesh.indices.len(), mesh.material_idx);
+        eprintln!(
+            " mesh {}: {} vertices {} indices mat_idx={:?}",
+            i,
+            mesh.positions.len(),
+            mesh.indices.len(),
+            mesh.material_idx
+        );
         // build key using path and primitive index so different meshes in the
         // same file don't collide.
         let key = format!("{}#{}", path.display(), i);
 
         // convert to renderer vertices
-        let mut verts = Vec::with_capacity(mesh.positions.len());
-        for j in 0..mesh.positions.len() {
+        let n = mesh.positions.len();
+        let mut verts = Vec::with_capacity(n);
+        for j in 0..n {
             verts.push(ferrous_renderer::geometry::Vertex {
                 position: mesh.positions[j],
-                normal: mesh.normals[j],
-                tangent: mesh.tangents[j],
-                color: mesh.colors[j],
-                uv: mesh.uvs[j],
+                normal: *mesh.normals.get(j).unwrap_or(&[0.0, 1.0, 0.0]),
+                tangent: *mesh.tangents.get(j).unwrap_or(&[1.0, 0.0, 0.0, 1.0]),
+                color: *mesh.colors.get(j).unwrap_or(&[1.0, 1.0, 1.0]),
+                uv: *mesh.uvs.get(j).unwrap_or(&[0.0, 0.0]),
             });
         }
 

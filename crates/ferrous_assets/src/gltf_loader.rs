@@ -224,7 +224,8 @@ pub fn load_gltf(path: &Path) -> Result<AssetModel> {
                 let inv = 1.0 / len_sq.sqrt();
                 mul(v, inv)
             } else {
-                v
+                // Degenerate vector — return a safe default tangent axis.
+                [1.0, 0.0, 0.0]
             }
         }
 
@@ -257,7 +258,15 @@ pub fn load_gltf(path: &Path) -> Result<AssetModel> {
             let t1 = uv1[1] - uv0[1];
             let t2 = uv2[1] - uv0[1];
 
-            let r = 1.0 / (s1 * t2 - s2 * t1);
+            let denom = s1 * t2 - s2 * t1;
+            // Skip degenerate triangles whose UV mapping has zero area
+            // (collinear UVs).  Using them would produce +inf or NaN in the
+            // tangent vectors, which propagates through the TBN matrix and
+            // causes black fragments in the PBR shader.
+            if denom.abs() < 1e-8 {
+                continue;
+            }
+            let r = 1.0 / denom;
             let sdir = [
                 (t2 * x1 - t1 * x2) * r,
                 (t2 * y1 - t1 * y2) * r,
@@ -281,10 +290,24 @@ pub fn load_gltf(path: &Path) -> Result<AssetModel> {
         for i in 0..len {
             let n = normals[i];
             let t = tan1[i];
-            // Gram-Schmidt orthogonalize
+            // Gram-Schmidt orthogonalize: remove the normal component from t
             let dot_nt = dot(n, t);
             let mut tangent = sub(t, mul(n, dot_nt));
             tangent = normalize(tangent);
+            // If tangent is still degenerate after normalize (e.g. t was zero
+            // because no triangle contributed to this vertex), fall back to an
+            // axis perpendicular to the normal so TBN stays valid.
+            let t_len_sq = dot(tangent, tangent);
+            if t_len_sq < 0.5 {
+                // pick an axis not parallel to n
+                let candidate = if n[0].abs() < 0.9 {
+                    [1.0, 0.0, 0.0]
+                } else {
+                    [0.0, 1.0, 0.0]
+                };
+                let dot_nc = dot(n, candidate);
+                tangent = normalize(sub(candidate, mul(n, dot_nc)));
+            }
             // handedness
             let cross = [
                 n[1] * t[2] - n[2] * t[1],
@@ -307,14 +330,27 @@ pub fn load_gltf(path: &Path) -> Result<AssetModel> {
                 .read_positions()
                 .map(|iter| iter.collect())
                 .unwrap_or_default();
+            let n_verts = positions.len();
             let mut normals: Vec<[f32; 3]> = reader
                 .read_normals()
                 .map(|iter| iter.collect())
                 .unwrap_or_default();
+            // Guarantee normals has exactly one entry per vertex.
+            if normals.len() != n_verts {
+                eprintln!(
+                    "warning: normals count ({}) != positions count ({}), padding",
+                    normals.len(),
+                    n_verts
+                );
+                normals.resize(n_verts, [0.0, 1.0, 0.0]);
+            }
             let uvs: Vec<[f32; 2]> = reader
                 .read_tex_coords(0)
                 .map(|t| t.into_f32().collect())
-                .unwrap_or_default();
+                .unwrap_or_else(|| {
+                    eprintln!("warning: primitive has no TEXCOORD_0, using zero UVs");
+                    vec![[0.0, 0.0]; n_verts]
+                });
             if !uvs.is_empty() {
                 let (mut min_u, mut max_u) = (uvs[0][0], uvs[0][0]);
                 let (mut min_v, mut max_v) = (uvs[0][1], uvs[0][1]);
@@ -354,6 +390,23 @@ pub fn load_gltf(path: &Path) -> Result<AssetModel> {
                 vec![[1.0, 1.0, 1.0]; positions.len()]
             };
 
+            // Guarantee uvs has exactly one entry per vertex so the
+            // asset_bridge indexing (mesh.uvs[j]) never goes out of bounds.
+            let uvs = if uvs.len() == n_verts {
+                uvs
+            } else if !uvs.is_empty() {
+                eprintln!(
+                    "warning: uvs count ({}) != positions count ({}), padding",
+                    uvs.len(),
+                    n_verts
+                );
+                let mut padded = uvs;
+                padded.resize(n_verts, [0.0, 0.0]);
+                padded
+            } else {
+                uvs // already zero-filled above via unwrap_or_else
+            };
+
             let mesh = AssetMesh {
                 positions,
                 normals,
@@ -363,11 +416,7 @@ pub fn load_gltf(path: &Path) -> Result<AssetModel> {
                 indices,
                 material_idx: primitive.material().index(),
             };
-            if mesh.uvs.is_empty() {
-                eprintln!("warning: primitive has no UV coordinates");
-            } else {
-                eprintln!("first uv = {:?}", mesh.uvs[0]);
-            }
+            eprintln!("first uv = {:?}", mesh.uvs.first());
             out_meshes.push(mesh);
         }
     }

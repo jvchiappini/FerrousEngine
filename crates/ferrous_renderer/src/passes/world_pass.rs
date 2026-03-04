@@ -225,7 +225,9 @@ impl WorldPass {
             // Large ortho volume covers the visible playfield.  near=1 avoids
             // precision issues right at the shadow camera; far=200 ensures
             // distant geometry still receives/casts shadows.
-            let proj = glam::Mat4::orthographic_rh(-50.0, 50.0, -50.0, 50.0, 1.0, 200.0);
+            // Tighter ortho frustum → more shadow-map texels per world-unit
+            // → sharper (but still PCF-filtered) shadow edges.
+            let proj = glam::Mat4::orthographic_rh(-20.0, 20.0, -20.0, 20.0, 1.0, 150.0);
             let view_proj = proj * view;
             u.light_view_proj = view_proj.to_cols_array_2d();
         }

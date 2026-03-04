@@ -6,6 +6,8 @@
 
 @group(0) @binding(0) var t_hdr: texture_2d<f32>;
 @group(0) @binding(1) var s_hdr: sampler;
+@group(0) @binding(2) var t_bloom: texture_2d<f32>;
+@group(0) @binding(3) var s_bloom: sampler;
 
 // ── Vertex shader ─────────────────────────────────────────────────────────────
 // Generates a fullscreen triangle from the vertex index — no vertex buffer needed.
@@ -46,9 +48,15 @@ fn aces_tone_mapping(x: vec3<f32>) -> vec3<f32> {
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // 1. Sample the raw HDR colour from the intermediate texture.
     let hdr_color = textureSample(t_hdr, s_hdr, in.uv).rgb;
+    // sample the bloom contribution produced by the bloom pass.  we expect
+    // level-0 of the bloom chain to already contain the accumulated result.
+    let bloom_color = textureSample(t_bloom, s_bloom, in.uv).rgb;
 
     // 2. ACES filmic tone mapping — compresses the HDR range to [0, 1].
-    let mapped = aces_tone_mapping(hdr_color);
+    //    we add the bloom before tone mapping so that the bright bleed
+    //    affects the final tonemapped colour.
+    let mixed_color = hdr_color + bloom_color * 0.15; // bloom intensity
+    let mapped = aces_tone_mapping(mixed_color);
 
     // 3. Gamma correction — convert from linear to sRGB (gamma ≈ 2.2).
     //    We do this explicitly because the HDR texture is Rgba16Float (linear),

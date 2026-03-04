@@ -344,6 +344,8 @@ impl Renderer {
         // using the swapchain surface format.
         let mut post_process_pass = PostProcessPass::new();
         post_process_pass.on_attach(device, &context.queue, format, 1);
+        // initial size of bloom textures must match the target we render to.
+        post_process_pass.on_resize(device, &context.queue, width, height);
 
         // Create the shared dynamic model buffer and register it with WorldPass.
         let model_buf = ModelBuffer::new(&context.device, &layouts.model, 64);
@@ -1034,6 +1036,13 @@ impl Renderer {
             new_width,
             new_height,
         );
+        // post-process pass owns bloom textures which also depend on size
+        self.post_process_pass.on_resize(
+            &self.context.device,
+            &self.context.queue,
+            new_width,
+            new_height,
+        );
         self.ui_pass.on_resize(
             &self.context.device,
             &self.context.queue,
@@ -1146,6 +1155,12 @@ impl Renderer {
             }
         };
 
+        // 3a. run bloom chain and obtain the level-0 view containing the
+        // accumulated bloom contribution.
+        let bloom_view = self
+            .post_process_pass
+            .run_bloom(&self.context.device, encoder, &self.world_pass.hdr_texture);
+
         {
             let pipeline = self
                 .post_process_pass
@@ -1170,6 +1185,19 @@ impl Renderer {
                     BindGroupEntry {
                         binding: 1,
                         resource: BindingResource::Sampler(&self.world_pass.hdr_texture.sampler),
+                    },
+                    BindGroupEntry {
+                        binding: 2,
+                        resource: BindingResource::TextureView(bloom_view),
+                    },
+                    BindGroupEntry {
+                        binding: 3,
+                        resource: BindingResource::Sampler(&self
+                            .post_process_pass
+                            .bloom_textures
+                            .as_ref()
+                            .unwrap()
+                            .sampler),
                     },
                 ],
             });

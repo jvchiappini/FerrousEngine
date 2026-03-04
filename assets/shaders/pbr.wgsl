@@ -277,7 +277,18 @@ fn fs_main(frag_in: FragmentInput) -> FragmentOutput {
     // fragment is outside the light frustum and we conservatively treat it
     // as lit.
     if (uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0 && proj.z >= 0.0 && proj.z <= 1.0) {
-        shadow = textureSampleCompare(shadow_map, shadow_sampler, uv, proj.z);
+        // PCF 3×3: sample a 3×3 grid of shadow map texels and average the
+        // comparison results.  This softens the hard aliased shadow edges
+        // at the cost of 9 texture fetches instead of 1.
+        let texel = 1.0 / 2048.0;
+        var pcf: f32 = 0.0;
+        for (var sy: i32 = -1; sy <= 1; sy = sy + 1) {
+            for (var sx: i32 = -1; sx <= 1; sx = sx + 1) {
+                let offset = vec2<f32>(f32(sx), f32(sy)) * texel;
+                pcf += textureSampleCompare(shadow_map, shadow_sampler, uv + offset, proj.z - 0.005);
+            }
+        }
+        shadow = pcf / 9.0;
     }
     var Lo = (kD * albedo / PI + specular) * radiance * NdotL * shadow;
 
