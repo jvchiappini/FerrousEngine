@@ -89,11 +89,13 @@ pub use input::{InputState, KeyCode, MouseButton};
 // Scene
 pub use scene::{
     AnimationClip, AnimationPlayer, AnimationSystem, Behavior, BehaviorComponent, BehaviorSystem,
-    Children, GlobalTransform, Keyframe, Parent, Stage, TimeSystem, TransformSystem, Velocity,
+    Camera3D, Camera3DBuilder, Children, DirectionalLight, GlobalTransform, Keyframe,
+    OrbitCamera, OrbitCameraSystem, Parent, Stage, TimeSystem, TransformSystem, Velocity,
     VelocitySystem,
 };
 pub use scene::{Camera, CameraUniform, Controller};
 pub use scene::{Element, ElementKind, Handle, PointLightComponent, World};
+pub use scene::{Material, MaterialBuilder};
 
 // Context
 pub use context::EngineContext;

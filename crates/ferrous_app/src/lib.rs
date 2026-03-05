@@ -78,6 +78,11 @@ pub use ferrous_renderer::scene::GizmoDraw;
 // ECS stage / system types — game code can register custom systems
 pub use ferrous_core::{AnimationClip, AnimationPlayer, Keyframe};
 pub use ferrous_core::{Behavior, BehaviorComponent, Stage, Velocity};
+
+// ── Phase 4.5: High-level component API ────────────────────────────────────
+// New ECS components for ergonomic scene construction.
+pub use ferrous_core::scene::{Camera3D, Camera3DBuilder, DirectionalLight, OrbitCamera};
+pub use ferrous_core::scene::{Material, MaterialBuilder};
 pub use ferrous_core::{Children, GlobalTransform, Parent};
 pub use ferrous_ecs::prelude::{Entity, StagedScheduler};
 

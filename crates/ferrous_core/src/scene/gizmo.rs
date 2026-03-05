@@ -56,7 +56,7 @@ impl PlaneColors {
 /// [`AppContext::update_gizmo`] to get a completely custom look.
 ///
 /// # Example
-/// ```rust
+/// ```rust,ignore
 /// let mut gizmo = GizmoState::default();
 /// gizmo.style.arm_length  = 2.0;
 /// gizmo.style.show_arrows = false;

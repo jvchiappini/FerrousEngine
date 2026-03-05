@@ -74,6 +74,31 @@ impl Color {
         )
     }
 
+    /// Construct from sRGB (gamma-encoded) components.
+    ///
+    /// Most colour pickers and design tools work in sRGB.  This constructor
+    /// applies the standard gamma‑2.2 approximation so that you never need to
+    /// call `.powf(2.2)` manually:
+    ///
+    /// ```rust,ignore
+    /// // Old (error-prone):
+    /// let red = Color::rgb(0.9f32.powf(2.2), 0.1f32.powf(2.2), 0.1f32.powf(2.2));
+    ///
+    /// // New:
+    /// let red = Color::srgb(0.9, 0.1, 0.1);
+    /// ```
+    #[inline]
+    pub fn srgb(r: f32, g: f32, b: f32) -> Self {
+        Self::rgb(r.powf(2.2), g.powf(2.2), b.powf(2.2))
+    }
+
+    /// Construct from sRGB components including alpha.
+    /// RGB channels are gamma-corrected; alpha is passed through unchanged.
+    #[inline]
+    pub fn srgba(r: f32, g: f32, b: f32, a: f32) -> Self {
+        Self::rgba(r.powf(2.2), g.powf(2.2), b.powf(2.2), a)
+    }
+
     // ── Conversions ─────────────────────────────────────────────────────────
 
     /// Returns `[r, g, b, a]`.
@@ -154,6 +179,10 @@ impl Color {
     pub const NAVY: Self = Self::rgb(0.0, 0.0, 0.5);
     pub const BEIGE: Self = Self::rgb(0.96, 0.96, 0.86);
     pub const BROWN: Self = Self::rgb(0.55, 0.27, 0.07);
+
+    /// Warm white sunlight — slightly yellow‑orange tint.
+    /// Equivalent to ~5500 K colour temperature in linear space.
+    pub const WARM_WHITE: Self = Self::rgb(1.0, 0.97, 0.90);
 }
 
 impl From<[f32; 4]> for Color {
@@ -191,5 +220,49 @@ mod tests {
     fn lerp_halfway() {
         let mid = Color::BLACK.lerp(Color::WHITE, 0.5);
         assert!((mid.r - 0.5).abs() < 1e-6);
+    }
+
+    // ── Phase 4.5: sRGB and WARM_WHITE tests ─────────────────────────────
+
+    #[test]
+    fn srgb_pure_white_is_linear_white() {
+        let c = Color::srgb(1.0, 1.0, 1.0);
+        assert!((c.r - 1.0).abs() < 1e-6);
+        assert!((c.g - 1.0).abs() < 1e-6);
+        assert!((c.b - 1.0).abs() < 1e-6);
+        assert!((c.a - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn srgb_pure_black_is_linear_black() {
+        let c = Color::srgb(0.0, 0.0, 0.0);
+        assert_eq!(c.r, 0.0);
+        assert_eq!(c.g, 0.0);
+        assert_eq!(c.b, 0.0);
+    }
+
+    #[test]
+    fn srgb_applies_gamma_correction() {
+        // sRGB 0.5 in linear should be ~0.5^2.2 ≈ 0.2176
+        let c = Color::srgb(0.5, 0.5, 0.5);
+        let expected = 0.5_f32.powf(2.2);
+        assert!((c.r - expected).abs() < 1e-5, "r={}, expected={}", c.r, expected);
+    }
+
+    #[test]
+    fn srgba_preserves_alpha() {
+        let c = Color::srgba(1.0, 1.0, 1.0, 0.5);
+        assert!((c.a - 0.5).abs() < 1e-6);
+        assert!((c.r - 1.0).abs() < 1e-6); // sRGB 1.0 → linear 1.0
+    }
+
+    #[test]
+    fn warm_white_exists_and_is_near_white() {
+        let w = Color::WARM_WHITE;
+        assert!((w.r - 1.0).abs() < 1e-6);
+        // g and b slightly below 1.0
+        assert!(w.g > 0.9 && w.g <= 1.0, "g={}", w.g);
+        assert!(w.b > 0.8 && w.b < 1.0, "b={}", w.b);
+        assert!((w.a - 1.0).abs() < 1e-6);
     }
 }

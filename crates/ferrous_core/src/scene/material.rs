@@ -118,6 +118,188 @@ impl Default for RenderStyle {
     }
 }
 
+// ── Material component ────────────────────────────────────────────────────
+
+use ferrous_ecs::component::Component;
+use crate::color::Color;
+
+/// High-level material component.  Attach this to any world entity to control
+/// how it is shaded.
+///
+/// Unlike the lower-level [`MaterialDescriptor`], `Material` works entirely in
+/// terms of engine types (`Color`, `RenderStyle`) and handles the
+/// linear-colour conversion internally.
+///
+/// # Usage
+/// ```rust,ignore
+/// world.spawn((
+///     Transform::from_position(Vec3::ZERO),
+///     Material::pbr().color(Color::srgb(0.9, 0.1, 0.1)).metallic(0.0).roughness(0.3).build(),
+/// ));
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct Material {
+    /// Base/albedo colour (linear space).
+    pub base_color: Color,
+    /// Metallic factor (0 = dielectric, 1 = metal).
+    pub metallic: f32,
+    /// Roughness factor (0 = mirror, 1 = fully rough).
+    pub roughness: f32,
+    /// Emissive colour (linear space).
+    pub emissive: Color,
+    /// Emissive strength multiplier.
+    pub emissive_strength: f32,
+    /// Transparency mode.
+    pub alpha_mode: AlphaMode,
+    /// Whether the material renders from both sides.
+    pub double_sided: bool,
+    /// Per-material shading style override.  `None` inherits the global
+    /// renderer style.
+    pub style_override: Option<RenderStyle>,
+}
+
+impl Component for Material {}
+
+impl Default for Material {
+    fn default() -> Self {
+        Self {
+            base_color: Color::WHITE,
+            metallic: 0.0,
+            roughness: 0.5,
+            emissive: Color::BLACK,
+            emissive_strength: 0.0,
+            alpha_mode: AlphaMode::Opaque,
+            double_sided: false,
+            style_override: None,
+        }
+    }
+}
+
+impl Material {
+    /// Begin building a PBR material (Cook-Torrance BRDF).
+    pub fn pbr() -> MaterialBuilder {
+        MaterialBuilder::new()
+    }
+
+    /// Begin building a cel-shaded (toon) material.
+    pub fn cel_shaded() -> MaterialBuilder {
+        MaterialBuilder::new().style(RenderStyle::CelShaded {
+            toon_levels: 4,
+            outline_width: 0.0,
+        })
+    }
+
+    /// Begin building a flat-shaded (low-poly) material.
+    pub fn flat_shaded() -> MaterialBuilder {
+        MaterialBuilder::new().style(RenderStyle::FlatShaded)
+    }
+
+    /// Convert this `Material` into a renderer-compatible [`MaterialDescriptor`].
+    ///
+    /// Call this inside the renderer's `sync_world` when you need to upload
+    /// the GPU uniform; the `Material` component itself stays in the ECS.
+    pub fn to_descriptor(&self) -> MaterialDescriptor {
+        let c = self.base_color;
+        let e = self.emissive;
+        MaterialDescriptor {
+            base_color: [c.r, c.g, c.b, c.a],
+            emissive: [e.r, e.g, e.b],
+            emissive_strength: self.emissive_strength,
+            metallic: self.metallic,
+            roughness: self.roughness,
+            alpha_mode: self.alpha_mode.clone(),
+            double_sided: self.double_sided,
+            style_override: self.style_override,
+            ..MaterialDescriptor::default()
+        }
+    }
+}
+
+// ── MaterialBuilder ───────────────────────────────────────────────────────
+
+/// Fluent builder for [`Material`].
+///
+/// ```rust,ignore
+/// let mat = Material::pbr()
+///     .color(Color::srgb(0.8, 0.2, 0.2))
+///     .metallic(0.0)
+///     .roughness(0.3)
+///     .build();
+/// ```
+#[derive(Debug, Clone)]
+pub struct MaterialBuilder {
+    inner: Material,
+}
+
+impl MaterialBuilder {
+    /// Create a builder with default PBR settings.
+    pub fn new() -> Self {
+        Self {
+            inner: Material::default(),
+        }
+    }
+
+    /// Set the base colour (albedo).
+    pub fn color(mut self, c: Color) -> Self {
+        self.inner.base_color = c;
+        self
+    }
+
+    /// Set the metallic factor (`0.0` = dielectric, `1.0` = fully metallic).
+    pub fn metallic(mut self, v: f32) -> Self {
+        self.inner.metallic = v.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Set the roughness factor (`0.0` = mirror-smooth, `1.0` = fully rough).
+    pub fn roughness(mut self, v: f32) -> Self {
+        self.inner.roughness = v.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Set the emissive colour and strength.
+    pub fn emissive(mut self, c: Color, strength: f32) -> Self {
+        self.inner.emissive = c;
+        self.inner.emissive_strength = strength;
+        self
+    }
+
+    /// Enable standard alpha blending (`AlphaMode::Blend`).
+    pub fn alpha_blend(mut self) -> Self {
+        self.inner.alpha_mode = AlphaMode::Blend;
+        self
+    }
+
+    /// Enable alpha-test (`AlphaMode::Mask`) with the given cutoff threshold.
+    pub fn alpha_mask(mut self, cutoff: f32) -> Self {
+        self.inner.alpha_mode = AlphaMode::Mask { cutoff };
+        self
+    }
+
+    /// Render both sides of every face.
+    pub fn double_sided(mut self) -> Self {
+        self.inner.double_sided = true;
+        self
+    }
+
+    /// Override the shading style for this material.
+    pub fn style(mut self, s: RenderStyle) -> Self {
+        self.inner.style_override = Some(s);
+        self
+    }
+
+    /// Consume the builder and return the finished [`Material`].
+    pub fn build(self) -> Material {
+        self.inner
+    }
+}
+
+impl Default for MaterialBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,5 +356,87 @@ mod tests {
         let mut desc = MaterialDescriptor::default();
         desc.style_override = Some(RenderStyle::FlatShaded);
         assert_eq!(desc.style_override, Some(RenderStyle::FlatShaded));
+    }
+
+    // ── Phase 4.5: Material builder tests ────────────────────────────────
+
+    #[test]
+    fn material_pbr_builder_defaults() {
+        let mat = Material::pbr().build();
+        assert_eq!(mat.base_color, Color::WHITE);
+        assert!((mat.metallic - 0.0).abs() < 1e-6);
+        assert!((mat.roughness - 0.5).abs() < 1e-6);
+        assert!(mat.style_override.is_none());
+    }
+
+    #[test]
+    fn material_cel_shaded_builder_sets_style() {
+        let mat = Material::cel_shaded().build();
+        assert!(matches!(mat.style_override, Some(RenderStyle::CelShaded { .. })));
+    }
+
+    #[test]
+    fn material_flat_shaded_builder_sets_style() {
+        let mat = Material::flat_shaded().build();
+        assert_eq!(mat.style_override, Some(RenderStyle::FlatShaded));
+    }
+
+    #[test]
+    fn material_builder_color_roundtrip() {
+        let c = Color::srgb(0.5, 0.2, 0.8);
+        let mat = Material::pbr().color(c).build();
+        assert!((mat.base_color.r - c.r).abs() < 1e-6, "r mismatch");
+        assert!((mat.base_color.g - c.g).abs() < 1e-6, "g mismatch");
+        assert!((mat.base_color.b - c.b).abs() < 1e-6, "b mismatch");
+    }
+
+    #[test]
+    fn material_builder_metallic_roughness() {
+        let mat = Material::pbr().metallic(1.0).roughness(0.1).build();
+        assert!((mat.metallic - 1.0).abs() < 1e-6);
+        assert!((mat.roughness - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn material_builder_emissive() {
+        let mat = Material::pbr()
+            .emissive(Color::rgb(1.0, 0.4, 0.1), 5.0)
+            .build();
+        assert!((mat.emissive_strength - 5.0).abs() < 1e-6);
+        assert!((mat.emissive.r - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn material_builder_alpha_blend() {
+        let mat = Material::pbr().alpha_blend().build();
+        assert_eq!(mat.alpha_mode, AlphaMode::Blend);
+    }
+
+    #[test]
+    fn material_builder_double_sided() {
+        let mat = Material::pbr().double_sided().build();
+        assert!(mat.double_sided);
+    }
+
+    #[test]
+    fn material_to_descriptor_preserves_fields() {
+        let mat = Material::pbr()
+            .color(Color::srgb(0.8, 0.2, 0.1))
+            .metallic(0.7)
+            .roughness(0.3)
+            .build();
+        let desc = mat.to_descriptor();
+        assert!((desc.metallic - 0.7).abs() < 1e-6);
+        assert!((desc.roughness - 0.3).abs() < 1e-6);
+        // base_color should reflect the linear-space color
+        assert!((desc.base_color[0] - mat.base_color.r).abs() < 1e-6);
+    }
+
+    #[test]
+    fn material_implements_component() {
+        // Verify Material can be used as an ECS component (just needs to compile).
+        use ferrous_ecs::prelude::Component;
+        fn assert_component<T: Component>() {}
+        assert_component::<Material>();
     }
 }

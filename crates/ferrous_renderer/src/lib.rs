@@ -711,6 +711,71 @@ impl Renderer {
     /// which queries the ECS directly.  All rendering goes through the ECS
     /// instanced path — the legacy `add_object` / `ModelBuffer` path is gone.
     pub fn sync_world(&mut self, world: &ferrous_core::scene::World) {
+        // 0. Sync DirectionalLight ECS component → GPU uniform (if present)
+        {
+            use ferrous_core::scene::DirectionalLight;
+            let lights: Vec<DirectionalLight> = world
+                .ecs
+                .query::<DirectionalLight>()
+                .map(|(_, l)| *l)
+                .collect();
+            if let Some(light) = lights.first() {
+                self.set_directional_light(
+                    [light.direction.x, light.direction.y, light.direction.z],
+                    [light.color.r, light.color.g, light.color.b],
+                    light.intensity,
+                );
+            }
+        }
+
+        // 0b. Sync Camera3D ECS component → renderer camera (if present)
+        {
+            use ferrous_core::scene::Camera3D;
+            let cameras: Vec<Camera3D> = world
+                .ecs
+                .query::<Camera3D>()
+                .map(|(_, c)| *c)
+                .collect();
+            if let Some(cam3d) = cameras.first() {
+                self.camera_system.camera.eye = cam3d.eye;
+                self.camera_system.camera.target = cam3d.target;
+                self.camera_system.camera.fovy = cam3d.fov_deg.to_radians();
+                self.camera_system.camera.znear = cam3d.near;
+                self.camera_system.camera.zfar = cam3d.far;
+            }
+        }
+
+        // 0c. Sync Material ECS components → MaterialDescriptors
+        {
+            use ferrous_core::scene::Material;
+            // Collect (ecs_entity_index, MaterialDescriptor) for entities
+            // that have a Material component attached.
+            let mat_only: Vec<(u32, ferrous_core::scene::MaterialDescriptor)> =
+                world.ecs.query::<Material>().map(|(e, m)| (e.index, m.to_descriptor())).collect();
+            for (ecs_idx, desc) in mat_only {
+                let ecs_id = ecs_idx as u64;
+                let needs_update = self
+                    .world_material_descs
+                    .get(&ecs_id)
+                    .map(|prev| *prev != desc)
+                    .unwrap_or(true);
+                if needs_update {
+                    // Match to an Element by its id (bridge stores ECS index as id)
+                    for element in world.iter() {
+                        if element.id == ecs_id {
+                            self.material_registry.update_params(
+                                &self.context.queue,
+                                element.material.handle,
+                                &desc,
+                            );
+                            self.world_material_descs.insert(ecs_id, desc.clone());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         // 1. Build frustum from current camera
         let camera_packet = crate::graph::frame_packet::CameraPacket {
             view_proj: self.camera_system.camera.build_view_projection_matrix(),

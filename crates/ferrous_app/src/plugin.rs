@@ -180,7 +180,9 @@ impl Plugin for CorePlugin {
     }
 
     fn build(&self, app: &mut AppBuilder) {
-        use ferrous_core::{AnimationSystem, BehaviorSystem, TimeSystem, TransformSystem, VelocitySystem};
+        use ferrous_core::{
+            AnimationSystem, BehaviorSystem, TimeSystem, TransformSystem, VelocitySystem,
+        };
 
         app.add_system_boxed(Stage::PreUpdate, Box::new(TimeSystem));
         app.add_system_boxed(Stage::Update, Box::new(VelocitySystem));
@@ -427,7 +429,9 @@ mod tests {
             }
         }
 
-        AppBuilder::new().add_plugin(MyPlugin { called: called_clone });
+        AppBuilder::new().add_plugin(MyPlugin {
+            called: called_clone,
+        });
         assert!(*called.lock().unwrap(), "build() was not called");
     }
 

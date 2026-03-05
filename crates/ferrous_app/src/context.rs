@@ -121,6 +121,15 @@ impl<'a> AppContext<'a> {
         }
     }
 
+    /// Switch the renderer's active shading style without touching `ctx.renderer`.
+    ///
+    /// ```rust,ignore
+    /// ctx.set_render_style(RenderStyle::CelShaded { toon_levels: 4, outline_width: 0.02 });
+    /// ```
+    pub fn set_render_style(&mut self, style: ferrous_renderer::RenderStyle) {
+        self.renderer.set_render_style(style);
+    }
+
     /// Shortcut: window width in physical pixels.
     #[inline]
     pub fn width(&self) -> u32 {

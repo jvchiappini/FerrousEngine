@@ -13,7 +13,8 @@ pub use world::{Element, ElementKind, Handle, PointLightComponent, World};
 // Systems and stage enum
 pub use systems::{
     AnimationClip, AnimationPlayer, AnimationSystem, Behavior, BehaviorComponent, BehaviorSystem,
-    Children, GlobalTransform, Keyframe, Parent, Stage, TimeSystem, TransformSystem, Velocity,
+    Camera3D, Camera3DBuilder, Children, DirectionalLight, GlobalTransform, Keyframe,
+    OrbitCamera, OrbitCameraSystem, Parent, Stage, TimeSystem, TransformSystem, Velocity,
     VelocitySystem,
 };
 
@@ -35,4 +36,7 @@ pub use gizmo::axis_vector;
 // material types are also part of the scene API; they live here so that the
 // renderer can depend on `ferrous_core` while client code can still build
 // descriptors without pulling in the renderer crate.
-pub use material::{AlphaMode, MaterialDescriptor, MaterialHandle, RenderStyle, MATERIAL_DEFAULT};
+pub use material::{
+    AlphaMode, Material, MaterialBuilder, MaterialDescriptor, MaterialHandle, RenderStyle,
+    MATERIAL_DEFAULT,
+};
