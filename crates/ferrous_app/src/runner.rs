@@ -1,5 +1,5 @@
-use ferrous_assets::Font;
-use ferrous_assets::AssetServer;
+use ferrous_assets::font_importer::FontData;
+use ferrous_assets::{AssetHandle, AssetState, AssetServer, Font};
 use ferrous_core::{
     glam::Vec3, AnimationSystem, BehaviorSystem, InputState, TimeClock, TimeSystem,
     TransformSystem, VelocitySystem, Viewport, World,
@@ -44,9 +44,10 @@ struct Runner<A: FerrousApp> {
     clock: TimeClock,
     world: World,
     font: Option<Font>,
-    /// Desktop-only: channel receiver for the async font-loading thread.
+    /// Desktop-only: `AssetServer` handle for the font being loaded via `font_path`.
+    /// `None` when fonts are loaded via `font_bytes` (immediate path) or not at all.
     #[cfg(not(target_arch = "wasm32"))]
-    font_rx: Option<std::sync::mpsc::Receiver<Font>>,
+    font_asset_handle: Option<AssetHandle<FontData>>,
     /// wasm32-only: receives the GraphicsState once the async GPU init completes.
     /// A spawn_local in resumed() fills this; render_frame drains it on the
     /// first frame after GPU init is done.
@@ -103,7 +104,7 @@ impl<A: FerrousApp> Runner<A> {
             world: World::new(),
             font: None,
             #[cfg(not(target_arch = "wasm32"))]
-            font_rx: None,
+            font_asset_handle: None,
             #[cfg(target_arch = "wasm32")]
             gfx_pending: None,
             #[cfg(target_arch = "wasm32")]
@@ -147,6 +148,7 @@ impl<A: FerrousApp> Runner<A> {
                                 exit_requested: false,
                                 _gpu_backend: gfx.renderer.context.backend,
                                 renderer: &mut gfx.renderer,
+                                asset_server: &mut self.asset_server,
                             };
                             self.app.setup(&mut ctx);
                             self.viewport = ctx.viewport;
@@ -208,11 +210,18 @@ impl<A: FerrousApp> Runner<A> {
         // Check for async font completion (desktop only; wasm32 loads synchronously)
         #[cfg(not(target_arch = "wasm32"))]
         if self.font.is_none() {
-            if let Some(Ok(font)) = self.font_rx.as_ref().map(|rx| rx.try_recv()) {
-                gfx.renderer
-                    .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
-                self.font = Some(font);
-                self.font_rx = None;
+            if let Some(handle) = self.font_asset_handle {
+                if let AssetState::Ready(font_data) = self.asset_server.get(handle) {
+                    let font = font_data.into_font(
+                        &gfx.renderer.context.device,
+                        &gfx.renderer.context.queue,
+                        ' '..'~',
+                    );
+                    gfx.renderer
+                        .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
+                    self.font = Some(font);
+                    self.font_asset_handle = None;
+                }
             }
         }
 
@@ -244,6 +253,7 @@ impl<A: FerrousApp> Runner<A> {
                 renderer: &mut gfx.renderer,
                 exit_requested: false,
                 _gpu_backend: backend,
+                asset_server: &mut self.asset_server,
             };
 
             self.app.update(&mut ctx);
@@ -302,6 +312,7 @@ impl<A: FerrousApp> Runner<A> {
                 renderer: &mut gfx.renderer,
                 exit_requested: false,
                 _gpu_backend: backend,
+                asset_server: &mut self.asset_server,
             };
 
             if self.viewport.width > 0 {
@@ -400,14 +411,10 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                     .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
                 self.font = Some(font);
             } else if let Some(path) = &self.config.font_path {
-                let device = gfx.renderer.context.device.clone();
-                let queue = gfx.renderer.context.queue.clone();
-                let path = path.clone();
-                let (tx, rx) = std::sync::mpsc::channel();
-                std::thread::spawn(move || {
-                    let _ = tx.send(Font::load(&path, &device, &queue, ' '..'~'));
-                });
-                self.font_rx = Some(rx);
+                // Load font bytes via AssetServer (non-blocking, rayon thread).
+                // GPU atlas baking happens in render_frame once Ready.
+                let handle = self.asset_server.load::<FontData>(path.as_str());
+                self.font_asset_handle = Some(handle);
             }
 
             // Call user setup
@@ -428,6 +435,7 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                     renderer: &mut gfx.renderer,
                     exit_requested: false,
                     _gpu_backend: backend,
+                    asset_server: &mut self.asset_server,
                 };
                 self.app.setup(&mut ctx);
                 self.viewport = ctx.viewport;
@@ -528,25 +536,28 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                 .as_ref()
                 .map(|g| g.renderer.context.backend)
                 .unwrap_or(wgpu::Backend::Empty);
-            let mut ctx = AppContext {
-                input: &self.input,
-                time,
-                window_size: self.window_size,
-                window: &window,
-                viewport: self.viewport,
-                render_stats: Default::default(),
-                camera_eye: Vec3::ZERO,
-                camera_target: Vec3::ZERO,
-                gizmos: Vec::new(),
-                world: &mut self.world,
-                renderer: &mut self.graphics.as_mut().unwrap().renderer,
-                exit_requested: false,
-                _gpu_backend: backend,
-            };
-            self.app.on_window_event(&event, &mut ctx);
-            if ctx.exit_requested {
-                event_loop.exit();
-                return;
+            if let Some(gfx) = self.graphics.as_mut() {
+                let mut ctx = AppContext {
+                    input: &self.input,
+                    time,
+                    window_size: self.window_size,
+                    window: &window,
+                    viewport: self.viewport,
+                    render_stats: Default::default(),
+                    camera_eye: Vec3::ZERO,
+                    camera_target: Vec3::ZERO,
+                    gizmos: Vec::new(),
+                    world: &mut self.world,
+                    renderer: &mut gfx.renderer,
+                    exit_requested: false,
+                    _gpu_backend: backend,
+                    asset_server: &mut self.asset_server,
+                };
+                self.app.on_window_event(&event, &mut ctx);
+                if ctx.exit_requested {
+                    event_loop.exit();
+                    return;
+                }
             }
         }
 
@@ -560,13 +571,9 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                 }
                 // Notify the user app
                 if let Some(window) = self.window.clone() {
-                    if self.graphics.is_some() {
+                    if let Some(gfx) = self.graphics.as_mut() {
                         let time = self.clock.peek();
-                        let backend = self
-                            .graphics
-                            .as_ref()
-                            .map(|g| g.renderer.context.backend)
-                            .unwrap_or(wgpu::Backend::Empty);
+                        let backend = gfx.renderer.context.backend;
                         let mut ctx = AppContext {
                             input: &self.input,
                             time,
@@ -578,9 +585,10 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                             camera_target: Vec3::ZERO,
                             gizmos: Vec::new(),
                             world: &mut self.world,
-                            renderer: &mut self.graphics.as_mut().unwrap().renderer,
+                            renderer: &mut gfx.renderer,
                             exit_requested: false,
                             _gpu_backend: backend,
+                            asset_server: &mut self.asset_server,
                         };
                         self.app.on_resize(new_size, &mut ctx);
                         self.viewport = ctx.viewport;

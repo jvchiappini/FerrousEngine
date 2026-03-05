@@ -74,4 +74,4 @@ pub use ferrous_core::{Children, GlobalTransform, Parent};
 pub use ferrous_ecs::prelude::{Entity, StagedScheduler};
 
 // helpers
-pub use crate::asset_bridge::spawn_gltf;
+pub use crate::asset_bridge::{spawn_gltf, spawn_gltf_async, GltfSpawnTask};

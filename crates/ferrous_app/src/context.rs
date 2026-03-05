@@ -1,3 +1,4 @@
+use ferrous_assets::AssetServer;
 use ferrous_core::glam::{Mat4, Vec3, Vec4};
 use ferrous_core::scene::{axis_vector, Axis, GizmoMode, GizmoState, Plane};
 use ferrous_core::{Handle, InputState, MouseButton, RenderStats, Time, Viewport, World};
@@ -75,6 +76,24 @@ pub struct AppContext<'a> {
     /// the runner itself.  The reference lives for the duration of the
     /// callback, so it is safe to mutate.
     pub renderer: &'a mut ferrous_renderer::Renderer,
+
+    /// Asset server — call `load()` to begin loading an asset in the
+    /// background and `get()` to poll its state.  The same handle returned
+    /// by `load()` can be stored across frames and polled in subsequent
+    /// `update()` callbacks.
+    ///
+    /// ```rust,ignore
+    /// fn setup(&mut self, ctx: &mut AppContext) {
+    ///     self.model = ctx.asset_server.load::<GltfModel>("assets/player.glb");
+    /// }
+    ///
+    /// fn update(&mut self, ctx: &mut AppContext) {
+    ///     if let AssetState::Ready(model) = ctx.asset_server.get(self.model) {
+    ///         // spawn entities from model …
+    ///     }
+    /// }
+    /// ```
+    pub asset_server: &'a mut AssetServer,
 
     /// Set to `true` via [`request_exit`] to stop the event loop gracefully.
     pub(crate) exit_requested: bool,

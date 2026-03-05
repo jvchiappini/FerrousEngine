@@ -34,6 +34,7 @@ pub mod texture;
 
 // ── Phase 5: asset pipeline ─────────────────────────────────────────────────
 pub mod asset_trait;
+pub mod font_importer;
 pub mod gltf_importer;
 pub mod handle;
 pub mod image_importer;
@@ -46,6 +47,7 @@ pub use texture::Texture2d;
 
 // ── re-exports: Phase 5 API ──────────────────────────────────────────────────
 pub use asset_trait::Asset;
+pub use font_importer::FontData;
 pub use gltf_importer::GltfModel;
 pub use handle::{AssetHandle, AssetState};
 pub use image_importer::ImageData;
@@ -53,7 +55,7 @@ pub use server::AssetServer;
 
 /// Convenience prelude — glob-import this in game/editor code.
 pub mod prelude {
-    pub use crate::{Asset, AssetHandle, AssetServer, AssetState, GltfModel, ImageData};
+    pub use crate::{Asset, AssetHandle, AssetServer, AssetState, FontData, GltfModel, ImageData};
 }
 
 #[cfg(test)]

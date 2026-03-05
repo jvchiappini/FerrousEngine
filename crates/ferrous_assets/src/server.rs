@@ -131,8 +131,7 @@ impl AssetServer {
             use notify::Watcher;
             match notify::RecommendedWatcher::new(
                 watch_tx,
-                notify::Config::default()
-                    .with_poll_interval(std::time::Duration::from_secs(1)),
+                notify::Config::default().with_poll_interval(std::time::Duration::from_secs(1)),
             ) {
                 Ok(w) => Some(Box::new(w)),
                 Err(e) => {
@@ -255,12 +254,13 @@ impl AssetServer {
             }
         };
 
-        let reimport: Box<dyn Fn(&Path) -> Result<Arc<dyn Any + Send + Sync>, String> + Send + Sync> =
-            Box::new(|p: &Path| {
-                T::import(p)
-                    .map(|v| Arc::new(v) as Arc<dyn Any + Send + Sync>)
-                    .map_err(|e| e.to_string())
-            });
+        let reimport: Box<
+            dyn Fn(&Path) -> Result<Arc<dyn Any + Send + Sync>, String> + Send + Sync,
+        > = Box::new(|p: &Path| {
+            T::import(p)
+                .map(|v| Arc::new(v) as Arc<dyn Any + Send + Sync>)
+                .map_err(|e| e.to_string())
+        });
 
         let gen = self.slots.lock().unwrap()[slot_id as usize].generation;
 
@@ -275,7 +275,10 @@ impl AssetServer {
             #[allow(unused_imports)]
             use notify::Watcher;
             if let Err(e) = watcher.watch(&path, notify::RecursiveMode::NonRecursive) {
-                eprintln!("[AssetServer] could not watch '{path}': {e}", path = path.display());
+                eprintln!(
+                    "[AssetServer] could not watch '{path}': {e}",
+                    path = path.display()
+                );
             }
         }
     }
@@ -305,10 +308,7 @@ impl AssetServer {
             };
 
             // Only care about content modifications.
-            if !matches!(
-                event.kind,
-                EventKind::Modify(_) | EventKind::Create(_)
-            ) {
+            if !matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
                 continue;
             }
 
