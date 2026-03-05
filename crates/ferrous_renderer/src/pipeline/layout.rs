@@ -52,6 +52,37 @@ pub struct PipelineLayouts {
     /// Bindings:
     ///   0  — directional light uniform (same dir-light struct as PBR)
     pub flat_lights: Arc<wgpu::BindGroupLayout>,
+
+    // ── Phase 11: GPU-driven culling layouts ──────────────────────────────────
+
+    /// Layout for the cull compute shader — group(0).
+    ///
+    /// Bindings:
+    ///   0  — `instances: array<InstanceCullData>` (storage, read-only)
+    ///         Each entry holds the model matrix + local AABB + command index.
+    pub cull_instances: Arc<wgpu::BindGroupLayout>,
+
+    /// Layout for the cull compute shader — group(1).
+    ///
+    /// Bindings:
+    ///   0  — `draw_cmds: array<DrawIndexedIndirect>` (storage, read-write)
+    ///         The cull shader increments `instance_count` in the matching slot.
+    ///   1  — `counters: array<atomic<u32>>` (storage, read-write)
+    ///         Per-batch write cursor so each visible instance gets a unique index.
+    pub cull_indirect: Arc<wgpu::BindGroupLayout>,
+
+    /// Layout for the cull compute shader — group(2).
+    ///
+    /// Bindings:
+    ///   0  — `out_instances: array<mat4x4<f32>>` (storage, read-write)
+    ///         Compacted visible instance matrices for the render pass.
+    pub cull_out_instances: Arc<wgpu::BindGroupLayout>,
+
+    /// Layout for the cull compute shader — group(3).
+    ///
+    /// Bindings:
+    ///   0  — `params: CullParams` (uniform): frustum planes + instance count.
+    pub cull_params: Arc<wgpu::BindGroupLayout>,
 }
 
 impl PipelineLayouts {
@@ -409,6 +440,91 @@ impl PipelineLayouts {
             cel_lights,
             outline_lights,
             flat_lights,
+            cull_instances: Self::make_cull_instances(device),
+            cull_indirect: Self::make_cull_indirect(device),
+            cull_out_instances: Self::make_cull_out_instances(device),
+            cull_params: Self::make_cull_params(device),
         }
+    }
+
+    // ── Phase 11: cull layout helpers ─────────────────────────────────────────
+
+    fn make_cull_instances(device: &wgpu::Device) -> Arc<wgpu::BindGroupLayout> {
+        Arc::new(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Layout: Cull Instances (RO storage)"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        }))
+    }
+
+    fn make_cull_indirect(device: &wgpu::Device) -> Arc<wgpu::BindGroupLayout> {
+        Arc::new(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Layout: Cull Indirect (RW storage)"),
+            entries: &[
+                // binding 0: draw commands (RW)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // binding 1: per-batch write counters (atomic RW)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        }))
+    }
+
+    fn make_cull_out_instances(device: &wgpu::Device) -> Arc<wgpu::BindGroupLayout> {
+        Arc::new(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Layout: Cull Out Instances (RW storage)"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        }))
+    }
+
+    fn make_cull_params(device: &wgpu::Device) -> Arc<wgpu::BindGroupLayout> {
+        Arc::new(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Layout: Cull Params (uniform)"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    // CullParams: 6 planes × 16 bytes + instance_count (4) + pad (12) = 112 bytes
+                    min_binding_size: wgpu::BufferSize::new(112),
+                },
+                count: None,
+            }],
+        }))
     }
 }

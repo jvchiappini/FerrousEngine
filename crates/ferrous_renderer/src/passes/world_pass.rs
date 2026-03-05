@@ -74,7 +74,7 @@ pub struct WorldPass {
     /// HDR off-screen render target. The world pass renders into this instead
     /// of the swapchain surface so values > 1.0 can be preserved.
     pub hdr_texture: HdrTexture,
-    /// Minimal bind group for the shadow pass (group 1).
+    /// Dedicated bind group for the shadow pass (group 1).
     ///
     /// Contains only the directional light uniform buffer — no shadow map
     /// texture.  Using the full `environment.bind_group` in the shadow pass
@@ -82,6 +82,16 @@ pub struct WorldPass {
     /// would be bound as both DEPTH_STENCIL_WRITE (depth attachment) and
     /// RESOURCE (sampled texture) within the same render-pass scope.
     shadow_light_bind_group: Arc<wgpu::BindGroup>,
+
+    // -- Phase 11: GPU-Driven Rendering (indirect draw) ----------------------
+    /// When `Some`, the render pass will use `draw_indexed_indirect` instead
+    /// of `draw_indexed`, consuming the pre-filled indirect draw buffer.
+    /// Set via `set_indirect_buffer`; cleared via `clear_indirect_buffer`.
+    indirect_buf: Option<Arc<wgpu::Buffer>>,
+    /// The bind group for the GPU-culled, compacted output instance buffer.
+    /// Replaces the regular `instance_bind_group` in the GPU-driven path so
+    /// the shader reads only the visible matrices produced by the cull shader.
+    culled_instance_bind_group: Option<Arc<wgpu::BindGroup>>,
 }
 
 impl WorldPass {
@@ -180,6 +190,8 @@ impl WorldPass {
             shadow_pipeline_instanced,
             shadow_resources,
             shadow_light_bind_group,
+            indirect_buf: None,
+            culled_instance_bind_group: None,
         }
     }
 
@@ -191,6 +203,28 @@ impl WorldPass {
     /// Called by `Renderer` whenever the shadow-caster `InstanceBuffer` is reallocated.
     pub fn set_shadow_instance_buffer(&mut self, bind_group: Arc<wgpu::BindGroup>) {
         self.shadow_instance_bind_group = Some(bind_group);
+    }
+
+    // -- Phase 11: GPU-driven helpers ----------------------------------------
+
+    /// Arm the GPU-driven render path.
+    ///
+    /// After this is set, `execute` will call `draw_indexed_indirect` using
+    /// `indirect_buf` for each mesh batch, and will bind `culled_bg` as group 1
+    /// (the compacted output instance buffer written by the cull shader).
+    pub fn set_indirect_buffer(
+        &mut self,
+        indirect_buf: Arc<wgpu::Buffer>,
+        culled_bg: Arc<wgpu::BindGroup>,
+    ) {
+        self.indirect_buf = Some(indirect_buf);
+        self.culled_instance_bind_group = Some(culled_bg);
+    }
+
+    /// Disarm the GPU-driven path, reverting to the CPU `draw_indexed` path.
+    pub fn clear_indirect_buffer(&mut self) {
+        self.indirect_buf = None;
+        self.culled_instance_bind_group = None;
     }
 
     /// Update the material table used during draw.  The passed slice is
@@ -411,7 +445,14 @@ impl RenderPass for WorldPass {
             };
 
         // ── Instanced path (World entities) ──────────────────────────────────
-        if let Some(inst_bg) = &self.instance_bind_group {
+        // Determine which instance bind group to use: GPU-culled (Phase 11)
+        // takes priority over the CPU-uploaded bind group.
+        let effective_inst_bg = self
+            .culled_instance_bind_group
+            .as_ref()
+            .or(self.instance_bind_group.as_ref());
+
+        if let Some(inst_bg) = effective_inst_bg {
             if !packet.instanced_objects.is_empty() {
                 // render all instanced geometry in two passes (opaque then
                 // transparent).  we reuse the same bind groups for both.
@@ -445,6 +486,29 @@ impl RenderPass for WorldPass {
                         }
                     }
                 };
+
+                // ── GPU-driven path (Phase 11) ────────────────────────────
+                if let Some(ref indirect) = self.indirect_buf {
+                    // The cull shader has already produced a compacted instance
+                    // list.  We issue one draw_indexed_indirect per batch; the
+                    // GPU reads instance_count and first_instance from the
+                    // indirect buffer (patched by CullPass::sync_patch_indirect).
+                    for (i, cmd) in packet.instanced_objects.iter().enumerate() {
+                        let (alpha_mode, double_sided) =
+                            get_flags(cmd.material_slot, cmd.double_sided);
+                        rpass.set_pipeline(choose_inst_pipe(&alpha_mode, double_sided));
+                        if let Some(mat_bg) = self.material_bind_groups.get(cmd.material_slot) {
+                            rpass.set_bind_group(2, mat_bg.as_ref(), &[]);
+                        }
+                        rpass.set_bind_group(3, self.environment.bind_group.as_ref(), &[]);
+                        rpass.set_vertex_buffer(0, cmd.vertex_buffer.slice(..));
+                        rpass.set_index_buffer(cmd.index_buffer.slice(..), cmd.index_format);
+                        // Offset into indirect buffer: each DrawIndexedIndirect is 20 bytes.
+                        let offset = i as u64 * 20;
+                        rpass.draw_indexed_indirect(indirect.as_ref(), offset);
+                    }
+                } else {
+                    // ── CPU-driven path (legacy) ──────────────────────────
 
                 // first draw opaque/masked objects (order not critical)
                 for cmd in &packet.instanced_objects {
@@ -497,6 +561,7 @@ impl RenderPass for WorldPass {
                         cmd.first_instance..cmd.first_instance + cmd.instance_count,
                     );
                 }
+                } // end CPU-driven path
             }
         }
     }

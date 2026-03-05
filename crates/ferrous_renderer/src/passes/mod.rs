@@ -1,4 +1,5 @@
 pub mod compute_pass;
+pub mod cull_pass;
 pub mod prepass;
 pub mod skybox_pass;
 pub mod post_process_pass;
@@ -11,6 +12,7 @@ pub mod outline_pass;
 pub mod flat_pass;
 
 pub use compute_pass::ComputePass;
+pub use cull_pass::{CullPass, CullParamsUniform};
 pub use prepass::PrePass;
 pub use skybox_pass::{SkyboxPass, SkyboxPipeline};
 pub use post_process_pass::PostProcessPass;

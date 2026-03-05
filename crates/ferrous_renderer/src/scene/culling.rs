@@ -138,4 +138,12 @@ impl Frustum {
         }
         true
     }
+
+    /// Returns the six frustum planes as `[Vec4; 6]`.
+    ///
+    /// Each plane is `(nx, ny, nz, d)` in the form `dot(n, p) + d >= 0`.
+    #[inline]
+    pub fn planes(&self) -> &[Vec4; 6] {
+        &self.planes
+    }
 }

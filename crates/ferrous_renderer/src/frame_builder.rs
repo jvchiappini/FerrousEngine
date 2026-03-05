@@ -51,11 +51,11 @@ pub struct FrameBuilder {
     // ── Phase 8: ECS-derived world draw commands (replaces world_objects) ───
     /// Instanced draw commands built from the ECS world query.
     /// Populated by `build_world_commands`; consumed by `build`.
-    world_instanced: Vec<InstancedDrawCommand>,
+    pub world_instanced: Vec<InstancedDrawCommand>,
     /// Shadow-caster instanced commands from the ECS query.
     world_shadow_instanced: Vec<InstancedDrawCommand>,
     /// Scratch matrices for world instancing (written to `InstanceBuffer`).
-    world_instance_matrices: Vec<glam::Mat4>,
+    pub world_instance_matrices: Vec<glam::Mat4>,
     /// Scratch matrices for shadow instancing.
     world_shadow_matrices: Vec<glam::Mat4>,
 }
