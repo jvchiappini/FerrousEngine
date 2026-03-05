@@ -110,6 +110,104 @@ impl World {
         entity
     }
 
+    /// Spawn an entity with a **single** non-`Clone` component by move.
+    ///
+    /// This is the escape hatch for components that box a trait object (e.g.
+    /// `BehaviorComponent`).  The component is written directly into the
+    /// archetype column without requiring `Clone`.
+    ///
+    /// # Limitations
+    /// - Only a single component per call.  Compose with `insert_owned` if you
+    ///   need more components.
+    /// - Archetype migration (e.g. calling `insert` to add another component
+    ///   later) will **panic** if it tries to clone this column.  Add all
+    ///   non-Clone components last, after all Clone ones are in place.
+    pub fn spawn_owned<C: Component>(&mut self, component: C) -> Entity {
+        use crate::component::{ComponentInfo, ComponentSet};
+        let info = ComponentInfo::of_owned::<C>();
+        let sig  = ComponentSet::new(vec![info.type_id]);
+        let arch_id = self.archetypes.get_or_create(sig, vec![info.clone()]);
+
+        let (entity, idx) = self.entities.alloc();
+        let arch = &mut self.archetypes.archetypes[arch_id];
+        arch.entities.push(entity);
+
+        let row = arch.entities.len() - 1;
+        for col in &mut arch.columns {
+            col.reserve(1);
+        }
+        let col = arch.columns.iter_mut().find(|c| c.info.type_id == info.type_id).unwrap();
+        unsafe {
+            let ptr = col.get_raw_mut(row);
+            std::ptr::write(ptr as *mut C, component);
+            col.len += 1;
+        }
+
+        let rec = self.entities.get_mut(idx).unwrap();
+        rec.archetype_id = Some(arch_id);
+        rec.row = row;
+
+        self.change_tick += 1;
+        entity
+    }
+
+    /// Insert a **non-`Clone`** component into an existing entity by move.
+    ///
+    /// Same rules as `spawn_owned` — only call this after all `Clone`
+    /// components have been inserted.
+    pub fn insert_owned<C: Component>(&mut self, entity: Entity, component: C) {
+        use std::any::TypeId;
+        use crate::component::ComponentInfo;
+
+        // If already has C, overwrite in-place (no archetype move needed).
+        {
+            let rec = match self.entities.get(entity) {
+                Some(r) => r.clone(),
+                None => return,
+            };
+            if let Some(arch_id) = rec.archetype_id {
+                let arch = &mut self.archetypes.archetypes[arch_id];
+                if let Some(col) = arch.column_mut::<C>() {
+                    let slot = unsafe { col.get_mut::<C>(rec.row) };
+                    *slot = component;
+                    self.change_tick += 1;
+                    return;
+                }
+            }
+        }
+
+        // New component — extend the archetype signature.
+        let old_rec = self.entities.get(entity).unwrap().clone();
+        let old_arch_id = match old_rec.archetype_id {
+            Some(id) => id,
+            None => return,
+        };
+
+        let new_type_id  = TypeId::of::<C>();
+        let new_info     = ComponentInfo::of_owned::<C>();
+        let old_sig      = self.archetypes.archetypes[old_arch_id].signature.clone();
+        let new_sig      = old_sig.add(new_type_id);
+
+        let mut new_infos: Vec<ComponentInfo> = self.archetypes.archetypes[old_arch_id]
+            .columns.iter().map(|c| c.info.clone()).collect();
+        new_infos.push(new_info);
+        new_infos.sort_unstable_by_key(|i| i.type_id);
+
+        let new_arch_id = self.archetypes.get_or_create(new_sig, new_infos);
+
+        let old_row = old_rec.row;
+        self.move_entity_between_archetypes(entity, old_arch_id, old_row, new_arch_id);
+
+        let new_row = self.entities.get(entity).unwrap().row;
+        let new_arch = &mut self.archetypes.archetypes[new_arch_id];
+        if let Some(col) = new_arch.column_mut::<C>() {
+            let slot = unsafe { col.get_mut::<C>(new_row) };
+            *slot = component;
+        }
+
+        self.change_tick += 1;
+    }
+
     /// Despawn an entity, removing all its components.
     ///
     /// Returns `false` if the entity was already dead (stale handle).

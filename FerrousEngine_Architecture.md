@@ -1,8 +1,8 @@
 # FerrousEngine — Architecture Analysis & Modernization Roadmap
 
-> **Status:** IN PROGRESS — Phase 1 ✅, Phase 2 ✅, Phase 3 ✅ complete.
+> **Status:** IN PROGRESS — Phase 1 ✅, Phase 2 ✅, Phase 3 ✅, Phase 4 ✅ complete.
 > **Date:** March 2026  
-> **Analyst:** GitHub Copilot (Gemini 3 Flash)
+> **Analyst:** GitHub Copilot (Claude Sonnet 4.6)
 
 ---
 
@@ -26,19 +26,68 @@
 #### ✅ Phase 3 — Renderer struct decomposition (100% complete)
 *No changes since last session.*
 
-#### 🏗️ Phase 4 — System Logic (In Progress)
-*   **`TimeSystem`**: Implemented and integrated into `ferrous_app`. It now updates the global `TimeClock` resource via the ECS scheduler.
-*   **`TransformSystem`**: Initial placeholder created; ready for physics/animation logic.
-*   **`SystemScheduler`**: Integrated into the main `Runner` loop in `ferrous_app`. The engine now runs a sequence of ECS systems before every update/render.
+#### ✅ Phase 4 — System Logic Expansion (100% complete)
+
+All work done in this session. The following was implemented:
+
+##### `ferrous_ecs/src/system.rs` — Stage-based scheduler added
+- **`Stage` enum**: `PreUpdate`, `Update`, `PostUpdate`, `Render` (in execution order).
+- **`StagedScheduler`**: Systems are registered per-stage with `sched.add(Stage::Update, my_system)`. Runs stages in fixed order. Has `run_all`, `run_stage`, `len`, `clear`.
+- **`fn_system`**: closure-to-system adapter was already present, now also exported from prelude.
+- Both `StagedScheduler` and `Stage` are exported from `ferrous_ecs::prelude`.
+
+##### `ferrous_ecs/src/world.rs` — Non-Clone component support
+- **`World::spawn_owned<C: Component>(component) -> Entity`**: Spawns a single entity with a non-Clone component. Used for `BehaviorComponent`.
+- **`World::insert_owned<C: Component>(entity, component)`**: Inserts a non-Clone component into an existing entity.
+
+##### `ferrous_ecs/src/component.rs` — `ComponentInfo::of_owned<C>()`
+- **`ComponentInfo::of_owned<C: Component>()`**: Constructs metadata for a non-Clone component. The clone function panics if called (for components that should never be migrated between archetypes).
+
+##### `ferrous_core/src/scene/systems.rs` — Full system suite implemented
+New components:
+- **`Velocity(Vec3)`**: Linear velocity in world space. Entities with this + `Transform` are integrated by `VelocitySystem`.
+- **`Parent(Entity)`**: Parent link for scene hierarchy.
+- **`Children(Vec<Entity>)`**: Child list (managed manually or by helpers).
+- **`GlobalTransform(Mat4)`**: Computed world-space transform output of `TransformSystem`. Read-only — don't set manually.
+- **`AnimationClip`**: CPU-side keyframe animation clip with position keys, looping, and duration. `sample_position(t)` does linear interpolation.
+- **`AnimationPlayer`**: State machine for playing an `AnimationClip`. Has `playing`, `speed`, `time` fields and `set_playing()`/`seek()` methods.
+- **`BehaviorComponent`**: Boxes a `Box<dyn Behavior>`. Non-Clone — use `world.spawn_owned()` or `world.insert_owned()`.
+
+New systems:
+- **`TimeSystem`** (PreUpdate): Calls `TimeClock::tick()` each frame and stores the result in `ResourceMap`. All other systems read `dt` from the clock.
+- **`VelocitySystem`** (Update): Integrates `Velocity` into `Transform::position` using `dt` from the clock.
+- **`AnimationSystem`** (Update): Advances `AnimationPlayer::time` by `dt * speed` and applies sampled position to `Transform`.
+- **`BehaviorSystem`** (Update): Calls `Behavior::on_start` once, then `Behavior::update` every frame for all entities with a `BehaviorComponent`.
+- **`TransformSystem`** (PostUpdate): Two-pass global transform propagation. Pass 1 sets `GlobalTransform = local.matrix()` for all entities. Pass 2 multiplies by parent's `GlobalTransform` for entities with a `Parent` component.
+
+New trait:
+- **`Behavior: Send + Sync + 'static`**: Per-entity scripting hook. Implement `update(entity, world, resources, dt)` and optionally `on_start(...)`.
+
+##### `ferrous_app/src/runner.rs` — Updated to staged scheduler
+- `SystemScheduler` replaced with `StagedScheduler`.
+- Systems registered at correct stages:
+  - `Stage::PreUpdate`: `TimeSystem`
+  - `Stage::Update`: `VelocitySystem`, `AnimationSystem`, `BehaviorSystem`
+  - `Stage::PostUpdate`: `TransformSystem`
+
+##### Tests (all pass)
+- `time_system_ticks_clock` — verifies `TimeClock` advances correctly per tick.
+- `velocity_system_moves_entity` — entity with `Velocity(10, 0, 0)` moves along X by `10 * dt`.
+- `animation_system_advances_and_applies_position` — clip with keyframes, position is applied.
+- `transform_system_propagates_parent` — parent at x=10, child local x=1 → child global x=11.
+- `behavior_system_calls_update` — custom `Behavior` impl is called once per `run`.
 
 ---
 
 ### What to do next (in priority order)
 
-#### 🔴 Next immediate task — Phase 4: System Logic Expansion
-- **Physics Integration**: Use `TransformSystem` or a new `PhysicsSystem` to integrate a physics engine (e.g., `rapier3d`).
-- **Animation System**: Implement a system that updates `Transform` components based on keyframes.
-- **Scripting/Behavior**: Add a `BehaviorSystem` that allows users to attach custom logic to entities via the ECS.
+#### 🔴 Next immediate task — Phase 5: Asset Pipeline Refresh
+The current asset loading is synchronous and lacks a handle/registry system.  See Phase 6 in the roadmap.
+- **`AssetHandle<T>`**: Type-safe 8-byte handle for any asset.
+- **`AssetServer`**: Non-blocking `load<T>(path) -> AssetHandle<T>`, `get<T>(handle) -> AssetState<T>`.
+- **Importers**: `GltfImporter`, `TextureImporter`, `FontImporter` as `Asset` trait implementations.
+- **Hot-reload**: File watcher on desktop via the `notify` crate.
+- **`AssetServer` as ECS resource**: `world.resource::<AssetServer>()`.
 
 #### 🟡 Phase 9 — Editor Systemization
 The `ferrous_editor` crate has some coupling with `Renderer` internals. After Phase 2, the editor should be refactored to use ECS systems for entity inspection and manipulation.
@@ -47,11 +96,11 @@ The `ferrous_editor` crate has some coupling with `Renderer` internals. After Ph
 
 ---
 
-#### 🟢 Phase 5+ (future)
-- **Phase 5**: Asset Pipeline Refresh (Async Loading, Hot Reloading).
+#### 🟢 Phase 6+ (future)
 - **Phase 6**: Multithreading (Parallel ECS Scheduling).
 - **Phase 7**: Shadow Map Cascades.
 - **Phase 8**: GPU Frustum Culling.
+- **Phase 11**: GUI Theming & Layout Caching.
 
 ---
 
@@ -60,19 +109,25 @@ The `ferrous_editor` crate has some coupling with `Renderer` internals. After Ph
 | File | Purpose |
 |------|---------|
 | `crates/ferrous_ecs/src/` | Archetype ECS Core |
+| `crates/ferrous_ecs/src/system.rs` | `System`, `SystemScheduler`, `StagedScheduler`, `Stage` |
+| `crates/ferrous_ecs/src/world.rs` | World + `spawn_owned`/`insert_owned` for non-Clone components |
+| `crates/ferrous_ecs/src/component.rs` | `ComponentInfo::of_owned` for non-Clone component metadata |
+| `crates/ferrous_core/src/scene/systems.rs` | ALL built-in systems + new components |
 | `crates/ferrous_core/src/scene/world.rs` | Legacy Bridge + Entity Management |
-| `crates/ferrous_core/src/scene/systems.rs` | NEW — ECS Systems (`TimeSystem`, etc.) |
 | `crates/ferrous_renderer/src/lib.rs` | Main Renderer Orchestrator |
-| `crates/ferrous_app/src/runner.rs` | Main Loop — Now runs `SystemScheduler` |
+| `crates/ferrous_app/src/runner.rs` | Main Loop — Now uses `StagedScheduler` |
 | `crates/ferrous_editor/src/app.rs` | Editor UI — Pending ECS refactor |
 
 ### How to verify nothing is broken
 
 ```powershell
-cargo build --release
+cargo build
 cargo test -p ferrous_ecs
+cargo test -p ferrous_core scene::systems
 cargo run --release -p ferrous_editor
 ```
+
+> ⚠️ There are 4 pre-existing test failures in `ferrous_core` related to floating-point precision in `rotate_around` tests. These existed before Phase 4 and are unrelated to the new work.
 
 ---
 

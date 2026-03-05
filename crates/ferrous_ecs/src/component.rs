@@ -86,6 +86,34 @@ impl ComponentInfo {
             name: std::any::type_name::<C>(),
         }
     }
+
+    /// Construct metadata for a component that is NOT `Clone`.
+    ///
+    /// The clone function will **panic** if called.  Use this only for
+    /// components that will never be moved between archetypes (i.e. they are
+    /// only ever inserted, never removed).  In practice this means archetype
+    /// migration that copies the column will panic.  Use with care.
+    pub fn of_owned<C: Component>() -> Self {
+        unsafe fn drop_impl<C>(ptr: *mut u8) {
+            std::ptr::drop_in_place(ptr as *mut C);
+        }
+        unsafe fn clone_panic(_src: *const u8, _dst: *mut u8) {
+            panic!("attempted to clone a non-Clone component during archetype migration");
+        }
+
+        ComponentInfo {
+            type_id: TypeId::of::<C>(),
+            size: std::mem::size_of::<C>(),
+            align: std::mem::align_of::<C>(),
+            drop_fn: if std::mem::needs_drop::<C>() {
+                Some(drop_impl::<C>)
+            } else {
+                None
+            },
+            clone_fn: clone_panic,
+            name: std::any::type_name::<C>(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

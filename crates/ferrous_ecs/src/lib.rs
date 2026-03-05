@@ -42,6 +42,6 @@ pub mod prelude {
     pub use crate::entity::Entity;
     pub use crate::query::{Query, QueryMut};
     pub use crate::resource::ResourceMap;
-    pub use crate::system::{System, SystemScheduler};
+    pub use crate::system::{System, SystemScheduler, StagedScheduler, Stage, fn_system};
     pub use crate::world::World;
 }

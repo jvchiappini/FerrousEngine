@@ -10,8 +10,24 @@ pub mod world;
 // World types
 pub use world::{Element, ElementKind, Handle, PointLightComponent, World};
 
-// Systems
-pub use systems::{TimeSystem, TransformSystem};
+// Systems and stage enum
+pub use systems::{
+    AnimationClip,
+    AnimationPlayer,
+    AnimationSystem,
+    Behavior,
+    BehaviorComponent,
+    BehaviorSystem,
+    Children,
+    GlobalTransform,
+    Keyframe,
+    Parent,
+    Stage,
+    TimeSystem,
+    TransformSystem,
+    VelocitySystem,
+    Velocity,
+};
 
 // Camera
 pub use camera::{Camera, CameraUniform};

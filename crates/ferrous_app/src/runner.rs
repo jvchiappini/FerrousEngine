@@ -1,6 +1,9 @@
 use ferrous_assets::Font;
-use ferrous_core::{glam::Vec3, InputState, TimeClock, Viewport, World, TimeSystem, TransformSystem};
-use ferrous_ecs::prelude::{ResourceMap, SystemScheduler};
+use ferrous_core::{
+    glam::Vec3, AnimationSystem, BehaviorSystem, InputState, TimeClock, TimeSystem,
+    TransformSystem, VelocitySystem, Viewport, World,
+};
+use ferrous_ecs::prelude::{ResourceMap, StagedScheduler, Stage};
 use ferrous_gui::{GuiBatch, TextBatch, Ui};
 use std::sync::Arc;
 use std::time::Duration;
@@ -62,16 +65,22 @@ struct Runner<A: FerrousApp> {
     /// if the application is idle and should stop continuous rendering.
     last_action_time: Instant,
     /// ECS system scheduler.
-    systems: SystemScheduler,
+    systems: StagedScheduler,
     /// Global resources for the ECS world.
     resources: ResourceMap,
 }
 
 impl<A: FerrousApp> Runner<A> {
     fn new(app: A, config: AppConfig) -> Self {
-        let mut systems = SystemScheduler::new();
-        systems.add(TimeSystem);
-        systems.add(TransformSystem);
+        let mut systems = StagedScheduler::new();
+        // PreUpdate: timing must come first so all other systems see a fresh dt.
+        systems.add(Stage::PreUpdate, TimeSystem);
+        // Update: gameplay logic — velocity, animation, user behaviors.
+        systems.add(Stage::Update, VelocitySystem);
+        systems.add(Stage::Update, AnimationSystem);
+        systems.add(Stage::Update, BehaviorSystem);
+        // PostUpdate: hierarchy propagation after all transforms are settled.
+        systems.add(Stage::PostUpdate, TransformSystem);
 
         Self {
             app,
@@ -205,7 +214,8 @@ impl<A: FerrousApp> Runner<A> {
 
         // Advance the frame clock via ECS systems
         self.resources.insert(self.clock);
-        self.systems.run_all(&mut self.world.ecs, &mut self.resources);
+        self.systems
+            .run_all(&mut self.world.ecs, &mut self.resources);
         self.clock = *self.resources.get::<TimeClock>().unwrap();
         let time = self.clock.at_tick(); // Use the snapshot captured at the last tick
 
