@@ -1,4 +1,5 @@
 use ferrous_assets::Font;
+use ferrous_assets::AssetServer;
 use ferrous_core::{
     glam::Vec3, AnimationSystem, BehaviorSystem, InputState, TimeClock, TimeSystem,
     TransformSystem, VelocitySystem, Viewport, World,
@@ -68,6 +69,8 @@ struct Runner<A: FerrousApp> {
     systems: StagedScheduler,
     /// Global resources for the ECS world.
     resources: ResourceMap,
+    /// Asset server — manages all background asset loading and hot-reload.
+    asset_server: AssetServer,
 }
 
 impl<A: FerrousApp> Runner<A> {
@@ -110,6 +113,7 @@ impl<A: FerrousApp> Runner<A> {
             last_action_time: Instant::now(),
             systems,
             resources: ResourceMap::new(),
+            asset_server: AssetServer::new(),
         }
     }
 
@@ -211,6 +215,10 @@ impl<A: FerrousApp> Runner<A> {
                 self.font_rx = None;
             }
         }
+
+        // Tick asset server: drains background-loaded assets into the registry
+        // and, on desktop, processes hot-reload file change events.
+        self.asset_server.tick();
 
         // Advance the frame clock via ECS systems
         self.resources.insert(self.clock);
