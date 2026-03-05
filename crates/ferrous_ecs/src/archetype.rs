@@ -248,10 +248,7 @@ impl Archetype {
 
     /// Find the column index for `type_id`, or `None` if not present.
     pub fn column_index(&self, type_id: TypeId) -> Option<usize> {
-        self.signature
-            .0
-            .binary_search(&type_id)
-            .ok()
+        self.signature.0.binary_search(&type_id).ok()
     }
 
     /// Typed immutable access to the column for `T`.
@@ -273,11 +270,7 @@ impl Archetype {
     /// # Safety
     /// `raw_components[i]` must point to a valid, initialized component of
     /// the type stored in `columns[i]`.  Ownership is transferred.
-    pub unsafe fn push_entity(
-        &mut self,
-        entity: Entity,
-        raw_components: &[*const u8],
-    ) -> usize {
+    pub unsafe fn push_entity(&mut self, entity: Entity, raw_components: &[*const u8]) -> usize {
         debug_assert_eq!(raw_components.len(), self.columns.len());
         let row = self.entities.len();
         self.entities.push(entity);
@@ -306,14 +299,18 @@ impl Archetype {
             let size = col.info.size;
             if size > 0 && !was_last {
                 let remove_ptr = col.data.add(row * size);
-                let last_ptr   = col.data.add(last * size);
+                let last_ptr = col.data.add(last * size);
                 // Overwrite removed slot with last element's bytes (no drop on either).
                 std::ptr::copy_nonoverlapping(last_ptr, remove_ptr, size);
             }
             col.len -= 1;
         }
 
-        if was_last { None } else { Some(last_entity) }
+        if was_last {
+            None
+        } else {
+            Some(last_entity)
+        }
     }
 
     /// Swap-remove the entity at `row`.
@@ -333,7 +330,11 @@ impl Archetype {
             col.swap_remove(row);
         }
 
-        if was_last { None } else { Some(last_entity) }
+        if was_last {
+            None
+        } else {
+            Some(last_entity)
+        }
     }
 }
 
@@ -362,11 +363,7 @@ impl ArchetypeStore {
 
     /// Get or create the archetype for `signature`.
     /// `infos` provides the column metadata.
-    pub fn get_or_create(
-        &mut self,
-        signature: ComponentSet,
-        infos: Vec<ComponentInfo>,
-    ) -> usize {
+    pub fn get_or_create(&mut self, signature: ComponentSet, infos: Vec<ComponentInfo>) -> usize {
         if let Some(&id) = self.index.get(&signature) {
             return id;
         }
@@ -423,7 +420,10 @@ mod tests {
         let (sig, infos) = make_sig::<Pos>();
         let mut arch = Archetype::new(sig, infos);
 
-        let e = Entity { index: 0, generation: 0 };
+        let e = Entity {
+            index: 0,
+            generation: 0,
+        };
         let pos = Pos(1.0, 2.0, 3.0);
         let src = &pos as *const Pos as *const u8;
 
@@ -442,10 +442,15 @@ mod tests {
         let mut arch = Archetype::new(sig, infos);
 
         for i in 0..3u32 {
-            let e = Entity { index: i, generation: 0 };
+            let e = Entity {
+                index: i,
+                generation: 0,
+            };
             let pos = Pos(i as f32, 0.0, 0.0);
             let src = &pos as *const Pos as *const u8;
-            unsafe { arch.push_entity(e, &[src]); }
+            unsafe {
+                arch.push_entity(e, &[src]);
+            }
             std::mem::forget(pos);
         }
         assert_eq!(arch.len(), 3);

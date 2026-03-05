@@ -72,6 +72,8 @@ pub struct TimeClock {
     start: Instant,
     last_tick: Instant,
     frame_count: u64,
+    /// The timing snapshot calculated at the last tick.
+    last_snapshot: Time,
 }
 
 impl TimeClock {
@@ -82,7 +84,13 @@ impl TimeClock {
             start: now,
             last_tick: now,
             frame_count: 0,
+            last_snapshot: Time::default(),
         }
+    }
+
+    /// Returns the snapshot captured at the last call to `tick()`.
+    pub fn at_tick(&self) -> Time {
+        self.last_snapshot
     }
 
     /// Return the current [`Time`] snapshot without advancing the clock.
@@ -116,12 +124,14 @@ impl TimeClock {
         self.last_tick = now;
         self.frame_count += 1;
 
-        Time {
+        let snapshot = Time {
             delta,
             elapsed,
             frame_count: count,
             fps,
-        }
+        };
+        self.last_snapshot = snapshot;
+        snapshot
     }
 }
 

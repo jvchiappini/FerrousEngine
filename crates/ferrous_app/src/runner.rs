@@ -203,11 +203,11 @@ impl<A: FerrousApp> Runner<A> {
             }
         }
 
-        // Advance the frame clock
+        // Advance the frame clock via ECS systems
         self.resources.insert(self.clock);
         self.systems.run_all(&mut self.world.ecs, &mut self.resources);
         self.clock = *self.resources.get::<TimeClock>().unwrap();
-        let time = self.clock.peek();
+        let time = self.clock.at_tick(); // Use the snapshot captured at the last tick
 
         // ── 1. UPDATE ────────────────────────────────────────────────────────
         {

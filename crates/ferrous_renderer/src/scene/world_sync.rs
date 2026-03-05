@@ -1,3 +1,4 @@
+use ferrous_core::scene::world::MaterialComponent;
 /// `RenderObject` list.
 ///
 /// ## Three-phase reconciliation (all O(n))
@@ -7,8 +8,7 @@
 /// 3. **Update** the transform of all surviving objects.
 ///
 /// Uses a `Vec<Option<RenderObject>>` for guaranteed sequential access.
-use ferrous_core::scene::{ElementKind, World, Element};
-use ferrous_core::scene::world::MaterialComponent;
+use ferrous_core::scene::{Element, ElementKind, World};
 use ferrous_core::transform::Transform;
 
 use crate::geometry::primitives::{
@@ -82,7 +82,9 @@ pub fn sync_world(
     }
 
     // ── Phase 2 & 3: spawn or update ─────────────────────────────────────────
-    for (_entity, element, transform, material) in world.ecs.query3::<Element, Transform, MaterialComponent>() {
+    for (_entity, element, transform, material) in
+        world.ecs.query3::<Element, Transform, MaterialComponent>()
+    {
         let is_renderable = matches!(
             element.kind,
             ElementKind::Cube { .. }
@@ -140,7 +142,7 @@ pub fn sync_world(
                 } => {
                     let lat = latitudes;
                     let lon = longitudes;
-                    
+
                     let use_mesh = if let Some((m, l, o)) = shared_sphere_mesh {
                         if l == lat && o == lon {
                             Some(m.clone())
@@ -161,7 +163,7 @@ pub fn sync_world(
                 }
                 _ => continue,
             };
-            
+
             let obj = RenderObject::new(
                 device,
                 element.id,
