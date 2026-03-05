@@ -108,6 +108,27 @@ impl AppBuilder {
         self
     }
 
+    /// Set the render quality preset.
+    pub fn with_render_quality(mut self, quality: ferrous_core::RenderQuality) -> Self {
+        self.config.render_quality = quality;
+        self
+    }
+
+    /// Load `ferrous.toml` from `path` and apply its settings.
+    ///
+    /// Missing files are silently ignored.  Parse errors are logged as
+    /// warnings so a broken config file does not abort startup.
+    ///
+    /// Call this **before** other `with_*` methods so that code overrides
+    /// take priority over the file.
+    pub fn with_config_file(mut self, path: &str) -> Self {
+        match crate::config::load_config(path) {
+            Ok(engine_cfg) => engine_cfg.apply_to(&mut self.config),
+            Err(e) => log::warn!("ferrous.toml: {e}"),
+        }
+        self
+    }
+
     // ── Plugin registration ────────────────────────────────────────────────
 
     /// Register a plugin.  Calls [`Plugin::build`] immediately so that

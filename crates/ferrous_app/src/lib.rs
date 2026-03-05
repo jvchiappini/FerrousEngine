@@ -42,6 +42,7 @@
 
 mod asset_bridge;
 pub mod builder;
+pub mod config;
 pub mod context;
 mod graphics;
 pub mod plugin;
@@ -49,6 +50,7 @@ mod runner;
 pub mod traits;
 
 pub use builder::{App, AppConfig};
+pub use config::{load_config, ConfigError, EngineConfig};
 pub use context::AppContext;
 pub use plugin::{
     AppBuilder, AssetPlugin, CorePlugin, DefaultPlugins, GuiPlugin, InputPlugin, Plugin,
@@ -58,6 +60,7 @@ pub use traits::FerrousApp;
 
 // ── Render style ───────────────────────────────────────────────────────────
 pub use ferrous_renderer::RenderStyle;
+pub use ferrous_core::RenderQuality;
 
 // ── Re-export the most-used ferrous_core primitives ────────────────────────
 // Users can do `use ferrous_app::{Color, Time, World, Handle, Vec3};` without

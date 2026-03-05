@@ -41,7 +41,11 @@ impl Component for PointLightComponent {}
 
 impl Default for PointLightComponent {
     fn default() -> Self {
-        Self { color: [1.0, 1.0, 1.0], intensity: 5.0, radius: 10.0 }
+        Self {
+            color: [1.0, 1.0, 1.0],
+            intensity: 5.0,
+            radius: 10.0,
+        }
     }
 }
 
@@ -58,7 +62,10 @@ impl Component for MaterialComponent {}
 
 impl Default for MaterialComponent {
     fn default() -> Self {
-        Self { handle: MATERIAL_DEFAULT, descriptor: MaterialDescriptor::default() }
+        Self {
+            handle: MATERIAL_DEFAULT,
+            descriptor: MaterialDescriptor::default(),
+        }
     }
 }
 
@@ -67,18 +74,35 @@ impl Default for MaterialComponent {
 /// Geometric or logical kind of a scene entity.
 #[derive(Debug, Clone)]
 pub enum ElementKind {
-    Cube { half_extents: Vec3 },
-    Quad { width: f32, height: f32, double_sided: bool },
-    Sphere { radius: f32, latitudes: u32, longitudes: u32 },
-    Mesh { asset_key: String },
-    PointLight { radius: f32, intensity: f32 },
+    Cube {
+        half_extents: Vec3,
+    },
+    Quad {
+        width: f32,
+        height: f32,
+        double_sided: bool,
+    },
+    Sphere {
+        radius: f32,
+        latitudes: u32,
+        longitudes: u32,
+    },
+    Mesh {
+        asset_key: String,
+    },
+    PointLight {
+        radius: f32,
+        intensity: f32,
+    },
     Empty,
 }
 
 impl ferrous_ecs::prelude::Component for ElementKind {}
 
 impl Default for ElementKind {
-    fn default() -> Self { ElementKind::Empty }
+    fn default() -> Self {
+        ElementKind::Empty
+    }
 }
 
 // ── Element ──────────────────────────────────────────────────────────────────
@@ -114,4 +138,3 @@ impl Element {
         }
     }
 }
-

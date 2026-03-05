@@ -1,0 +1,57 @@
+# ferrous.toml — FerrousEngine project configuration
+#
+# All keys are optional. Missing keys use the engine defaults.
+# Load this file at startup with:
+#
+#   App::new(MyGame).with_config_file("ferrous.toml").run()
+#   AppBuilder::new().with_config_file("ferrous.toml").add_plugin(DefaultPlugins).run()
+
+# ── Engine loop ───────────────────────────────────────────────────────────────
+[engine]
+# Maximum frames per second. 0 = unlimited (busy-loop).
+target_fps = 60
+# Lock GPU present to monitor refresh rate (eliminates tearing).
+vsync = true
+
+# ── Window ────────────────────────────────────────────────────────────────────
+[window]
+title     = "FerrousEngine"
+width     = 1280
+height    = 720
+resizable = true
+
+# ── Renderer ──────────────────────────────────────────────────────────────────
+[renderer]
+# Render quality preset.
+#   ultra  — Full PBR + SSAO + Bloom + 4x MSAA
+#   high   — Full PBR + SSAO + Bloom + 2x MSAA   (default)
+#   medium — PBR + Bloom, no SSAO, no IBL, 1x MSAA
+#   low    — Simple diffuse + directional only
+#   minimal — Depth-only (headless / server)
+quality = "high"
+
+# Render style.
+#   pbr  — Physically-based rendering with IBL    (default)
+#   cel  — Toon / cel-shaded (see [renderer.cel] below)
+#   flat — Faceted / low-poly flat shading
+style = "pbr"
+
+# MSAA sample count (1, 2, or 4).
+# When omitted, the quality preset drives this value automatically.
+# msaa = 4
+
+# Path to an HDR environment map for image-based lighting.
+# hdri = "assets/skybox/citrus_orchard_road_puresky_4k.exr"
+
+# ── Cel-shading options (only used when style = "cel") ───────────────────────
+[renderer.cel]
+# Number of discrete toon shading bands (2–8). 4 gives a classic cartoon look.
+toon_levels = 4
+# World-space inverted-hull outline thickness. 0.0 disables the outline pass.
+outline_width = 0.0
+
+# ── Asset server ──────────────────────────────────────────────────────────────
+[assets]
+# Watch asset files for changes and transparently re-import them at runtime.
+# Disable in production builds to avoid background FS overhead.
+hot_reload = true

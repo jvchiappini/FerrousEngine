@@ -4,15 +4,12 @@
 //! Material, visibility, tags, access and iteration live in [`super::query`].
 
 use ferrous_ecs::prelude::{Entity, World as EcsWorld};
-use glam::{Vec3};
+use glam::Vec3;
 
-use crate::scene::{MaterialDescriptor, MaterialHandle};
 use crate::transform::Transform;
 
-use super::types::{
-    Element, ElementKind, Handle, PointLightComponent, next_id,
-};
 use super::builder::EntityBuilder;
+use super::types::{next_id, Element, ElementKind, Handle, PointLightComponent};
 
 // ─── World ──────────────────────────────────────────────────────────────────
 
@@ -84,7 +81,11 @@ impl World {
     ) -> Handle {
         let scale = Vec3::new(width * 0.5, height * 0.5, 1.0);
         self.spawn(name)
-            .with_kind(ElementKind::Quad { width, height, double_sided })
+            .with_kind(ElementKind::Quad {
+                width,
+                height,
+                double_sided,
+            })
             .with_position(position)
             .with_scale(scale)
             .build()
@@ -101,7 +102,11 @@ impl World {
         let lat = segments.max(2);
         let lon = segments.max(3);
         self.spawn(name)
-            .with_kind(ElementKind::Sphere { radius, latitudes: lat, longitudes: lon })
+            .with_kind(ElementKind::Sphere {
+                radius,
+                latitudes: lat,
+                longitudes: lon,
+            })
             .with_position(position)
             .with_scale(Vec3::splat(radius))
             .build()
@@ -118,7 +123,11 @@ impl World {
     ) -> Handle {
         self.spawn(name)
             .with_position(position)
-            .with_point_light(PointLightComponent { color, intensity, radius })
+            .with_point_light(PointLightComponent {
+                color,
+                intensity,
+                radius,
+            })
             .invisible()
             .build()
     }
@@ -141,7 +150,9 @@ impl World {
         position: Vec3,
     ) -> Handle {
         self.spawn(name)
-            .with_kind(ElementKind::Mesh { asset_key: asset_key.into() })
+            .with_kind(ElementKind::Mesh {
+                asset_key: asset_key.into(),
+            })
             .with_position(position)
             .build()
     }
@@ -257,7 +268,10 @@ impl World {
     /// Resize a `Cube` by changing its half-extents (and updating scale).
     pub fn set_cube_half_extents(&mut self, handle: Handle, half_extents: Vec3) {
         if let Some(Some(e)) = self.entities.get_mut(handle.0 as usize) {
-            if let ElementKind::Cube { half_extents: ref mut he } = e.kind {
+            if let ElementKind::Cube {
+                half_extents: ref mut he,
+            } = e.kind
+            {
                 *he = half_extents;
             }
             e.transform.scale = half_extents;

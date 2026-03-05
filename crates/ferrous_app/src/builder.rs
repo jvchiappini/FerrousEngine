@@ -1,4 +1,5 @@
 use ferrous_core::Color;
+use ferrous_core::RenderQuality;
 use ferrous_renderer::RenderStyle;
 
 use crate::traits::FerrousApp;
@@ -48,6 +49,13 @@ pub struct AppConfig {
     /// `RenderStyle::CelShaded` — toon-ramp shading + optional outline.
     /// `RenderStyle::FlatShaded` — faceted / low-poly flat shading.
     pub render_style: RenderStyle,
+    /// Render quality preset — controls which passes are active and at what
+    /// resolution they run.  Defaults to [`RenderQuality::High`].
+    ///
+    /// When loaded from `ferrous.toml` via [`AppBuilder::with_config_file`],
+    /// the quality preset also drives the default MSAA sample count unless
+    /// `msaa` is explicitly set in the TOML.
+    pub render_quality: RenderQuality,
 }
 
 impl Default for AppConfig {
@@ -66,6 +74,7 @@ impl Default for AppConfig {
             sample_count: 1,
             hdri_path: None,
             render_style: RenderStyle::Pbr,
+            render_quality: RenderQuality::High,
         }
     }
 }
@@ -164,6 +173,41 @@ impl<A: FerrousApp + 'static> App<A> {
     /// ```
     pub fn with_render_style(mut self, style: RenderStyle) -> Self {
         self.config.render_style = style;
+        self
+    }
+
+    /// Set the render quality preset.
+    ///
+    /// Defaults to [`RenderQuality::High`].  When set programmatically (rather
+    /// than via `ferrous.toml`) the MSAA sample count is *not* automatically
+    /// updated — call [`with_msaa`][Self::with_msaa] explicitly if needed.
+    pub fn with_render_quality(mut self, quality: RenderQuality) -> Self {
+        self.config.render_quality = quality;
+        self
+    }
+
+    /// Load `ferrous.toml` from `path` and apply all recognised settings to
+    /// this app's configuration.
+    ///
+    /// Missing files are silently ignored (returns `self` unchanged).  Parse
+    /// errors are logged via `log::warn!` and also ignored so that a broken
+    /// config file does not crash the application at startup.
+    ///
+    /// This method should be called **before** any explicit `with_*` overrides
+    /// so that code-level settings take priority over the file.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// App::new(MyGame)
+    ///     .with_config_file("ferrous.toml")   // loaded first
+    ///     .with_title("Override Title")        // code wins
+    ///     .run();
+    /// ```
+    pub fn with_config_file(mut self, path: &str) -> Self {
+        match crate::config::load_config(path) {
+            Ok(engine_cfg) => engine_cfg.apply_to(&mut self.config),
+            Err(e) => log::warn!("ferrous.toml: {e}"),
+        }
         self
     }
 

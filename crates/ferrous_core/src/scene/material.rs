@@ -118,6 +118,114 @@ impl Default for RenderStyle {
     }
 }
 
+// ── Render Quality ────────────────────────────────────────────────────────────
+
+/// Coarse render-quality preset.  Controls which passes are active and at what
+/// resolution they run.
+///
+/// Quality presets are orthogonal to [`RenderStyle`]: you can run cel-shaded
+/// at `Ultra` quality or PBR at `Low` quality.
+///
+/// | Preset  | SSAO | Bloom | Shadows | IBL | MSAA |
+/// |---------|------|-------|---------|-----|------|
+/// | Ultra   | ✅   | ✅    | ✅ 2048 | ✅  | 4x   |
+/// | High    | ✅   | ✅    | ✅ 1024 | ✅  | 2x   |
+/// | Medium  | ❌   | ✅    | ✅ 512  | ❌  | 1x   |
+/// | Low     | ❌   | ❌    | ❌      | ❌  | 1x   |
+/// | Minimal | ❌   | ❌    | ❌      | ❌  | 1x (depth only) |
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RenderQuality {
+    /// Full PBR + SSAO + Bloom + 4x MSAA — maximum visual fidelity.
+    Ultra,
+    /// Full PBR + SSAO + Bloom + 2x MSAA — high fidelity, lower GPU cost.
+    High,
+    /// PBR without SSAO; bloom active; no IBL; 1x MSAA — balanced.
+    Medium,
+    /// Simple diffuse + directional light only; no post-processing.
+    Low,
+    /// Depth-only (headless/server builds or extreme performance budgets).
+    Minimal,
+}
+
+impl Default for RenderQuality {
+    fn default() -> Self {
+        RenderQuality::High
+    }
+}
+
+impl RenderQuality {
+    /// Returns `true` if screen-space ambient occlusion should be enabled.
+    pub fn ssao_enabled(self) -> bool {
+        matches!(self, RenderQuality::Ultra | RenderQuality::High)
+    }
+
+    /// Returns `true` if bloom post-processing should be enabled.
+    pub fn bloom_enabled(self) -> bool {
+        matches!(
+            self,
+            RenderQuality::Ultra | RenderQuality::High | RenderQuality::Medium
+        )
+    }
+
+    /// Returns `true` if shadow maps should be rendered.
+    pub fn shadows_enabled(self) -> bool {
+        matches!(
+            self,
+            RenderQuality::Ultra | RenderQuality::High | RenderQuality::Medium
+        )
+    }
+
+    /// Returns `true` if image-based lighting (IBL) should be computed.
+    pub fn ibl_enabled(self) -> bool {
+        matches!(self, RenderQuality::Ultra | RenderQuality::High)
+    }
+
+    /// Shadow-map resolution in texels (one side of the square depth texture).
+    pub fn shadow_resolution(self) -> u32 {
+        match self {
+            RenderQuality::Ultra => 2048,
+            RenderQuality::High => 1024,
+            RenderQuality::Medium => 512,
+            _ => 0,
+        }
+    }
+
+    /// Recommended MSAA sample count.
+    pub fn msaa_sample_count(self) -> u32 {
+        match self {
+            RenderQuality::Ultra => 4,
+            RenderQuality::High => 2,
+            _ => 1,
+        }
+    }
+
+    /// Parse a quality preset from its string name (case-insensitive).
+    ///
+    /// Accepted values: `"ultra"`, `"high"`, `"medium"`, `"low"`, `"minimal"`.
+    /// Returns `None` if the string does not match any variant.
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "ultra" => Some(RenderQuality::Ultra),
+            "high" => Some(RenderQuality::High),
+            "medium" => Some(RenderQuality::Medium),
+            "low" => Some(RenderQuality::Low),
+            "minimal" => Some(RenderQuality::Minimal),
+            _ => None,
+        }
+    }
+
+    /// Return the canonical lowercase string name for this variant.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RenderQuality::Ultra => "ultra",
+            RenderQuality::High => "high",
+            RenderQuality::Medium => "medium",
+            RenderQuality::Low => "low",
+            RenderQuality::Minimal => "minimal",
+        }
+    }
+}
+
 // ── Material component ────────────────────────────────────────────────────
 
 use crate::color::Color;

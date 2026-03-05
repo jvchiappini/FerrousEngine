@@ -13,9 +13,8 @@ pub use world::{Element, ElementKind, Handle, PointLightComponent, World};
 // Systems and stage enum
 pub use systems::{
     AnimationClip, AnimationPlayer, AnimationSystem, Behavior, BehaviorComponent, BehaviorSystem,
-    Camera3D, Camera3DBuilder, Children, DirectionalLight, GlobalTransform, Keyframe,
-    OrbitCamera, OrbitCameraSystem, Parent, Stage, TimeSystem, TransformSystem, Velocity,
-    VelocitySystem,
+    Camera3D, Camera3DBuilder, Children, DirectionalLight, GlobalTransform, Keyframe, OrbitCamera,
+    OrbitCameraSystem, Parent, Stage, TimeSystem, TransformSystem, Velocity, VelocitySystem,
 };
 
 // Camera
@@ -37,6 +36,6 @@ pub use gizmo::axis_vector;
 // renderer can depend on `ferrous_core` while client code can still build
 // descriptors without pulling in the renderer crate.
 pub use material::{
-    AlphaMode, Material, MaterialBuilder, MaterialDescriptor, MaterialHandle, RenderStyle,
-    MATERIAL_DEFAULT,
+    AlphaMode, Material, MaterialBuilder, MaterialDescriptor, MaterialHandle, RenderQuality,
+    RenderStyle, MATERIAL_DEFAULT,
 };
