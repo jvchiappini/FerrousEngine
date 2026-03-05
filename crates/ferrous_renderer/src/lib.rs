@@ -13,7 +13,7 @@
 /// | `gizmo_system`  | `GizmoSystem` — debug line/shape rendering           |
 /// | `pipeline`      | Bind-group layouts + compiled `WorldPipeline`        |
 /// | `render_target` | Off-screen color + depth targets (MSAA-aware)        |
-/// | `scene`         | `RenderObject`, `sync_world` helper                  |
+/// | `scene`         | `Aabb`, `Frustum`, culling helpers                   |
 /// | `graph`         | `RenderPass` trait + `FramePacket`                   |
 /// | `passes`        | Built-in passes: `WorldPass`, `UiPass`               |
 /// | `materials`     | `MaterialRegistry`, PBR material management          |
@@ -50,7 +50,7 @@ pub use render_stats::RenderStats;
 pub use render_target::HdrTexture;
 pub use render_target::RenderTarget;
 pub use resources::InstanceBuffer;
-pub use scene::{Aabb, Frustum, RenderObject};
+pub use scene::{Aabb, Frustum};
 
 use materials::MaterialRegistry;
 // re-export material types for API consumers
@@ -77,14 +77,13 @@ use std::sync::Arc;
 use ferrous_gui::TextBatch;
 
 use camera::controller::OrbitState;
-use graph::frame_packet::{CameraPacket, DrawCommand};
+use graph::frame_packet::CameraPacket;
 use passes::{CelFrameData, FlatFrameData, OutlineFrameData};
 use passes::{
     CelShadedPass, FlatShadedPass, OutlinePass, PostProcessPass, PrePass, SsaoBlurPass, SsaoPass,
     UiPass, WorldPass,
 };
 use pipeline::{PbrPipeline, PipelineLayouts};
-use resources::ModelBuffer;
 use resources::SsaoResources;
 
 // -- RenderDest ---------------------------------------------------------------
@@ -129,22 +128,9 @@ pub struct Renderer {
     pub camera_system: CameraSystem,
 
     // -- Scene (O(1) lookup by id) --------------------------------------------
-    /// Legacy manual objects (started at u64::MAX and descending).
-    /// Prefer spawning entities via `ferrous_core::scene::World` instead.
-    legacy_objects: HashMap<u64, RenderObject>,
-    /// CPU-side copy of each object�s material descriptor.  Used during
-    /// `sync_world` to detect when the core has modified a material and
-    /// therefore we need to call `material_registry.update_material_params`.
     /// CPU-side material descriptor cache for detecting changes during sync_world.
     /// Keyed by entity id (u64).
     world_material_descs: HashMap<u64, ferrous_core::scene::MaterialDescriptor>,
-    next_manual_id: u64,
-    /// Shared dynamic uniform buffer for all model matrices (legacy/manual objects).
-    model_buf: ModelBuffer,
-    /// Next free slot in `model_buf` for manually-spawned objects.
-    next_slot: usize,
-    /// Layout kept for `model_buf.ensure_capacity` reallocation.
-    model_layout: Arc<wgpu::BindGroupLayout>,
     /// Storage buffer for instanced World entities.
     instance_buf: InstanceBuffer,
     /// Layout for the instance storage buffer bind group.
@@ -389,13 +375,10 @@ impl Renderer {
         // keyed to the swapchain format); must be called before on_resize.
         post_process_pass.on_attach(device, &context.queue, format, sample_count);
 
-        // Create the shared dynamic model buffer and register it with WorldPass.
-        let model_buf = ModelBuffer::new(&context.device, &layouts.model, 64);
         let instance_buf = InstanceBuffer::new(&context.device, &layouts.instance, 64);
         // Separate instance buffer for shadow casters (all objects, not camera-culled).
         let shadow_instance_buf = InstanceBuffer::new(&context.device, &layouts.instance, 64);
         let mut world_pass_init = world_pass;
-        world_pass_init.set_model_buffer(model_buf.bind_group.clone(), model_buf.stride);
         world_pass_init.set_instance_buffer(instance_buf.bind_group.clone());
         world_pass_init.set_shadow_instance_buffer(shadow_instance_buf.bind_group.clone());
 
@@ -405,12 +388,10 @@ impl Renderer {
         // -- SSAO: build passes before the Self literal consumes the buffers --
         let mut prepass = PrePass::new(
             device,
-            layouts.model.clone(),
             layouts.instance.clone(),
             width,
             height,
         );
-        prepass.set_model_buffer(model_buf.bind_group.clone(), model_buf.stride);
         prepass.set_instance_buffer(instance_buf.bind_group.clone());
         let ssao_pass = SsaoPass::new(device, width, height);
         let ssao_blur_pass = SsaoBlurPass::new(device, width, height);
@@ -424,12 +405,7 @@ impl Renderer {
             post_process_pass,
             extra_passes: Vec::new(),
             camera_system,
-            legacy_objects: HashMap::new(),
             world_material_descs: HashMap::new(),
-            next_manual_id: u64::MAX,
-            model_buf,
-            next_slot: 0,
-            model_layout: layouts.model.clone(),
             instance_buf,
             instance_layout: layouts.instance.clone(),
             gizmo_system,
@@ -708,24 +684,6 @@ impl Renderer {
             .update_point_lights(&self.context.device, &self.context.queue, lights);
     }
 
-    /// Set the material for a previously-spawned legacy object.
-    pub fn set_object_material(&mut self, id: u64, material: MaterialHandle) {
-        if let Some(obj) = self.legacy_objects.get_mut(&id) {
-            obj.material_slot = material.0 as usize;
-        }
-    }
-
-    /// Set the material for a world object by index (matching the world ID).
-    ///
-    /// Deprecated (Phase 8): world objects are now driven entirely by the ECS.
-    /// Material updates should be made through the `World` entity's
-    /// `MaterialComponent` instead.  This method is now a no-op and will be
-    /// removed in a future release.
-    #[deprecated(note = "Use the World ECS material component instead")]
-    pub fn set_world_object_material(&mut self, _index: usize, _material: MaterialHandle) {
-        // No-op: world objects are now driven by the ECS material component.
-    }
-
     pub fn render_to_target(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -746,87 +704,12 @@ impl Renderer {
         self.do_render(encoder, RenderDest::View(view), ui_batch, text_batch);
     }
 
-    // -- Scene management -----------------------------------------------------
+    // -- Pass management -----------------------------------------------------
 
-    /// Spawns a mesh instance at `pos`; returns a stable u64 handle.
-    ///
-    /// `double_sided` indicates whether the object should be rendered with
-    /// face culling disabled.  `false` is the traditional behaviour.
-    /// Spawn a mesh instance at `pos` using the given material.
-    ///
-    /// Returns a stable u64 handle that may be used with the legacy
-    /// `set_object_*` helpers.  `double_sided` controls culling as before.
-    pub fn add_object(
-        &mut self,
-        mesh: Mesh,
-        pos: glam::Vec3,
-        double_sided: bool,
-        material: MaterialHandle,
-    ) -> u64 {
-        let id = self.next_manual_id;
-        self.next_manual_id = self.next_manual_id.wrapping_sub(1);
-
-        let slot = self.next_slot;
-        self.next_slot += 1;
-        let matrix = glam::Mat4::from_translation(pos);
-
-        // Grow the buffer if needed, then update WorldPass bind group.
-        let prev_bg = self.model_buf.bind_group.clone();
-        self.model_buf
-            .ensure_capacity(&self.context.device, &self.model_layout, slot + 1);
-        if !Arc::ptr_eq(&prev_bg, &self.model_buf.bind_group) {
-            self.world_pass
-                .set_model_buffer(self.model_buf.bind_group.clone(), self.model_buf.stride);
-            self.prepass
-                .set_model_buffer(self.model_buf.bind_group.clone(), self.model_buf.stride);
-        }
-        self.model_buf.write(&self.context.queue, slot, &matrix);
-
-        let obj = RenderObject::new(
-            &self.context.device,
-            id,
-            mesh,
-            matrix,
-            slot,
-            double_sided,
-            material.0 as usize,
-        );
-        self.legacy_objects.insert(id, obj);
-        self.frame_builder.scene_dirty = true;
-        id
-    }
-
-    /// Moves an existing object (GPU write). No-op if id is unknown.
-    pub fn set_object_position(&mut self, id: u64, pos: glam::Vec3) {
-        if let Some(obj) = self.legacy_objects.get_mut(&id) {
-            let matrix = glam::Mat4::from_translation(pos);
-            obj.set_matrix(matrix);
-            self.model_buf.write(&self.context.queue, obj.slot, &matrix);
-            self.frame_builder.scene_dirty = true;
-        }
-    }
-
-    /// Returns the world-space position of an object, or `None`.
-    pub fn get_object_position(&self, id: u64) -> Option<glam::Vec3> {
-        self.legacy_objects.get(&id).map(|o| {
-            let w = o.matrix.w_axis;
-            glam::Vec3::new(w.x, w.y, w.z)
-        })
-    }
-
-    /// Removes a manually-spawned object. No-op if unknown.
-    pub fn remove_object(&mut self, id: u64) {
-        if self.legacy_objects.remove(&id).is_some() {
-            self.frame_builder.scene_dirty = true;
-        }
-    }
-
-    /// Synchronises a `ferrous_core::scene::World` with the renderer's object map.
-    /// Synchronises a `ferrous_core::scene::World` with the renderer.
-    ///
-    /// Phase 8: This now delegates geometry work to
-    /// `FrameBuilder::build_world_commands` which queries the ECS directly.
-    /// The intermediate `Vec<Option<RenderObject>>` mirror has been removed.
+    /// Queue a gizmo for rendering this frame.
+    /// Phase 9: Delegates geometry work to `FrameBuilder::build_world_commands`
+    /// which queries the ECS directly.  All rendering goes through the ECS
+    /// instanced path — the legacy `add_object` / `ModelBuffer` path is gone.
     pub fn sync_world(&mut self, world: &ferrous_core::scene::World) {
         // 1. Build frustum from current camera
         let camera_packet = crate::graph::frame_packet::CameraPacket {
@@ -1075,32 +958,7 @@ impl Renderer {
             view_proj: self.camera_system.camera.build_view_projection_matrix(),
             eye: self.camera_system.camera.eye,
         };
-        let (mut packet, stats) = {
-            let device = &self.context.device;
-            let queue = &self.context.queue;
-            let viewport = self.viewport;
-            let legacy_objects = &self.legacy_objects;
-            let instance_layout = &self.instance_layout;
-
-            let world_pass_ref = &mut self.world_pass;
-            let prepass_ref = &mut self.prepass;
-
-            self.frame_builder.build(
-                device,
-                queue,
-                viewport,
-                camera_packet,
-                legacy_objects,
-                &mut self.instance_buf,
-                instance_layout,
-                &mut self.shadow_instance_buf,
-                &mut |bg, shadow_bg| {
-                    world_pass_ref.set_instance_buffer(bg.clone());
-                    world_pass_ref.set_shadow_instance_buffer(shadow_bg);
-                    prepass_ref.set_instance_buffer(bg);
-                },
-            )
-        };
+        let (mut packet, stats) = self.frame_builder.build(self.viewport, camera_packet);
         // Propagate the (possibly-reallocated) instance buffer to style passes.
         self.sync_style_instance_buffer(self.instance_buf.bind_group.clone());
         self.render_stats = stats;

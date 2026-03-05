@@ -2,7 +2,7 @@
 ///
 /// ## Design
 /// `FramePacket` is intentionally **open**: the core fields (`viewport`,
-/// `camera`, `scene_objects`) are fixed, but any system can attach arbitrary
+/// `camera`, `instanced_objects`) are fixed, but any system can attach arbitrary
 /// per-frame data via [`FramePacket::insert`] / [`FramePacket::get`].
 ///
 /// This means `ferrous_gui`, a future particle system, or any user system
@@ -31,30 +31,6 @@ pub struct CameraPacket {
 }
 
 // ── 3-D scene ─────────────────────────────────────────────────────────────────
-
-/// A single mesh draw call, fully resolved to GPU handles.
-/// Used for manually-spawned objects with the legacy dynamic-uniform path.
-pub struct DrawCommand {
-    pub vertex_buffer: Arc<wgpu::Buffer>,
-    pub index_buffer: Arc<wgpu::Buffer>,
-    pub index_count: u32,
-    /// Number of vertices in the mesh (used for render statistics).
-    pub vertex_count: u32,
-    pub index_format: wgpu::IndexFormat,
-    /// Slot index inside the renderer-wide `ModelBuffer`.
-    ///
-    /// `WorldPass` converts this to a byte offset via `model_buf.offset(slot)`
-    /// and supplies it as the dynamic offset to `set_bind_group(1, ...)`.
-    pub model_slot: usize,
-    /// Slot index inside the renderer's material table.  WorldPass will
-    /// convert this to a bind group reference when drawing.
-    pub material_slot: usize,
-    /// Indicates whether the object should be drawn with back-face culling disabled.
-    pub double_sided: bool,
-    /// Squared distance from the camera at the time the packet was built.
-    /// Used for sorting transparent objects back-to-front.
-    pub distance_sq: f32,
-}
 
 /// One instanced draw call: all instances share the same mesh buffers and
 /// their matrices are packed contiguously in the `InstanceBuffer`.
@@ -97,16 +73,8 @@ pub use ferrous_core::Viewport;
 pub struct FramePacket {
     pub viewport: Option<Viewport>,
     pub camera: CameraPacket,
-    /// Legacy per-object draw calls (manually-spawned objects, dynamic-uniform path).
-    pub scene_objects: Vec<DrawCommand>,
     /// Instanced draw calls assembled from World entities (one per unique mesh).
     pub instanced_objects: Vec<InstancedDrawCommand>,
-    /// Shadow-caster draw calls for the legacy (dynamic-uniform) path.
-    ///
-    /// These are NOT camera-frustum culled — every legacy object that falls
-    /// inside the light frustum is included so that objects behind the camera
-    /// can still cast shadows onto visible geometry.
-    pub shadow_scene_objects: Vec<DrawCommand>,
     /// Shadow-caster instanced draw calls for World entities.
     ///
     /// These reference a separate section of the shadow instance buffer
@@ -126,9 +94,7 @@ impl FramePacket {
         Self {
             viewport,
             camera,
-            scene_objects: Vec::new(),
             instanced_objects: Vec::new(),
-            shadow_scene_objects: Vec::new(),
             shadow_instanced_objects: Vec::new(),
             extras: HashMap::new(),
         }

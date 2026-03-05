@@ -1,19 +1,12 @@
-//! `FrameBuilder` — construye el `FramePacket` por frame a partir del estado
-//! de escena, aplicando frustum culling y agrupando instancias.
+//! `FrameBuilder` — constructs the `FramePacket` per frame from ECS state,
+//! applying frustum culling and grouping instances.
 //!
-//! ## Phase 8 changes
-//! `FrameBuilder` now owns the shared mesh caches and queries the ECS world
-//! directly via `build_world_commands()`.  The intermediate
-//! `Vec<Option<RenderObject>>` (previously mirrored from `sync_world`) has
-//! been removed.  Legacy objects (via `add_object`) still use the
-//! `HashMap<u64, RenderObject>` path so existing call-sites do not break.
-//!
-//! ## Responsabilidades
-//! - Mantener caches de draw commands (reutilización de `Vec` entre frames)
-//! - Frustum culling de objetos legacy y world (ECS)
-//! - Agrupación de objetos world por mesh (instancing)
-//! - Upload de matrices al `InstanceBuffer` y `ModelBuffer`
-//! - Calcular `RenderStats` para el frame
+//! ## Responsibilities
+//! - Maintain caches of draw commands (reuse `Vec` between frames)
+//! - Frustum culling of world (ECS) objects
+//! - Group world objects by mesh (instancing)
+//! - Upload matrices to `InstanceBuffer`
+//! - Calculate `RenderStats` for the frame
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -25,19 +18,17 @@ use crate::geometry::primitives::{
     cube::cube as create_cube, quad::quad as create_quad, sphere::sphere as create_sphere,
 };
 use crate::graph::frame_packet::{
-    CameraPacket, DrawCommand, FramePacket, InstancedDrawCommand, Viewport,
+    CameraPacket, FramePacket, InstancedDrawCommand, Viewport,
 };
 use crate::render_stats::RenderStats;
 use crate::resources::InstanceBuffer;
-use crate::scene::{Frustum, RenderObject};
+use crate::scene::Frustum;
 
 /// All per-frame scratch state that `FrameBuilder` needs to track between calls.
 pub struct FrameBuilder {
     // Reusable draw command lists (zeroed each frame, allocated once)
-    pub draw_commands_cache: Vec<DrawCommand>,
     pub instanced_commands_cache: Vec<InstancedDrawCommand>,
     pub instance_matrix_scratch: Vec<glam::Mat4>,
-    pub shadow_scene_cache: Vec<DrawCommand>,
     pub shadow_instanced_cache: Vec<InstancedDrawCommand>,
     pub shadow_matrix_scratch: Vec<glam::Mat4>,
 
@@ -78,10 +69,8 @@ impl Default for FrameBuilder {
 impl FrameBuilder {
     pub fn new() -> Self {
         FrameBuilder {
-            draw_commands_cache: Vec::new(),
             instanced_commands_cache: Vec::new(),
             instance_matrix_scratch: Vec::new(),
-            shadow_scene_cache: Vec::new(),
             shadow_instanced_cache: Vec::new(),
             shadow_matrix_scratch: Vec::new(),
             prev_view_proj: None,
@@ -346,33 +335,18 @@ impl FrameBuilder {
     /// cached command lists are reused (zero CPU work).
     ///
     /// World-object draw commands (ECS-derived) are taken from the caches
-    /// populated by `build_world_commands()`.  Legacy objects still use the
-    /// `legacy_objects` map.
-    #[allow(clippy::too_many_arguments)]
+    /// populated by `build_world_commands()`.
     pub fn build(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
         viewport: Viewport,
         camera_packet: CameraPacket,
-        legacy_objects: &HashMap<u64, RenderObject>,
-        instance_buf: &mut InstanceBuffer,
-        instance_layout: &wgpu::BindGroupLayout,
-        shadow_instance_buf: &mut InstanceBuffer,
-        // Callbacks to notify passes of new instance buffer bind groups
-        instance_callback: &mut dyn FnMut(Arc<wgpu::BindGroup>, Arc<wgpu::BindGroup>),
     ) -> (FramePacket, RenderStats) {
         // -- Fast path: scene unchanged + camera unchanged --------------------
         if !self.scene_dirty && self.prev_view_proj == Some(camera_packet.view_proj) {
             let mut packet = FramePacket::new(Some(viewport), camera_packet);
-            std::mem::swap(&mut packet.scene_objects, &mut self.draw_commands_cache);
             std::mem::swap(
                 &mut packet.instanced_objects,
                 &mut self.instanced_commands_cache,
-            );
-            std::mem::swap(
-                &mut packet.shadow_scene_objects,
-                &mut self.shadow_scene_cache,
             );
             std::mem::swap(
                 &mut packet.shadow_instanced_objects,
@@ -385,84 +359,24 @@ impl FrameBuilder {
         // -- Slow path: rebuild -----------------------------------------------
         self.scene_dirty = false;
         self.prev_view_proj = Some(camera_packet.view_proj);
-        self.draw_commands_cache.clear();
         self.instanced_commands_cache.clear();
         self.instance_matrix_scratch.clear();
-        self.shadow_scene_cache.clear();
         self.shadow_instanced_cache.clear();
         self.shadow_matrix_scratch.clear();
 
-        let frustum = Frustum::from_view_proj(&camera_packet.view_proj);
-
-        // -- Legacy objects (model-buffer path) --------------------------------
-        // Shadow casters: all legacy objects regardless of camera frustum
-        for obj in legacy_objects.values() {
-            self.shadow_scene_cache.push(DrawCommand {
-                vertex_buffer: obj.mesh.vertex_buffer.clone(),
-                index_buffer: obj.mesh.index_buffer.clone(),
-                index_count: obj.mesh.index_count,
-                vertex_count: obj.mesh.vertex_count,
-                index_format: obj.mesh.index_format,
-                model_slot: obj.slot,
-                double_sided: obj.double_sided,
-                material_slot: obj.material_slot,
-                distance_sq: 0.0,
-            });
-        }
-        // Camera-visible legacy objects
-        for obj in legacy_objects.values() {
-            if frustum.intersects_aabb(&obj.world_aabb()) {
-                let pos = obj.matrix.w_axis.truncate();
-                let dist_sq = (pos - camera_packet.eye).length_squared();
-                self.draw_commands_cache.push(DrawCommand {
-                    vertex_buffer: obj.mesh.vertex_buffer.clone(),
-                    index_buffer: obj.mesh.index_buffer.clone(),
-                    index_count: obj.mesh.index_count,
-                    vertex_count: obj.mesh.vertex_count,
-                    index_format: obj.mesh.index_format,
-                    model_slot: obj.slot,
-                    double_sided: obj.double_sided,
-                    material_slot: obj.material_slot,
-                    distance_sq: dist_sq,
-                });
-            }
-        }
-
-        // -- World objects (ECS-derived instanced commands) --------------------
-        // `build_world_commands` already produced the instance buffers and
-        // populated `world_instanced` / `world_shadow_instanced`.  We just
-        // copy those into the frame's instanced command caches here.
-        //
-        // Note: `build_world_commands` is called by `Renderer::sync_world`
-        // which runs before `build`; by the time we get here the caches are
-        // fresh (the frustum used there was computed from the same view_proj).
+        // World-object instanced commands are already populated by
+        // `build_world_commands()` (called from `Renderer::sync_world`).
         self.instanced_commands_cache
             .extend_from_slice(&self.world_instanced);
         self.shadow_instanced_cache
             .extend_from_slice(&self.world_shadow_instanced);
 
-        // Ensure the instance buffers have been notified of any resize; the
-        // callback is already called inside `build_world_commands` if needed.
-        let _ = (
-            device,
-            queue,
-            instance_buf,
-            instance_layout,
-            shadow_instance_buf,
-            instance_callback,
-        );
-
         let stats = self.compute_stats();
 
         let mut packet = FramePacket::new(Some(viewport), camera_packet);
-        std::mem::swap(&mut packet.scene_objects, &mut self.draw_commands_cache);
         std::mem::swap(
             &mut packet.instanced_objects,
             &mut self.instanced_commands_cache,
-        );
-        std::mem::swap(
-            &mut packet.shadow_scene_objects,
-            &mut self.shadow_scene_cache,
         );
         std::mem::swap(
             &mut packet.shadow_instanced_objects,
@@ -475,14 +389,9 @@ impl FrameBuilder {
     /// Reclaim the internal caches from a used `FramePacket`.
     #[inline]
     pub fn reclaim(&mut self, mut packet: FramePacket) {
-        std::mem::swap(&mut self.draw_commands_cache, &mut packet.scene_objects);
         std::mem::swap(
             &mut self.instanced_commands_cache,
             &mut packet.instanced_objects,
-        );
-        std::mem::swap(
-            &mut self.shadow_scene_cache,
-            &mut packet.shadow_scene_objects,
         );
         std::mem::swap(
             &mut self.shadow_instanced_cache,
@@ -493,11 +402,6 @@ impl FrameBuilder {
     /// Internal helper to calculate statistics based on current caches.
     fn compute_stats(&self) -> RenderStats {
         let mut stats = RenderStats::default();
-        for cmd in &self.draw_commands_cache {
-            stats.vertex_count += cmd.vertex_count as u64;
-            stats.triangle_count += (cmd.index_count / 3) as u64;
-            stats.draw_calls += 1;
-        }
         for cmd in &self.instanced_commands_cache {
             let inst = cmd.instance_count as u64;
             stats.vertex_count += cmd.vertex_count as u64 * inst;

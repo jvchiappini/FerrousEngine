@@ -7,12 +7,12 @@
 ///
 /// This texture is consumed by the SSAO pass which runs immediately after.
 ///
-/// ## Bind group layout (mirrors prepass.wgsl)
+/// ## Bind group layout (mirrors prepass_instanced.wgsl)
 ///
 /// | Group | Binding | Resource                                   |
-/// |-------|---------|--------------------------------------------|
+/// |-------|---------|-----------------------------------------|
 /// |   0   |    0    | `PrepassCamera` uniform buffer             |
-/// |   1   |    0    | `Model` dynamic uniform buffer             |
+/// |   1   |    0    | Instance storage buffer (array of mat4x4)  |
 ///
 /// The prepass camera uniform includes the raw **view** and **projection**
 /// matrices so the shader can transform positions and normals into view space.
@@ -164,10 +164,6 @@ impl PrepassCamera {
 pub struct PrePass {
     pub normal_depth: NormalDepthTexture,
 
-    pipeline: Arc<RenderPipeline>,
-    /// BGL for the per-object dynamic-uniform path (group 1 = model matrix).
-    #[allow(dead_code)]
-    model_layout: Arc<BindGroupLayout>,
     /// BGL for the instanced storage-buffer path (group 1 = instance array).
     #[allow(dead_code)]
     instance_layout: Arc<BindGroupLayout>,
@@ -184,8 +180,6 @@ pub struct PrePass {
     depth_view: wgpu::TextureView,
 
     // Shared buffers from WorldPass (set by the renderer after construction)
-    model_bind_group: Option<Arc<wgpu::BindGroup>>,
-    model_stride: u32,
     instance_bind_group: Option<Arc<wgpu::BindGroup>>,
     instanced_pipeline: Arc<RenderPipeline>,
 }
@@ -193,7 +187,6 @@ pub struct PrePass {
 impl PrePass {
     pub fn new(
         device: &Device,
-        model_layout: Arc<BindGroupLayout>,
         instance_layout: Arc<BindGroupLayout>,
         width: u32,
         height: u32,
@@ -202,36 +195,25 @@ impl PrePass {
 
         let prepass_camera = PrepassCamera::new(device);
 
-        // ── Pipeline for per-object (dynamic offset) geometry ─────────────────
-        let pipeline = Self::build_pipeline(device, &prepass_camera.layout, &model_layout, false);
-        // ── Instanced pipeline: group 1 = storage buffer (not dynamic uniform) ─
+        // ── Instanced pipeline: group 1 = storage buffer ───────────────────────
         let instanced_pipeline =
-            Self::build_pipeline(device, &prepass_camera.layout, &instance_layout, true);
+            Self::build_pipeline(device, &prepass_camera.layout, &instance_layout);
 
         // ── Dedicated depth target for the prepass ────────────────────────────
         let (depth_texture, depth_view) = Self::make_depth(device, width, height);
 
         Self {
             normal_depth,
-            pipeline: Arc::new(pipeline),
-            model_layout,
             instance_layout,
             prepass_camera,
             depth_texture,
             depth_view,
-            model_bind_group: None,
-            model_stride: 256,
             instance_bind_group: None,
             instanced_pipeline: Arc::new(instanced_pipeline),
         }
     }
 
-    // ── Public setters (called by Renderer) ───────────────────────────────────
-
-    pub fn set_model_buffer(&mut self, bind_group: Arc<wgpu::BindGroup>, stride: u32) {
-        self.model_bind_group = Some(bind_group);
-        self.model_stride = stride;
-    }
+    // ── Public setters (called by Renderer) ────────────────────────────────────────────
 
     pub fn set_instance_buffer(&mut self, bind_group: Arc<wgpu::BindGroup>) {
         self.instance_bind_group = Some(bind_group);
@@ -260,18 +242,10 @@ impl PrePass {
         device: &Device,
         camera_layout: &BindGroupLayout,
         group1_layout: &BindGroupLayout,
-        instanced: bool,
     ) -> RenderPipeline {
-        // Instanced path uses a separate shader with a storage-buffer at group 1.
-        let shader = if instanced {
-            device.create_shader_module(wgpu::include_wgsl!(
-                "../../../../assets/shaders/prepass_instanced.wgsl"
-            ))
-        } else {
-            device.create_shader_module(wgpu::include_wgsl!(
-                "../../../../assets/shaders/prepass.wgsl"
-            ))
-        };
+        let shader = device.create_shader_module(wgpu::include_wgsl!(
+            "../../../../assets/shaders/prepass_instanced.wgsl"
+        ));
 
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Prepass Pipeline Layout"),
@@ -280,11 +254,7 @@ impl PrePass {
         });
 
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(if instanced {
-                "Prepass Pipeline (instanced)"
-            } else {
-                "Prepass Pipeline"
-            }),
+            label: Some("Prepass Pipeline (instanced)"),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -412,17 +382,5 @@ impl RenderPass for PrePass {
             }
         }
 
-        // ── Per-object path ────────────────────────────────────────────────
-        if let (Some(model_bg), true) = (&self.model_bind_group, !packet.scene_objects.is_empty()) {
-            rpass.set_pipeline(&self.pipeline);
-            rpass.set_bind_group(0, self.prepass_camera.bind_group.as_ref(), &[]);
-            for cmd in &packet.scene_objects {
-                let offset = (cmd.model_slot as u32).wrapping_mul(self.model_stride);
-                rpass.set_bind_group(1, model_bg.as_ref(), &[offset]);
-                rpass.set_vertex_buffer(0, cmd.vertex_buffer.slice(..));
-                rpass.set_index_buffer(cmd.index_buffer.slice(..), cmd.index_format);
-                rpass.draw_indexed(0..cmd.index_count, 0, 0..1);
-            }
-        }
     }
 }

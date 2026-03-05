@@ -1,16 +1,7 @@
 use log::warn;
 /// 3-D / 2-D opaque geometry pass.
 ///
-/// Clears color + depth, binds the camera and the shared model-matrix buffer,
-/// and emits one indexed draw call per `DrawCommand` in the `FramePacket`.
-///
-/// ## Dynamic model buffer (legacy path)
-///
-/// All per-object model matrices live in a single `ModelBuffer`.  This pass
-/// receives a reference to the current bind group + stride via
-/// [`WorldPass::set_model_buffer`].  Each draw call sets only the dynamic
-/// offset (4 bytes on the CPU), so the total CPU overhead for model matrix
-/// binding is O(1) GPU-API calls instead of O(N).
+/// Clears color + depth, binds the camera and renders geometry.
 ///
 /// ## Instanced path
 ///
@@ -32,7 +23,7 @@ use crate::graph::{FramePacket, RenderPass};
 use crate::pipeline::{InstancingPipeline, PbrPipeline, PipelineLayouts, ShadowPipeline};
 use crate::render_target::HdrTexture;
 use crate::resources::{DirectionalLightUniform, Environment, PointLightUniform, ShadowResources};
-use crate::{DrawCommand, InstancedDrawCommand};
+use crate::InstancedDrawCommand;
 use ferrous_core::scene::MaterialHandle;
 
 pub struct WorldPass {
@@ -60,10 +51,6 @@ pub struct WorldPass {
     /// to it before the main geometry pass.
     pub shadow_resources: ShadowResources,
     camera_bind_group: Arc<wgpu::BindGroup>,
-    /// Shared dynamic model-matrix bind group (legacy path).
-    model_bind_group: Option<Arc<wgpu::BindGroup>>,
-    /// Byte stride between matrix slots in the model buffer.
-    model_stride: u32,
     /// Bind group for the instance storage buffer.
     instance_bind_group: Option<Arc<wgpu::BindGroup>>,
     /// Separate bind group pointing at the shadow-caster instance buffer.
@@ -175,8 +162,6 @@ impl WorldPass {
             instancing_pipeline_blend,
             instancing_pipeline_blend_double,
             camera_bind_group,
-            model_bind_group: None,
-            model_stride: 256, // safe default; overwritten by set_model_buffer
             instance_bind_group: None,
             shadow_instance_bind_group: None,
             clear_color: Color {
@@ -196,12 +181,6 @@ impl WorldPass {
             shadow_resources,
             shadow_light_bind_group,
         }
-    }
-
-    /// Called by `Renderer` whenever the `ModelBuffer` is created or reallocated.
-    pub fn set_model_buffer(&mut self, bind_group: Arc<wgpu::BindGroup>, stride: u32) {
-        self.model_bind_group = Some(bind_group);
-        self.model_stride = stride;
     }
 
     /// Called by `Renderer` whenever the `InstanceBuffer` is created or reallocated.
@@ -374,20 +353,6 @@ impl RenderPass for WorldPass {
                     }
                 }
             }
-
-            // then non-instanced (legacy) objects using the regular shadow pipeline.
-            // Uses shadow_scene_objects (all legacy objects, not camera-culled).
-            if let Some(model_bg) = &self.model_bind_group {
-                spass.set_pipeline(&self.shadow_pipeline.inner);
-                spass.set_bind_group(1, &*self.shadow_light_bind_group, &[]);
-                for cmd in &packet.shadow_scene_objects {
-                    let offset = (cmd.model_slot as u32).wrapping_mul(self.model_stride);
-                    spass.set_bind_group(0, model_bg.as_ref(), &[offset]);
-                    spass.set_vertex_buffer(0, cmd.vertex_buffer.slice(..));
-                    spass.set_index_buffer(cmd.index_buffer.slice(..), cmd.index_format);
-                    spass.draw_indexed(0..cmd.index_count, 0, 0..1);
-                }
-            }
         }
 
         // Always render into the HDR texture, not the swapchain surface.
@@ -531,103 +496,6 @@ impl RenderPass for WorldPass {
                         0,
                         cmd.first_instance..cmd.first_instance + cmd.instance_count,
                     );
-                }
-            }
-        }
-
-        // ── Legacy per-object path (manually-spawned objects) ─────────────────
-        if let Some(model_bg) = &self.model_bind_group {
-            if !packet.scene_objects.is_empty() {
-                rpass.set_bind_group(0, &*self.camera_bind_group, &[]);
-
-                // draw opaque / mask commands first
-                let opaque_cmds: Vec<&DrawCommand> = packet
-                    .scene_objects
-                    .iter()
-                    .filter(|cmd| {
-                        let (alpha_mode, _) = get_flags(cmd.material_slot, cmd.double_sided);
-                        !matches!(alpha_mode, ferrous_core::scene::AlphaMode::Blend)
-                    })
-                    .collect();
-                // optionally sort front-to-back for early-z (not required)
-                // opaque_cmds.sort_by(|a, b| a.distance_sq.partial_cmp(&b.distance_sq).unwrap_or(std::cmp::Ordering::Equal));
-                for cmd in opaque_cmds {
-                    let offset = (cmd.model_slot as u32).wrapping_mul(self.model_stride);
-                    rpass.set_bind_group(1, model_bg.as_ref(), &[offset]);
-                    if let Some(mat_bg) = self.material_bind_groups.get(cmd.material_slot) {
-                        rpass.set_bind_group(2, mat_bg.as_ref(), &[]);
-                    }
-                    rpass.set_bind_group(3, self.environment.bind_group.as_ref(), &[]);
-                    // shadow map is now included in the environment bind group
-                    let (alpha_mode, double_sided) = get_flags(cmd.material_slot, cmd.double_sided);
-                    let pipeline_ref = match (alpha_mode, double_sided) {
-                        (ferrous_core::scene::AlphaMode::Opaque, false) => &self.pbr_pipeline.inner,
-                        (ferrous_core::scene::AlphaMode::Opaque, true) => {
-                            &self.pbr_pipeline_double.inner
-                        }
-                        (ferrous_core::scene::AlphaMode::Mask { .. }, false) => {
-                            &self.pbr_pipeline.inner
-                        }
-                        (ferrous_core::scene::AlphaMode::Mask { .. }, true) => {
-                            &self.pbr_pipeline_double.inner
-                        }
-                        (ferrous_core::scene::AlphaMode::Blend, false) => {
-                            &self.pbr_pipeline_blend.inner
-                        }
-                        (ferrous_core::scene::AlphaMode::Blend, true) => {
-                            &self.pbr_pipeline_blend_double.inner
-                        }
-                    };
-                    rpass.set_pipeline(pipeline_ref);
-                    rpass.set_vertex_buffer(0, cmd.vertex_buffer.slice(..));
-                    rpass.set_index_buffer(cmd.index_buffer.slice(..), cmd.index_format);
-                    rpass.draw_indexed(0..cmd.index_count, 0, 0..1);
-                }
-
-                // now collect, sort and draw transparent commands
-                let mut transparent_cmds: Vec<&DrawCommand> = packet
-                    .scene_objects
-                    .iter()
-                    .filter(|cmd| {
-                        let (alpha_mode, _) = get_flags(cmd.material_slot, cmd.double_sided);
-                        matches!(alpha_mode, ferrous_core::scene::AlphaMode::Blend)
-                    })
-                    .collect();
-                transparent_cmds.sort_by(|a, b| {
-                    b.distance_sq
-                        .partial_cmp(&a.distance_sq)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-                for cmd in transparent_cmds {
-                    let offset = (cmd.model_slot as u32).wrapping_mul(self.model_stride);
-                    rpass.set_bind_group(1, model_bg.as_ref(), &[offset]);
-                    if let Some(mat_bg) = self.material_bind_groups.get(cmd.material_slot) {
-                        rpass.set_bind_group(2, mat_bg.as_ref(), &[]);
-                    }
-                    rpass.set_bind_group(3, self.environment.bind_group.as_ref(), &[]);
-                    let (alpha_mode, double_sided) = get_flags(cmd.material_slot, cmd.double_sided);
-                    let pipeline_ref = match (alpha_mode, double_sided) {
-                        (ferrous_core::scene::AlphaMode::Opaque, false) => &self.pbr_pipeline.inner,
-                        (ferrous_core::scene::AlphaMode::Opaque, true) => {
-                            &self.pbr_pipeline_double.inner
-                        }
-                        (ferrous_core::scene::AlphaMode::Mask { .. }, false) => {
-                            &self.pbr_pipeline.inner
-                        }
-                        (ferrous_core::scene::AlphaMode::Mask { .. }, true) => {
-                            &self.pbr_pipeline_double.inner
-                        }
-                        (ferrous_core::scene::AlphaMode::Blend, false) => {
-                            &self.pbr_pipeline_blend.inner
-                        }
-                        (ferrous_core::scene::AlphaMode::Blend, true) => {
-                            &self.pbr_pipeline_blend_double.inner
-                        }
-                    };
-                    rpass.set_pipeline(pipeline_ref);
-                    rpass.set_vertex_buffer(0, cmd.vertex_buffer.slice(..));
-                    rpass.set_index_buffer(cmd.index_buffer.slice(..), cmd.index_format);
-                    rpass.draw_indexed(0..cmd.index_count, 0, 0..1);
                 }
             }
         }
