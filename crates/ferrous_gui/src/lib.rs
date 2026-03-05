@@ -1,3 +1,23 @@
+//! `ferrous_gui` — retained-mode 2D GUI system for FerrousEngine.
+//!
+//! Provides a full widget toolkit without any egui dependency. All widgets are
+//! rendered via `GuiRenderer` which emits textured quads consumed by the
+//! renderer's `UiPass`.
+//!
+//! ## Module layout
+//!
+//! | Module | Responsibility |
+//! |--------|----------------|
+//! | `widget` | `Widget` trait: collect / hit-test / mouse_input / keyboard_input |
+//! | `layout` | `Node`, `Style`, `Rect`, `Units`, `Alignment`, `DisplayMode` |
+//! | `canvas` | Widget container with focus tracking |
+//! | `ui` | High-level `Ui` wrapper around `Canvas` |
+//! | `renderer` | `GuiRenderer`, `GuiBatch`, `GuiQuad`, `TextBatch` |
+//! | `button`, `slider`, `textinput`, `color_picker` | Concrete interactive widgets |
+//! | `builders` | Declarative `Row`, `Column`, `Text`, `UiButton` |
+//! | `viewport_widget` | Embedded 3D viewport region |
+//! | `container` | Grouping / panel widget |
+
 pub mod builders;
 pub mod button;
 pub mod canvas;

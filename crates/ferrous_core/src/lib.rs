@@ -12,7 +12,7 @@
 //! [`color`]     | `Color` — RGBA f32 with a large palette of constants |
 //! [`time`]      | `Time` / `TimeClock` — frame delta, elapsed, FPS |
 //! [`input`]     | `InputState` — keyboard, mouse, scroll; `just_pressed` / `just_released` |
-//! [`scene`]     | `World`, `Element`, `Handle`, `ElementKind`, `Camera`, `Controller` |
+//! [`scene`]     | `World`, `Element`, ECS systems (`TimeSystem`, `VelocitySystem`, `AnimationSystem`, `BehaviorSystem`, `TransformSystem`), hierarchy components (`Parent`, `Children`, `GlobalTransform`), `AnimationClip/Player`, `BehaviorComponent`, `Camera` |
 //! [`context`]   | `EngineContext` — wgpu device + queue |
 //! [`metrics`]   | CPU / RAM usage helpers |
 //!
@@ -47,8 +47,18 @@ pub mod input;
 /// wgpu device + queue container.
 pub mod context;
 
-/// Scene graph: World, Element, Handle, ElementKind, Camera, Controller.
-/// Shape kinds (Cube, Sphere, Mesh, etc.) are defined as `ElementKind` variants.
+/// Scene graph: `World`, `Element`, `Handle`, `ElementKind`, `Camera`, `Controller`.
+///
+/// **ECS systems** (register via `StagedScheduler`):
+/// - `TimeSystem` (PreUpdate) — ticks `TimeClock` resource each frame.
+/// - `VelocitySystem` (Update) — integrates `Velocity` into `Transform::position`.
+/// - `AnimationSystem` (Update) — advances `AnimationPlayer` and applies keyframe positions.
+/// - `BehaviorSystem` (Update) — calls per-entity `Behavior::update` hooks.
+/// - `TransformSystem` (PostUpdate) — propagates `GlobalTransform` through the parent chain.
+///
+/// **New components**: `Velocity`, `Parent`, `Children`, `GlobalTransform`,
+/// `AnimationClip`, `AnimationPlayer`, `BehaviorComponent`.
+/// `BehaviorComponent` is non-Clone; spawn with `world.spawn_owned()`.
 pub mod scene;
 
 /// CPU / RAM usage helpers.
@@ -69,23 +79,21 @@ pub mod render_stats;
 pub use glam;
 
 // Core types
-pub use transform::Transform;
 pub use color::Color;
 pub use time::{Time, TimeClock};
+pub use transform::Transform;
 
 // Input
 pub use input::{InputState, KeyCode, MouseButton};
 
 // Scene
-pub use scene::{World, Element, Handle, ElementKind, PointLightComponent};
 pub use scene::{
-    TimeSystem, TransformSystem, VelocitySystem, AnimationSystem, BehaviorSystem,
-    Velocity, Behavior, BehaviorComponent,
-    AnimationClip, AnimationPlayer, Keyframe,
-    Parent, Children, GlobalTransform,
-    Stage,
+    AnimationClip, AnimationPlayer, AnimationSystem, Behavior, BehaviorComponent, BehaviorSystem,
+    Children, GlobalTransform, Keyframe, Parent, Stage, TimeSystem, TransformSystem, Velocity,
+    VelocitySystem,
 };
 pub use scene::{Camera, CameraUniform, Controller};
+pub use scene::{Element, ElementKind, Handle, PointLightComponent, World};
 
 // Context
 pub use context::EngineContext;
@@ -94,5 +102,5 @@ pub use context::EngineContext;
 pub use metrics::{get_cpu_usage, get_ram_usage_mb};
 
 // Renderer-agnostic display types
-pub use viewport::Viewport;
 pub use render_stats::RenderStats;
+pub use viewport::Viewport;

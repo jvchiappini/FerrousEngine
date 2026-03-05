@@ -8,11 +8,15 @@
 /// | `resources`     | Low-level buffer / texture allocation helpers        |
 /// | `geometry`      | `Vertex`, `Mesh`, built-in primitives                |
 /// | `camera`        | GPU camera uniform + orbit controller                |
+/// | `camera_system` | `CameraSystem` — ECS-friendly camera update system   |
+/// | `frame_builder` | `FrameBuilder` — assembles `FramePacket` each frame  |
+/// | `gizmo_system`  | `GizmoSystem` — debug line/shape rendering           |
 /// | `pipeline`      | Bind-group layouts + compiled `WorldPipeline`        |
 /// | `render_target` | Off-screen color + depth targets (MSAA-aware)        |
 /// | `scene`         | `RenderObject`, `sync_world` helper                  |
 /// | `graph`         | `RenderPass` trait + `FramePacket`                   |
 /// | `passes`        | Built-in passes: `WorldPass`, `UiPass`               |
+/// | `materials`     | `MaterialRegistry`, PBR material management          |
 pub mod camera;
 pub mod camera_system;
 pub mod context;

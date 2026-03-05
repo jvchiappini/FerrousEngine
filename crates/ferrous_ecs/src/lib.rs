@@ -10,7 +10,14 @@
 //! | `world`       | spawn / despawn / insert / remove / get                     |
 //! | `query`       | WorldQuery trait + safe query iterators                     |
 //! | `resource`    | Non-entity global state (ResourceMap)                       |
-//! | `system`      | System trait + linear SystemScheduler                      |
+//! | `system`      | `System` trait, `SystemScheduler`, `StagedScheduler` (stage-ordered: PreUpdate→Update→PostUpdate→Render), `Stage` enum, `fn_system` adapter |
+//!
+//! ## Non-Clone components
+//!
+//! Components that contain `Box<dyn Trait>` or other non-Clone types can be
+//! stored using [`world::World::spawn_owned`] / [`world::World::insert_owned`].
+//! These use `ComponentInfo::of_owned()` whose clone stub panics — never
+//! trigger an archetype move on owned components.
 //!
 //! # Example
 //! ```rust
@@ -42,6 +49,6 @@ pub mod prelude {
     pub use crate::entity::Entity;
     pub use crate::query::{Query, QueryMut};
     pub use crate::resource::ResourceMap;
-    pub use crate::system::{System, SystemScheduler, StagedScheduler, Stage, fn_system};
+    pub use crate::system::{fn_system, Stage, StagedScheduler, System, SystemScheduler};
     pub use crate::world::World;
 }

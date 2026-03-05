@@ -218,10 +218,11 @@ ferrous_editor
 
 | Module | Lines (approx) | Role |
 |--------|----------------|------|
-| `scene/world.rs` | 923 | Entity container + EntityBuilder |
+| `scene/world.rs` | 923 | Entity container + EntityBuilder (ECS-backed) |
 | `scene/camera.rs` | 112 | Camera + CameraUniform |
 | `scene/material.rs` | 82 | MaterialDescriptor + MaterialHandle |
 | `scene/gizmo.rs` | ~150 | Gizmo state and drawing types |
+| `scene/systems.rs` | ~350 | ECS systems: `TimeSystem`, `VelocitySystem`, `AnimationSystem`, `BehaviorSystem`, `TransformSystem`; components: `Velocity`, `Parent`, `Children`, `GlobalTransform`, `AnimationClip`, `AnimationPlayer`, `BehaviorComponent`; `Behavior` trait |
 | `transform.rs` | 196 | TRS Transform |
 | `input.rs` | 213 | InputState (keyboard + mouse) |
 | `time.rs` | 132 | Time + TimeClock |
@@ -358,9 +359,9 @@ PrePass (depth + normals, view-space)
 | `traits.rs` | `FerrousApp` trait |
 | `context.rs` | `AppContext<'a>` — per-frame context |
 | `builder.rs` | `App`, `AppConfig` |
-| `runner.rs` | winit event loop + GPU init (636 lines) |
+| `runner.rs` | winit event loop + GPU init; uses `StagedScheduler` (PreUpdate→Update→PostUpdate) |
 | `graphics.rs` | `GraphicsState` (surface, swapchain) |
-| `asset_bridge.rs` | `spawn_gltf` helper |
+| `asset_bridge.rs` | `spawn_gltf` helper — loads glTF and spawns ECS entities |
 
 **Strengths:**
 - Clean `FerrousApp` trait with sensible defaults.

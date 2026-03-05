@@ -1,3 +1,24 @@
+//! `ferrous_assets` — CPU-side asset loading for FerrousEngine.
+//!
+//! This crate is intentionally free of wgpu / GPU types so it can be used in
+//! tools, headless tests, and the editor without a GPU context.
+//!
+//! ## Modules
+//!
+//! | Module | Responsibility |
+//! |--------|----------------|
+//! | `gltf_loader` | glTF/GLB import → `AssetModel` (CPU mesh + materials) |
+//! | `texture` | PNG/JPEG image loading → `Texture2d` |
+//! | `font` | MSDF font atlas baking (parser, msdf_gen, atlas) |
+//!
+//! ## Planned (Phase 5)
+//!
+//! - `AssetHandle<T>` — type-safe, generation-tracked handle (16 bytes, `Copy`).
+//! - `AssetServer` — background loading via rayon thread pool (native) /
+//!   `wasm_bindgen_futures` (WASM).
+//! - `Asset` trait with `import` + `process` stages.
+//! - Hot-reload via `notify` file watcher (non-WASM only).
+
 pub mod font;
 pub mod texture;
 pub mod gltf_loader;

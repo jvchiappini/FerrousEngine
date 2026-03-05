@@ -189,10 +189,10 @@ impl Stage {
 /// sched.run_all(&mut world, &mut res); // "pre" runs before "tick"
 /// ```
 pub struct StagedScheduler {
-    pre_update:  Vec<Box<dyn System>>,
-    update:      Vec<Box<dyn System>>,
+    pre_update: Vec<Box<dyn System>>,
+    update: Vec<Box<dyn System>>,
     post_update: Vec<Box<dyn System>>,
-    render:      Vec<Box<dyn System>>,
+    render: Vec<Box<dyn System>>,
 }
 
 impl Default for StagedScheduler {
@@ -204,10 +204,10 @@ impl Default for StagedScheduler {
 impl StagedScheduler {
     pub fn new() -> Self {
         StagedScheduler {
-            pre_update:  Vec::new(),
-            update:      Vec::new(),
+            pre_update: Vec::new(),
+            update: Vec::new(),
             post_update: Vec::new(),
-            render:      Vec::new(),
+            render: Vec::new(),
         }
     }
 
@@ -215,39 +215,46 @@ impl StagedScheduler {
     pub fn add<S: System>(&mut self, stage: Stage, system: S) -> &mut Self {
         let boxed: Box<dyn System> = Box::new(system);
         match stage {
-            Stage::PreUpdate  => self.pre_update.push(boxed),
-            Stage::Update     => self.update.push(boxed),
+            Stage::PreUpdate => self.pre_update.push(boxed),
+            Stage::Update => self.update.push(boxed),
             Stage::PostUpdate => self.post_update.push(boxed),
-            Stage::Render     => self.render.push(boxed),
+            Stage::Render => self.render.push(boxed),
         }
         self
     }
 
     /// Run all stages in order.
     pub fn run_all(&mut self, world: &mut World, resources: &mut ResourceMap) {
-        for s in &mut self.pre_update  { s.run(world, resources); }
-        for s in &mut self.update      { s.run(world, resources); }
-        for s in &mut self.post_update { s.run(world, resources); }
-        for s in &mut self.render      { s.run(world, resources); }
+        for s in &mut self.pre_update {
+            s.run(world, resources);
+        }
+        for s in &mut self.update {
+            s.run(world, resources);
+        }
+        for s in &mut self.post_update {
+            s.run(world, resources);
+        }
+        for s in &mut self.render {
+            s.run(world, resources);
+        }
     }
 
     /// Run only the systems belonging to a single stage.
     pub fn run_stage(&mut self, stage: Stage, world: &mut World, resources: &mut ResourceMap) {
         let systems = match stage {
-            Stage::PreUpdate  => &mut self.pre_update,
-            Stage::Update     => &mut self.update,
+            Stage::PreUpdate => &mut self.pre_update,
+            Stage::Update => &mut self.update,
             Stage::PostUpdate => &mut self.post_update,
-            Stage::Render     => &mut self.render,
+            Stage::Render => &mut self.render,
         };
-        for s in systems { s.run(world, resources); }
+        for s in systems {
+            s.run(world, resources);
+        }
     }
 
     /// Total number of registered systems across all stages.
     pub fn len(&self) -> usize {
-        self.pre_update.len()
-            + self.update.len()
-            + self.post_update.len()
-            + self.render.len()
+        self.pre_update.len() + self.update.len() + self.post_update.len() + self.render.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -292,10 +299,7 @@ mod tests {
         sched.add(IncrementSystem);
         sched.run_all(&mut world, &mut res);
 
-        let vals: Vec<u32> = world
-            .query::<Counter>()
-            .map(|(_, c)| c.0)
-            .collect();
+        let vals: Vec<u32> = world.query::<Counter>().map(|(_, c)| c.0).collect();
         assert!(vals.contains(&1));
         assert!(vals.contains(&11));
     }
