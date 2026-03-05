@@ -223,6 +223,20 @@ impl StagedScheduler {
         self
     }
 
+    /// Register a pre-boxed system in the given stage.
+    ///
+    /// Used by the plugin system, where systems are collected as
+    /// `Box<dyn System>` before the scheduler is constructed.
+    pub fn add_boxed(&mut self, stage: Stage, system: Box<dyn System>) -> &mut Self {
+        match stage {
+            Stage::PreUpdate => self.pre_update.push(system),
+            Stage::Update => self.update.push(system),
+            Stage::PostUpdate => self.post_update.push(system),
+            Stage::Render => self.render.push(system),
+        }
+        self
+    }
+
     /// Run all stages in order.
     pub fn run_all(&mut self, world: &mut World, resources: &mut ResourceMap) {
         for s in &mut self.pre_update {

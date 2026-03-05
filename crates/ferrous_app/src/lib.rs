@@ -44,11 +44,16 @@ mod asset_bridge;
 pub mod builder;
 pub mod context;
 mod graphics;
+pub mod plugin;
 mod runner;
 pub mod traits;
 
 pub use builder::{App, AppConfig};
 pub use context::AppContext;
+pub use plugin::{
+    AppBuilder, AssetPlugin, CorePlugin, DefaultPlugins, GuiPlugin, InputPlugin, Plugin,
+    RendererPlugin, TimePlugin, WindowPlugin,
+};
 pub use traits::FerrousApp;
 
 // ── Render style ───────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 pub mod culling;
-pub mod object;
 pub mod gizmo;
+pub mod object;
 
 pub use culling::{Aabb, Frustum};
-pub use object::RenderObject;
 pub use gizmo::GizmoDraw;
+pub use object::RenderObject;

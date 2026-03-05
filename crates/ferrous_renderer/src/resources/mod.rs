@@ -3,10 +3,10 @@ pub mod environment;
 pub mod instance_buffer;
 pub mod light;
 pub mod material;
+pub mod shadow;
 pub mod ssao;
 pub mod texture;
 pub mod texture_registry;
-pub mod shadow;
 
 pub use environment::Environment;
 pub use instance_buffer::InstanceBuffer;

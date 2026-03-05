@@ -677,3 +677,44 @@ pub(crate) fn run_internal<A: FerrousApp + 'static>(config: AppConfig, app: A) {
     event_loop.set_control_flow(ControlFlow::Wait);
     event_loop.run_app(&mut runner).unwrap();
 }
+
+// ── Plugin-based entry point ──────────────────────────────────────────────────
+
+/// Lightweight [`FerrousApp`] shim constructed from a collection of
+/// plugin-provided extra systems.  The systems registered by plugins via
+/// [`AppBuilder::add_system`] are injected into the runner's `StagedScheduler`
+/// during [`Runner::new`], so there is nothing extra to call here — the shim
+/// simply implements the no-op default methods on the trait.
+struct PluginApp;
+
+impl FerrousApp for PluginApp {}
+
+/// Entry point for the plugin-based `AppBuilder::run()`.
+///
+/// Installs the plugin-provided staged systems into the runner, then starts
+/// the event loop exactly like `run_internal`.
+pub(crate) fn run_plugin_app(mut builder: crate::plugin::AppBuilder) {
+    // Build the Runner with a no-op FerrousApp shim.
+    let mut runner = Runner::new(PluginApp, builder.config.clone());
+
+    // Install any extra systems registered by plugins (in addition to the
+    // default TimeSystem / VelocitySystem / etc. that Runner::new already adds).
+    for (stage, system) in builder.staged_systems.drain(..) {
+        runner.systems.add_boxed(stage, system);
+    }
+
+    // Start the event loop.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let event_loop = EventLoop::new().unwrap();
+        event_loop.set_control_flow(ControlFlow::Wait);
+        event_loop.run_app(&mut runner).unwrap();
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        console_error_panic_hook::set_once();
+        let event_loop = EventLoop::new().unwrap();
+        event_loop.set_control_flow(ControlFlow::Wait);
+        event_loop.run_app(&mut runner).unwrap();
+    }
+}
