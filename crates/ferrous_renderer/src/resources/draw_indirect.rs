@@ -178,8 +178,18 @@ impl InstanceCullData {
     ) -> Self {
         Self {
             model: model.to_cols_array_2d(),
-            aabb_center_cmd: [aabb_center.x, aabb_center.y, aabb_center.z, f32::from_bits(cmd_index)],
-            aabb_half_extents_pad: [aabb_half_extents.x, aabb_half_extents.y, aabb_half_extents.z, 0.0],
+            aabb_center_cmd: [
+                aabb_center.x,
+                aabb_center.y,
+                aabb_center.z,
+                f32::from_bits(cmd_index),
+            ],
+            aabb_half_extents_pad: [
+                aabb_half_extents.x,
+                aabb_half_extents.y,
+                aabb_half_extents.z,
+                0.0,
+            ],
         }
     }
 }
@@ -296,12 +306,8 @@ mod tests {
 
     #[test]
     fn instance_cull_data_new_stores_cmd_index() {
-        let data = InstanceCullData::new(
-            glam::Mat4::IDENTITY,
-            glam::Vec3::ZERO,
-            glam::Vec3::ONE,
-            42,
-        );
+        let data =
+            InstanceCullData::new(glam::Mat4::IDENTITY, glam::Vec3::ZERO, glam::Vec3::ONE, 42);
         // w component of aabb_center_cmd stores cmd_index as raw bits
         assert_eq!(data.aabb_center_cmd[3].to_bits(), 42u32);
     }

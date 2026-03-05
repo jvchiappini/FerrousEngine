@@ -28,18 +28,18 @@ impl Aabb {
     /// Creates an AABB from `min`/`max` corners.
     #[inline]
     pub fn new(min: Vec3, max: Vec3) -> Self {
-        Self { 
-            center: (min + max) * 0.5, 
-            half_extents: (max - min) * 0.5 
+        Self {
+            center: (min + max) * 0.5,
+            half_extents: (max - min) * 0.5,
         }
     }
 
     /// Creates a unit-cube AABB centred at `origin` (fits the built-in cube mesh).
     #[inline]
     pub fn unit_cube() -> Self {
-        Self { 
-            center: Vec3::ZERO, 
-            half_extents: Vec3::splat(1.0) 
+        Self {
+            center: Vec3::ZERO,
+            half_extents: Vec3::splat(1.0),
         }
     }
 
@@ -49,7 +49,7 @@ impl Aabb {
     /// non-uniform scale and arbitrary rotations, though we only use axis-aligned
     /// transforms for now.
     pub fn transform(&self, transform: &Mat4) -> Self {
-        // Fast AABB transform: transform centre + half-extents (avoids 8-corner loop).        
+        // Fast AABB transform: transform centre + half-extents (avoids 8-corner loop).
         // Source: Graphics Gems (Arvo 1990).
         let new_centre = transform.transform_point3(self.center);
 
@@ -67,7 +67,7 @@ impl Aabb {
             half_extents: new_half,
         }
     }
-}// ── Frustum ───────────────────────────────────────────────────────────────────
+} // ── Frustum ───────────────────────────────────────────────────────────────────
 
 /// Six clip planes extracted from a `view_proj` matrix.
 ///
@@ -126,8 +126,13 @@ impl Frustum {
         for plane in &self.planes {
             // Branchless AABB / plane test:
             // dot(center, normal) + dot(half_extents, abs(normal)) + d
-            let center_dist = plane.x * aabb.center.x + plane.y * aabb.center.y + plane.z * aabb.center.z + plane.w;
-            let extent_dist = plane.x.abs() * aabb.half_extents.x + plane.y.abs() * aabb.half_extents.y + plane.z.abs() * aabb.half_extents.z;
+            let center_dist = plane.x * aabb.center.x
+                + plane.y * aabb.center.y
+                + plane.z * aabb.center.z
+                + plane.w;
+            let extent_dist = plane.x.abs() * aabb.half_extents.x
+                + plane.y.abs() * aabb.half_extents.y
+                + plane.z.abs() * aabb.half_extents.z;
 
             // If the maximum inscribed sphere distance goes below 0, it's outside.
             // Wait, more precisely, if the closest point is outside, the whole box is outside.

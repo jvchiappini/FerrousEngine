@@ -33,10 +33,10 @@ impl GpuCullPipeline {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Layout: GpuCullPipeline"),
             bind_group_layouts: &[
-                &layouts.cull_instances,    // group(0): input instances (RO)
-                &layouts.cull_indirect,     // group(1): draw_cmds (RO) + counters (RW)
-                &layouts.cull_out_instances,// group(2): output instance matrices (RW)
-                &layouts.cull_params,       // group(3): CullParams uniform
+                &layouts.cull_instances,     // group(0): input instances (RO)
+                &layouts.cull_indirect,      // group(1): draw_cmds (RO) + counters (RW)
+                &layouts.cull_out_instances, // group(2): output instance matrices (RW)
+                &layouts.cull_params,        // group(3): CullParams uniform
             ],
             push_constant_ranges: &[],
         });

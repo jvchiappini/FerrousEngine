@@ -80,8 +80,8 @@ use camera::controller::OrbitState;
 use graph::frame_packet::CameraPacket;
 use passes::{CelFrameData, FlatFrameData, OutlineFrameData};
 use passes::{
-    CelShadedPass, CullPass, FlatShadedPass, OutlinePass, PostProcessPass, PrePass,
-    SsaoBlurPass, SsaoPass, UiPass, WorldPass,
+    CelShadedPass, CullPass, FlatShadedPass, OutlinePass, PostProcessPass, PrePass, SsaoBlurPass,
+    SsaoPass, UiPass, WorldPass,
 };
 use pipeline::{PbrPipeline, PipelineLayouts};
 use resources::SsaoResources;
@@ -394,12 +394,7 @@ impl Renderer {
         let gizmo_system = GizmoSystem::new(device, hdr_format, rt.sample_count(), layouts.clone());
 
         // -- SSAO: build passes before the Self literal consumes the buffers --
-        let mut prepass = PrePass::new(
-            device,
-            layouts.instance.clone(),
-            width,
-            height,
-        );
+        let mut prepass = PrePass::new(device, layouts.instance.clone(), width, height);
         prepass.set_instance_buffer(instance_buf.bind_group.clone());
         let ssao_pass = SsaoPass::new(device, width, height);
         let ssao_blur_pass = SsaoBlurPass::new(device, width, height);
@@ -728,10 +723,7 @@ impl Renderer {
     pub fn enable_gpu_culling(&mut self, enabled: bool) {
         self.gpu_culling_enabled = enabled;
         if enabled && self.cull_pass.is_none() {
-            self.cull_pass = Some(CullPass::new(
-                &self.context.device,
-                &self.pipeline_layouts,
-            ));
+            self.cull_pass = Some(CullPass::new(&self.context.device, &self.pipeline_layouts));
         }
         if !enabled {
             self.world_pass.clear_indirect_buffer();
@@ -779,11 +771,7 @@ impl Renderer {
         // 0b. Sync Camera3D ECS component → renderer camera (if present)
         {
             use ferrous_core::scene::Camera3D;
-            let cameras: Vec<Camera3D> = world
-                .ecs
-                .query::<Camera3D>()
-                .map(|(_, c)| *c)
-                .collect();
+            let cameras: Vec<Camera3D> = world.ecs.query::<Camera3D>().map(|(_, c)| *c).collect();
             if let Some(cam3d) = cameras.first() {
                 self.camera_system.camera.eye = cam3d.eye;
                 self.camera_system.camera.target = cam3d.target;
@@ -798,8 +786,11 @@ impl Renderer {
             use ferrous_core::scene::Material;
             // Collect (ecs_entity_index, MaterialDescriptor) for entities
             // that have a Material component attached.
-            let mat_only: Vec<(u32, ferrous_core::scene::MaterialDescriptor)> =
-                world.ecs.query::<Material>().map(|(e, m)| (e.index, m.to_descriptor())).collect();
+            let mat_only: Vec<(u32, ferrous_core::scene::MaterialDescriptor)> = world
+                .ecs
+                .query::<Material>()
+                .map(|(e, m)| (e.index, m.to_descriptor()))
+                .collect();
             for (ecs_idx, desc) in mat_only {
                 let ecs_id = ecs_idx as u64;
                 let needs_update = self
@@ -857,10 +848,7 @@ impl Renderer {
         if self.gpu_culling_enabled {
             // Ensure the CullPass exists.
             if self.cull_pass.is_none() {
-                self.cull_pass = Some(CullPass::new(
-                    &self.context.device,
-                    &self.pipeline_layouts,
-                ));
+                self.cull_pass = Some(CullPass::new(&self.context.device, &self.pipeline_layouts));
             }
 
             // `build_world_commands` populated world_instanced and

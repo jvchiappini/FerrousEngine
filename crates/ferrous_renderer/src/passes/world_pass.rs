@@ -510,57 +510,59 @@ impl RenderPass for WorldPass {
                 } else {
                     // ── CPU-driven path (legacy) ──────────────────────────
 
-                // first draw opaque/masked objects (order not critical)
-                for cmd in &packet.instanced_objects {
-                    let (alpha_mode, double_sided) = get_flags(cmd.material_slot, cmd.double_sided);
-                    if matches!(alpha_mode, ferrous_core::scene::AlphaMode::Blend) {
-                        continue;
+                    // first draw opaque/masked objects (order not critical)
+                    for cmd in &packet.instanced_objects {
+                        let (alpha_mode, double_sided) =
+                            get_flags(cmd.material_slot, cmd.double_sided);
+                        if matches!(alpha_mode, ferrous_core::scene::AlphaMode::Blend) {
+                            continue;
+                        }
+                        rpass.set_pipeline(choose_inst_pipe(&alpha_mode, double_sided));
+                        if let Some(mat_bg) = self.material_bind_groups.get(cmd.material_slot) {
+                            rpass.set_bind_group(2, mat_bg.as_ref(), &[]);
+                        }
+                        rpass.set_bind_group(3, self.environment.bind_group.as_ref(), &[]);
+                        // shadow map is now included in the environment bind group
+                        rpass.set_vertex_buffer(0, cmd.vertex_buffer.slice(..));
+                        rpass.set_index_buffer(cmd.index_buffer.slice(..), cmd.index_format);
+                        rpass.draw_indexed(
+                            0..cmd.index_count,
+                            0,
+                            cmd.first_instance..cmd.first_instance + cmd.instance_count,
+                        );
                     }
-                    rpass.set_pipeline(choose_inst_pipe(&alpha_mode, double_sided));
-                    if let Some(mat_bg) = self.material_bind_groups.get(cmd.material_slot) {
-                        rpass.set_bind_group(2, mat_bg.as_ref(), &[]);
-                    }
-                    rpass.set_bind_group(3, self.environment.bind_group.as_ref(), &[]);
-                    // shadow map is now included in the environment bind group
-                    rpass.set_vertex_buffer(0, cmd.vertex_buffer.slice(..));
-                    rpass.set_index_buffer(cmd.index_buffer.slice(..), cmd.index_format);
-                    rpass.draw_indexed(
-                        0..cmd.index_count,
-                        0,
-                        cmd.first_instance..cmd.first_instance + cmd.instance_count,
-                    );
-                }
 
-                // then the transparent batches, sorted back-to-front
-                let mut transparent_cmds: Vec<&InstancedDrawCommand> = packet
-                    .instanced_objects
-                    .iter()
-                    .filter(|cmd| {
-                        let (alpha_mode, _) = get_flags(cmd.material_slot, cmd.double_sided);
-                        matches!(alpha_mode, ferrous_core::scene::AlphaMode::Blend)
-                    })
-                    .collect();
-                transparent_cmds.sort_by(|a, b| {
-                    b.distance_sq
-                        .partial_cmp(&a.distance_sq)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-                for cmd in transparent_cmds {
-                    let (alpha_mode, double_sided) = get_flags(cmd.material_slot, cmd.double_sided);
-                    rpass.set_pipeline(choose_inst_pipe(&alpha_mode, double_sided));
-                    if let Some(mat_bg) = self.material_bind_groups.get(cmd.material_slot) {
-                        rpass.set_bind_group(2, mat_bg.as_ref(), &[]);
+                    // then the transparent batches, sorted back-to-front
+                    let mut transparent_cmds: Vec<&InstancedDrawCommand> = packet
+                        .instanced_objects
+                        .iter()
+                        .filter(|cmd| {
+                            let (alpha_mode, _) = get_flags(cmd.material_slot, cmd.double_sided);
+                            matches!(alpha_mode, ferrous_core::scene::AlphaMode::Blend)
+                        })
+                        .collect();
+                    transparent_cmds.sort_by(|a, b| {
+                        b.distance_sq
+                            .partial_cmp(&a.distance_sq)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    for cmd in transparent_cmds {
+                        let (alpha_mode, double_sided) =
+                            get_flags(cmd.material_slot, cmd.double_sided);
+                        rpass.set_pipeline(choose_inst_pipe(&alpha_mode, double_sided));
+                        if let Some(mat_bg) = self.material_bind_groups.get(cmd.material_slot) {
+                            rpass.set_bind_group(2, mat_bg.as_ref(), &[]);
+                        }
+                        rpass.set_bind_group(3, self.environment.bind_group.as_ref(), &[]);
+                        // shadow map is now included in the environment bind group
+                        rpass.set_vertex_buffer(0, cmd.vertex_buffer.slice(..));
+                        rpass.set_index_buffer(cmd.index_buffer.slice(..), cmd.index_format);
+                        rpass.draw_indexed(
+                            0..cmd.index_count,
+                            0,
+                            cmd.first_instance..cmd.first_instance + cmd.instance_count,
+                        );
                     }
-                    rpass.set_bind_group(3, self.environment.bind_group.as_ref(), &[]);
-                    // shadow map is now included in the environment bind group
-                    rpass.set_vertex_buffer(0, cmd.vertex_buffer.slice(..));
-                    rpass.set_index_buffer(cmd.index_buffer.slice(..), cmd.index_format);
-                    rpass.draw_indexed(
-                        0..cmd.index_count,
-                        0,
-                        cmd.first_instance..cmd.first_instance + cmd.instance_count,
-                    );
-                }
                 } // end CPU-driven path
             }
         }

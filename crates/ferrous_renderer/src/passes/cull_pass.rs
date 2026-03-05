@@ -192,11 +192,13 @@ impl CullPass {
 
         // ── CullParams uniform ────────────────────────────────────────────────
         let params_data = CullParamsUniform::zeroed();
-        let params_buf = Arc::new(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("CullParams Uniform"),
-            contents: bytemuck::bytes_of(&params_data),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        }));
+        let params_buf = Arc::new(
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("CullParams Uniform"),
+                contents: bytemuck::bytes_of(&params_data),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            }),
+        );
         let params_bg = Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Cull group(3): params"),
             layout: &layouts.cull_params,
@@ -281,11 +283,7 @@ impl CullPass {
     }
 
     /// Updates the CullParams uniform with the current frustum and instance count.
-    pub fn update_params(
-        &self,
-        queue: &wgpu::Queue,
-        frustum: &Frustum,
-    ) {
+    pub fn update_params(&self, queue: &wgpu::Queue, frustum: &Frustum) {
         let params = CullParamsUniform::from_frustum(frustum, self.instance_count);
         queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&params));
     }
@@ -294,13 +292,7 @@ impl CullPass {
     /// read back instance counts after the dispatch finishes.
     pub fn copy_counters_to_staging(&self, encoder: &mut wgpu::CommandEncoder) {
         let byte_size = (self.batch_count as u64 * 4).max(4);
-        encoder.copy_buffer_to_buffer(
-            &self.counters_buf,
-            0,
-            &self.counter_staging,
-            0,
-            byte_size,
-        );
+        encoder.copy_buffer_to_buffer(&self.counters_buf, 0, &self.counter_staging, 0, byte_size);
     }
 
     /// Patches the indirect draw buffer's `instance_count` fields using the
@@ -336,11 +328,7 @@ impl CullPass {
     /// until the GPU copy is done.
     ///
     /// Returns the per-batch visible instance counts (for benchmarking).
-    pub fn sync_patch_indirect(
-        &self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-    ) -> Vec<u32> {
+    pub fn sync_patch_indirect(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> Vec<u32> {
         if self.batch_count == 0 {
             return vec![];
         }
@@ -486,12 +474,7 @@ impl RenderPass for CullPass {
         "CullPass"
     }
 
-    fn prepare(
-        &mut self,
-        _device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-        _packet: &FramePacket,
-    ) {
+    fn prepare(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue, _packet: &FramePacket) {
         // Params and instance data are updated externally (via update_params
         // and upload_instances). Nothing to do here.
     }
