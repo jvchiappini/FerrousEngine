@@ -129,7 +129,10 @@ mod tests {
 
     #[test]
     fn render_style_copy_clone() {
-        let original = RenderStyle::CelShaded { toon_levels: 4, outline_width: 0.02 };
+        let original = RenderStyle::CelShaded {
+            toon_levels: 4,
+            outline_width: 0.02,
+        };
         let copied = original;
         let cloned = original.clone();
         assert_eq!(copied, original);
@@ -144,8 +147,15 @@ mod tests {
 
     #[test]
     fn render_style_cel_shaded_params() {
-        let style = RenderStyle::CelShaded { toon_levels: 3, outline_width: 0.01 };
-        if let RenderStyle::CelShaded { toon_levels, outline_width } = style {
+        let style = RenderStyle::CelShaded {
+            toon_levels: 3,
+            outline_width: 0.01,
+        };
+        if let RenderStyle::CelShaded {
+            toon_levels,
+            outline_width,
+        } = style
+        {
             assert_eq!(toon_levels, 3);
             assert!((outline_width - 0.01).abs() < 1e-6);
         } else {

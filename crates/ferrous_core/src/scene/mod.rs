@@ -12,21 +12,9 @@ pub use world::{Element, ElementKind, Handle, PointLightComponent, World};
 
 // Systems and stage enum
 pub use systems::{
-    AnimationClip,
-    AnimationPlayer,
-    AnimationSystem,
-    Behavior,
-    BehaviorComponent,
-    BehaviorSystem,
-    Children,
-    GlobalTransform,
-    Keyframe,
-    Parent,
-    Stage,
-    TimeSystem,
-    TransformSystem,
+    AnimationClip, AnimationPlayer, AnimationSystem, Behavior, BehaviorComponent, BehaviorSystem,
+    Children, GlobalTransform, Keyframe, Parent, Stage, TimeSystem, TransformSystem, Velocity,
     VelocitySystem,
-    Velocity,
 };
 
 // Camera

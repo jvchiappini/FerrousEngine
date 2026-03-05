@@ -58,7 +58,9 @@ use materials::MaterialRegistry;
 // remain public even though the local `materials` module imports them
 // privately.  this avoids the privacy errors encountered when the compiler
 // treated the earlier exports as private imports.
-pub use ferrous_core::scene::{AlphaMode, MaterialDescriptor, MaterialHandle, RenderStyle, MATERIAL_DEFAULT};
+pub use ferrous_core::scene::{
+    AlphaMode, MaterialDescriptor, MaterialHandle, RenderStyle, MATERIAL_DEFAULT,
+};
 
 // texture handles/constants are owned by the texture registry but we expose
 // them here so end users can construct `MaterialDescriptor` values without
@@ -76,11 +78,11 @@ use ferrous_gui::TextBatch;
 
 use camera::controller::OrbitState;
 use graph::frame_packet::{CameraPacket, DrawCommand};
+use passes::{CelFrameData, FlatFrameData, OutlineFrameData};
 use passes::{
     CelShadedPass, FlatShadedPass, OutlinePass, PostProcessPass, PrePass, SsaoBlurPass, SsaoPass,
     UiPass, WorldPass,
 };
-use passes::{CelFrameData, FlatFrameData, OutlineFrameData};
 use pipeline::{PbrPipeline, PipelineLayouts};
 use resources::ModelBuffer;
 use resources::SsaoResources;
@@ -127,14 +129,15 @@ pub struct Renderer {
     pub camera_system: CameraSystem,
 
     // -- Scene (O(1) lookup by id) --------------------------------------------
-    /// Legacy manual objects (started at u64::MAX and descending)
+    /// Legacy manual objects (started at u64::MAX and descending).
+    /// Prefer spawning entities via `ferrous_core::scene::World` instead.
     legacy_objects: HashMap<u64, RenderObject>,
-    /// World objects mirrored from `ferrous_core::scene::World` (indices match World IDs)
-    world_objects: Vec<Option<RenderObject>>,
     /// CPU-side copy of each object�s material descriptor.  Used during
     /// `sync_world` to detect when the core has modified a material and
     /// therefore we need to call `material_registry.update_material_params`.
-    world_material_descs: Vec<Option<ferrous_core::scene::MaterialDescriptor>>,
+    /// CPU-side material descriptor cache for detecting changes during sync_world.
+    /// Keyed by entity id (u64).
+    world_material_descs: HashMap<u64, ferrous_core::scene::MaterialDescriptor>,
     next_manual_id: u64,
     /// Shared dynamic uniform buffer for all model matrices (legacy/manual objects).
     model_buf: ModelBuffer,
@@ -148,19 +151,8 @@ pub struct Renderer {
     instance_layout: Arc<wgpu::BindGroupLayout>,
     /// A copy of the pipeline bind-group layouts; needed when creating
     /// new materials or other GPU resources that rely on them.
-
-    /// Shared cube mesh � lazily created on first World spawn so that every
-    /// cube RenderObject carries the same Arc<Buffer> pointers, enabling
-    /// instanced grouping by vertex-buffer pointer in build_base_packet.
-    shared_cube_mesh: Option<geometry::Mesh>,
-    /// Shared quad mesh, used for all quads irrespective of size.
-    shared_quad_mesh: Option<geometry::Mesh>,
-    /// Shared sphere mesh plus the lat/long subdivisions used to create it.
-    /// Lazily populated on first sphere spawn.
-    shared_sphere_mesh: Option<(geometry::Mesh, u32, u32)>,
-
-    /// Cache of meshes that have been registered by asset loaders.
-    mesh_cache: std::collections::HashMap<String, geometry::Mesh>,
+    // Note: shared mesh caches (cube/quad/sphere) and mesh_cache are now
+    // owned by `frame_builder` (Phase 8).
 
     // -- Gizmo system (Phase 3: extracted to GizmoSystem) -------------------
     /// Owns the line-list GPU pipeline and per-frame draw queue.
@@ -433,18 +425,13 @@ impl Renderer {
             extra_passes: Vec::new(),
             camera_system,
             legacy_objects: HashMap::new(),
-            world_objects: Vec::new(),
-            world_material_descs: Vec::new(),
+            world_material_descs: HashMap::new(),
             next_manual_id: u64::MAX,
             model_buf,
             next_slot: 0,
             model_layout: layouts.model.clone(),
             instance_buf,
             instance_layout: layouts.instance.clone(),
-            shared_cube_mesh: None,
-            shared_quad_mesh: None,
-            shared_sphere_mesh: None,
-            mesh_cache: std::collections::HashMap::new(),
             gizmo_system,
             frame_builder: FrameBuilder::new(),
             shadow_instance_buf,
@@ -567,14 +554,14 @@ impl Renderer {
     /// elements referencing `key` to use the provided geometry.  If a mesh
     /// already existed at that key it is overwritten.
     pub fn register_mesh(&mut self, key: &str, mesh: geometry::Mesh) {
-        self.mesh_cache.insert(key.to_string(), mesh);
+        self.frame_builder.mesh_cache.insert(key.to_string(), mesh);
     }
 
     /// Remove a previously-registered mesh.  Any world elements still
     /// referring to the key will fall back to the cube primitive when the
     /// next `sync_world` runs.
     pub fn free_mesh(&mut self, key: &str) {
-        self.mesh_cache.remove(key);
+        self.frame_builder.mesh_cache.remove(key);
     }
 
     /// Free a material slot so that the corresponding bind group may be
@@ -655,7 +642,10 @@ impl Renderer {
                 self.outline_pass = None;
                 self.flat_pass = None;
             }
-            RenderStyle::CelShaded { toon_levels, outline_width } => {
+            RenderStyle::CelShaded {
+                toon_levels,
+                outline_width,
+            } => {
                 let toon_levels = *toon_levels;
                 let outline_width = *outline_width;
 
@@ -726,11 +716,14 @@ impl Renderer {
     }
 
     /// Set the material for a world object by index (matching the world ID).
-    pub fn set_world_object_material(&mut self, index: usize, material: MaterialHandle) {
-        // layouts no longer stored; registry keeps its own copy
-        if let Some(Some(obj)) = self.world_objects.get_mut(index) {
-            obj.material_slot = material.0 as usize;
-        }
+    ///
+    /// Deprecated (Phase 8): world objects are now driven entirely by the ECS.
+    /// Material updates should be made through the `World` entity's
+    /// `MaterialComponent` instead.  This method is now a no-op and will be
+    /// removed in a future release.
+    #[deprecated(note = "Use the World ECS material component instead")]
+    pub fn set_world_object_material(&mut self, _index: usize, _material: MaterialHandle) {
+        // No-op: world objects are now driven by the ECS material component.
     }
 
     pub fn render_to_target(
@@ -829,51 +822,73 @@ impl Renderer {
     }
 
     /// Synchronises a `ferrous_core::scene::World` with the renderer's object map.
+    /// Synchronises a `ferrous_core::scene::World` with the renderer.
+    ///
+    /// Phase 8: This now delegates geometry work to
+    /// `FrameBuilder::build_world_commands` which queries the ECS directly.
+    /// The intermediate `Vec<Option<RenderObject>>` mirror has been removed.
     pub fn sync_world(&mut self, world: &ferrous_core::scene::World) {
-        let mutated = scene::sync_world(
-            world,
-            &mut self.world_objects,
-            &self.context.device,
-            &mut self.shared_cube_mesh,
-            &mut self.shared_quad_mesh,
-            &mut self.shared_sphere_mesh,
-            &mut self.mesh_cache,
-        );
-        if mutated {
-            self.frame_builder.scene_dirty = true;
-        }
+        // 1. Build frustum from current camera
+        let camera_packet = crate::graph::frame_packet::CameraPacket {
+            view_proj: self.camera_system.camera.build_view_projection_matrix(),
+            eye: self.camera_system.camera.eye,
+        };
+        let frustum = crate::scene::Frustum::from_view_proj(&camera_packet.view_proj);
 
-        // ensure our descriptor cache is large enough
-        if self.world_material_descs.len() != world.capacity() {
-            self.world_material_descs
-                .resize_with(world.capacity(), || None);
+        // 2. ECS query -> populate frame_builder world instanced caches
+        {
+            let world_pass_ref = &mut self.world_pass;
+            let prepass_ref = &mut self.prepass;
+            self.frame_builder.build_world_commands(
+                world,
+                &self.context.device,
+                &frustum,
+                self.camera_system.camera.eye,
+                &mut self.instance_buf,
+                &self.instance_layout,
+                &mut self.shadow_instance_buf,
+                &mut |bg, shadow_bg| {
+                    world_pass_ref.set_instance_buffer(bg.clone());
+                    world_pass_ref.set_shadow_instance_buffer(shadow_bg);
+                    prepass_ref.set_instance_buffer(bg);
+                },
+                &self.context.queue,
+            );
         }
+        self.frame_builder.scene_dirty = true;
 
-        // iterate over every entity and propagate any descriptor changes
+        // 3. Material param updates (detect changes via HashMap cache)
         for element in world.iter() {
-            let idx = element.id as usize;
+            let id = element.id;
             let desc = &element.material.descriptor;
-            let needs_update = match &self.world_material_descs[idx] {
-                Some(prev) => prev != desc,
-                None => true,
-            };
+            let needs_update = self
+                .world_material_descs
+                .get(&id)
+                .map(|prev| prev != desc)
+                .unwrap_or(true);
             if needs_update {
-                // push new parameters to GPU; `create_material` already wrote
-                // the initial state so this is safe even if the handle is
-                // MATERIAL_DEFAULT.
                 self.material_registry.update_params(
                     &self.context.queue,
                     element.material.handle,
                     desc,
                 );
-                self.world_material_descs[idx] = Some(desc.clone());
-                self.frame_builder.scene_dirty = true;
+                self.world_material_descs.insert(id, desc.clone());
             }
         }
 
-        // -- Collect point lights from World entities ----------------------
-        // Gather every element that has a PointLightComponent and convert it
-        // into a PointLightUniform using the entity's world-space position.
+        // Prune entries for despawned entities
+        let live_ids: std::collections::HashSet<u64> = world.iter().map(|e| e.id).collect();
+        self.world_material_descs
+            .retain(|id, _| live_ids.contains(id));
+
+        // 4. Sync material table to style passes
+        self.world_pass.set_material_table(
+            &self.material_registry.bind_group_table(),
+            &self.material_registry,
+        );
+        self.sync_style_material_table();
+
+        // 5. Collect point lights from World entities
         let mut point_light_uniforms: Vec<crate::resources::PointLightUniform> = Vec::new();
         for element in world.iter() {
             if let Some(pl) = &element.point_light {
@@ -1065,7 +1080,6 @@ impl Renderer {
             let queue = &self.context.queue;
             let viewport = self.viewport;
             let legacy_objects = &self.legacy_objects;
-            let world_objects = &self.world_objects;
             let instance_layout = &self.instance_layout;
 
             let world_pass_ref = &mut self.world_pass;
@@ -1077,7 +1091,6 @@ impl Renderer {
                 viewport,
                 camera_packet,
                 legacy_objects,
-                world_objects,
                 &mut self.instance_buf,
                 instance_layout,
                 &mut self.shadow_instance_buf,
@@ -1185,7 +1198,10 @@ impl Renderer {
         // pass(es).  All style passes render into the same HDR texture
         // (LoadOp::Load) so they composite on top of the world geometry.
         match &self.render_style {
-            RenderStyle::CelShaded { toon_levels, outline_width } => {
+            RenderStyle::CelShaded {
+                toon_levels,
+                outline_width,
+            } => {
                 let toon_levels = *toon_levels;
                 let outline_width = *outline_width;
                 packet.insert(CelFrameData {
@@ -1229,7 +1245,9 @@ impl Renderer {
                 }
             }
             RenderStyle::FlatShaded => {
-                packet.insert(FlatFrameData { light: self.current_dir_light });
+                packet.insert(FlatFrameData {
+                    light: self.current_dir_light,
+                });
                 if let Some(p) = &mut self.flat_pass {
                     p.prepare(&self.context.device, &self.context.queue, &packet);
                     p.execute(

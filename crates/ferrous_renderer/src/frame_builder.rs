@@ -1,13 +1,16 @@
 //! `FrameBuilder` — construye el `FramePacket` por frame a partir del estado
 //! de escena, aplicando frustum culling y agrupando instancias.
 //!
-//! Extraído de `ferrous_renderer::lib::build_base_packet` (Fase 3 del roadmap).
-//! Esto deja `Renderer::do_render` enfocado en **orquestar passes**, no en
-//! gestionar lógica de culling/instancing.
+//! ## Phase 8 changes
+//! `FrameBuilder` now owns the shared mesh caches and queries the ECS world
+//! directly via `build_world_commands()`.  The intermediate
+//! `Vec<Option<RenderObject>>` (previously mirrored from `sync_world`) has
+//! been removed.  Legacy objects (via `add_object`) still use the
+//! `HashMap<u64, RenderObject>` path so existing call-sites do not break.
 //!
 //! ## Responsabilidades
 //! - Mantener caches de draw commands (reutilización de `Vec` entre frames)
-//! - Frustum culling de objetos legacy y world
+//! - Frustum culling de objetos legacy y world (ECS)
 //! - Agrupación de objetos world por mesh (instancing)
 //! - Upload de matrices al `InstanceBuffer` y `ModelBuffer`
 //! - Calcular `RenderStats` para el frame
@@ -15,9 +18,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[cfg(not(target_arch = "wasm32"))]
-use rayon::prelude::*;
+use ferrous_core::scene::world::{Element, ElementKind, MaterialComponent};
+use ferrous_core::transform::Transform;
 
+use crate::geometry::primitives::{
+    cube::cube as create_cube, quad::quad as create_quad, sphere::sphere as create_sphere,
+};
 use crate::graph::frame_packet::{
     CameraPacket, DrawCommand, FramePacket, InstancedDrawCommand, Viewport,
 };
@@ -40,6 +46,27 @@ pub struct FrameBuilder {
     pub prev_view_proj: Option<glam::Mat4>,
     /// Set to `true` whenever scene geometry or materials change.
     pub scene_dirty: bool,
+
+    // ── Phase 8: shared mesh caches (moved from Renderer) ───────────────────
+    /// Shared cube mesh — lazily created on first ECS query spawn.
+    pub shared_cube_mesh: Option<crate::geometry::Mesh>,
+    /// Shared quad mesh.
+    pub shared_quad_mesh: Option<crate::geometry::Mesh>,
+    /// Shared sphere mesh + (latitudes, longitudes) key.
+    pub shared_sphere_mesh: Option<(crate::geometry::Mesh, u32, u32)>,
+    /// Cache of arbitrary meshes keyed by asset string.
+    pub mesh_cache: HashMap<String, crate::geometry::Mesh>,
+
+    // ── Phase 8: ECS-derived world draw commands (replaces world_objects) ───
+    /// Instanced draw commands built from the ECS world query.
+    /// Populated by `build_world_commands`; consumed by `build`.
+    world_instanced: Vec<InstancedDrawCommand>,
+    /// Shadow-caster instanced commands from the ECS query.
+    world_shadow_instanced: Vec<InstancedDrawCommand>,
+    /// Scratch matrices for world instancing (written to `InstanceBuffer`).
+    world_instance_matrices: Vec<glam::Mat4>,
+    /// Scratch matrices for shadow instancing.
+    world_shadow_matrices: Vec<glam::Mat4>,
 }
 
 impl Default for FrameBuilder {
@@ -59,6 +86,14 @@ impl FrameBuilder {
             shadow_matrix_scratch: Vec::new(),
             prev_view_proj: None,
             scene_dirty: true,
+            shared_cube_mesh: None,
+            shared_quad_mesh: None,
+            shared_sphere_mesh: None,
+            mesh_cache: HashMap::new(),
+            world_instanced: Vec::new(),
+            world_shadow_instanced: Vec::new(),
+            world_instance_matrices: Vec::new(),
+            world_shadow_matrices: Vec::new(),
         }
     }
 
@@ -69,11 +104,250 @@ impl FrameBuilder {
     }
 
     // -----------------------------------------------------------------------
+    // Phase 8: ECS world command builder
+    // -----------------------------------------------------------------------
+
+    /// Query the ECS world and rebuild the world instanced draw command caches.
+    ///
+    /// Called by `Renderer::sync_world` whenever the scene changes.  Replaces
+    /// the old `sync_world → world_objects Vec` indirection.
+    ///
+    /// Frustum culling is deferred to `build()` so that a camera change still
+    /// re-culls even when the scene is otherwise static.
+    pub fn build_world_commands(
+        &mut self,
+        world: &ferrous_core::scene::World,
+        device: &wgpu::Device,
+        frustum: &Frustum,
+        camera_eye: glam::Vec3,
+        instance_buf: &mut InstanceBuffer,
+        instance_layout: &wgpu::BindGroupLayout,
+        shadow_instance_buf: &mut InstanceBuffer,
+        instance_callback: &mut dyn FnMut(Arc<wgpu::BindGroup>, Arc<wgpu::BindGroup>),
+        queue: &wgpu::Queue,
+    ) {
+        // prune mesh cache of any keys that are no longer referenced by the world
+        {
+            let live_keys: std::collections::HashSet<&str> = world
+                .iter()
+                .filter_map(|e| {
+                    if let ElementKind::Mesh { asset_key } = &e.kind {
+                        Some(asset_key.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            self.mesh_cache
+                .retain(|k, _| live_keys.contains(k.as_str()));
+        }
+
+        type MeshGroupKey = (usize, usize, bool);
+        type MeshGroupVal = (crate::geometry::Mesh, usize, Vec<glam::Mat4>);
+
+        // Visible (camera-culled) groups for main draw pass
+        let mut visible_groups: HashMap<MeshGroupKey, MeshGroupVal> = HashMap::new();
+        // All-objects groups for shadow pass (no frustum culling)
+        let mut shadow_groups: HashMap<MeshGroupKey, MeshGroupVal> = HashMap::new();
+
+        for (_entity, element, transform, material) in
+            world.ecs.query3::<Element, Transform, MaterialComponent>()
+        {
+            let is_renderable = matches!(
+                element.kind,
+                ElementKind::Cube { .. }
+                    | ElementKind::Mesh { .. }
+                    | ElementKind::Quad { .. }
+                    | ElementKind::Sphere { .. }
+            );
+            if !is_renderable || !element.visible {
+                continue;
+            }
+
+            let is_double_sided = if let ElementKind::Quad { double_sided, .. } = element.kind {
+                double_sided
+            } else {
+                false
+            };
+
+            let mesh = match &element.kind {
+                ElementKind::Cube { .. } => self
+                    .shared_cube_mesh
+                    .get_or_insert_with(|| create_cube(device))
+                    .clone(),
+                ElementKind::Mesh { asset_key } => {
+                    if let Some(m) = self.mesh_cache.get(asset_key.as_str()) {
+                        m.clone()
+                    } else {
+                        self.shared_cube_mesh
+                            .get_or_insert_with(|| create_cube(device))
+                            .clone()
+                    }
+                }
+                ElementKind::Quad { .. } => self
+                    .shared_quad_mesh
+                    .get_or_insert_with(|| create_quad(device))
+                    .clone(),
+                ElementKind::Sphere {
+                    latitudes,
+                    longitudes,
+                    ..
+                } => {
+                    let lat = latitudes;
+                    let lon = longitudes;
+                    let use_mesh = if let Some((m, l, o)) = &self.shared_sphere_mesh {
+                        if l == lat && o == lon {
+                            Some(m.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some(m) = use_mesh {
+                        m
+                    } else {
+                        let new = create_sphere(device, 1.0, *lat, *lon);
+                        self.shared_sphere_mesh = Some((new.clone(), *lat, *lon));
+                        new
+                    }
+                }
+                _ => continue,
+            };
+
+            let matrix = transform.matrix();
+            let material_slot = material.handle.0 as usize;
+
+            // Compute a quick AABB from the matrix for frustum culling
+            let local_aabb = crate::scene::culling::Aabb::unit_cube();
+            let world_aabb = local_aabb.transform(&matrix);
+
+            let key = (
+                Arc::as_ptr(&mesh.vertex_buffer) as usize,
+                material_slot,
+                is_double_sided,
+            );
+
+            // Shadow pass — all objects
+            shadow_groups
+                .entry(key)
+                .or_insert_with(|| (mesh.clone(), material_slot, Vec::new()))
+                .2
+                .push(matrix);
+
+            // Main pass — frustum culled
+            if frustum.intersects_aabb(&world_aabb) {
+                visible_groups
+                    .entry(key)
+                    .or_insert_with(|| (mesh.clone(), material_slot, Vec::new()))
+                    .2
+                    .push(matrix);
+            }
+        }
+
+        // -- Build visible instanced commands --------------------------------
+        self.world_instanced.clear();
+        self.world_instance_matrices.clear();
+
+        let total_visible: usize = visible_groups.values().map(|(_, _, m)| m.len()).sum();
+        if total_visible > 0 {
+            let prev_bg = instance_buf.bind_group.clone();
+            instance_buf.reserve(device, instance_layout, total_visible);
+            if !Arc::ptr_eq(&prev_bg, &instance_buf.bind_group) {
+                instance_callback(
+                    instance_buf.bind_group.clone(),
+                    shadow_instance_buf.bind_group.clone(),
+                );
+            }
+
+            let mut offset = 0u32;
+            for ((_ptr, _mat_s, double_sided), (mesh, material_slot, mats)) in &visible_groups {
+                let count = mats.len() as u32;
+                self.world_instance_matrices.extend_from_slice(mats);
+
+                let mut max_dist_sq = 0.0f32;
+                for m in mats {
+                    let pos = m.w_axis.truncate();
+                    let d = (pos - camera_eye).length_squared();
+                    if d > max_dist_sq {
+                        max_dist_sq = d;
+                    }
+                }
+
+                self.world_instanced.push(InstancedDrawCommand {
+                    vertex_buffer: mesh.vertex_buffer.clone(),
+                    index_buffer: mesh.index_buffer.clone(),
+                    index_count: mesh.index_count,
+                    vertex_count: mesh.vertex_count,
+                    index_format: mesh.index_format,
+                    first_instance: offset,
+                    instance_count: count,
+                    double_sided: *double_sided,
+                    material_slot: *material_slot,
+                    distance_sq: max_dist_sq,
+                });
+                offset += count;
+            }
+            instance_buf.write_slice(queue, 0, &self.world_instance_matrices);
+        } else {
+            // Ensure instance buffer has space even when empty
+            let prev_bg = instance_buf.bind_group.clone();
+            instance_buf.reserve(device, instance_layout, 1);
+            if !Arc::ptr_eq(&prev_bg, &instance_buf.bind_group) {
+                instance_callback(
+                    instance_buf.bind_group.clone(),
+                    shadow_instance_buf.bind_group.clone(),
+                );
+            }
+        }
+
+        // -- Build shadow instanced commands ---------------------------------
+        self.world_shadow_instanced.clear();
+        self.world_shadow_matrices.clear();
+
+        let total_shadow: usize = shadow_groups.values().map(|(_, _, m)| m.len()).sum();
+        if total_shadow > 0 {
+            let prev_bg = shadow_instance_buf.bind_group.clone();
+            shadow_instance_buf.reserve(device, instance_layout, total_shadow);
+            if !Arc::ptr_eq(&prev_bg, &shadow_instance_buf.bind_group) {
+                instance_callback(
+                    instance_buf.bind_group.clone(),
+                    shadow_instance_buf.bind_group.clone(),
+                );
+            }
+
+            let mut offset = 0u32;
+            for ((_ptr, _mat_s, double_sided), (mesh, material_slot, mats)) in &shadow_groups {
+                let count = mats.len() as u32;
+                self.world_shadow_matrices.extend_from_slice(mats);
+                self.world_shadow_instanced.push(InstancedDrawCommand {
+                    vertex_buffer: mesh.vertex_buffer.clone(),
+                    index_buffer: mesh.index_buffer.clone(),
+                    index_count: mesh.index_count,
+                    vertex_count: mesh.vertex_count,
+                    index_format: mesh.index_format,
+                    first_instance: offset,
+                    instance_count: count,
+                    double_sided: *double_sided,
+                    material_slot: *material_slot,
+                    distance_sq: 0.0,
+                });
+                offset += count;
+            }
+            shadow_instance_buf.write_slice(queue, 0, &self.world_shadow_matrices);
+        }
+    }
+
+    // -----------------------------------------------------------------------
 
     /// Build a `FramePacket` for the current frame.
     ///
     /// If neither the scene nor the camera changed since last frame, the
     /// cached command lists are reused (zero CPU work).
+    ///
+    /// World-object draw commands (ECS-derived) are taken from the caches
+    /// populated by `build_world_commands()`.  Legacy objects still use the
+    /// `legacy_objects` map.
     #[allow(clippy::too_many_arguments)]
     pub fn build(
         &mut self,
@@ -82,7 +356,6 @@ impl FrameBuilder {
         viewport: Viewport,
         camera_packet: CameraPacket,
         legacy_objects: &HashMap<u64, RenderObject>,
-        world_objects: &[Option<RenderObject>],
         instance_buf: &mut InstanceBuffer,
         instance_layout: &wgpu::BindGroupLayout,
         shadow_instance_buf: &mut InstanceBuffer,
@@ -105,7 +378,6 @@ impl FrameBuilder {
                 &mut packet.shadow_instanced_objects,
                 &mut self.shadow_instanced_cache,
             );
-            // Stats are recalculated for simplicity in this path too.
             let stats = self.compute_stats();
             return (packet, stats);
         }
@@ -122,7 +394,7 @@ impl FrameBuilder {
 
         let frustum = Frustum::from_view_proj(&camera_packet.view_proj);
 
-        // -- Legacy objects ---------------------------------------------------
+        // -- Legacy objects (model-buffer path) --------------------------------
         // Shadow casters: all legacy objects regardless of camera frustum
         for obj in legacy_objects.values() {
             self.shadow_scene_cache.push(DrawCommand {
@@ -137,13 +409,11 @@ impl FrameBuilder {
                 distance_sq: 0.0,
             });
         }
-
         // Camera-visible legacy objects
         for obj in legacy_objects.values() {
             if frustum.intersects_aabb(&obj.world_aabb()) {
                 let pos = obj.matrix.w_axis.truncate();
-                let diff = pos - camera_packet.eye;
-                let dist_sq = diff.length_squared();
+                let dist_sq = (pos - camera_packet.eye).length_squared();
                 self.draw_commands_cache.push(DrawCommand {
                     vertex_buffer: obj.mesh.vertex_buffer.clone(),
                     index_buffer: obj.mesh.index_buffer.clone(),
@@ -158,164 +428,29 @@ impl FrameBuilder {
             }
         }
 
-        // -- World objects (instanced) ----------------------------------------
-        type MeshGroupKey = (usize, usize, bool);
-        type MeshGroupVal = (crate::geometry::Mesh, usize, Vec<glam::Mat4>);
+        // -- World objects (ECS-derived instanced commands) --------------------
+        // `build_world_commands` already produced the instance buffers and
+        // populated `world_instanced` / `world_shadow_instanced`.  We just
+        // copy those into the frame's instanced command caches here.
+        //
+        // Note: `build_world_commands` is called by `Renderer::sync_world`
+        // which runs before `build`; by the time we get here the caches are
+        // fresh (the frustum used there was computed from the same view_proj).
+        self.instanced_commands_cache
+            .extend_from_slice(&self.world_instanced);
+        self.shadow_instanced_cache
+            .extend_from_slice(&self.world_shadow_instanced);
 
-        #[cfg(not(target_arch = "wasm32"))]
-        let visible_mesh_groups: HashMap<MeshGroupKey, MeshGroupVal> = world_objects
-            .par_iter()
-            .flatten()
-            .filter(|obj| frustum.intersects_aabb(&obj.world_aabb()))
-            .fold(
-                HashMap::new,
-                |mut map: HashMap<MeshGroupKey, MeshGroupVal>, obj| {
-                    let key = (
-                        Arc::as_ptr(&obj.mesh.vertex_buffer) as usize,
-                        obj.material_slot,
-                        obj.double_sided,
-                    );
-                    map.entry(key)
-                        .or_insert_with(|| (obj.mesh.clone(), obj.material_slot, Vec::new()))
-                        .2
-                        .push(obj.matrix);
-                    map
-                },
-            )
-            .reduce(HashMap::new, |mut a, b| {
-                for (k, (mesh, mat, mats)) in b {
-                    a.entry(k)
-                        .or_insert_with(|| (mesh.clone(), mat, Vec::new()))
-                        .2
-                        .extend(mats);
-                }
-                a
-            });
-
-        #[cfg(target_arch = "wasm32")]
-        let visible_mesh_groups: HashMap<MeshGroupKey, MeshGroupVal> = world_objects
-            .iter()
-            .flatten()
-            .filter(|obj| frustum.intersects_aabb(&obj.world_aabb()))
-            .fold(HashMap::new(), |mut map, obj| {
-                let key = (
-                    Arc::as_ptr(&obj.mesh.vertex_buffer) as usize,
-                    obj.material_slot,
-                    obj.double_sided,
-                );
-                map.entry(key)
-                    .or_insert_with(|| (obj.mesh.clone(), obj.material_slot, Vec::new()))
-                    .2
-                    .push(obj.matrix);
-                map
-            });
-
-        let mut total_visible = 0;
-        for (_, (_, _, mats)) in &visible_mesh_groups {
-            total_visible += mats.len();
-        }
-
-        // Upload visible matrices
-        if total_visible > 0 {
-            let prev_bg = instance_buf.bind_group.clone();
-            instance_buf.reserve(device, instance_layout, total_visible);
-            if !Arc::ptr_eq(&prev_bg, &instance_buf.bind_group) {
-                instance_callback(
-                    instance_buf.bind_group.clone(),
-                    shadow_instance_buf.bind_group.clone(),
-                );
-            }
-
-            let mut offset = 0;
-            self.instance_matrix_scratch.clear();
-            self.instance_matrix_scratch.reserve(total_visible);
-
-            for ((_key, _mat, double_sided), (mesh, material_slot, mats)) in visible_mesh_groups {
-                let count = mats.len() as u32;
-                self.instance_matrix_scratch.extend_from_slice(&mats);
-
-                let mut max_dist_sq = 0.0;
-                for m in &mats {
-                    let pos = m.w_axis.truncate();
-                    let diff = pos - camera_packet.eye;
-                    let d = diff.length_squared();
-                    if d > max_dist_sq {
-                        max_dist_sq = d;
-                    }
-                }
-
-                self.instanced_commands_cache.push(InstancedDrawCommand {
-                    vertex_buffer: mesh.vertex_buffer.clone(),
-                    index_buffer: mesh.index_buffer.clone(),
-                    index_count: mesh.index_count,
-                    vertex_count: mesh.vertex_count,
-                    index_format: mesh.index_format,
-                    first_instance: offset,
-                    instance_count: count,
-                    double_sided,
-                    material_slot,
-                    distance_sq: max_dist_sq,
-                });
-
-                offset += count;
-            }
-
-            instance_buf.write_slice(queue, 0, &self.instance_matrix_scratch);
-        }
-
-        // -- Shadow-caster instanced list (World objects, no camera cull) ----
-        {
-            self.shadow_matrix_scratch.clear();
-            let mut shadow_groups: HashMap<MeshGroupKey, MeshGroupVal> = HashMap::new();
-            for obj in world_objects.iter().flatten() {
-                let key = (
-                    Arc::as_ptr(&obj.mesh.vertex_buffer) as usize,
-                    obj.material_slot,
-                    obj.double_sided,
-                );
-                shadow_groups
-                    .entry(key)
-                    .or_insert_with(|| (obj.mesh.clone(), obj.material_slot, Vec::new()))
-                    .2
-                    .push(obj.matrix);
-            }
-
-            let total_shadow = shadow_groups
-                .values()
-                .map(|(_, _, m)| m.len())
-                .sum::<usize>();
-            if total_shadow > 0 {
-                let prev_bg = shadow_instance_buf.bind_group.clone();
-                shadow_instance_buf.reserve(device, instance_layout, total_shadow);
-                if !Arc::ptr_eq(&prev_bg, &shadow_instance_buf.bind_group) {
-                    instance_callback(
-                        instance_buf.bind_group.clone(),
-                        shadow_instance_buf.bind_group.clone(),
-                    );
-                }
-
-                let mut offset = 0u32;
-                for ((_ptr, _mat, double_sided), (mesh, material_slot, mats)) in shadow_groups {
-                    let count = mats.len() as u32;
-                    self.shadow_matrix_scratch.extend_from_slice(&mats);
-                    self.shadow_instanced_cache.push(InstancedDrawCommand {
-                        vertex_buffer: mesh.vertex_buffer.clone(),
-                        index_buffer: mesh.index_buffer.clone(),
-                        index_count: mesh.index_count,
-                        vertex_count: mesh.vertex_count,
-                        index_format: mesh.index_format,
-                        first_instance: offset,
-                        instance_count: count,
-                        double_sided,
-                        material_slot,
-                        distance_sq: 0.0,
-                    });
-                    offset += count;
-                }
-
-                shadow_instance_buf.write_slice(queue, 0, &self.shadow_matrix_scratch);
-            }
-        }
+        // Ensure the instance buffers have been notified of any resize; the
+        // callback is already called inside `build_world_commands` if needed.
+        let _ = (
+            device,
+            queue,
+            instance_buf,
+            instance_layout,
+            shadow_instance_buf,
+            instance_callback,
+        );
 
         let stats = self.compute_stats();
 

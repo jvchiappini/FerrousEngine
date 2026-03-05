@@ -60,6 +60,7 @@ pub struct DrawCommand {
 /// their matrices are packed contiguously in the `InstanceBuffer`.
 ///
 /// The shader reads `instances[instance_index]` from the storage buffer.
+#[derive(Clone)]
 pub struct InstancedDrawCommand {
     pub vertex_buffer: Arc<wgpu::Buffer>,
     pub index_buffer: Arc<wgpu::Buffer>,
