@@ -6,12 +6,11 @@
 use ferrous_ecs::prelude::{Entity, World as EcsWorld};
 use glam::{Vec3};
 
-use crate::scene::{MaterialDescriptor, MaterialHandle, MATERIAL_DEFAULT};
+use crate::scene::{MaterialDescriptor, MaterialHandle};
 use crate::transform::Transform;
-use crate::color::Color;
 
 use super::types::{
-    Element, ElementKind, Handle, MaterialComponent, PointLightComponent, next_id,
+    Element, ElementKind, Handle, PointLightComponent, next_id,
 };
 use super::builder::EntityBuilder;
 

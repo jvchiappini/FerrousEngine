@@ -7,7 +7,7 @@
 use crate::color::Color;
 use crate::scene::{MaterialDescriptor, MaterialHandle};
 
-use super::types::{Element, ElementKind, Handle, MaterialComponent};
+use super::types::{Element, Handle, MaterialComponent};
 use super::scene::World;
 
 impl World {

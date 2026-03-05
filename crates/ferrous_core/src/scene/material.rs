@@ -120,8 +120,8 @@ impl Default for RenderStyle {
 
 // ── Material component ────────────────────────────────────────────────────
 
-use ferrous_ecs::component::Component;
 use crate::color::Color;
+use ferrous_ecs::component::Component;
 
 /// High-level material component.  Attach this to any world entity to control
 /// how it is shaded.
@@ -372,7 +372,10 @@ mod tests {
     #[test]
     fn material_cel_shaded_builder_sets_style() {
         let mat = Material::cel_shaded().build();
-        assert!(matches!(mat.style_override, Some(RenderStyle::CelShaded { .. })));
+        assert!(matches!(
+            mat.style_override,
+            Some(RenderStyle::CelShaded { .. })
+        ));
     }
 
     #[test]

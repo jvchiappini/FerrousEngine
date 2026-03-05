@@ -246,7 +246,12 @@ mod tests {
         // sRGB 0.5 in linear should be ~0.5^2.2 ≈ 0.2176
         let c = Color::srgb(0.5, 0.5, 0.5);
         let expected = 0.5_f32.powf(2.2);
-        assert!((c.r - expected).abs() < 1e-5, "r={}, expected={}", c.r, expected);
+        assert!(
+            (c.r - expected).abs() < 1e-5,
+            "r={}, expected={}",
+            c.r,
+            expected
+        );
     }
 
     #[test]

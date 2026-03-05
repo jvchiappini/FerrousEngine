@@ -5,7 +5,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use ferrous_ecs::prelude::Component;
 use glam::Vec3;
 
-use crate::color::Color;
 use crate::scene::{MaterialDescriptor, MaterialHandle, MATERIAL_DEFAULT};
 use crate::transform::Transform;
 
@@ -116,10 +115,3 @@ impl Element {
     }
 }
 
-// ── Convenience colour helper ─────────────────────────────────────────────────
-
-/// Convert a `Color` to a `[f32; 4]` base-color array.
-#[inline]
-pub(super) fn color_to_base(color: Color) -> [f32; 4] {
-    color.to_array()
-}
