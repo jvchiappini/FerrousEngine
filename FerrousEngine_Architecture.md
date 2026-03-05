@@ -1,6 +1,6 @@
 # FerrousEngine — Architecture Analysis & Modernization Roadmap
 
-> **Status:** IN PROGRESS — Phase 1 ✅ complete, Phase 3 ✅ complete.
+> **Status:** IN PROGRESS — Phase 1 ✅, Phase 2 ✅, Phase 3 ✅ complete.
 > **Date:** March 2026  
 > **Analyst:** GitHub Copilot (Gemini 3 Flash)
 
@@ -16,66 +16,42 @@
 #### ✅ Phase 1 — `ferrous_ecs` crate (100% complete)
 *No changes since last session.*
 
+#### ✅ Phase 2 — ECS Integration & Bridge (100% complete)
+*   **`ferrous_core::World`** now uses `ferrous_ecs::World` as its backend.
+*   **Entity Bridge**: Maintains a mapping between legacy incremental IDs and ECS `Entity` handles to support the editor and existing logic.
+*   **Component Syncing**: Automatic synchronization for `Transform`, `MaterialComponent`, and `ElementKind`.
+*   **Renderer Sync**: `ferrous_renderer` now uses ECS queries (`query3`) to extract renderable data, achieving O(n) performance and better cache locality.
+*   **Stability**: Fixed critical heap corruption in `spawn` and restored GLTF material propagation.
+
 #### ✅ Phase 3 — Renderer struct decomposition (100% complete)
+*No changes since last session.*
 
-This phase aimed to break down the monolithic `Renderer` struct (previously ~1760 lines) into modular systems.
-
-**Key Components Extracted:**
-- **`CameraSystem`**: Manages `Camera` state, `Orbit` controls, and `GpuCamera` uniform buffers. Moves math and input handling out of the main renderer.
-- **`GizmoSystem`**: Encapsulates all debug line/shape drawing logic. Owns its own `GizmoPipeline` and vertex-building logic.
-- **`FrameBuilder`**: **(Extracted in Session 4)** Handles the "Prepare" phase logic.
-  - Performs frustum culling for both legacy and world (instanced) objects.
-  - Manages `InstanceBuffer` and `ModelBuffer` allocations.
-  - **Closure Proxy Pattern**: Implemented a unified `instance_callback(&mut FnMut(Arc<BindGroup>, Arc<BindGroup>))` to allow `FrameBuilder` to trigger instance buffer rebinds in `WorldPass` and `PrePass` without violating Rust's borrow checker (avoids dual mutable borrows of the Pass structs).
-
-**`Renderer` struct in `lib.rs` (Current State):**
-- **Size**: Reduced from >1700 lines to **~1100 lines**.
-- **Role**: Now acts strictly as an **orchestrator**.
-- **`do_render`**: Refactored to coordinate the high-level flow:
-  1. `CameraSystem` sync.
-  2. `FrameBuilder::build` (Culling + Instancing + Buffer Uploads).
-  3. `PrePass` (Depth/Normals).
-  4. `SSAO` chain (`Pass` -> `Blur` -> `WorldPass` update).
-  5. `WorldPass` (PBR Opaque/Blended).
-  6. `GizmoSystem` (Debug overlays).
-  7. `PostProcess` (Tone mapping/Bloom).
-  8. `UiPass` / `ExtraPasses`.
-- **Packet Management**: Uses `FrameBuilder::reclaim` to recycle command vectors, maintaining high performance.
-
-**Bug Fixes & API Polish:**
-- Fixed `SSAO` pass field mismatches (`SsaoBlurPass` fields and `ShadowResources` structure).
-- Corrected `Camera` API usage; `CameraPacket` is now built manually in `lib.rs` to keep `ferrous_core` free of renderer-specific types.
-- Resolved "unused mut" and "unused import" warnings across `lib.rs`, `frame_builder.rs`, and `camera.rs`.
-
-**Build status:** `cargo build` — ✅ `Finished` (0 errors, 0 logic-breaking warnings).
+#### 🏗️ Phase 4 — System Logic (In Progress)
+*   **`TimeSystem`**: Implemented and integrated into `ferrous_app`. It now updates the global `TimeClock` resource via the ECS scheduler.
+*   **`TransformSystem`**: Initial placeholder created; ready for physics/animation logic.
+*   **`SystemScheduler`**: Integrated into the main `Runner` loop in `ferrous_app`. The engine now runs a sequence of ECS systems before every update/render.
 
 ---
 
 ### What to do next (in priority order)
 
-#### 🔴 Next immediate task — Phase 2: ECS Integration
-
-Now that the Renderer is modular and `do_render` is clean, we can move the scene data into the ECS.
-
-**2.1 — Bridge `ferrous_core::scene::World` to `ferrous_ecs`**
-- Add `ferrous_ecs` as a dependency to `ferrous_core`.
-- Replace the `Vec<Option<Element>>` in `World` with a `ferrous_ecs::World`.
-- Define `TransformComponent`, `MeshComponent`, `MaterialComponent`, and `LightComponent`.
-- **Goal**: Keep the public `World` API the same (e.g., `world.spawn_cube()`) but have it spawn an entity with the correct components internally.
-
-**2.2 — Update Renderer to Query ECS**
-- Modify `FrameBuilder::build` to take a reference to the ECS `World`.
-- Replace the iteration over `world_objects` with an ECS query (e.g., `world.query::<(&Transform, &MeshHandle, &MaterialHandle)>()`).
-- This will allow the engine to scale to thousands of entities with mixed components.
+#### 🔴 Next immediate task — Phase 4: System Logic Expansion
+- **Physics Integration**: Use `TransformSystem` or a new `PhysicsSystem` to integrate a physics engine (e.g., `rapier3d`).
+- **Animation System**: Implement a system that updates `Transform` components based on keyframes.
+- **Scripting/Behavior**: Add a `BehaviorSystem` that allows users to attach custom logic to entities via the ECS.
 
 #### 🟡 Phase 9 — Editor Systemization
 The `ferrous_editor` crate has some coupling with `Renderer` internals. After Phase 2, the editor should be refactored to use ECS systems for entity inspection and manipulation.
+- **Entity Inspector**: Update to use `world.ecs.get_mut::<T>(entity)` for editing components.
+- **Scene Hierarchy**: Sync with the ECS archetype structure.
 
 ---
 
-#### 🟢 Phase 4+ (future)
-
-Phases 4–11 not yet started. See roadmap below.
+#### 🟢 Phase 5+ (future)
+- **Phase 5**: Asset Pipeline Refresh (Async Loading, Hot Reloading).
+- **Phase 6**: Multithreading (Parallel ECS Scheduling).
+- **Phase 7**: Shadow Map Cascades.
+- **Phase 8**: GPU Frustum Culling.
 
 ---
 
@@ -83,24 +59,19 @@ Phases 4–11 not yet started. See roadmap below.
 
 | File | Purpose |
 |------|---------|
-| `crates/ferrous_ecs/src/` | New ECS crate — complete |
-| `crates/ferrous_renderer/src/lib.rs` | ~1555 lines — main renderer, still needs decomposition |
-| `crates/ferrous_renderer/src/camera_system.rs` | NEW — CameraSystem |
-| `crates/ferrous_renderer/src/frame_builder.rs` | NEW — FrameBuilder (per-frame caches) |
-| `crates/ferrous_renderer/src/gizmo_system.rs` | NEW — GizmoSystem (pipeline + vertex baking + render pass) |
-| `crates/ferrous_renderer/src/passes/world_pass.rs` | PBR world rendering pass |
-| `crates/ferrous_renderer/src/passes/prepass.rs` | Depth+normal prepass |
-| `crates/ferrous_core/src/scene/world.rs` | Old entity container (~923 lines) — will be wrapped |
-| `crates/ferrous_editor/src/app.rs` | Editor main — 907 lines, needs Phase 9 split |
-| `crates/ferrous_app/src/runner.rs` | winit loop — 636 lines |
-| `FerrousEngine_Architecture.md` | This file — update agent state section each session |
+| `crates/ferrous_ecs/src/` | Archetype ECS Core |
+| `crates/ferrous_core/src/scene/world.rs` | Legacy Bridge + Entity Management |
+| `crates/ferrous_core/src/scene/systems.rs` | NEW — ECS Systems (`TimeSystem`, etc.) |
+| `crates/ferrous_renderer/src/lib.rs` | Main Renderer Orchestrator |
+| `crates/ferrous_app/src/runner.rs` | Main Loop — Now runs `SystemScheduler` |
+| `crates/ferrous_editor/src/app.rs` | Editor UI — Pending ECS refactor |
 
 ### How to verify nothing is broken
 
-```
-cargo build              # full workspace — must show Finished with zero errors
-cargo test -p ferrous_ecs  # must show 21+5 tests passing
-cargo run -p ferrous_editor  # editor must launch and render correctly
+```powershell
+cargo build --release
+cargo test -p ferrous_ecs
+cargo run --release -p ferrous_editor
 ```
 
 ---

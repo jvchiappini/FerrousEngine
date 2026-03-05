@@ -21,7 +21,7 @@ use crate::entity::Entity;
 /// Internally it is a raw byte array with a known stride (`info.size`).
 /// Capacity grows like a `Vec` (doubling).
 #[derive(Debug)]
-pub(crate) struct ComponentColumn {
+pub struct ComponentColumn {
     pub(crate) info: ComponentInfo,
     /// Raw byte storage.  Length == `len * info.size`.
     data: *mut u8,

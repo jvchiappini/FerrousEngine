@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 ferrous_renderer = { path = "../ferrous_renderer" }
 ferrous_core = { path = "../ferrous_core" }
+ferrous_ecs = { path = "../ferrous_ecs" }
 winit = "0.30"
 ferrous_gui = { path = "../ferrous_gui" }
 wgpu = "23.0"

@@ -15,7 +15,6 @@ use crate::geometry::primitives::{
     cube::cube as create_cube, quad::quad as create_quad, sphere::sphere as create_sphere,
 };
 use crate::scene::RenderObject;
-use crate::scene::object::RenderObject as Object; // just in case for disambiguation if needed
 
 /// Update `objects` so that it mirrors the renderable entities in `world`.
 ///

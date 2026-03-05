@@ -4,8 +4,8 @@
 //! struct.  Call `.matrix()` to get the combined model matrix for upload
 //! to the GPU.
 
-use glam::{Mat4, Quat, Vec3};
 use ferrous_ecs::prelude::Component;
+use glam::{Mat4, Quat, Vec3};
 
 /// World-space transform component.
 ///

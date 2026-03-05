@@ -32,8 +32,8 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use ferrous_ecs::prelude::{Component, Entity, World as EcsWorld};
 use glam::{Quat, Vec3};
-use ferrous_ecs::prelude::{Component, World as EcsWorld, Entity};
 
 // colour utilities remain available for auxiliary code (UI, helpers), but
 // the scene elements no longer store a simple `Color`.  PBR materials have
@@ -304,7 +304,7 @@ impl<'a> EntityBuilder<'a> {
     /// Finalise the builder, insert the entity, and return its handle.
     pub fn build(self) -> Handle {
         let id = self.element.id;
-        
+
         // Spawn in ECS with initial components
         let entity = self.world.ecs.spawn((
             self.element.transform,
@@ -316,7 +316,7 @@ impl<'a> EntityBuilder<'a> {
         if let Some(pl) = self.element.point_light {
             self.world.ecs.insert(entity, pl);
         }
-        
+
         // Internal mapping
         let idx = id as usize;
         if idx >= self.world.entities.len() {
@@ -338,7 +338,7 @@ impl<'a> EntityBuilder<'a> {
 pub struct World {
     entities: Vec<Option<Element>>,
     count: usize,
-    
+
     /// The new ECS world!
     pub ecs: EcsWorld,
     /// Map from legacy Handle ID to ECS Entity.
@@ -464,7 +464,11 @@ impl World {
     ) -> Handle {
         self.spawn(name)
             .with_position(position)
-            .with_point_light(PointLightComponent { color, intensity, radius })
+            .with_point_light(PointLightComponent {
+                color,
+                intensity,
+                radius,
+            })
             .invisible()
             .build()
     }

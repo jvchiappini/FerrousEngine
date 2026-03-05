@@ -78,6 +78,7 @@ pub use input::{InputState, KeyCode, MouseButton};
 
 // Scene
 pub use scene::{World, Element, Handle, ElementKind, PointLightComponent};
+pub use scene::{TimeSystem, TransformSystem};
 pub use scene::{Camera, CameraUniform, Controller};
 
 // Context

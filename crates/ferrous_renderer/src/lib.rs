@@ -1051,7 +1051,7 @@ impl Renderer {
             &self.context.device,
             encoder,
             &self.world_pass.hdr_texture.view,
-            &self.world_pass.shadow_resources.view, // Fallback placeholder if depth view is missing
+            &self.render_target.depth.view, // Use real depth target instead of shadow map
             &self.camera_system.gpu.bind_group,
         );
 

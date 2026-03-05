@@ -67,6 +67,7 @@ impl Time {
 ///
 /// The runner creates one of these at startup and calls `tick()` at the
 /// beginning of every frame.
+#[derive(Debug, Clone, Copy)]
 pub struct TimeClock {
     start: Instant,
     last_tick: Instant,

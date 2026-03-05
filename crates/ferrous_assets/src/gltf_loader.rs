@@ -71,7 +71,7 @@ pub fn load_gltf(path: &Path) -> Result<AssetModel> {
         );
         let mut width = img.width;
         let mut height = img.height;
-        let mut pixels = match img.format {
+        let pixels = match img.format {
             GltfFormat::R8G8B8 => {
                 let mut rgba = Vec::with_capacity((width as usize) * (height as usize) * 4);
                 for chunk in img.pixels.chunks(3) {
@@ -374,7 +374,7 @@ pub fn load_gltf(path: &Path) -> Result<AssetModel> {
                 .map(|r| r.into_u32().collect())
                 .unwrap_or_default();
 
-            let tangents = if let Some(mut t) = reader
+            let tangents = if let Some(t) = reader
                 .read_tangents()
                 .map(|iter| iter.collect::<Vec<[f32; 4]>>())
             {

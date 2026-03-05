@@ -1,5 +1,6 @@
 use ferrous_assets::Font;
-use ferrous_core::{glam::Vec3, InputState, TimeClock, Viewport, World};
+use ferrous_core::{glam::Vec3, InputState, TimeClock, Viewport, World, TimeSystem, TransformSystem};
+use ferrous_ecs::prelude::{ResourceMap, SystemScheduler};
 use ferrous_gui::{GuiBatch, TextBatch, Ui};
 use std::sync::Arc;
 use std::time::Duration;
@@ -60,10 +61,18 @@ struct Runner<A: FerrousApp> {
     /// Timestamp of the last received window event (e.g. input), used to determine
     /// if the application is idle and should stop continuous rendering.
     last_action_time: Instant,
+    /// ECS system scheduler.
+    systems: SystemScheduler,
+    /// Global resources for the ECS world.
+    resources: ResourceMap,
 }
 
 impl<A: FerrousApp> Runner<A> {
     fn new(app: A, config: AppConfig) -> Self {
+        let mut systems = SystemScheduler::new();
+        systems.add(TimeSystem);
+        systems.add(TransformSystem);
+
         Self {
             app,
             config,
@@ -90,6 +99,8 @@ impl<A: FerrousApp> Runner<A> {
             last_frame: Instant::now(),
             next_frame_deadline: None,
             last_action_time: Instant::now(),
+            systems,
+            resources: ResourceMap::new(),
         }
     }
 
@@ -193,9 +204,12 @@ impl<A: FerrousApp> Runner<A> {
         }
 
         // Advance the frame clock
-        let time = self.clock.tick();
+        self.resources.insert(self.clock);
+        self.systems.run_all(&mut self.world.ecs, &mut self.resources);
+        self.clock = *self.resources.get::<TimeClock>().unwrap();
+        let time = self.clock.peek();
 
-        // â”€â”€ 1. UPDATE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── 1. UPDATE ────────────────────────────────────────────────────────
         {
             let backend = gfx.renderer.context.backend;
             let mut ctx = AppContext {
