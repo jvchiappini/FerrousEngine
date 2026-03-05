@@ -5,6 +5,9 @@ pub mod world;
 pub mod gizmo;
 pub mod pbr;
 pub mod shadow;
+pub mod cel;
+pub mod outline;
+pub mod flat;
 
 pub use compute::ComputePipeline;
 pub use instancing::InstancingPipeline;
@@ -13,3 +16,6 @@ pub use world::WorldPipeline;
 pub use gizmo::GizmoPipeline;
 pub use pbr::PbrPipeline;
 pub use shadow::ShadowPipeline;
+pub use cel::CelPipeline;
+pub use outline::OutlinePipeline;
+pub use flat::FlatPipeline;

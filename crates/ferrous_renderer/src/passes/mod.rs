@@ -6,6 +6,9 @@ pub mod ssao_pass;
 pub mod ssao_blur_pass;
 pub mod ui_pass;
 pub mod world_pass;
+pub mod cel_pass;
+pub mod outline_pass;
+pub mod flat_pass;
 
 pub use compute_pass::ComputePass;
 pub use prepass::PrePass;
@@ -15,3 +18,6 @@ pub use ssao_pass::SsaoPass;
 pub use ssao_blur_pass::SsaoBlurPass;
 pub use ui_pass::UiPass;
 pub use world_pass::WorldPass;
+pub use cel_pass::{CelFrameData, CelShadedPass};
+pub use outline_pass::{OutlineFrameData, OutlinePass};
+pub use flat_pass::{FlatFrameData, FlatShadedPass};

@@ -58,7 +58,7 @@ use materials::MaterialRegistry;
 // remain public even though the local `materials` module imports them
 // privately.  this avoids the privacy errors encountered when the compiler
 // treated the earlier exports as private imports.
-pub use ferrous_core::scene::{AlphaMode, MaterialDescriptor, MaterialHandle, MATERIAL_DEFAULT};
+pub use ferrous_core::scene::{AlphaMode, MaterialDescriptor, MaterialHandle, RenderStyle, MATERIAL_DEFAULT};
 
 // texture handles/constants are owned by the texture registry but we expose
 // them here so end users can construct `MaterialDescriptor` values without
@@ -76,7 +76,11 @@ use ferrous_gui::TextBatch;
 
 use camera::controller::OrbitState;
 use graph::frame_packet::{CameraPacket, DrawCommand};
-use passes::{PostProcessPass, PrePass, SsaoBlurPass, SsaoPass, UiPass, WorldPass};
+use passes::{
+    CelShadedPass, FlatShadedPass, OutlinePass, PostProcessPass, PrePass, SsaoBlurPass, SsaoPass,
+    UiPass, WorldPass,
+};
+use passes::{CelFrameData, FlatFrameData, OutlineFrameData};
 use pipeline::{PbrPipeline, PipelineLayouts};
 use resources::ModelBuffer;
 use resources::SsaoResources;
@@ -195,6 +199,21 @@ pub struct Renderer {
     pub ssao_resources: SsaoResources,
     /// When true, SSAO is computed and applied to the IBL ambient term.
     pub ssao_enabled: bool,
+
+    // -- Render style (Phase 7) -----------------------------------------------
+    /// Active render style.  Defaults to `RenderStyle::Pbr`.
+    pub render_style: RenderStyle,
+    /// Cel-shaded pass (active when `render_style == CelShaded`).
+    cel_pass: Option<CelShadedPass>,
+    /// Inverted-hull outline pass (active when `CelShaded { outline_width > 0 }`).
+    outline_pass: Option<OutlinePass>,
+    /// Flat-shaded pass (active when `render_style == FlatShaded`).
+    flat_pass: Option<FlatShadedPass>,
+    /// Copy of pipeline layouts so we can construct style passes at runtime
+    /// without borrowing `Renderer::new` locals.
+    pipeline_layouts: PipelineLayouts,
+    /// Cached directional light for per-frame packet injection.
+    current_dir_light: crate::resources::DirectionalLightUniform,
 }
 
 // ---------------------------------------------------------------------------
@@ -446,6 +465,12 @@ impl Renderer {
             ssao_blur_pass,
             ssao_resources,
             ssao_enabled: true,
+            render_style: RenderStyle::Pbr,
+            cel_pass: None,
+            outline_pass: None,
+            flat_pass: None,
+            pipeline_layouts: layouts,
+            current_dir_light: crate::resources::DirectionalLightUniform::default(),
         }
     }
 
@@ -482,6 +507,7 @@ impl Renderer {
             &self.material_registry.bind_group_table(),
             &self.material_registry,
         );
+        self.sync_style_material_table();
         handle
     }
 
@@ -506,6 +532,7 @@ impl Renderer {
             &self.material_registry.bind_group_table(),
             &self.material_registry,
         );
+        self.sync_style_material_table();
         handle
     }
 
@@ -530,6 +557,7 @@ impl Renderer {
             &self.material_registry.bind_group_table(),
             &self.material_registry,
         );
+        self.sync_style_material_table();
         handle
     }
 
@@ -560,6 +588,7 @@ impl Renderer {
             &self.material_registry.bind_group_table(),
             &self.material_registry,
         );
+        self.sync_style_material_table();
     }
 
     /// Update the scalar parameters of an existing material.  Only the
@@ -604,8 +633,80 @@ impl Renderer {
         uniform.direction = direction;
         uniform.color = color;
         uniform.intensity = intensity;
+        // Cache for style-pass frame data injection.
+        self.current_dir_light = uniform;
         // delegate to world pass so that the buffer is encapsulated
         self.world_pass.update_light(&self.context.queue, uniform);
+    }
+
+    /// Switch to a new render style.
+    ///
+    /// * `RenderStyle::Pbr` — drops all style passes; the default `WorldPass` is used.
+    /// * `RenderStyle::CelShaded` — creates `CelShadedPass` + optional `OutlinePass`.
+    /// * `RenderStyle::FlatShaded` — creates `FlatShadedPass`.
+    ///
+    /// The method propagates the current instance buffer and material table to
+    /// newly-created passes immediately so they are ready to draw on the next frame.
+    pub fn set_render_style(&mut self, style: RenderStyle) {
+        let hdr_format = crate::render_target::HdrTexture::FORMAT;
+        match &style {
+            RenderStyle::Pbr => {
+                self.cel_pass = None;
+                self.outline_pass = None;
+                self.flat_pass = None;
+            }
+            RenderStyle::CelShaded { toon_levels, outline_width } => {
+                let toon_levels = *toon_levels;
+                let outline_width = *outline_width;
+
+                let mut cp = CelShadedPass::new(
+                    &self.context.device,
+                    &self.pipeline_layouts,
+                    self.camera_system.gpu.bind_group.clone(),
+                    hdr_format,
+                    self.sample_count,
+                    toon_levels,
+                    outline_width,
+                );
+                cp.set_instance_buffer(self.instance_buf.bind_group.clone());
+                cp.set_material_table(&self.material_registry.bind_group_table());
+                self.cel_pass = Some(cp);
+
+                if outline_width > 0.0 {
+                    let mut op = OutlinePass::new(
+                        &self.context.device,
+                        &self.pipeline_layouts,
+                        self.camera_system.gpu.bind_group.clone(),
+                        hdr_format,
+                        self.sample_count,
+                        toon_levels,
+                        outline_width,
+                        [0.0, 0.0, 0.0, 1.0],
+                    );
+                    op.set_instance_buffer(self.instance_buf.bind_group.clone());
+                    op.set_material_table(&self.material_registry.bind_group_table());
+                    self.outline_pass = Some(op);
+                } else {
+                    self.outline_pass = None;
+                }
+                self.flat_pass = None;
+            }
+            RenderStyle::FlatShaded => {
+                let mut fp = FlatShadedPass::new(
+                    &self.context.device,
+                    &self.pipeline_layouts,
+                    self.camera_system.gpu.bind_group.clone(),
+                    hdr_format,
+                    self.sample_count,
+                );
+                fp.set_instance_buffer(self.instance_buf.bind_group.clone());
+                fp.set_material_table(&self.material_registry.bind_group_table());
+                self.flat_pass = Some(fp);
+                self.cel_pass = None;
+                self.outline_pass = None;
+            }
+        }
+        self.render_style = style;
     }
 
     /// Upload an explicit list of point lights to the GPU storage buffer.
@@ -919,6 +1020,33 @@ impl Renderer {
 
     // -- Private helpers ------------------------------------------------------
 
+    /// Propagates the current material bind-group table to all active style passes.
+    fn sync_style_material_table(&mut self) {
+        let table = self.material_registry.bind_group_table();
+        if let Some(p) = &mut self.cel_pass {
+            p.set_material_table(&table);
+        }
+        if let Some(p) = &mut self.outline_pass {
+            p.set_material_table(&table);
+        }
+        if let Some(p) = &mut self.flat_pass {
+            p.set_material_table(&table);
+        }
+    }
+
+    /// Propagates a new instance-buffer bind group to all active style passes.
+    fn sync_style_instance_buffer(&mut self, bg: Arc<wgpu::BindGroup>) {
+        if let Some(p) = &mut self.cel_pass {
+            p.set_instance_buffer(bg.clone());
+        }
+        if let Some(p) = &mut self.outline_pass {
+            p.set_instance_buffer(bg.clone());
+        }
+        if let Some(p) = &mut self.flat_pass {
+            p.set_instance_buffer(bg);
+        }
+    }
+
     fn do_render(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -960,6 +1088,8 @@ impl Renderer {
                 },
             )
         };
+        // Propagate the (possibly-reallocated) instance buffer to style passes.
+        self.sync_style_instance_buffer(self.instance_buf.bind_group.clone());
         self.render_stats = stats;
 
         if let Some(b) = ui_batch {
@@ -1049,6 +1179,72 @@ impl Renderer {
             Some(&self.render_target.depth.view),
             &packet,
         );
+
+        // -- 3b. Render Style Passes ------------------------------------------
+        // Inject per-frame data for whichever style is active, then run its
+        // pass(es).  All style passes render into the same HDR texture
+        // (LoadOp::Load) so they composite on top of the world geometry.
+        match &self.render_style {
+            RenderStyle::CelShaded { toon_levels, outline_width } => {
+                let toon_levels = *toon_levels;
+                let outline_width = *outline_width;
+                packet.insert(CelFrameData {
+                    light: self.current_dir_light,
+                    toon_levels,
+                    outline_width,
+                });
+                if outline_width > 0.0 {
+                    packet.insert(OutlineFrameData {
+                        light: self.current_dir_light,
+                        toon_levels,
+                        outline_width,
+                        color: [0.0, 0.0, 0.0, 1.0],
+                    });
+                }
+                if let Some(p) = &mut self.cel_pass {
+                    p.prepare(&self.context.device, &self.context.queue, &packet);
+                    p.execute(
+                        &self.context.device,
+                        &self.context.queue,
+                        encoder,
+                        &self.world_pass.hdr_texture.view,
+                        None,
+                        Some(&self.render_target.depth.view),
+                        &packet,
+                    );
+                }
+                if outline_width > 0.0 {
+                    if let Some(p) = &mut self.outline_pass {
+                        p.prepare(&self.context.device, &self.context.queue, &packet);
+                        p.execute(
+                            &self.context.device,
+                            &self.context.queue,
+                            encoder,
+                            &self.world_pass.hdr_texture.view,
+                            None,
+                            Some(&self.render_target.depth.view),
+                            &packet,
+                        );
+                    }
+                }
+            }
+            RenderStyle::FlatShaded => {
+                packet.insert(FlatFrameData { light: self.current_dir_light });
+                if let Some(p) = &mut self.flat_pass {
+                    p.prepare(&self.context.device, &self.context.queue, &packet);
+                    p.execute(
+                        &self.context.device,
+                        &self.context.queue,
+                        encoder,
+                        &self.world_pass.hdr_texture.view,
+                        None,
+                        Some(&self.render_target.depth.view),
+                        &packet,
+                    );
+                }
+            }
+            RenderStyle::Pbr => {}
+        }
 
         // -- 4. Gizmo Pass -----------------------------------------------------
         self.gizmo_system.execute(

@@ -47,4 +47,4 @@ pub use gizmo::axis_vector;
 // material types are also part of the scene API; they live here so that the
 // renderer can depend on `ferrous_core` while client code can still build
 // descriptors without pulling in the renderer crate.
-pub use material::{AlphaMode, MaterialDescriptor, MaterialHandle, MATERIAL_DEFAULT};
+pub use material::{AlphaMode, MaterialDescriptor, MaterialHandle, RenderStyle, MATERIAL_DEFAULT};

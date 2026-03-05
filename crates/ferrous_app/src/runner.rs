@@ -398,6 +398,8 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
             gfx.renderer.set_viewport(self.viewport);
             gfx.renderer
                 .set_clear_color(self.config.background_color.to_wgpu());
+            gfx.renderer
+                .set_render_style(self.config.render_style.clone());
 
             // Font loading: font_bytes takes priority (works on all platforms).
             if let Some(bytes) = self.config.font_bytes {
@@ -470,6 +472,7 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
             let vp = self.viewport;
             let font_bytes = self.config.font_bytes;
             let hdri_path = self.config.hdri_path.clone();
+            let render_style = self.config.render_style.clone();
 
             // Clone the font out of the runner so we can set it from the async block.
             // We use a second Rc<RefCell> slot to pass the font back.
@@ -490,6 +493,7 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                 .await;
                 gfx.renderer.set_clear_color(bg);
                 gfx.renderer.set_viewport(vp);
+                gfx.renderer.set_render_style(render_style);
 
                 if let Some(bytes) = font_bytes {
                     let font = Font::load_bytes(

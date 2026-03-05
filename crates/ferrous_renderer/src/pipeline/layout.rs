@@ -34,6 +34,24 @@ pub struct PipelineLayouts {
     /// is simultaneously used as `DEPTH_STENCIL_WRITE` — which wgpu forbids
     /// as conflicting exclusive usages within a render pass.
     pub shadow_lights: Arc<wgpu::BindGroupLayout>,
+    /// group(3) for cel/outline passes.
+    ///
+    /// Bindings:
+    ///   0  — directional light uniform (same as `lights`)
+    ///   10 — `CelParams` { toon_levels, outline_width, _pad×2 }
+    pub cel_lights: Arc<wgpu::BindGroupLayout>,
+    /// group(3) for outline pass.
+    ///
+    /// Bindings:
+    ///   0  — directional light uniform
+    ///   10 — `CelParams`
+    ///   11 — `OutlineColor` { vec4<f32> }
+    pub outline_lights: Arc<wgpu::BindGroupLayout>,
+    /// group(3) for the flat-shaded pass.
+    ///
+    /// Bindings:
+    ///   0  — directional light uniform (same dir-light struct as PBR)
+    pub flat_lights: Arc<wgpu::BindGroupLayout>,
 }
 
 impl PipelineLayouts {
@@ -318,6 +336,69 @@ impl PipelineLayouts {
             },
         ));
 
+        // ── cel_lights layout ─────────────────────────────────────────────────
+        // group(3) for the cel-shaded pass: dir-light (0) + CelParams (10).
+        let dir_light_entry = wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: wgpu::BufferSize::new(96),
+            },
+            count: None,
+        };
+        let cel_params_entry = wgpu::BindGroupLayoutEntry {
+            binding: 10,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                // CelParams: toon_levels(4) + outline_width(4) + 2×pad(8) = 16 bytes
+                min_binding_size: wgpu::BufferSize::new(16),
+            },
+            count: None,
+        };
+        let cel_lights = Arc::new(device.create_bind_group_layout(
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("Layout: Cel Lights"),
+                entries: &[dir_light_entry.clone(), cel_params_entry.clone()],
+            },
+        ));
+
+        // ── outline_lights layout ─────────────────────────────────────────────
+        // group(3) for outline pass: dir-light (0) + CelParams (10) + OutlineColor (11).
+        let outline_color_entry = wgpu::BindGroupLayoutEntry {
+            binding: 11,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                // OutlineColor: vec4<f32> = 16 bytes
+                min_binding_size: wgpu::BufferSize::new(16),
+            },
+            count: None,
+        };
+        let outline_lights = Arc::new(device.create_bind_group_layout(
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("Layout: Outline Lights"),
+                entries: &[
+                    dir_light_entry.clone(),
+                    cel_params_entry.clone(),
+                    outline_color_entry,
+                ],
+            },
+        ));
+
+        // ── flat_lights layout ────────────────────────────────────────────────
+        // group(3) for the flat-shaded pass: only the dir-light uniform (0).
+        let flat_lights = Arc::new(device.create_bind_group_layout(
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("Layout: Flat Lights"),
+                entries: &[dir_light_entry],
+            },
+        ));
+
         Self {
             camera,
             model,
@@ -325,6 +406,9 @@ impl PipelineLayouts {
             material,
             lights,
             shadow_lights,
+            cel_lights,
+            outline_lights,
+            flat_lights,
         }
     }
 }

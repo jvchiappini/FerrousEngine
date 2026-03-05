@@ -1,4 +1,5 @@
 use ferrous_core::Color;
+use ferrous_renderer::RenderStyle;
 
 use crate::traits::FerrousApp;
 
@@ -41,6 +42,12 @@ pub struct AppConfig {
     /// Optional path to an HDR environment map.  If provided the renderer
     /// will initialise its IBL resources from this file.
     pub hdri_path: Option<String>,
+    /// Default render style applied after the renderer is created.
+    ///
+    /// `RenderStyle::Pbr` — full PBR shading (default).
+    /// `RenderStyle::CelShaded` — toon-ramp shading + optional outline.
+    /// `RenderStyle::FlatShaded` — faceted / low-poly flat shading.
+    pub render_style: RenderStyle,
 }
 
 impl Default for AppConfig {
@@ -58,6 +65,7 @@ impl Default for AppConfig {
             idle_timeout: None,
             sample_count: 1,
             hdri_path: None,
+            render_style: RenderStyle::Pbr,
         }
     }
 }
@@ -141,6 +149,21 @@ impl<A: FerrousApp + 'static> App<A> {
     /// Path is resolved relative to the working directory at runtime.
     pub fn with_hdri(mut self, path: &str) -> Self {
         self.config.hdri_path = Some(path.to_string());
+        self
+    }
+
+    /// Set the initial render style.
+    ///
+    /// Defaults to [`RenderStyle::Pbr`] (full PBR).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// App::new(MyGame)
+    ///     .with_render_style(RenderStyle::CelShaded { toon_levels: 4, outline_width: 0.02 })
+    ///     .run();
+    /// ```
+    pub fn with_render_style(mut self, style: RenderStyle) -> Self {
+        self.config.render_style = style;
         self
     }
 
