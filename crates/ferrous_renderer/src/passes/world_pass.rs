@@ -91,10 +91,10 @@ pub struct WorldPass {
     /// When `Some`, the render pass will use `draw_indexed_indirect` instead
     /// of `draw_indexed`, consuming the pre-filled indirect draw buffer.
     /// Set via `set_indirect_buffer`; cleared via `clear_indirect_buffer`.
-        #[cfg(feature = "gpu-driven")]
-        indirect_buf: Option<Arc<wgpu::Buffer>>,
-        #[cfg(feature = "gpu-driven")]
-        culled_instance_bind_group: Option<Arc<wgpu::BindGroup>>,
+    #[cfg(feature = "gpu-driven")]
+    indirect_buf: Option<Arc<wgpu::Buffer>>,
+    #[cfg(feature = "gpu-driven")]
+    culled_instance_bind_group: Option<Arc<wgpu::BindGroup>>,
 }
 
 impl WorldPass {
@@ -467,7 +467,7 @@ impl RenderPass for WorldPass {
             .culled_instance_bind_group
             .as_ref()
             .or(self.instance_bind_group.as_ref());
-        
+
         #[cfg(not(feature = "gpu-driven"))]
         let effective_inst_bg = self.instance_bind_group.as_ref();
 

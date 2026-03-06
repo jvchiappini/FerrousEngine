@@ -1,24 +1,119 @@
 # FerrousEngine
 
-**FerrousEngine** is a modern, highly modular game engine constructed from the ground up in Rust. It utilizes a strict multi-crate architecture to ensure that the application lifecycle, rendering, game logic, UI, and asset management remain decoupled. FerrousEngine is perfect as a foundation for lightweight games, custom 3D editors, compute-shader toy environments (like raymarching), and native desktop tooling.
+**FerrousEngine** is a modular Rust framework for building desktop applications,
+editors, and tools. Documentation lives at
+[jvchiappini.github.io/FerrousEngine](https://jvchiappini.github.io/FerrousEngine/).
 
-## Architecture & Multi-Crate Structure
+> To build a **UI/GUI desktop application** start with
+> [Getting Started](ferrous_app/getting-started.md) and the
+> [ferrous_gui widget reference](ferrous_gui/README.md).
 
-FerrousEngine is split into specialized crates, each with an exact, tightly-scoped domain:
+---
 
-* **`ferrous_app`**: The application shell and runtime orchestration. It exposes the engine builder pattern (`App::new().run()`) and handles the main event loop cleanly over `winit`. Users implement the `FerrousApp` trait (`setup`, `update`, `draw_ui`, `draw_3d`) to interact seamlessly with the frame lifecycle.
-* **`ferrous_core`**: The foundational headless layer. It defines 3D transforms (`Transform`), color utilities (`Color`), timing helpers (`Time`, metrics), keyboard/mouse states (`InputState`), and the logical entity container (`World`). It relies heavily on `glam` for math and has **zero GPU or windowing dependencies**.
-* **`ferrous_renderer`**: The graphics and Hardware Abstraction Layer built entirely on `wgpu`. It implements an advanced **Render Graph** based on the `RenderPass` trait using a two-phase `prepare -> execute` structure. Out of the box, it supports configurable 3D Geometry (`WorldPass`), 2D GUI overlays (`UiPass`), off-screen MSAA Render Targets, and fully independent `ComputePass` capabilities para GPU compute/raymarching tasks.
-* **`ferrous_gui`**: A hybrid immediate/retained-mode 2D GUI framework. It supports an extensive suite of widgets including Interactive Buttons, Sliders, Text Inputs, Color Pickers, and Containers. Also supports flex-like declarative layouts (`Row`, `Column`) and custom engine widgets like the `ViewportWidget` (which embeds the 3D `ferrous_renderer` scene directly into the GUI).
-* **`ferrous_assets`**: The asset loading and caching system. Currently optimized for TTF/OTF font rasterization and caching, ensuring text rendering across the engine is performant and reliable.
-* **`ferrous_editor`**: The reference tool built *with* FerrousEngine. It serves as an active sandbox that consumes all the above crates, demonstrating how to bootstrap an application that displays a 3D interactive viewport embedded inside a tool-oriented GUI.
+**FerrousEngine** is a modular Rust framework for building desktop applications,
+editors, and games. It has a strict multi-crate architecture that keeps the
+application lifecycle, rendering, UI, and asset management fully decoupled.
 
-## Documentation
+## Crate map
 
-Every major crate within `FerrousEngine` includes its own dedicated `docs/` folder. This ensures that the documentation for the renderer stays with the renderer, and the logic docs stay with the core. 
+| Crate | Purpose | Key types |
+|-------|---------|-----------|
+| `ferrous_app` | **Application shell** — window, event loop, frame callbacks | `App<T>`, `AppBuilder`, `FerrousApp`, `AppContext` |
+| `ferrous_gui` | **2D GUI widget toolkit** | `Ui`, `Button`, `Slider`, `TextInput`, `ColorPicker`, `Container`, `Row`, `Column` |
+| `ferrous_renderer` | GPU rendering (wgpu) | `Renderer`, `RenderPass`, `RenderStyle`, `MaterialDescriptor` |
+| `ferrous_core` | Headless math/ECS primitives | `World`, `Transform`, `Color`, `InputState`, `KeyCode` |
+| `ferrous_assets` | Asset loading & caching | `AssetServer`, `Font`, `GltfModel` |
+| `ferrous_ecs` | Entity-Component-System | `Entity`, `Stage`, `StagedScheduler`, `System` |
 
-The documentation website unifies all of these markdown files and is generated with [MkDocs](https://www.mkdocs.org/) using the Material theme. All markdown files from each crate's `docs/` folder are aggregated into the root `docs/` folder via `scripts/build_docs.sh` and then built into `site/`.
+## Building a UI application — minimum viable recipe
 
+```toml
+# Cargo.toml
+[dependencies]
+ferrous_app = { path = "path/to/FerrousEngine/crates/ferrous_app" }
+ferrous_gui  = { path = "path/to/FerrousEngine/crates/ferrous_gui"  }
+```
 
+```rust
+use ferrous_app::{App, AppContext, Color, FerrousApp, KeyCode};
+use ferrous_assets::Font;
+use ferrous_gui::{Button, GuiBatch, Slider, TextBatch, Ui};
 
-For detailed architectural notes, custom pipeline extending, and API references, browse the individual `docs/` directories inside the sub-crates.
+struct MyApp {
+    counter: u32,
+    btn: Button,
+    slider: Slider,
+}
+
+impl Default for MyApp {
+    fn default() -> Self {
+        Self {
+            counter: 0,
+            btn:    Button::new(20.0, 20.0, 160.0, 40.0).with_radius(6.0),
+            slider: Slider::new(20.0, 80.0, 300.0, 24.0, 0.5),
+        }
+    }
+}
+
+impl FerrousApp for MyApp {
+    // configure_ui is called once; add persistent widgets here
+    fn configure_ui(&mut self, ui: &mut Ui) {
+        ui.add(self.btn.clone());
+        ui.add(self.slider.clone());
+    }
+
+    fn update(&mut self, ctx: &mut AppContext) {
+        if ctx.input.just_pressed(KeyCode::Escape) {
+            ctx.request_exit();
+        }
+        if self.btn.pressed {
+            self.counter += 1;
+            self.btn.pressed = false;   // consume the click
+        }
+    }
+
+    fn draw_ui(
+        &mut self,
+        gui: &mut GuiBatch,
+        text: &mut TextBatch,
+        font: Option<&Font>,
+        _ctx: &mut AppContext,
+    ) {
+        self.btn.draw(gui);
+        self.slider.draw(gui);
+        if let Some(f) = font {
+            text.push_str(
+                &format!("clicks: {}  slider: {:.2}", self.counter, self.slider.value),
+                10.0, 130.0, 18.0, [1.0; 4], f,
+            );
+        }
+    }
+}
+
+fn main() {
+    App::new(MyApp::default())
+        .with_title("My UI App")
+        .with_size(800, 600)
+        .with_background_color(Color::rgb(0.08, 0.08, 0.10))
+        .with_font("assets/fonts/Roboto-Regular.ttf")
+        .run();
+}
+```
+
+## Documentation sections
+
+- **[Getting Started](ferrous_app/getting-started.md)** — step-by-step from zero to running app
+- **[App Builder](ferrous_app/app-builder.md)** — `App<T>` fluent API, all `with_*` options
+- **[FerrousApp Trait](ferrous_app/ferrous-app-trait.md)** — the six frame callbacks
+- **[AppContext](ferrous_app/app-context.md)** — everything inside `ctx`
+- **[GUI Overview](ferrous_gui/README.md)** — `Ui`, `Canvas`, `Widget`, input routing
+- **[Widgets](ferrous_gui/widgets/button.md)** — Button, Slider, TextInput, ColorPicker, Container
+- **[Layout](ferrous_gui/layout.md)** — `Row`, `Column`, `Node`, `Style`
+- **[Renderer](ferrous_renderer/README.md)** — materials, camera, custom passes
+
+## How the documentation site is built
+
+Every crate in `crates/*/docs/` is aggregated by `scripts/build_docs.sh` into a
+root `docs/` folder, then rendered with
+[MkDocs Material](https://squidfunk.github.io/mkdocs-material/) and deployed to
+GitHub Pages on every push to `main`.

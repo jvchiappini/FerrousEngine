@@ -4,6 +4,30 @@ use ferrous_renderer::RenderStyle;
 
 use crate::traits::FerrousApp;
 
+/// Selects which engine subsystems the runner initialises and which frame
+/// callbacks it invokes.
+///
+/// | Mode | 3D renderer | ECS world sync | `draw_3d` called |
+/// |------|-------------|----------------|------------------|
+/// | `Desktop2D` | ✓ (2-D only) | ✗ | ✗ |
+/// | `Game2D` | ✓ | ✗ | ✗ |
+/// | `Game3D` | ✓ | ✓ | ✓ |
+///
+/// The renderer is always present so `draw_ui` / fonts / GUI work in every
+/// mode.  Only `Game3D` runs the full ECS→renderer sync and invokes `draw_3d`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum AppMode {
+    /// Full 3-D game: ECS world sync, camera input, `draw_3d` callback.
+    #[default]
+    Game3D,
+    /// 2-D game or side-scroller: renderer active, no 3-D world sync,
+    /// `draw_3d` is **not** called.
+    Game2D,
+    /// Desktop tool / editor panel: renderer active for GUI only,
+    /// no ECS world sync, no `draw_3d` callback.
+    Desktop2D,
+}
+
 /// Configuración inicial de la ventana y el motor.
 #[derive(Clone)]
 pub struct AppConfig {
@@ -40,6 +64,11 @@ pub struct AppConfig {
     /// Higher values improve edge quality but multiply GPU raster work.
     /// Default: `1` (no MSAA) — enable explicitly when needed.
     pub sample_count: u32,
+    /// Which engine subsystems to activate.  See [`AppMode`] for details.
+    ///
+    /// Default: [`AppMode::Game3D`].  Set to [`AppMode::Desktop2D`] for
+    /// tools that only need GUI, or [`AppMode::Game2D`] for 2-D games.
+    pub mode: AppMode,
     /// Optional path to an HDR environment map.  If provided the renderer
     /// will initialise its IBL resources from this file.
     pub hdri_path: Option<String>,
@@ -75,6 +104,7 @@ impl Default for AppConfig {
             hdri_path: None,
             render_style: RenderStyle::Pbr,
             render_quality: RenderQuality::High,
+            mode: AppMode::Game3D,
         }
     }
 }
@@ -232,6 +262,25 @@ impl<A: FerrousApp + 'static> App<A> {
     /// edge quality is critical.
     pub fn with_msaa(mut self, sample_count: u32) -> Self {
         self.config.sample_count = sample_count;
+        self
+    }
+
+    /// Set the application mode — controls which engine subsystems are active.
+    ///
+    /// | Mode | Use when |
+    /// |------|----------|
+    /// | [`AppMode::Game3D`] | 3-D game or simulation (default) |
+    /// | [`AppMode::Game2D`] | 2-D game, top-down, side-scroller |
+    /// | [`AppMode::Desktop2D`] | GUI tool, editor, desktop utility |
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// App::new(MyTool)
+    ///     .with_mode(AppMode::Desktop2D)
+    ///     .run();
+    /// ```
+    pub fn with_mode(mut self, mode: crate::builder::AppMode) -> Self {
+        self.config.mode = mode;
         self
     }
 

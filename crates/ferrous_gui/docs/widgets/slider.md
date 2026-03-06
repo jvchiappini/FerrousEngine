@@ -1,6 +1,86 @@
-<!--
-Reference material for the `Slider` widget.
--->
+# Slider
+
+`Slider` is a horizontal drag control. The user clicks and drags the thumb to
+select a normalised value in `[0.0, 1.0]`.
+
+## Struct
+
+```rust
+#[derive(Debug, Clone)]
+pub struct Slider {
+    pub rect:        [f32; 4],   // [x, y, width, height]
+    pub value:       f32,        // normalised position, clamped to 0.0-1.0
+    pub dragging:    bool,
+    pub thumb_color: [f32; 4],
+    pub track_color: [f32; 4],
+}
+```
+
+## Construction
+
+```rust
+// Slider::new(x, y, width, height, initial_value)
+let slider = Slider::new(20.0, 60.0, 300.0, 24.0, 0.5);
+
+// Change colours directly (fields are pub)
+let mut s = Slider::new(20.0, 60.0, 300.0, 24.0, 0.0);
+s.thumb_color = [0.9, 0.6, 0.1, 1.0];
+s.track_color = [0.3, 0.3, 0.3, 1.0];
+```
+
+## Usage pattern
+
+```rust
+struct MyApp {
+    volume: Slider,
+}
+
+impl Default for MyApp {
+    fn default() -> Self {
+        Self {
+            volume: Slider::new(20.0, 60.0, 200.0, 20.0, 0.8),
+        }
+    }
+}
+
+impl FerrousApp for MyApp {
+    fn configure_ui(&mut self, ui: &mut Ui) {
+        ui.add(self.volume.clone());
+    }
+
+    fn update(&mut self, _ctx: &mut AppContext) {
+        // self.volume.value is already updated by the Ui input routing
+        set_audio_volume(self.volume.value);
+    }
+
+    fn draw_ui(&mut self, gui: &mut GuiBatch, ..) {
+        self.volume.draw(gui);
+    }
+}
+```
+
+## Mapping to a real range
+
+`value` is always `0.0`-`1.0`. Scale it in code:
+
+```rust
+let frequency_hz = 200.0 + self.freq_slider.value * 1800.0; // 200-2000 Hz
+let brightness    = (self.bright_slider.value * 255.0) as u8;
+```
+
+## Rendering
+
+Two quads are drawn: the full-width track and a narrower thumb. The thumb's
+left edge is positioned at `value * (track_width - thumb_width)`. Thumb width
+is fixed at 10 % of total width.
+
+## Notes
+
+- Dragging begins only when the cursor is over the thumb, not the track.
+- The full track rect is used for focus/hit purposes.
+- `update_value(mx)` recalculates `value` from an X coordinate — called
+  automatically during drag, exposed for manual use.
+
 
 # Slider widget
 

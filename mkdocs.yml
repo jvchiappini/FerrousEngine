@@ -1,18 +1,67 @@
 site_name: FerrousEngine Documentation
 site_url: https://jvchiappini.github.io/FerrousEngine
+site_description: >
+  Complete reference for FerrousEngine — a modular Rust application/game
+  framework. Covers the App builder, GUI widgets, layout system, renderer,
+  ECS, and asset pipeline. Optimised for both human readers and AI agents.
+site_author: jvchiappini
+repo_url: https://github.com/jvchiappini/FerrousEngine
+repo_name: FerrousEngine
 
-# use the Material theme for a polished look
 theme:
   name: material
   features:
     - navigation.expand
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - search.suggest
+    - toc.follow
 
-# navigation block is carefully indented; keep this comment here to
-# force a rebuild of the docs when the file changes slightly.
+plugins:
+  - search
 
-## navigation is automatically generated from the docs/ folder structure.
-## no manual nav list is needed here, mkdocs will automatically find
-## any new files added to the crates (like widgets/color_picker.md)
+markdown_extensions:
+  - toc:
+      permalink: true
+  - admonition
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
 
-# extras or plugins could be added if desired
+nav:
+  - Home: index.md
+  - Getting Started: ferrous_app/getting-started.md
+  - ferrous_app — Application Shell:
+    - Overview: ferrous_app/README.md
+    - App Builder (App<T>): ferrous_app/app-builder.md
+    - AppBuilder & Plugins: ferrous_app/plugins.md
+    - FerrousApp Trait: ferrous_app/ferrous-app-trait.md
+    - AppContext Reference: ferrous_app/app-context.md
+    - RenderContext Reference: ferrous_app/render-context.md
+    - Configuration (ferrous.toml): ferrous_app/config.md
+  - ferrous_gui — GUI System:
+    - Overview: ferrous_gui/README.md
+    - Core API (Ui / Canvas / Widget): ferrous_gui/api/core.md
+    - Layout System: ferrous_gui/layout.md
+    - Widgets:
+      - Button: ferrous_gui/widgets/button.md
+      - Slider: ferrous_gui/widgets/slider.md
+      - TextInput: ferrous_gui/widgets/textinput.md
+      - ColorPicker: ferrous_gui/widgets/color_picker.md
+      - Container: ferrous_gui/widgets/container.md
+  - ferrous_renderer — GPU Renderer:
+    - Overview: ferrous_renderer/README.md
+    - Architecture: ferrous_renderer/architecture.md
+    - Camera: ferrous_renderer/camera.md
+    - Geometry & Meshes: ferrous_renderer/geometry.md
+    - Materials & Textures: ferrous_renderer/materials.md
+    - Render Target: ferrous_renderer/render_target.md
+    - Gizmos: ferrous_renderer/gizmo.md
+    - Extending:
+      - Custom Pass: ferrous_renderer/extending/custom_pass.md
+      - New Pipeline: ferrous_renderer/extending/new_pipeline.md
+      - Compute Pipeline: ferrous_renderer/extending/compute_pipeline.md
+      - World Sync: ferrous_renderer/extending/world_sync.md
 

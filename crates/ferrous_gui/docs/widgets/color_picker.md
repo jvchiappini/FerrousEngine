@@ -1,6 +1,99 @@
-<!--
-Reference material for the `ColorPicker` widget.
--->
+# ColorPicker
+
+`ColorPicker` is a configurable colour-selection widget. The user clicks or
+drags inside a rendered shape to pick a point; the widget calls a callback
+and exposes the resulting colour.
+
+## Struct
+
+```rust
+#[derive(Clone)]
+pub struct ColorPicker {
+    pub rect:      [f32; 4],   // [x, y, w, h]
+    pub colour:    [f32; 4],   // current RGBA colour
+    pub hovered:   bool,
+    pub pressed:   bool,
+    pub shape:     PickerShape,
+    pub on_pick:   Option<Arc<dyn Fn(&mut ColorPicker, f32, f32) + Send + Sync>>,
+    pub pick_pos:  [f32; 2],   // normalised [0,1] pick position
+}
+```
+
+## `PickerShape` enum
+
+```rust
+pub enum PickerShape {
+    Circle,
+    Rect,
+    Triangle,
+    Custom(Arc<dyn Fn(&mut Canvas, [f32; 4]) + Send + Sync>),
+}
+```
+
+The built-in shapes render a simple gradient fill suitable for hue/saturation
+or brightness selection. Use `Custom` to pass your own draw function.
+
+## Construction
+
+```rust
+let mut picker = ColorPicker::new(x, y, width, height)
+    .with_colour([1.0, 0.5, 0.0, 1.0])   // initial colour
+    .with_shape(PickerShape::Rect)
+    .on_pick(|picker, nx, ny| {
+        // nx, ny are normalised (0..1) cursor position within the widget
+        picker.colour = [nx, ny, 0.5, 1.0];
+    });
+```
+
+## Usage pattern
+
+```rust
+struct MyApp {
+    picker: ColorPicker,
+    chosen: [f32; 4],
+}
+
+impl Default for MyApp {
+    fn default() -> Self {
+        let picker = ColorPicker::new(20.0, 20.0, 200.0, 200.0)
+            .with_shape(PickerShape::Rect)
+            .on_pick(|p, nx, ny| {
+                p.colour = [nx, ny, 1.0 - nx, 1.0];
+            });
+        Self { picker, chosen: [1.0; 4] }
+    }
+}
+
+impl FerrousApp for MyApp {
+    fn configure_ui(&mut self, ui: &mut Ui) {
+        ui.add(self.picker.clone());
+    }
+
+    fn update(&mut self, _ctx: &mut AppContext) {
+        self.chosen = self.picker.colour;
+    }
+
+    fn draw_ui(&mut self, gui: &mut GuiBatch, _text: &mut TextBatch,
+               _font: Option<&Font>, _ctx: &mut AppContext) {
+        self.picker.draw(gui);
+    }
+}
+```
+
+## Reading the colour
+
+After the user interacts:
+
+```rust
+let rgba: [f32; 4] = self.picker.colour;
+let [r, g, b, a] = rgba;
+```
+
+## Notes
+
+- The callback fires every frame the widget is pressed, not only on release.
+- `pick_pos` stores the last normalised cursor position inside the widget.
+- `on_pick` is `Arc`-wrapped so `ColorPicker` remains `Clone + Send + Sync`.
 
 # ColorPicker widget
 

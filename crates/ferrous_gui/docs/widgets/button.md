@@ -1,7 +1,97 @@
-<!--
-Comprehensive reference for the `Button` widget provided by the
-`ferrous_gui` crate.
--->
+# Button
+
+`Button` is a clickable rectangular widget that tracks hover and press state.
+
+## Struct
+
+```rust
+#[derive(Debug, Clone)]
+pub struct Button {
+    pub rect:    [f32; 4],   // [x, y, width, height] in window pixels
+    pub hovered: bool,
+    pub pressed: bool,
+    pub color:   [f32; 4],   // RGBA base colour
+    pub radii:   [f32; 4],   // per-corner radii [top-left, top-right, bottom-left, bottom-right]
+}
+```
+
+- `pressed` — set to `true` on mouse-down inside the rect; cleared on any mouse-up.  
+  Read this in `update()` and set it back to `false` to consume the click.
+- `hovered` — set while the cursor is over the rect.
+- `color` — base RGBA colour. Tinted slightly on hover (green), more on press (red).
+- `radii` — corner radii in pixels; zero = sharp corners.
+
+## Construction
+
+```rust
+// Minimal: position + size
+let btn = Button::new(x, y, width, height);
+
+// Uniform corner radius
+let btn = Button::new(20.0, 20.0, 120.0, 40.0).with_radius(6.0);
+
+// Per-corner radii
+let btn = Button::new(20.0, 20.0, 120.0, 40.0)
+    .with_radii([8.0, 8.0, 0.0, 0.0]);  // rounded top only
+
+// Fine-grained per-corner builders
+let btn = Button::new(20.0, 20.0, 120.0, 40.0)
+    .round_tl(8.0).round_tr(8.0);
+
+// Set colour directly (field is pub)
+let mut btn = Button::new(20.0, 20.0, 120.0, 40.0);
+btn.color = [0.2, 0.6, 1.0, 1.0];
+```
+
+## Usage pattern
+
+```rust
+struct MyApp {
+    save_btn: Button,
+}
+
+impl Default for MyApp {
+    fn default() -> Self {
+        Self {
+            save_btn: Button::new(20.0, 20.0, 120.0, 40.0).with_radius(6.0),
+        }
+    }
+}
+
+impl FerrousApp for MyApp {
+    fn configure_ui(&mut self, ui: &mut Ui) {
+        ui.add(self.save_btn.clone());
+    }
+
+    fn update(&mut self, ctx: &mut AppContext) {
+        if self.save_btn.pressed {
+            self.save_btn.pressed = false;   // consume
+            save_file();
+        }
+    }
+
+    fn draw_ui(&mut self, gui: &mut GuiBatch, _text: &mut TextBatch,
+               _font: Option<&Font>, _ctx: &mut AppContext) {
+        self.save_btn.draw(gui);
+    }
+}
+```
+
+## Drawing without `Ui`
+
+If you do not need input routing, draw the button directly:
+
+```rust
+fn draw_ui(&mut self, gui: &mut GuiBatch, ..) {
+    self.btn.draw(gui);
+}
+```
+
+## Notes
+
+- The hit test uses the full `rect`; corner radii do not affect it.
+- There is no built-in label; render text on top in `draw_ui` using `TextBatch`.
+
 
 # Button widget
 

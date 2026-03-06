@@ -1,73 +1,81 @@
-<!--
-Documentation for the `ferrous_gui` crate.
-This folder is intended to hold markdown files describing the public
-API, design decisions and usage examples for all of the GUI components
-provided by the crate.  Start with this README as the "home page"; each
-sub‑component has its own document linked below.
--->
+# ferrous_gui
 
-# ferrous_gui documentation
+`ferrous_gui` is the 2D widget toolkit for FerrousEngine. It provides interactive
+widgets, a flex-like layout system, and helpers for integrating with the engine
+frame loop and input state.
 
-`ferrous_gui` is a lightweight immediate-style GUI layer used by the
-FerrousEngine.  It provides a small collection of widgets, a very simple
-layout system, and helpers for integrating with the rest of the engine
-(input handling, rendering, etc.).
+---
 
-Most users will simply create a `Ui`, add widgets to it, and forward
-winit events via `Ui::handle_window_event`.  The `Canvas`/`Widget`
-abstractions are designed to be easy to extend if you need a custom
-control.
+## Module overview
 
-## Crate structure and documentation
+| Module | Key exports | Description |
+|--------|-------------|-------------|
+| `ui` | `Ui` | Top-level container; add widgets and route input events |
+| `canvas` | `Canvas` | Focus-aware widget collection |
+| `widget` | `Widget` | Trait every widget implements |
+| `button` | `Button` | Clickable rectangle, optional rounded corners |
+| `slider` | `Slider` | Horizontal drag control, normalised 0.0-1.0 |
+| `textinput` | `TextInput` | Single-line editable text field |
+| `color_picker` | `ColorPicker`, `PickerShape` | Colour selection widget |
+| `container` | `Container` | Grouping panel with optional background |
+| `layout` | `Node`, `Style`, `Row`, `Column`, `UiButton`, `Text` | Declarative layout |
+| `viewport_widget` | `ViewportWidget` | Embedded 3D viewport region |
+| `renderer` | `GuiBatch`, `TextBatch`, `GuiRenderer` | Low-level draw batches |
 
-The layout of the documentation mirrors the logical structure of the
-crate.  High‑level concepts and core APIs live at the top level; individual
-widgets are grouped under `widgets/`.
+---
 
-```
-docs/
-├── README.md          # this file
-├── api/               # core trait and Ui helpers
-│   └── core.md
-├── layout.md          # layout system reference
-└── widgets/           # built-in widget documentation
-    ├── button.md
-    ├── slider.md
-    └── textinput.md
-```
+## Three-step workflow
 
-## Quick start
-
-Add the crate to your `Cargo.toml`:
-
-```toml
-[dependencies]
-ferrous_gui = { path = "../ferrous_gui" }
-```
-
-Then initialise a UI object in your application:
+### Step 1 - Add widgets once (in `configure_ui`)
 
 ```rust
-let mut ui = ferrous_gui::Ui::new();
-// add widgets, handle events and render each frame
+fn configure_ui(&mut self, ui: &mut Ui) {
+    ui.add(self.my_button.clone());
+    ui.add(self.my_slider.clone());
+    ui.add(self.my_input.clone());
+}
 ```
 
-See the `widgets` section for examples of adding controls and responding
-to user input.
+`Ui` takes ownership of the widgets and routes mouse/keyboard input to them
+automatically every frame. Keep your own copy in your struct to read state.
 
-## Documentation overview
+### Step 2 - Draw every frame (in `draw_ui`)
 
-- **api/core.md** – explanation of the `Widget` trait, the `Canvas`
-  container type, and the high‑level `Ui` helper that integrates with
-  the engine’s event loop.
-- **layout.md** – reference for the small flex‑box‑inspired layout
-  system used by editor components and other containers.
-- **widgets/** – individual documents for each supplied widget.  For
-  example, to learn about styling and usage of buttons see
-  `widgets/button.md`.
+```rust
+fn draw_ui(&mut self, gui: &mut GuiBatch, text: &mut TextBatch,
+           font: Option<&Font>, _ctx: &mut AppContext) {
+    self.my_button.draw(gui);
+    self.my_slider.draw(gui);
+    if let Some(f) = font {
+        text.push_str("Hello world", 20.0, 20.0, 18.0, [1.0; 4], f);
+    }
+}
+```
 
-Each document is intended to be self‑contained; links between them help
-you navigate the crate’s functionality.
+### Step 3 - Read state in `update`
 
-The sections above provide a comprehensive starting point; additional
-guidance will be added as the crate evolves.
+```rust
+fn update(&mut self, ctx: &mut AppContext) {
+    if self.my_button.pressed {
+        self.my_button.pressed = false;   // consume
+        println!("Clicked!");
+    }
+    println!("Slider: {:.2}", self.my_slider.value);
+    println!("Input:  {}", self.my_input.text);
+}
+```
+
+---
+
+## Widget reference
+
+- [Button](widgets/button.md)
+- [Slider](widgets/slider.md)
+- [TextInput](widgets/textinput.md)
+- [ColorPicker](widgets/color_picker.md)
+- [Container](widgets/container.md)
+
+## Further reading
+
+- [Layout system - Row, Column, Node, Style](layout.md)
+- [Core API - Ui, Canvas, Widget trait](api/core.md)

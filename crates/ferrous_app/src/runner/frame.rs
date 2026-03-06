@@ -12,6 +12,7 @@ use std::time::Instant;
 #[cfg(target_arch = "wasm32")]
 use web_time::Instant;
 
+use crate::builder::AppMode;
 use crate::context::AppContext;
 use crate::render_context::RenderContext;
 use crate::traits::FerrousApp;
@@ -87,7 +88,11 @@ impl<A: FerrousApp> Runner<A> {
             let next = match self.next_frame_deadline {
                 Some(prev) => {
                     let candidate = prev + budget;
-                    if candidate < now { now + budget } else { candidate }
+                    if candidate < now {
+                        now + budget
+                    } else {
+                        candidate
+                    }
                 }
                 None => now + budget,
             };
@@ -104,7 +109,8 @@ impl<A: FerrousApp> Runner<A> {
                         &gfx.renderer.context.queue,
                         ' '..'~',
                     );
-                    gfx.renderer.set_font_atlas(&font.atlas.view, &font.atlas.sampler);
+                    gfx.renderer
+                        .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
                     self.font = Some(font);
                     self.font_asset_handle = None;
                 }
@@ -115,7 +121,8 @@ impl<A: FerrousApp> Runner<A> {
 
         // Advance ECS systems
         self.resources.insert(self.clock);
-        self.systems.run_all(&mut self.world.ecs, &mut self.resources);
+        self.systems
+            .run_all(&mut self.world.ecs, &mut self.resources);
         self.clock = *self.resources.get::<ferrous_core::TimeClock>().unwrap();
         let time = self.clock.at_tick();
 
@@ -157,18 +164,20 @@ impl<A: FerrousApp> Runner<A> {
             }
         }
 
-        gfx.renderer.sync_world(&self.world);
-
-        // 3D camera input
+        // ECS → renderer sync and 3-D camera input are only needed in Game3D.
         let dt = time.delta;
-        if self.viewport.width > 0 && self.viewport.height > 0 {
-            let (mx, my) = self.input.mouse_position();
-            let in_viewport = mx >= self.viewport.x as f64
-                && mx < (self.viewport.x + self.viewport.width) as f64
-                && my >= self.viewport.y as f64
-                && my < (self.viewport.y + self.viewport.height) as f64;
-            if in_viewport {
-                gfx.renderer.handle_input(&mut self.input, dt);
+        if self.config.mode == AppMode::Game3D {
+            gfx.renderer.sync_world(&self.world);
+
+            if self.viewport.width > 0 && self.viewport.height > 0 {
+                let (mx, my) = self.input.mouse_position();
+                let in_viewport = mx >= self.viewport.x as f64
+                    && mx < (self.viewport.x + self.viewport.width) as f64
+                    && my >= self.viewport.y as f64
+                    && my < (self.viewport.y + self.viewport.height) as f64;
+                if in_viewport {
+                    gfx.renderer.handle_input(&mut self.input, dt);
+                }
             }
         }
 
@@ -197,7 +206,9 @@ impl<A: FerrousApp> Runner<A> {
             };
 
             if self.viewport.width > 0 {
-                self.app.draw_3d(&mut ctx);
+                if self.config.mode == AppMode::Game3D {
+                    self.app.draw_3d(&mut ctx);
+                }
             }
 
             for gizmo in ctx.gizmos.drain(..) {
@@ -212,7 +223,8 @@ impl<A: FerrousApp> Runner<A> {
                 self.font.as_ref(),
                 &mut ctx,
             );
-            self.ui.draw(&mut gui_batch, &mut text_batch, self.font.as_ref());
+            self.ui
+                .draw(&mut gui_batch, &mut text_batch, self.font.as_ref());
 
             // ── 3. RENDER FINAL ─────────────────────────────────────────────
             let frame = match gfx.surface.get_current_texture() {
@@ -223,7 +235,9 @@ impl<A: FerrousApp> Runner<A> {
                 }
                 Err(e) => panic!("Surface error: {e:?}"),
             };
-            let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let view = frame
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
             gfx.renderer
                 .render_to_view(&mut encoder, &view, Some(gui_batch), Some(text_batch));
             gfx.renderer.context.queue.submit(Some(encoder.finish()));

@@ -50,7 +50,7 @@ pub mod render_context;
 mod runner;
 pub mod traits;
 
-pub use builder::{App, AppConfig};
+pub use builder::{App, AppConfig, AppMode};
 pub use config::{load_config, ConfigError, EngineConfig};
 pub use context::AppContext;
 pub use plugin::{

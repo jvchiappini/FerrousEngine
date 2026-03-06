@@ -1,6 +1,90 @@
-<!--
-Reference documentation for the `TextInput` widget.
--->
+# TextInput
+
+`TextInput` is a single-line editable text field. It handles focus, character
+insertion, and backspace. There is no cursor or text selection.
+
+## Struct
+
+```rust
+#[derive(Debug, Clone)]
+pub struct TextInput {
+    pub rect:       [f32; 4],
+    pub text:       String,
+    pub focused:    bool,
+    pub placeholder: String,
+    pub bg_color:   [f32; 4],
+    pub text_color: [f32; 4],
+}
+```
+
+- `text` — current buffer contents; read this in `update()`.
+- `focused` — true while the widget has keyboard focus.
+- `placeholder` — shown when `text` is empty.
+
+## Construction
+
+```rust
+let mut input = TextInput::new(x, y, width, height);
+input.placeholder = "Enter your name…".into();
+input.bg_color    = [0.15, 0.15, 0.15, 1.0];
+input.text_color  = [0.95, 0.95, 0.95, 1.0];
+```
+
+## Usage pattern
+
+```rust
+struct MyApp {
+    name_input: TextInput,
+}
+
+impl Default for MyApp {
+    fn default() -> Self {
+        let mut input = TextInput::new(20.0, 20.0, 240.0, 32.0);
+        input.placeholder = "Your name".into();
+        Self { name_input: input }
+    }
+}
+
+impl FerrousApp for MyApp {
+    fn configure_ui(&mut self, ui: &mut Ui) {
+        ui.add(self.name_input.clone());
+    }
+
+    fn update(&mut self, ctx: &mut AppContext) {
+        if ctx.input.just_pressed(KeyCode::Enter) && self.name_input.focused {
+            println!("Submitted: {}", self.name_input.text);
+        }
+    }
+
+    fn draw_ui(&mut self, gui: &mut GuiBatch, text: &mut TextBatch,
+               font: Option<&Font>, _ctx: &mut AppContext) {
+        self.name_input.draw(gui, text, font);
+    }
+}
+```
+
+## `draw` signature
+
+```rust
+pub fn draw(&self, quad_batch: &mut GuiBatch, text_batch: &mut TextBatch,
+            font: Option<&Font>);
+```
+
+Draws a filled background quad and, if `font` is `Some`, renders the text (or
+placeholder) vertically centred with a 4 px left margin.
+
+## Keyboard behaviour
+
+- Clicking inside gives focus; clicking outside removes it.
+- Printable characters are appended to `text`.
+- `Backspace` removes the last character.
+- No cursor movement or selection — editing is always at the end.
+
+## Notes
+
+- `insert_char(c)` and `backspace()` are available for programmatic editing.
+- If you need multi-line input, implement a custom `Widget`.
+
 
 # TextInput widget
 

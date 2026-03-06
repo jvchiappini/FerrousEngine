@@ -1,70 +1,138 @@
-<!--
-Overview of the layout system used by `ferrous_gui`.
--->
+# Layout System
 
+`ferrous_gui` includes a lightweight layout engine modelled on CSS flexbox.
+It computes where to place rectangular nodes based on margin, padding, size,
+and alignment rules.
 
-# Layout system
+---
 
-The crate provides a lightweight layout engine inspired by CSS flexbox.
-It is primarily used within the editor and other panels to position
-widgets, but it can be employed anywhere a tree of rectangular nodes is
-desirable.  The implementation prioritises simplicity over feature
-completeness; only the necessary primitives are provided.
+## Core types
 
-## Fundamental types
+| Type | Description |
+|------|-------------|
+| `Rect` | `{ x, y, width, height: f32 }` -- computed rectangle for a node |
+| `RectOffset` | Per-side margin or padding. `RectOffset::all(v)` for uniform. |
+| `Units` | `Px(f32)`, `Percentage(f32)`, `Flex(f32)` |
+| `Alignment` | `Start`, `Center`, `End`, `Stretch` |
+| `DisplayMode` | `Block`, `FlexRow`, `FlexColumn` |
+| `Style` | Aggregates all layout properties for one node |
+| `Node` | One element in the layout tree; contains `Style`, children, text, background |
 
-- **`Rect`** – represents a rectangle with `x`, `y`, `width`, and
-  `height`.
-- **`RectOffset`** – margin or padding, with distinct values for each side.
-  Constructors such as `RectOffset::all(v)` create a uniform inset.
-- **`Units`** – measurement units used by `Style` properties. Possible
-  values are `Px(f32)`, `Percentage(f32)` and `Flex(f32)`.
-- **`Alignment`** – how children are positioned within their parent
-  (`Start`, `Center`, `End`, `Stretch`).
-- **`DisplayMode`** – layout flow type: `Block`, `FlexRow`, or
-  `FlexColumn`.
-- **`Style`** – aggregates margin, padding, size, alignment and display
-  mode rules for a node.
-- **`Node`** – represents a single element in the layout tree. It contains
-  a `Style`, optional text, background colour, font settings and a list of
-  child nodes. Computed rectangles are stored in `node.rect`.
+---
 
-## Working with nodes
+## Building a layout tree
 
-Nodes are typically constructed using builder methods that make it easy to
-specify common layout attributes:
+### Using `Node` directly
 
 ```rust
+use ferrous_gui::layout::{Node, DisplayMode, Units, Alignment};
+
 let mut root = Node::new()
     .with_display(DisplayMode::FlexColumn)
-    .with_padding(10.0)
+    .with_padding(16.0)
     .add_child(
-        Node::new().with_size(Units::Px(100.0), Units::Px(30.0))
+        Node::new()
+            .with_size(Units::Px(200.0), Units::Px(40.0))
+            .set_background([0.2, 0.2, 0.8, 1.0])
+            .set_text("Save")
+            .set_text_color([1.0, 1.0, 1.0, 1.0])
+    )
+    .add_child(
+        Node::new()
+            .with_size(Units::Px(200.0), Units::Px(40.0))
+            .set_background([0.3, 0.3, 0.3, 1.0])
+            .set_text("Cancel")
     );
+
+root.compute_layout(800.0, 600.0);
+// root.children[0].rect.x / .y now contain computed positions
 ```
 
-Other helpers include `.with_margin(...)`, `.with_alignment(...)`,
-`.set_text(...)`, `.set_background(...)`, and so forth.
+### Using declarative builders
 
-Once the tree is assembled, invoke `compute_layout(parent_width, parent_height)`
-to perform two passes:
-
-1. **Bottom‑up pass** calculates each node’s desired size based on its
-   children and style rules.
-2. **Top‑down pass** assigns concrete `rect` values beginning from the
-   root, using the supplied parent dimensions (usually the viewport size).
+`Row`, `Column`, `UiButton`, and `Text` are thin wrappers around `Node` with a
+fluent API. They all implement `Into<Node>`.
 
 ```rust
-root.compute_layout(1024.0, 768.0);
+use ferrous_gui::{Column, Row, UiButton, Text};
+
+let panel: Node = Column::new()
+    .with_padding(12.0)
+    .add_child(
+        Row::new()
+            .with_padding(4.0)
+            .add_child(UiButton::new("Open").with_margin(4.0))
+            .add_child(UiButton::new("Save").with_margin(4.0))
+    )
+    .add_child(Text::new("Status: ready").with_margin(8.0))
+    .into();
 ```
 
-The resulting `rect` fields can then be used for hit testing or rendering
-quad backgrounds and text.
+---
+
+## `Column`
+
+Stacks children vertically (`DisplayMode::FlexColumn`).
+
+```rust
+Column::new()
+    .with_padding(10.0)   // inner padding
+    .with_margin(5.0)     // outer margin
+    .add_child(/* any Into<Node> */)
+```
+
+## `Row`
+
+Arranges children horizontally (`DisplayMode::FlexRow`).
+
+```rust
+Row::new()
+    .with_padding(8.0)
+    .add_child(UiButton::new("A"))
+    .add_child(UiButton::new("B"))
+```
+
+## `UiButton`
+
+A `Node` pre-configured with a blue background, white text, and centred
+alignment. Declarative only -- not interactive (use `Button` for click events).
+
+```rust
+UiButton::new("Click me")
+    .with_padding(8.0)
+    .with_margin(4.0)
+```
+
+## `Text`
+
+A `Node` containing plain text with no background.
+
+```rust
+Text::new("Hello, world!").with_margin(6.0)
+```
+
+---
+
+## Computing layout
+
+```rust
+let mut root = /* build your Node tree */;
+root.compute_layout(parent_width, parent_height);
+```
+
+This runs two passes:
+
+1. **Bottom-up** -- each node calculates its desired size from children and style.
+2. **Top-down** -- concrete `rect` values are assigned from the root down.
+
+After `compute_layout`, read `node.rect` (and `node.children[i].rect`) for
+positions and sizes to use in hit-testing or custom rendering.
+
+---
 
 ## Limitations
 
-The layout subsystem does not support advanced features such as wrapping,
-absolute positioning, or nested flex axes beyond the three display modes
-listed above.  It is adequate for simple form‑style UIs and editor
-panels, but heavier weight applications may prefer a full CSS engine.
-
+- No text wrapping or multi-line support
+- No absolute positioning (`position: absolute`)
+- No nested flex axes (e.g. `flex-wrap`)
+- Adequate for panels, toolbars, and form layouts; not a full CSS engine

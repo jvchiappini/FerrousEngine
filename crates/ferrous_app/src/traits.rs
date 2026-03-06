@@ -5,8 +5,19 @@ use ferrous_gui::{GuiBatch, TextBatch, Ui};
 /// The core trait that every FerrousApp application or game implements.
 ///
 /// All methods have empty default implementations so you only override what
-/// you need.  A minimal "hello world" needs zero methods; a full 3-D game
-/// might override `setup`, `update`, and `draw_3d`.
+/// you need.  The runner only calls the callbacks that make sense for the
+/// active [`crate::AppMode`]:
+///
+/// | Callback | `Desktop2D` | `Game2D` | `Game3D` |
+/// |----------|:-----------:|:--------:|:--------:|
+/// | `setup` / `update` / `draw_ui` | ✓ | ✓ | ✓ |
+/// | `draw_3d` | ✗ | ✗ | ✓ |
+/// | ECS world sync | ✗ | ✗ | ✓ |
+///
+/// A minimal "hello world" GUI tool needs zero methods and
+/// `App::new(MyTool).with_mode(AppMode::Desktop2D).run()`.
+/// A full 3-D game uses the default [`AppMode::Game3D`] and overrides
+/// `setup`, `update`, and optionally `draw_3d`.
 ///
 /// ```rust,ignore
 /// struct MyGame { speed: f32 }
@@ -79,4 +90,3 @@ pub trait FerrousApp {
     /// helpers on `AppContext`.
     fn on_window_event(&mut self, event: &winit::event::WindowEvent, ctx: &mut AppContext) {}
 }
-
