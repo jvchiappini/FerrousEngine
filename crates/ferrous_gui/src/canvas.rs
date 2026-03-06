@@ -1,6 +1,6 @@
 use crate::layout::RenderCommand;
 use crate::widget::Widget;
-use winit::keyboard::KeyCode;
+use crate::KeyCode;
 
 /// Generic container that holds a heterogeneous collection of widgets and
 /// draws them in order.  The container handles focus tracking so that a

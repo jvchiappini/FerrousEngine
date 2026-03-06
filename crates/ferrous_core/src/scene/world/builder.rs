@@ -1,5 +1,6 @@
 //! Fluent entity builder returned by [`super::World::spawn`].
 
+#[cfg(feature = "ecs")]
 use glam::{Quat, Vec3};
 
 use crate::color::Color;

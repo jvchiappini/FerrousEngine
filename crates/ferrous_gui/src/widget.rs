@@ -1,5 +1,5 @@
 use crate::layout::{Node, RenderCommand};
-use winit::keyboard::KeyCode;
+use crate::KeyCode;
 
 /// Cualquier elemento de la interfaz que pueda "dibujarse".
 ///
@@ -77,7 +77,7 @@ impl<T: Widget> Widget for std::rc::Rc<std::cell::RefCell<T>> {
     fn keyboard_input(
         &mut self,
         text: Option<&str>,
-        key: Option<winit::keyboard::KeyCode>,
+        key: Option<KeyCode>,
         pressed: bool,
     ) {
         self.borrow_mut().keyboard_input(text, key, pressed);

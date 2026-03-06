@@ -59,6 +59,7 @@ pub mod context;
 /// **New components**: `Velocity`, `Parent`, `Children`, `GlobalTransform`,
 /// `AnimationClip`, `AnimationPlayer`, `BehaviorComponent`.
 /// `BehaviorComponent` is non-Clone; spawn with `world.spawn_owned()`.
+#[cfg(feature = "ecs")]
 pub mod scene;
 
 /// CPU / RAM usage helpers.
@@ -86,15 +87,24 @@ pub use transform::Transform;
 // Input
 pub use input::{InputState, KeyCode, MouseButton};
 
-// Scene
+// Scene (re-exported only when ECS support is enabled)
+#[cfg(feature = "ecs")]
 pub use scene::{AlphaMode, MaterialDescriptor, MaterialHandle, RenderQuality, RenderStyle};
+
+#[cfg(feature = "ecs")]
 pub use scene::{
     AnimationClip, AnimationPlayer, AnimationSystem, Behavior, BehaviorComponent, BehaviorSystem,
     Camera3D, Camera3DBuilder, Children, DirectionalLight, GlobalTransform, Keyframe, OrbitCamera,
     OrbitCameraSystem, Parent, Stage, TimeSystem, TransformSystem, Velocity, VelocitySystem,
 };
+
+#[cfg(feature = "ecs")]
 pub use scene::{Camera, CameraUniform, Controller};
+
+#[cfg(feature = "ecs")]
 pub use scene::{Element, ElementKind, Handle, PointLightComponent, World};
+
+#[cfg(feature = "ecs")]
 pub use scene::{Material, MaterialBuilder};
 
 // Context

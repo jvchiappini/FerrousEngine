@@ -1,3 +1,4 @@
+#![cfg(feature = "ecs")]
 //! Scene world — the primary container for all runtime objects.
 //!
 //! `World` is backed by a `Vec` indexed by a monotonically-increasing `u64` ID
@@ -20,7 +21,7 @@
 mod builder;
 mod query;
 mod scene;
-mod types;
+pub mod types;
 
 pub use builder::EntityBuilder;
 pub use scene::World;

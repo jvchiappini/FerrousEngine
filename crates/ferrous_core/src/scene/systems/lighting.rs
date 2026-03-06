@@ -1,5 +1,10 @@
 //! Directional and point light ECS components.
 
+// MaterialComponent is re-exported through scene::world; this import
+// existed previously but is no longer used in this file.
+#[cfg(feature = "ecs")]
+// use crate::scene::world::types::MaterialComponent;
+
 use crate::color::Color;
 use ferrous_ecs::prelude::Component;
 

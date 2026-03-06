@@ -1,5 +1,7 @@
 //! Time and velocity ECS components and systems.
 
+#![cfg(feature = "ecs")]
+
 use ferrous_ecs::prelude::*;
 use ferrous_ecs::system::System;
 

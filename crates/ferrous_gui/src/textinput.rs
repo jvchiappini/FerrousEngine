@@ -1,5 +1,5 @@
 use crate::{layout::Rect, RenderCommand, Widget};
-use winit::keyboard::KeyCode;
+use crate::KeyCode;
 
 /// Simple single-line text input widget.
 ///
@@ -51,6 +51,7 @@ impl TextInput {
 
     /// Draw into both a quad batch and a text batch. If `font` is `None`, only
     /// the quad background will be emitted and text will be skipped.
+    #[cfg(feature = "text")]
     pub fn draw(
         &self,
         quad_batch: &mut crate::renderer::GuiBatch,
@@ -75,6 +76,22 @@ impl TextInput {
             };
             text_batch.draw_text(f, display, [tx, ty], 16.0, self.text_color);
         }
+    }
+
+    #[cfg(not(feature = "text"))]
+    pub fn draw(
+        &self,
+        quad_batch: &mut crate::renderer::GuiBatch,
+        _text_batch: &mut crate::renderer::TextBatch,
+    ) {
+        // just draw background quad
+        quad_batch.push(crate::renderer::GuiQuad {
+            pos: [self.rect[0], self.rect[1]],
+            size: [self.rect[2], self.rect[3]],
+            color: self.bg_color,
+            radii: [0.0; 4],
+            flags: 0,
+        });
     }
 }
 
@@ -135,8 +152,11 @@ impl Widget for TextInput {
         }
         if pressed {
             if let Some(k) = key {
-                if k == KeyCode::Backspace {
-                    self.backspace();
+                #[cfg(feature = "winit-backend")]
+                {
+                    if k == KeyCode::Backspace {
+                        self.backspace();
+                    }
                 }
             }
         }

@@ -432,6 +432,7 @@ pub enum RenderCommand {
 impl RenderCommand {
     /// Convierte el comando a los lotes que entiende el renderer. Requiere
     /// una fuente para la conversión de texto a quads.
+    #[cfg(feature = "text")]
     pub fn to_batches(
         &self,
         quad_batch: &mut GuiBatch,
@@ -458,6 +459,28 @@ impl RenderCommand {
                 if let Some(f) = font {
                     text_batch.draw_text(f, text, [rect.x, rect.y], *font_size, *color);
                 }
+            }
+        }
+    }
+
+    #[cfg(not(feature = "text"))]
+    pub fn to_batches(
+        &self,
+        quad_batch: &mut GuiBatch,
+        text_batch: &mut TextBatch,
+    ) {
+        match self {
+            RenderCommand::Quad { rect, color, radii, flags } => {
+                quad_batch.push(crate::renderer::GuiQuad {
+                    pos: [rect.x, rect.y],
+                    size: [rect.width, rect.height],
+                    color: *color,
+                    radii: *radii,
+                    flags: *flags,
+                });
+            }
+            RenderCommand::Text { .. } => {
+                // text commands are ignored when text feature is disabled
             }
         }
     }
@@ -497,7 +520,10 @@ mod tests {
         let mut qb = GuiBatch::new();
         let mut tb = TextBatch::new();
         // no font needed for quad case
+        #[cfg(feature = "text")]
         cmd.to_batches(&mut qb, &mut tb, None);
+        #[cfg(not(feature = "text"))]
+        cmd.to_batches(&mut qb, &mut tb);
         assert_eq!(qb.len(), 1);
         assert!(tb.is_empty());
     }

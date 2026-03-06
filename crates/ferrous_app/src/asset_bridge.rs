@@ -78,7 +78,14 @@ pub fn spawn_gltf(
         desc.roughness = raw.roughness;
         desc.normal_scale = raw.normal_scale;
         desc.ao_strength = raw.ao_strength;
-        desc.alpha_mode = raw.alpha_mode.clone();
+        desc.alpha_mode = match raw.alpha_mode {
+            ferrous_assets::gltf_loader::AlphaMode::Opaque =>
+                ferrous_core::scene::AlphaMode::Opaque,
+            ferrous_assets::gltf_loader::AlphaMode::Mask { cutoff } =>
+                ferrous_core::scene::AlphaMode::Mask { cutoff },
+            ferrous_assets::gltf_loader::AlphaMode::Blend =>
+                ferrous_core::scene::AlphaMode::Blend,
+        };
         desc.double_sided = raw.double_sided;
 
         if let Some(idx) = raw.base_color_tex {
@@ -326,7 +333,14 @@ fn spawn_gltf_from_model(
         desc.roughness = raw.roughness;
         desc.normal_scale = raw.normal_scale;
         desc.ao_strength = raw.ao_strength;
-        desc.alpha_mode = raw.alpha_mode.clone();
+        desc.alpha_mode = match raw.alpha_mode {
+            ferrous_assets::gltf_loader::AlphaMode::Opaque =>
+                ferrous_core::scene::AlphaMode::Opaque,
+            ferrous_assets::gltf_loader::AlphaMode::Mask { cutoff } =>
+                ferrous_core::scene::AlphaMode::Mask { cutoff },
+            ferrous_assets::gltf_loader::AlphaMode::Blend =>
+                ferrous_core::scene::AlphaMode::Blend,
+        };
         desc.double_sided = raw.double_sided;
         if let Some(idx) = raw.base_color_tex {
             if let Some(tex) = tex_handles.get(idx) { desc.albedo_tex = Some(tex.0); }

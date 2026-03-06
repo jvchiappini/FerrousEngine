@@ -274,7 +274,10 @@ impl ColorPicker {
                 let mut cmds = Vec::new();
                 f(self, &mut cmds);
                 for cmd in cmds {
+                    #[cfg(feature = "text")]
                     cmd.to_batches(batch, &mut crate::renderer::TextBatch::new(), None);
+                    #[cfg(not(feature = "text"))]
+                    cmd.to_batches(batch, &mut crate::renderer::TextBatch::new());
                 }
             }
         }

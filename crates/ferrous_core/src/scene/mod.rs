@@ -1,3 +1,4 @@
+#![cfg(feature = "ecs")]
 //! Scene subsystem — World, Element, Camera, Controller.
 
 pub mod camera;

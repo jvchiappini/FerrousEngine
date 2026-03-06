@@ -1,5 +1,7 @@
 //! Camera ECS components: Camera3D, Camera3DBuilder, OrbitCamera, OrbitCameraSystem.
 
+#![cfg(feature = "ecs")]
+
 use ferrous_ecs::prelude::*;
 use ferrous_ecs::system::System;
 

@@ -12,7 +12,7 @@ bytemuck = { version = "1.14", features = ["derive"] } # habilita macros derive 
 glam = "0.29"
 
 # font atlas generator lives in the assets crate
-ferrous_assets = { path = "../ferrous_assets" }
+ferrous_assets = { path = "../ferrous_assets", optional = true, features = ["gpu"] }
 
 # the UI library uses `InputState` type when routing events; pull in core so
 # users don't need to import it separately.
@@ -21,4 +21,11 @@ ferrous_core = { path = "../ferrous_core" }
 # adding a dependency here keeps the types available for users of the
 # GUI library. This is a lightweight crate and is already used by the
 # editor project.
-winit = "0.30"
+winit = { version = "0.30", optional = true }
+
+half = { version = "2.3", optional = true }
+
+[features]
+default = ["text", "winit-backend"]
+text = ["dep:ferrous_assets", "ferrous_assets/gpu"]
+winit-backend = ["dep:winit"]

@@ -1,5 +1,7 @@
 //! User scripting hook — Behavior trait and BehaviorSystem.
 
+#![cfg(feature = "ecs")]
+
 use ferrous_ecs::prelude::*;
 use ferrous_ecs::system::System;
 

@@ -1,5 +1,6 @@
 //! Lightweight representation of an editor "gizmo" (translate/rotate/scale
 //! handles) and helper logic for driving object transforms.
+#![cfg(feature = "ecs")]
 //!
 //! The core crate exposes only the abstract state and the math; rendering is
 //! handled by `ferrous_renderer` and user interaction by the editor or app.

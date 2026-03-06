@@ -1,7 +1,7 @@
 use crate::canvas::Canvas;
 use crate::layout::{Rect, RenderCommand};
 use crate::widget::Widget;
-use winit::keyboard::KeyCode;
+use crate::KeyCode;
 
 /// Simple container widget that groups other widgets together.  The
 /// container itself may optionally draw a background quad, but otherwise

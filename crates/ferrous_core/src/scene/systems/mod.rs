@@ -1,4 +1,5 @@
 //! Built-in ECS systems for FerrousEngine.
+#![cfg(feature = "ecs")]
 //!
 //! This module re-exports all system types from focused sub-modules:
 //!

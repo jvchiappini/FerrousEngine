@@ -1,5 +1,7 @@
 //! Animation keyframe, clip, player components and system.
 
+#![cfg(feature = "ecs")]
+
 use ferrous_ecs::prelude::*;
 use ferrous_ecs::system::System;
 

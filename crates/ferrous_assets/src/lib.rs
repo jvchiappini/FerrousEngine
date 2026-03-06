@@ -28,8 +28,10 @@
 //! - `GltfModel: Asset` and `ImageData: Asset` importers.
 
 // ── existing modules ────────────────────────────────────────────────────────
+#[cfg(feature = "gpu")]
 pub mod font;
 pub mod gltf_loader;
+#[cfg(feature = "gpu")]
 pub mod texture;
 
 // ── Phase 5: asset pipeline ─────────────────────────────────────────────────
@@ -41,8 +43,10 @@ pub mod image_importer;
 pub mod server;
 
 // ── re-exports: legacy API (unchanged) ──────────────────────────────────────
+#[cfg(feature = "gpu")]
 pub use font::Font;
 pub use gltf_loader::{load_gltf, AssetMesh, AssetModel, RawMaterial};
+#[cfg(feature = "gpu")]
 pub use texture::Texture2d;
 
 // ── re-exports: Phase 5 API ──────────────────────────────────────────────────

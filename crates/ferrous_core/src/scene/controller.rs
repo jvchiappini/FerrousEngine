@@ -1,3 +1,5 @@
+#![cfg(feature = "ecs")]
+
 use std::collections::HashMap;
 
 use crate::input::KeyCode;

@@ -3,6 +3,7 @@
 //! Spawning, despawn, position, rotation and scale live here.
 //! Material, visibility, tags, access and iteration live in [`super::query`].
 
+#[cfg(feature = "ecs")]
 use ferrous_ecs::prelude::{Entity, World as EcsWorld};
 use glam::Vec3;
 

@@ -106,9 +106,10 @@ impl TextBatch {
         bytemuck::cast_slice(&self.quads)
     }
 
+    #[cfg(feature = "text")]
     pub fn draw_text(
         &mut self,
-        font: &ferrous_assets::font::Font, // <-- Ahora pide la estructura Font
+        font: &ferrous_assets::font::Font,
         text: &str,
         position: [f32; 2],
         size: f32,
@@ -140,6 +141,11 @@ impl TextBatch {
                 x += metric.advance * size;
             }
         }
+    }
+
+    #[cfg(not(feature = "text"))]
+    pub fn draw_text(&mut self, _font: &(), _text: &str, _position: [f32; 2], _size: f32, _color: [f32; 4]) {
+        // text rendering disabled; no-op
     }
 }
 

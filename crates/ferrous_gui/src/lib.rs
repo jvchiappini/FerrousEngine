@@ -39,6 +39,28 @@ pub use crate::color_picker::{ColorPicker, PickerShape};
 pub use button::Button as InteractiveButton;
 pub use slider::Slider;
 pub use textinput::TextInput;
+
+// Re-export or stub the key code type depending on the backend feature. When
+// the winit backend is enabled we simply re‑export the real type so downstream
+// code can work with it directly.  When the backend is disabled we need a
+// placeholder so that the public API signatures remain the same; rather than
+// an entirely empty enum we include the few variants that the GUI logic
+// actually compares against (currently only `Backspace` used by the text
+// input widget).  This keeps `cargo check --no-default-features` from
+// failing while avoiding a hard dependency on winit.
+
+#[cfg(feature = "winit-backend")]
+pub use winit::keyboard::KeyCode;
+
+#[cfg(not(feature = "winit-backend"))]
+/// Minimal stub used when the winit backend is disabled. Variant list may
+/// grow as the GUI code begins to depend on additional key codes, but for the
+/// moment only backspace is required.
+pub enum KeyCode {
+	/// Represents the backspace key, used by text input widgets to delete
+	/// characters.
+	Backspace,
+}
 pub use widget::Widget;
 // container/grouping widget
 pub use container::Container;

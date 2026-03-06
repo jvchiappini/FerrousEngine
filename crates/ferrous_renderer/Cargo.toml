@@ -7,9 +7,8 @@ edition = "2021"
 wgpu = "23.0"
 anyhow = "1.0"
 thiserror = "1.0"
-ferrous_core = { path = "../ferrous_core" }
-winit = "0.30" # el renderer puede necesitar winit más adelante
-ferrous_gui = { path = "../ferrous_gui" }
+ferrous_core = { path = "../ferrous_core", features = ["ecs"] }
+ferrous_gui = { path = "../ferrous_gui", optional = true }
 bytemuck = { version = "1.14", features = ["derive"] }
 glam = { workspace = true }
 image = { version = "0.25", optional = true, default-features = false, features = ["png", "jpeg"] }
@@ -28,4 +27,6 @@ pollster = "0.3"
 # disabled; the optional dependency below is the one that will be used by
 # consumers when they enable `--features image`.
 [features]
+default = ["gui"]
+gui = ["dep:ferrous_gui"]
 image = ["dep:image"]

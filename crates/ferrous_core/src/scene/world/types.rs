@@ -1,5 +1,7 @@
-//! ECS component types and scene entity types for the scene world.
+#[cfg(feature = "ecs")]
+/// ECS component types and scene entity types for the scene world.
 
+// `Element` type is defined later in this file; no need to import it.
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ferrous_ecs::prelude::Component;

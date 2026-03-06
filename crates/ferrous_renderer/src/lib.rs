@@ -34,6 +34,7 @@ pub mod scene;
 
 // -- Public re-exports --------------------------------------------------------
 
+#[cfg(feature = "gui")]
 pub use ferrous_gui::{GuiBatch, GuiQuad};
 pub use glam;
 
@@ -74,6 +75,7 @@ pub use resources::texture_registry::{
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[cfg(feature = "gui")]
 use ferrous_gui::TextBatch;
 
 use camera::controller::OrbitState;
@@ -117,6 +119,7 @@ pub struct Renderer {
 
     // -- Built-in passes (direct typed access, zero-cost) --------------------
     pub world_pass: WorldPass,
+    #[cfg(feature = "gui")]
     pub ui_pass: UiPass,
     /// Post-process pass: tone mapping + gamma correction.
     pub post_process_pass: PostProcessPass,
@@ -366,6 +369,7 @@ impl Renderer {
         let material_registry = MaterialRegistry::new(device, &context.queue, &layouts);
         let mut world_pass = world_pass;
         world_pass.set_material_table(&material_registry.bind_group_table(), &material_registry);
+        #[cfg(feature = "gui")]
         let ui_renderer = ferrous_gui::GuiRenderer::new(
             device.clone(),
             format,
@@ -377,6 +381,7 @@ impl Renderer {
 
         // now that we have a GUI renderer instance, create the corresponding
         // UI pass and the post-process (tone-mapping) pass
+        #[cfg(feature = "gui")]
         let ui_pass = UiPass::new(ui_renderer);
         let mut post_process_pass = PostProcessPass::new();
         // on_attach builds the bloom pipelines (and the tone-mapping pipeline
@@ -404,6 +409,7 @@ impl Renderer {
             context,
             render_target: rt,
             world_pass: world_pass_init,
+            #[cfg(feature = "gui")]
             ui_pass,
             post_process_pass,
             extra_passes: Vec::new(),
@@ -689,6 +695,7 @@ impl Renderer {
             .update_point_lights(&self.context.device, &self.context.queue, lights);
     }
 
+    #[cfg(feature = "gui")]
     pub fn render_to_target(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -699,6 +706,7 @@ impl Renderer {
     }
 
     /// Renders directly into an external `TextureView` (e.g. swapchain frame).
+    #[cfg(feature = "gui")]
     pub fn render_to_view(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -1122,6 +1130,7 @@ impl Renderer {
         }
     }
 
+    #[cfg(feature = "gui")]
     fn do_render(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,

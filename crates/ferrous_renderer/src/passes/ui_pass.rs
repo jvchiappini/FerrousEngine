@@ -6,6 +6,8 @@
 ///
 /// The `on_resize` hook keeps the GUI projection matrix in sync without
 /// needing any downcast from the `Renderer`.
+#[cfg(feature = "gui")]
+
 use wgpu::{CommandEncoder, Device, Queue, TextureView};
 
 use ferrous_gui::{GuiBatch, GuiRenderer, TextBatch};

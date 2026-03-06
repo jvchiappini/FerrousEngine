@@ -1,5 +1,7 @@
 //! Parent-child transform hierarchy components and TransformSystem.
 
+#![cfg(feature = "ecs")]
+
 use ferrous_ecs::prelude::*;
 use ferrous_ecs::system::System;
 

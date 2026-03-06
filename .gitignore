@@ -38,5 +38,6 @@ Thumbs.db
 
 tree_analyzer.py
 flowmap_tool.py
-
+doc_manager.py
+analysis.md
 FerrousEngine_Architecture.md

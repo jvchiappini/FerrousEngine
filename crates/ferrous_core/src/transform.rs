@@ -4,6 +4,11 @@
 //! struct.  Call `.matrix()` to get the combined model matrix for upload
 //! to the GPU.
 
+// Component trait is gated behind the `ecs` feature so consumers can compile
+// ferrous_core without pulling in the entire ECS crate.  The blanket `impl`
+// below is wrapped in `#[cfg(feature = "ecs")]` to make the dependency
+// optional.
+#[cfg(feature = "ecs")]
 use ferrous_ecs::prelude::Component;
 use glam::{Mat4, Quat, Vec3};
 
@@ -27,6 +32,7 @@ pub struct Transform {
     pub scale: Vec3,
 }
 
+#[cfg(feature = "ecs")]
 impl Component for Transform {}
 
 impl Default for Transform {

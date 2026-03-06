@@ -1,6 +1,17 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
+/// Material transparency mode, mirroring `gltf::material::AlphaMode` but
+/// kept local so the assets crate does not depend on `ferrous_core`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AlphaMode {
+    /// fully opaque; no blending or alpha-test
+    Opaque,
+    /// alpha-tested mask. fragments with alpha below `cutoff` are discarded.
+    Mask { cutoff: f32 },
+    /// standard alpha blending.
+    Blend,
+}
 /// "Raw" material description produced by the asset loader.  We keep this
 /// independent of the renderer's `MaterialDescriptor` type so that the
 /// assets crate can remain completely API-agnostic and not pull in any
@@ -19,7 +30,7 @@ pub struct RawMaterial {
     pub metallic_roughness_tex: Option<usize>,
     pub emissive_tex: Option<usize>,
     pub ao_tex: Option<usize>,
-    pub alpha_mode: ferrous_core::scene::AlphaMode,
+    pub alpha_mode: AlphaMode,
     pub double_sided: bool,
 }
 
@@ -154,11 +165,11 @@ pub fn load_gltf(path: &Path) -> Result<AssetModel> {
     for mat in document.materials() {
         let pbr = mat.pbr_metallic_roughness();
         let alpha_mode = match mat.alpha_mode() {
-            gltf::material::AlphaMode::Opaque => ferrous_core::scene::AlphaMode::Opaque,
-            gltf::material::AlphaMode::Mask => ferrous_core::scene::AlphaMode::Mask {
+            gltf::material::AlphaMode::Opaque => AlphaMode::Opaque,
+            gltf::material::AlphaMode::Mask => AlphaMode::Mask {
                 cutoff: mat.alpha_cutoff().unwrap_or(0.5),
             },
-            gltf::material::AlphaMode::Blend => ferrous_core::scene::AlphaMode::Blend,
+            gltf::material::AlphaMode::Blend => AlphaMode::Blend,
         };
         let raw = RawMaterial {
             base_color: pbr.base_color_factor(),

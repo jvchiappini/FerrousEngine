@@ -1,4 +1,5 @@
 //! PBR material types shared between core and renderer.
+#![cfg(feature = "ecs")]
 //!
 //! These definitions were originally part of the renderer crate but are now
 //! owned by `ferrous_core` so that the scene layer can refer to them without

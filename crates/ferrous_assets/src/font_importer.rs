@@ -28,6 +28,11 @@
 use crate::asset_trait::Asset;
 use std::path::Path;
 
+// wgpu and the `font` module are only needed when the `gpu` feature is
+// enabled; guard their usage accordingly.
+#[cfg(feature = "gpu")]
+use wgpu;
+
 /// Raw font file bytes, ready to be baked into a GPU atlas.
 ///
 /// Produced by loading a `.ttf` or `.otf` file from disk.
@@ -52,6 +57,7 @@ impl FontData {
     /// `wgpu::Device` + `wgpu::Queue`.  Call this from the main (GPU) thread
     /// once [`crate::server::AssetServer::get`] returns
     /// [`crate::handle::AssetState::Ready`].
+    #[cfg(feature = "gpu")]
     pub fn into_font(
         &self,
         device: &wgpu::Device,

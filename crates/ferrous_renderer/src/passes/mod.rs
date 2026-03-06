@@ -8,6 +8,7 @@ pub mod prepass;
 pub mod skybox_pass;
 pub mod ssao_blur_pass;
 pub mod ssao_pass;
+#[cfg(feature = "gui")]
 pub mod ui_pass;
 pub mod world_pass;
 
@@ -21,5 +22,6 @@ pub use prepass::PrePass;
 pub use skybox_pass::{SkyboxPass, SkyboxPipeline};
 pub use ssao_blur_pass::SsaoBlurPass;
 pub use ssao_pass::SsaoPass;
+#[cfg(feature = "gui")]
 pub use ui_pass::UiPass;
 pub use world_pass::WorldPass;

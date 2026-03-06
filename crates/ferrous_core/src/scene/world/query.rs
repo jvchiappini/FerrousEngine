@@ -4,6 +4,7 @@
 //! handle slot all live here.  Core mutation (spawn/despawn/transform) lives
 //! in [`super::scene`].
 
+#[cfg(feature = "ecs")]
 use crate::color::Color;
 use crate::scene::{MaterialDescriptor, MaterialHandle};
 

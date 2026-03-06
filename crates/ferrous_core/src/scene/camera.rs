@@ -1,3 +1,5 @@
+#![cfg(feature = "ecs")]
+
 use crate::scene::controller::Controller;
 use glam::{Mat4, Vec3};
 

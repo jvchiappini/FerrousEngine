@@ -1,6 +1,8 @@
 use crate::canvas::Canvas;
 use ferrous_core::InputState;
 use crate::Widget;
+// window-event handling is only available when the winit backend is enabled.
+#[cfg(feature = "winit-backend")]
 use winit::event::WindowEvent;
 
 /// Higher‑level UI object intended to be held by applications. It wraps a
@@ -66,6 +68,7 @@ impl Ui {
     /// Handle a winit window event, updating both the provided `InputState`
     /// (so that the rest of the engine sees the mouse position/keys) and
     /// dispatching the event to the widget tree.
+    #[cfg(feature = "winit-backend")]
     pub fn handle_window_event(&mut self, event: &WindowEvent, input: &mut InputState) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -101,7 +104,10 @@ impl Ui {
         let mut cmds = Vec::new();
         self.canvas.collect(&mut cmds);
         for cmd in &cmds {
+            #[cfg(feature = "text")]
             cmd.to_batches(quad_batch, text_batch, font);
+            #[cfg(not(feature = "text"))]
+            cmd.to_batches(quad_batch, text_batch);
         }
     }
 
