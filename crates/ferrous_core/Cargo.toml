@@ -19,6 +19,7 @@ edition = "2021"
 # depends on `ferrous_core`).  `ferrous_renderer` will re-export these types
 # for convenience.
 ferrous_ecs = { workspace = true, optional = true }
+ferrous_gpu = { workspace = true, optional = true }
 # ── desktop-only (process metrics via OS APIs) ────────────────────────────
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 once_cell = "1.18"
@@ -38,7 +39,7 @@ ecs = ["dep:ferrous_ecs"]
 # downstream consumers to compile `ferrous_core` without dragging in the
 # heavy GPU dependency.  Engine apps such as the editor or renderer will
 # enable this unconditionally.
-gpu = ["wgpu"]
+gpu = ["dep:ferrous_gpu", "dep:wgpu"]
 
 # Input events (winit) are only pulled in when the `input` feature is
 # requested.  This keeps headless builds free of windowing dependencies.

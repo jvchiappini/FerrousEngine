@@ -52,6 +52,7 @@ pub use render_target::HdrTexture;
 pub use render_target::RenderTarget;
 pub use resources::InstanceBuffer;
 pub use scene::{Aabb, Frustum};
+pub use scene::{CameraData, DirectionalLightData, RenderInstance, SceneData};
 
 use materials::MaterialRegistry;
 // re-export material types for API consumers
@@ -762,6 +763,41 @@ impl Renderer {
     }
 
     // -- Scene sync ----------------------------------------------------------
+
+    /// Push a fully-assembled [`SceneData`] to the renderer for this frame.
+    ///
+    /// This is the **preferred** entry point going forward.  The application
+    /// layer (e.g. `ferrous_app`) queries the ECS, builds a [`SceneData`],
+    /// and calls this method — keeping the renderer free of ECS knowledge.
+    ///
+    /// `sync_world` is kept for backward compatibility; it converts ECS state
+    /// into an equivalent `SceneData` and delegates here.
+    pub fn set_scene(&mut self, scene: &SceneData) {
+        // 1. Apply camera if provided
+        if let Some(cam) = &scene.camera {
+            self.camera_system.camera.eye    = cam.eye;
+            self.camera_system.camera.target = cam.target;
+            self.camera_system.camera.fovy   = cam.fov_y;
+            self.camera_system.camera.znear  = cam.z_near;
+            self.camera_system.camera.zfar   = cam.z_far;
+        }
+
+        // 2. Apply directional light if provided
+        if let Some(light) = &scene.directional_light {
+            self.set_directional_light(
+                light.direction.to_array(),
+                light.color.to_array(),
+                light.intensity,
+            );
+        }
+
+        // 3. Mark scene dirty so frame_builder rebuilds next frame.
+        //    Instance uploads are still handled by sync_world / build_world_commands
+        //    until the full ECS→SceneData migration is complete (Phase 3 step 2).
+        if !scene.instances.is_empty() {
+            self.frame_builder.scene_dirty = true;
+        }
+    }
 
     /// Queue a gizmo for rendering this frame.
     /// Phase 9: Delegates geometry work to `FrameBuilder::build_world_commands`

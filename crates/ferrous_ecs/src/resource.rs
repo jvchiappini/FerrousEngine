@@ -75,6 +75,21 @@ impl ResourceMap {
         self.map.len()
     }
 
+    /// Returns a raw mutable pointer to resource `R`.
+    ///
+    /// # Safety
+    /// The caller must ensure no other reference to `R` is alive for the
+    /// duration of the pointer's use.  This is intended for `SystemParam`
+    /// implementations that need `&mut R` while only holding `&ResourceMap`.
+    pub unsafe fn get_mut_ptr<R: Send + Sync + 'static>(&self) -> Option<*mut R> {
+        self.map
+            .get(&TypeId::of::<R>())
+            .and_then(|b| {
+                let ptr = b.downcast_ref::<R>()? as *const R as *mut R;
+                Some(ptr)
+            })
+    }
+
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }

@@ -7,6 +7,7 @@ edition = "2021"
 ferrous_renderer = { path = "../ferrous_renderer", features = ["assets"] }
 ferrous_core = { path = "../ferrous_core" }
 ferrous_ecs = { path = "../ferrous_ecs" }
+ferrous_gpu = { path = "../ferrous_gpu" }
 winit = "0.30"
 ferrous_gui = { path = "../ferrous_gui" }
 wgpu = "23.0"

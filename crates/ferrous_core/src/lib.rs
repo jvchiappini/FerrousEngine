@@ -114,7 +114,7 @@ pub use scene::{Material, MaterialBuilder};
 
 // Context (re-export only when GPU support is active)
 #[cfg(feature = "gpu")]
-pub use context::EngineContext;
+pub use ferrous_gpu::EngineContext;
 
 // Metrics shortcuts (the most common two)
 pub use metrics::{get_cpu_usage, get_ram_usage_mb};

@@ -410,6 +410,10 @@ impl World {
     }
 
     /// Iterate over all entities that have both `A` and `B`.
+    ///
+    /// # Deprecated
+    /// Use `Query::<(&A, &B)>::new(world).iter()` instead.
+    #[deprecated(since = "0.2.0", note = "use Query::<(&A, &B)>::new(world).iter()")]
     pub fn query2<A: Component, B: Component>(
         &self,
     ) -> impl Iterator<Item = (Entity, &A, &B)> {
@@ -429,6 +433,10 @@ impl World {
     }
 
     /// Iterate over all entities that have `A`, `B`, and `C`.
+    ///
+    /// # Deprecated
+    /// Use `Query::<(&A, &B, &C)>::new(world).iter()` instead.
+    #[deprecated(since = "0.2.0", note = "use Query::<(&A, &B, &C)>::new(world).iter()")]
     pub fn query3<A: Component, B: Component, C: Component>(
         &self,
     ) -> impl Iterator<Item = (Entity, &A, &B, &C)> {

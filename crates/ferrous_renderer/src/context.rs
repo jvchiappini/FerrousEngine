@@ -1,11 +1,11 @@
-/// Re-exports the shared GPU context supplied by `ferrous_core` and adds a
-/// small helper so the rest of the renderer can reference device/queue without
-/// repeating `context.device` / `context.queue` everywhere.
+/// Re-exports the shared GPU context and adds a small helper so the rest of
+/// the renderer can reference device/queue without repeating
+/// `context.device` / `context.queue` everywhere.
 ///
-/// We deliberately keep this file thin: the real wgpu adapter/surface setup
-/// lives in `ferrous_app` and `ferrous_core`.  The renderer only receives an
-/// already-initialised `EngineContext`.
-pub use ferrous_core::context::EngineContext;
+/// `EngineContext` is now defined in `ferrous_gpu`; this module re-exports it
+/// for internal use.  The backward-compat alias via `ferrous_core` still
+/// works but new code should import from `ferrous_gpu` or this module.
+pub use ferrous_gpu::EngineContext;
 
 use wgpu::{Device, Queue};
 

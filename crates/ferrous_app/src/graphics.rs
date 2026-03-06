@@ -1,4 +1,4 @@
-use ferrous_core::context::EngineContext;
+use ferrous_gpu::EngineContext;
 use ferrous_renderer::Renderer;
 use winit::window::Window;
 

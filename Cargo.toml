@@ -2,6 +2,7 @@
 members = [
     "crates/ferrous_ecs",
     "crates/ferrous_core",
+    "crates/ferrous_gpu",
     "crates/ferrous_renderer",
     "crates/ferrous_editor",
     "crates/ferrous_gui",
@@ -21,3 +22,4 @@ winit = "0.30"
 log = "0.4"
 pollster = "0.3"
 ferrous_ecs = { path = "crates/ferrous_ecs" }
+ferrous_gpu = { path = "crates/ferrous_gpu" }

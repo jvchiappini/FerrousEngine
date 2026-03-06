@@ -8,9 +8,11 @@
 //! | `component`   | Component trait, TypeId-keyed metadata                      |
 //! | `archetype`   | Dense SoA storage; one archetype per unique component set   |
 //! | `world`       | spawn / despawn / insert / remove / get                     |
-//! | `query`       | WorldQuery trait + safe query iterators                     |
+//! | `query`       | `WorldQuery` trait + `Query<Q>` tuple iterators             |
 //! | `resource`    | Non-entity global state (ResourceMap)                       |
-//! | `system`      | `System` trait, `SystemScheduler`, `StagedScheduler` (stage-ordered: PreUpdate→Update→PostUpdate→Render), `Stage` enum, `fn_system` adapter |
+//! | `system`      | `System` trait, `SystemScheduler`, `StagedScheduler`        |
+//! | `system_param`| `SystemParam` trait, `Res<T>`, `ResMut<T>`                  |
+//! | `fn_system`   | `IntoSystem` trait, `FnSystem` — plain-function systems     |
 //!
 //! ## Non-Clone components
 //!
@@ -39,16 +41,27 @@
 pub mod archetype;
 pub mod component;
 pub mod entity;
+pub mod fn_system;
 pub mod query;
 pub mod resource;
 pub mod system;
+pub mod system_param;
 pub mod world;
 
 pub mod prelude {
     pub use crate::component::Component;
     pub use crate::entity::Entity;
-    pub use crate::query::{Query, QueryMut};
+    // New: function-system ergonomics
+    pub use crate::fn_system::IntoSystem;
+    pub use crate::query::{Query, QueryMut, WorldQuery};
     pub use crate::resource::ResourceMap;
-    pub use crate::system::{fn_system, Stage, StagedScheduler, System, SystemScheduler};
+    // Note: `crate::system::fn_system` (the legacy closure constructor) is
+    // intentionally NOT re-exported here to avoid name collision with the
+    // `crate::fn_system` module.  Use `crate::system::fn_system(...)` directly.
+    pub use crate::system::{Stage, StagedScheduler, System, SystemScheduler};
+    // Param value types (what users receive in their fn args)
+    pub use crate::system_param::{Res, ResMut};
+    // Param marker types (used to spell out param sets, e.g. ResParam<T>)
+    pub use crate::system_param::{QueryParam, ResMutParam, ResParam, SystemParam};
     pub use crate::world::World;
 }

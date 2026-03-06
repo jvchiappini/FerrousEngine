@@ -90,6 +90,8 @@ pub use ferrous_core::scene::{Camera3D, Camera3DBuilder, DirectionalLight, Orbit
 pub use ferrous_core::scene::{Material, MaterialBuilder};
 pub use ferrous_core::{Children, GlobalTransform, Parent};
 pub use ferrous_ecs::prelude::{Entity, StagedScheduler};
+// Plain-function system conversion — users need this to call add_system_fn
+pub use ferrous_ecs::fn_system::IntoSystem;
 
 // helpers
 pub use crate::asset_bridge::{spawn_gltf, spawn_gltf_async, GltfSpawnTask};

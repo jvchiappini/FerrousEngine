@@ -164,6 +164,44 @@ impl AppBuilder {
         self
     }
 
+    /// Add a plain-function system using the [`IntoSystem`] conversion.
+    ///
+    /// This is the ergonomic entry point from the roadmap.  The function is
+    /// registered in [`Stage::Update`].  If you need a different stage, use
+    /// [`AppBuilder::add_system`] directly.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use ferrous_app::AppBuilder;
+    /// use ferrous_app::plugin::DefaultPlugins;
+    /// use ferrous_ecs::prelude::*;
+    ///
+    /// #[derive(Clone)] struct Position { x: f32, y: f32 }
+    /// impl Component for Position {}
+    ///
+    /// fn log_positions(query: Query<&Position>) {
+    ///     for pos in query.iter() {
+    ///         println!("pos = ({}, {})", pos.x, pos.y);
+    ///     }
+    /// }
+    ///
+    /// AppBuilder::new()
+    ///     .add_plugin(DefaultPlugins)
+    ///     .add_system_fn(log_positions)
+    ///     .run();
+    /// ```
+    pub fn add_system_fn<Params, S>(mut self, system: S) -> Self
+    where
+        S: ferrous_ecs::fn_system::IntoSystem<Params>,
+        S::Sys: System + 'static,
+        Params: 'static,
+    {
+        self.staged_systems
+            .push((Stage::Update, Box::new(system.into_system())));
+        self
+    }
+
     /// Add a pre-boxed system (builder-pattern helper used by plugin impls
     /// that call `app.add_system_boxed(...)` from `&mut self` context).
     pub(crate) fn add_system_boxed(&mut self, stage: Stage, system: Box<dyn System>) {
