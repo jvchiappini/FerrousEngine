@@ -48,7 +48,10 @@ pub struct Events<T: Send + Sync + 'static> {
 impl<T: Send + Sync + 'static> Events<T> {
     /// Create an empty event stream.
     pub fn new() -> Self {
-        Self { current: Vec::new(), previous: Vec::new() }
+        Self {
+            current: Vec::new(),
+            previous: Vec::new(),
+        }
     }
 
     /// Send an event into the stream.  This appends to the `current` buffer.
@@ -130,7 +133,9 @@ unsafe impl<'a, T: Send + Sync + 'static> SystemParam for EventWriter<'a, T> {
         EventWriter { events: &mut *ptr }
     }
 
-    fn res_writes() -> Vec<TypeId> { vec![TypeId::of::<Events<T>>()] }
+    fn res_writes() -> Vec<TypeId> {
+        vec![TypeId::of::<Events<T>>()]
+    }
 }
 
 unsafe impl<'a, T: Send + Sync + 'static> SystemParam for EventReader<'a, T> {
@@ -150,10 +155,15 @@ unsafe impl<'a, T: Send + Sync + 'static> SystemParam for EventReader<'a, T> {
         let events = resources
             .get::<Events<T>>()
             .expect("EventReader: Events resource missing");
-        EventReader { events, cursor: *state }
+        EventReader {
+            events,
+            cursor: *state,
+        }
     }
 
-    fn res_reads() -> Vec<TypeId> { vec![TypeId::of::<Events<T>>()] }
+    fn res_reads() -> Vec<TypeId> {
+        vec![TypeId::of::<Events<T>>()]
+    }
 }
 
 // ---------------------------------------------------------------------------

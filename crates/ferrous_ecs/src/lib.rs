@@ -49,13 +49,13 @@
 pub mod archetype;
 pub mod component;
 pub mod entity;
+pub mod event;
 pub mod fn_system;
 pub mod query;
 pub mod resource;
 pub mod system;
 pub mod system_param;
 pub mod world;
-pub mod event;
 
 pub mod prelude {
     pub use crate::component::Component;
@@ -75,7 +75,7 @@ pub mod prelude {
     pub use crate::world::World;
 
     // Event API
-    pub use crate::event::{Events, EventWriter, EventReader};
+    pub use crate::event::{EventReader, EventWriter, Events};
 
     // Parallel scheduling — only available with `feature = "parallel"`.
     #[cfg(feature = "parallel")]
@@ -84,5 +84,4 @@ pub mod prelude {
     // `use ferrous_ecs::prelude::*;` and `#[derive(Component)]`).
     #[cfg(feature = "derive")]
     pub use ferrous_ecs_macros::Component;
-
 }

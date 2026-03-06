@@ -1,3 +1,5 @@
+#![cfg(feature = "gpu-driven")]
+
 /// GPU-driven frustum culling pass — Phase 11.
 ///
 /// `CullPass` is the CPU orchestration layer for the `cull.wgsl` compute

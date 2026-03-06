@@ -1,4 +1,5 @@
 pub mod buffer;
+#[cfg(feature = "gpu-driven")]
 pub mod draw_indirect;
 pub mod environment;
 pub mod instance_buffer;
@@ -10,6 +11,7 @@ pub mod texture;
 pub mod texture_registry;
 pub mod camera;
 
+#[cfg(feature = "gpu-driven")]
 pub use draw_indirect::{
     DrawIndirectBuffer, GpuDrawIndexedIndirect, InstanceCullBuffer, InstanceCullData,
 };

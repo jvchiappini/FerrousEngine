@@ -33,6 +33,14 @@ default = ["gui"]
 gui = ["dep:ferrous_gui"]
 image = ["dep:image"]
 
+# Enable GPU-driven indirect draw path.  When disabled the renderer compiles
+# only the legacy CPU-driven `draw_indexed` path.
+"gpu-driven" = []
+
 # optional assets support; when disabled the renderer does not depend on the
 # asset crate and mesh caches are omitted at compile time.
 assets = ["dep:ferrous_assets", "ferrous_assets/gpu"]
+
+# Bindless textures/materials – replaces per-material bind groups with a
+# single bindless descriptor array.  Functionality is currently a stub.
+bindless = []

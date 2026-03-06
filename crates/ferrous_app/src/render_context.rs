@@ -82,6 +82,7 @@ impl<'r> RenderContext<'r> {
     /// When enabled, per-batch visible instance counts are determined on the
     /// GPU before `WorldPass` draws anything.  Disable for debugging or on
     /// hardware that does not support compute.
+    #[cfg(feature = "gpu-driven")]
     pub fn set_gpu_culling(&mut self, enabled: bool) {
         self.inner.enable_gpu_culling(enabled);
     }

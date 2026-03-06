@@ -83,15 +83,18 @@ pub struct WorldPass {
     /// RESOURCE (sampled texture) within the same render-pass scope.
     shadow_light_bind_group: Arc<wgpu::BindGroup>,
 
+    #[cfg(feature = "bindless")]
+    /// bindless descriptor set (one for all materials)
+    bindless_bind_group: Option<Arc<wgpu::BindGroup>>,
+
     // -- Phase 11: GPU-Driven Rendering (indirect draw) ----------------------
     /// When `Some`, the render pass will use `draw_indexed_indirect` instead
     /// of `draw_indexed`, consuming the pre-filled indirect draw buffer.
     /// Set via `set_indirect_buffer`; cleared via `clear_indirect_buffer`.
-    indirect_buf: Option<Arc<wgpu::Buffer>>,
-    /// The bind group for the GPU-culled, compacted output instance buffer.
-    /// Replaces the regular `instance_bind_group` in the GPU-driven path so
-    /// the shader reads only the visible matrices produced by the cull shader.
-    culled_instance_bind_group: Option<Arc<wgpu::BindGroup>>,
+        #[cfg(feature = "gpu-driven")]
+        indirect_buf: Option<Arc<wgpu::Buffer>>,
+        #[cfg(feature = "gpu-driven")]
+        culled_instance_bind_group: Option<Arc<wgpu::BindGroup>>,
 }
 
 impl WorldPass {
@@ -190,7 +193,11 @@ impl WorldPass {
             shadow_pipeline_instanced,
             shadow_resources,
             shadow_light_bind_group,
+            #[cfg(feature = "bindless")]
+            bindless_bind_group: None,
+            #[cfg(feature = "gpu-driven")]
             indirect_buf: None,
+            #[cfg(feature = "gpu-driven")]
             culled_instance_bind_group: None,
         }
     }
@@ -212,6 +219,7 @@ impl WorldPass {
     /// After this is set, `execute` will call `draw_indexed_indirect` using
     /// `indirect_buf` for each mesh batch, and will bind `culled_bg` as group 1
     /// (the compacted output instance buffer written by the cull shader).
+    #[cfg(feature = "gpu-driven")]
     pub fn set_indirect_buffer(
         &mut self,
         indirect_buf: Arc<wgpu::Buffer>,
@@ -222,6 +230,7 @@ impl WorldPass {
     }
 
     /// Disarm the GPU-driven path, reverting to the CPU `draw_indexed` path.
+    #[cfg(feature = "gpu-driven")]
     pub fn clear_indirect_buffer(&mut self) {
         self.indirect_buf = None;
         self.culled_instance_bind_group = None;
@@ -242,6 +251,12 @@ impl WorldPass {
         // keep a clone of the registry for flag lookups; cloning is cheap
         // because most data inside is stored in Arcs.
         self.material_registry = Some(registry.clone());
+        #[cfg(feature = "bindless")]
+        {
+            if table.len() == 1 {
+                self.bindless_bind_group = Some(table[0].clone());
+            }
+        }
     }
 
     /// Push new light data into the GPU buffer.  The caller is responsible
@@ -447,10 +462,14 @@ impl RenderPass for WorldPass {
         // ── Instanced path (World entities) ──────────────────────────────────
         // Determine which instance bind group to use: GPU-culled (Phase 11)
         // takes priority over the CPU-uploaded bind group.
+        #[cfg(feature = "gpu-driven")]
         let effective_inst_bg = self
             .culled_instance_bind_group
             .as_ref()
             .or(self.instance_bind_group.as_ref());
+        
+        #[cfg(not(feature = "gpu-driven"))]
+        let effective_inst_bg = self.instance_bind_group.as_ref();
 
         if let Some(inst_bg) = effective_inst_bg {
             if !packet.instanced_objects.is_empty() {
@@ -458,6 +477,12 @@ impl RenderPass for WorldPass {
                 // transparent).  we reuse the same bind groups for both.
                 rpass.set_bind_group(0, &*self.camera_bind_group, &[]);
                 rpass.set_bind_group(1, inst_bg.as_ref(), &[]);
+
+                #[cfg(feature = "bindless")]
+                if let Some(bbg) = &self.bindless_bind_group {
+                    // bindless descriptor set at binding slot 2 (arbitrary choice)
+                    rpass.set_bind_group(2, bbg.as_ref(), &[]);
+                }
 
                 // helper closure to choose an instancing pipeline from render
                 // flags.  we no longer consult `material_registry` here; the
@@ -488,11 +513,15 @@ impl RenderPass for WorldPass {
                 };
 
                 // ── GPU-driven path (Phase 11) ────────────────────────────
-                if let Some(ref indirect) = self.indirect_buf {
-                    // The cull shader has already produced a compacted instance
-                    // list.  We issue one draw_indexed_indirect per batch; the
-                    // GPU reads instance_count and first_instance from the
-                    // indirect buffer (patched by CullPass::sync_patch_indirect).
+                // compute `maybe_indirect` only if the feature is enabled; the
+                // unused variable will be optimized away otherwise.
+                #[cfg(feature = "gpu-driven")]
+                let maybe_indirect = self.indirect_buf.as_ref();
+                #[cfg(not(feature = "gpu-driven"))]
+                let maybe_indirect: Option<&Arc<wgpu::Buffer>> = None;
+
+                if let Some(indirect) = maybe_indirect {
+                    // GPU-driven branch: issue one indirect draw per batch.
                     for (i, cmd) in packet.instanced_objects.iter().enumerate() {
                         let (alpha_mode, double_sided) =
                             get_flags(cmd.material_slot, cmd.double_sided);
@@ -563,7 +592,7 @@ impl RenderPass for WorldPass {
                             cmd.first_instance..cmd.first_instance + cmd.instance_count,
                         );
                     }
-                } // end CPU-driven path
+                }
             }
         }
     }

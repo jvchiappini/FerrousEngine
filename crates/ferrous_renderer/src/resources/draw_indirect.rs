@@ -1,3 +1,5 @@
+#![cfg(feature = "gpu-driven")]
+
 /// GPU-side indirect draw command buffer for GPU-driven rendering.
 ///
 /// Stores a contiguous array of `wgpu::util::DrawIndexedIndirect` (20 bytes each).

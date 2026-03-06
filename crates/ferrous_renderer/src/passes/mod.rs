@@ -1,5 +1,6 @@
 pub mod cel_pass;
 pub mod compute_pass;
+#[cfg(feature = "gpu-driven")]
 pub mod cull_pass;
 pub mod flat_pass;
 pub mod outline_pass;
@@ -14,6 +15,7 @@ pub mod world_pass;
 
 pub use cel_pass::{CelFrameData, CelShadedPass};
 pub use compute_pass::ComputePass;
+#[cfg(feature = "gpu-driven")]
 pub use cull_pass::{CullParamsUniform, CullPass};
 pub use flat_pass::{FlatFrameData, FlatShadedPass};
 pub use outline_pass::{OutlineFrameData, OutlinePass};

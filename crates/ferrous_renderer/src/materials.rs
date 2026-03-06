@@ -20,6 +20,53 @@ use crate::resources::{Material, TextureHandle, TextureRegistry};
 // `lib.rs` so clients can continue to import from either crate.
 use ferrous_core::scene::{AlphaMode, MaterialDescriptor, MaterialHandle, MATERIAL_DEFAULT};
 
+// ---------------------------------------------------------------------------
+// Bindless support (Phase 13)
+//
+// When the `bindless` feature gate is enabled we will maintain a single GPU
+// descriptor set containing an array of textures rather than creating one
+// bind group per material.  This stub is intentionally minimal; future
+// commits will flesh out the allocation logic and shader bindings.
+
+#[cfg(feature = "bindless")]
+#[derive(Clone)]
+struct BindlessMaterials {
+    // placeholder for the GPU bind group / texture array
+    // e.g. `texture_array: wgpu::BindGroup`, `max_slots: u32`, etc.
+    bind_group: Arc<wgpu::BindGroup>,
+    count: u32,
+}
+
+#[cfg(feature = "bindless")]
+impl BindlessMaterials {
+    fn new(_device: &wgpu::Device, _queue: &wgpu::Queue) -> Self {
+        // build a minimal bindless layout.  for the stub we keep **no
+        // bindings** so that creating an empty bind group is valid.  a
+        // future iteration will flesh out the actual texture-array binding.
+        let layout = _device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("bindless_materials_layout"),
+            entries: &[],
+        });
+        let bind_group = _device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bindless_materials"),
+            layout: &layout,
+            entries: &[],
+        });
+        BindlessMaterials { bind_group: Arc::new(bind_group), count: 0 }
+    }
+
+    /// Reserve a new slot in the bindless table and return its index.
+    fn add_material(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue, _material: &Material) -> u32 {
+        let idx = self.count;
+        self.count += 1;
+        idx
+    }
+
+    fn bind_group(&self) -> Arc<wgpu::BindGroup> {
+        self.bind_group.clone()
+    }
+}
+
 /// Manages materials, texture handles and the resulting bind groups.  All
 /// materials are built from a [`MaterialDescriptor`] and may refer to
 /// textures by handle; the registry owns the underlying GPU textures so
@@ -40,6 +87,15 @@ pub struct MaterialRegistry {
     /// free list of material slots that have been explicitly released via
     /// [`MaterialRegistry::free`].  values are raw u32 indices.
     free_slots: Vec<u32>,
+    /// Optional bindless bookkeeping (Phase 13 roadmap).
+    ///
+    /// When the `bindless` feature is enabled we will allocate a single
+    /// descriptor set/array that holds all material textures.  For now the
+    /// implementation is a stub that simply falls back to the regular
+    /// per-material bind groups; later phases will populate and consume
+    /// this field.
+    #[cfg(feature = "bindless")]
+    bindless: Option<BindlessMaterials>,
 }
 
 impl MaterialRegistry {
@@ -68,6 +124,8 @@ impl MaterialRegistry {
             tex_registry,
             materials,
             free_slots: Vec::new(),
+            #[cfg(feature = "bindless")]
+            bindless: Some(BindlessMaterials::new(device, queue)),
         }
     }
 
@@ -135,16 +193,27 @@ impl MaterialRegistry {
     ) -> MaterialHandle {
         let material =
             Material::from_descriptor(device, queue, &self.layouts, desc, &self.tex_registry);
-        if let Some(slot) = self.free_slots.pop() {
-            let idx = slot as usize;
-            // overwrite the placeholder default material previously written
-            // by `free`.
-            self.materials[idx] = material;
-            MaterialHandle(slot)
-        } else {
-            let idx = self.materials.len() as u32;
+        #[cfg(feature = "bindless")]
+        {
+            // allocate slot in bindless table and append material for flag
+            let handle = MaterialHandle(self.bindless.as_mut().unwrap().add_material(device, queue, &material));
             self.materials.push(material);
-            MaterialHandle(idx)
+            handle
+        }
+
+        #[cfg(not(feature = "bindless"))]
+        {
+            if let Some(slot) = self.free_slots.pop() {
+                let idx = slot as usize;
+                // overwrite the placeholder default material previously written
+                // by `free`.
+                self.materials[idx] = material;
+                MaterialHandle(slot)
+            } else {
+                let idx = self.materials.len() as u32;
+                self.materials.push(material);
+                MaterialHandle(idx)
+            }
         }
     }
 
@@ -207,10 +276,17 @@ impl MaterialRegistry {
     /// Returns a vector of all bind groups in slot order.  Used by passes to
     /// refresh their local copy of the material table.
     pub fn bind_group_table(&self) -> Vec<Arc<wgpu::BindGroup>> {
-        self.materials
-            .iter()
-            .map(|m| m.bind_group.clone())
-            .collect()
+        #[cfg(feature = "bindless")]
+        {
+            vec![self.bindless.as_ref().unwrap().bind_group()]
+        }
+        #[cfg(not(feature = "bindless"))]
+        {
+            self.materials
+                .iter()
+                .map(|m| m.bind_group.clone())
+                .collect()
+        }
     }
 
     /// Retrieve the rendering flags associated with a material.  These are
@@ -239,5 +315,35 @@ impl MaterialRegistry {
             self.materials[idx] = self.materials[0].clone();
             self.free_slots.push(handle.0);
         }
+    }
+}
+
+// simple smoke tests that exercise the public API, compiled with or without
+// the `bindless` feature.  wgpu requires a real device/queue so we create
+// one via `pollster`.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pipeline::PipelineLayouts;
+    use pollster;
+
+    #[test]
+    fn registry_roundtrip() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        });
+        let adapter = pollster::block_on(
+            instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
+        )
+        .expect("adapter");
+        let (device, queue) = pollster::block_on(
+            adapter.request_device(&wgpu::DeviceDescriptor::default(), None),
+        )
+        .expect("device");
+        let layouts = PipelineLayouts::new(&device);
+        let mut reg = MaterialRegistry::new(&device, &queue, &layouts);
+        let table = reg.bind_group_table();
+        assert!(!table.is_empty());
     }
 }

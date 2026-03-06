@@ -3,6 +3,11 @@ name = "ferrous_app"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+gpu-driven = ["ferrous_renderer/gpu-driven"]
+bindless = ["ferrous_renderer/bindless"]
+
 [dependencies]
 ferrous_renderer = { path = "../ferrous_renderer", features = ["assets"] }
 ferrous_core = { path = "../ferrous_core" }

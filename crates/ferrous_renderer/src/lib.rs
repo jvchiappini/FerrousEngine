@@ -87,9 +87,12 @@ use graph::frame_packet::CameraPacket;
 use passes::{CelFrameData, FlatFrameData, OutlineFrameData};
 
 use passes::{
-    CelShadedPass, CullPass, FlatShadedPass, OutlinePass, PostProcessPass, PrePass, SsaoBlurPass,
+    CelShadedPass, FlatShadedPass, OutlinePass, PostProcessPass, PrePass, SsaoBlurPass,
     SsaoPass, WorldPass,
 };
+
+#[cfg(feature = "gpu-driven")]
+use passes::CullPass;
 
 #[cfg(feature = "gui")]
 use passes::UiPass;
@@ -207,9 +210,11 @@ pub struct Renderer {
     // -- Phase 11: GPU-Driven Rendering --------------------------------------
     /// When `true`, `sync_world` uploads cull data and `do_render` dispatches
     /// the compute cull pass before `WorldPass`. Defaults to `false`.
+    #[cfg(feature = "gpu-driven")]
     pub gpu_culling_enabled: bool,
     /// The GPU frustum-cull compute pass. Created lazily the first time
     /// `enable_gpu_culling(true)` is called.
+    #[cfg(feature = "gpu-driven")]
     cull_pass: Option<CullPass>,
 }
 
@@ -451,7 +456,9 @@ impl Renderer {
             flat_pass: None,
             pipeline_layouts: layouts,
             current_dir_light: crate::resources::DirectionalLightUniform::default(),
+            #[cfg(feature = "gpu-driven")]
             gpu_culling_enabled: false,
+            #[cfg(feature = "gpu-driven")]
             cull_pass: None,
         }
     }
@@ -738,6 +745,7 @@ impl Renderer {
     /// `WorldPass` will then use `draw_indexed_indirect` instead of `draw_indexed`.
     ///
     /// Disabling reverts to the CPU `draw_indexed` path using `instance_buf`.
+    #[cfg(feature = "gpu-driven")]
     pub fn enable_gpu_culling(&mut self, enabled: bool) {
         self.gpu_culling_enabled = enabled;
         if enabled && self.cull_pass.is_none() {
@@ -754,6 +762,7 @@ impl Renderer {
     /// Call this *after* rendering a frame to obtain per-batch culling statistics.
     ///
     /// Returns an empty `Vec` if GPU culling is disabled or no batches were drawn.
+    #[cfg(feature = "gpu-driven")]
     pub fn cull_visible_counts(&self) -> Vec<u32> {
         if let Some(cp) = &self.cull_pass {
             cp.sync_patch_indirect(&self.context.device, &self.context.queue)
@@ -898,78 +907,81 @@ impl Renderer {
         self.frame_builder.scene_dirty = true;
 
         // -- Phase 11: GPU-driven cull data upload ---------------------------
-        if self.gpu_culling_enabled {
-            // Ensure the CullPass exists.
-            if self.cull_pass.is_none() {
-                self.cull_pass = Some(CullPass::new(&self.context.device, &self.pipeline_layouts));
-            }
+        #[cfg(feature = "gpu-driven")]
+        {
+            if self.gpu_culling_enabled {
+                // Ensure the CullPass exists.
+                if self.cull_pass.is_none() {
+                    self.cull_pass = Some(CullPass::new(&self.context.device, &self.pipeline_layouts));
+                }
 
-            // `build_world_commands` populated world_instanced and
-            // world_instance_matrices above.  We use those to build cull data.
-            let instanced = &self.frame_builder.world_instanced;
-            let matrices = &self.frame_builder.world_instance_matrices;
+                // `build_world_commands` populated world_instanced and
+                // world_instance_matrices above.  We use those to build cull data.
+                let instanced = &self.frame_builder.world_instanced;
+                let matrices = &self.frame_builder.world_instance_matrices;
 
-            if let Some(cp) = &mut self.cull_pass {
-                use crate::resources::draw_indirect::{GpuDrawIndexedIndirect, InstanceCullData};
+                if let Some(cp) = &mut self.cull_pass {
+                    use crate::resources::draw_indirect::{GpuDrawIndexedIndirect, InstanceCullData};
 
-                let mut cull_data: Vec<InstanceCullData> = Vec::with_capacity(matrices.len());
-                let mut templates: Vec<GpuDrawIndexedIndirect> =
-                    Vec::with_capacity(instanced.len());
+                    let mut cull_data: Vec<InstanceCullData> = Vec::with_capacity(matrices.len());
+                    let mut templates: Vec<GpuDrawIndexedIndirect> =
+                        Vec::with_capacity(instanced.len());
 
-                for (cmd_idx, cmd) in instanced.iter().enumerate() {
-                    // Emit one template per batch (index_count, first_instance).
-                    // instance_count = 0 — the cull shader fills it.
-                    templates.push(GpuDrawIndexedIndirect {
-                        index_count: cmd.index_count,
-                        instance_count: 0,
-                        first_index: 0,
-                        base_vertex: 0,
-                        first_instance: cmd.first_instance,
-                    });
+                    for (cmd_idx, cmd) in instanced.iter().enumerate() {
+                        // Emit one template per batch (index_count, first_instance).
+                        // instance_count = 0 — the cull shader fills it.
+                        templates.push(GpuDrawIndexedIndirect {
+                            index_count: cmd.index_count,
+                            instance_count: 0,
+                            first_index: 0,
+                            base_vertex: 0,
+                            first_instance: cmd.first_instance,
+                        });
 
-                    // Emit one InstanceCullData per entity within this batch.
-                    let base = cmd.first_instance as usize;
-                    for inst_idx in 0..cmd.instance_count as usize {
-                        let model = matrices
-                            .get(base + inst_idx)
-                            .copied()
-                            .unwrap_or(glam::Mat4::IDENTITY);
-                        // Use a conservative world-space AABB that ensures nothing
-                        // gets incorrectly culled for the Phase 11 baseline.
-                        // Future passes (Phase 12) will extract real AABBs from mesh assets.
-                        let aabb_half = glam::Vec3::splat(100.0);
-                        let aabb_center = glam::Vec3::ZERO;
-                        cull_data.push(InstanceCullData::new(
-                            model,
-                            aabb_center,
-                            aabb_half,
-                            cmd_idx as u32,
-                        ));
+                        // Emit one InstanceCullData per entity within this batch.
+                        let base = cmd.first_instance as usize;
+                        for inst_idx in 0..cmd.instance_count as usize {
+                            let model = matrices
+                                .get(base + inst_idx)
+                                .copied()
+                                .unwrap_or(glam::Mat4::IDENTITY);
+                            // Use a conservative world-space AABB that ensures nothing
+                            // gets incorrectly culled for the Phase 11 baseline.
+                            // Future passes (Phase 12) will extract real AABBs from mesh assets.
+                            let aabb_half = glam::Vec3::splat(100.0);
+                            let aabb_center = glam::Vec3::ZERO;
+                            cull_data.push(InstanceCullData::new(
+                                model,
+                                aabb_center,
+                                aabb_half,
+                                cmd_idx as u32,
+                            ));
+                        }
+                    }
+
+                    if !cull_data.is_empty() {
+                        cp.upload_instances(
+                            &self.context.device,
+                            &self.context.queue,
+                            &cull_data,
+                            &templates,
+                        );
+                        cp.reset_counters(&self.context.queue);
+                        cp.update_params(&self.context.queue, &frustum);
+
+                        // Arm WorldPass with the GPU-driven indirect buffer and
+                        // compacted output instance bind group.
+                        let indirect = cp.indirect_buf.buffer.clone();
+                        let out_bg = cp.out_instance_bg.clone();
+                        self.world_pass.set_indirect_buffer(indirect, out_bg);
+                    } else {
+                        self.world_pass.clear_indirect_buffer();
                     }
                 }
-
-                if !cull_data.is_empty() {
-                    cp.upload_instances(
-                        &self.context.device,
-                        &self.context.queue,
-                        &cull_data,
-                        &templates,
-                    );
-                    cp.reset_counters(&self.context.queue);
-                    cp.update_params(&self.context.queue, &frustum);
-
-                    // Arm WorldPass with the GPU-driven indirect buffer and
-                    // compacted output instance bind group.
-                    let indirect = cp.indirect_buf.buffer.clone();
-                    let out_bg = cp.out_instance_bg.clone();
-                    self.world_pass.set_indirect_buffer(indirect, out_bg);
-                } else {
-                    self.world_pass.clear_indirect_buffer();
-                }
+            } else {
+                // CPU-driven path — ensure WorldPass does not use stale indirect buf.
+                self.world_pass.clear_indirect_buffer();
             }
-        } else {
-            // CPU-driven path — ensure WorldPass does not use stale indirect buf.
-            self.world_pass.clear_indirect_buffer();
         }
         for element in world.iter() {
             let id = element.id;
@@ -1276,10 +1288,13 @@ impl Renderer {
         }
 
         // -- 3. Phase 11: GPU cull compute dispatch (if enabled) --------------
-        if self.gpu_culling_enabled {
-            if let Some(cp) = &self.cull_pass {
-                cp.dispatch(encoder);
-                cp.copy_counters_to_staging(encoder);
+        #[cfg(feature = "gpu-driven")]
+        {
+            if self.gpu_culling_enabled {
+                if let Some(cp) = &self.cull_pass {
+                    cp.dispatch(encoder);
+                    cp.copy_counters_to_staging(encoder);
+                }
             }
         }
 
