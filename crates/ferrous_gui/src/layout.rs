@@ -437,7 +437,7 @@ impl RenderCommand {
         &self,
         quad_batch: &mut GuiBatch,
         text_batch: &mut TextBatch,
-        font: Option<&ferrous_assets::font::Font>,
+        font: Option<&ferrous_assets::Font>,
     ) {
         match self {
             RenderCommand::Quad { rect, color, radii, flags } => {

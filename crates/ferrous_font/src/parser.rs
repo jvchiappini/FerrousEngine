@@ -200,7 +200,7 @@ impl FontParser {
             return Some(Vec::new());
         }
 
-        let mut flags = Vec::with_capacity(total_points);
+        let mut flags = Vec::new();
         while flags.len() < total_points {
             let mut b = [0u8; 1];
             cur.read_exact(&mut b).ok()?;

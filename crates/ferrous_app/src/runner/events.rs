@@ -60,8 +60,10 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                 self.config.hdri_path.clone(),
             ));
             gfx.renderer.set_viewport(self.viewport);
-            gfx.renderer.set_clear_color(self.config.background_color.to_wgpu());
-            gfx.renderer.set_render_style(self.config.render_style.clone());
+            gfx.renderer
+                .set_clear_color(self.config.background_color.to_wgpu());
+            gfx.renderer
+                .set_render_style(self.config.render_style.clone());
 
             if let Some(bytes) = self.config.font_bytes {
                 let font = Font::load_bytes(
@@ -70,7 +72,8 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                     &gfx.renderer.context.queue,
                     ' '..'~',
                 );
-                gfx.renderer.set_font_atlas(&font.atlas.view, &font.atlas.sampler);
+                gfx.renderer
+                    .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
                 self.font = Some(font);
             } else if let Some(path) = &self.config.font_path {
                 use ferrous_assets::font_importer::FontData;
@@ -134,9 +137,15 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
             let window_for_closure = window.clone();
 
             wasm_bindgen_futures::spawn_local(async move {
-                let mut gfx =
-                    GraphicsState::new(&window_for_closure, w, h, vsync, samples, hdri_path.clone())
-                        .await;
+                let mut gfx = GraphicsState::new(
+                    &window_for_closure,
+                    w,
+                    h,
+                    vsync,
+                    samples,
+                    hdri_path.clone(),
+                )
+                .await;
                 gfx.renderer.set_clear_color(bg);
                 gfx.renderer.set_viewport(vp);
                 gfx.renderer.set_render_style(render_style);
@@ -148,7 +157,8 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                         &gfx.renderer.context.queue,
                         ' '..'~',
                     );
-                    gfx.renderer.set_font_atlas(&font.atlas.view, &font.atlas.sampler);
+                    gfx.renderer
+                        .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
                     *font_slot_clone.borrow_mut() = Some(font);
                 }
 
@@ -162,12 +172,7 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {}
 
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _id: WindowId,
-        event: WindowEvent,
-    ) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::RedrawRequested => {}
             _ => self.last_action_time = Instant::now(),
@@ -188,9 +193,15 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
             }
             WindowEvent::KeyboardInput { ref event, .. } => {
                 // borrow `text` so we don't move it out of the event
-                let winit::event::KeyEvent { physical_key, state, ref text, .. } = *event;
-                    if let winit::keyboard::PhysicalKey::Code(code) = physical_key {
-                    self.input.update_key(code.into(), state == winit::event::ElementState::Pressed);
+                let winit::event::KeyEvent {
+                    physical_key,
+                    state,
+                    ref text,
+                    ..
+                } = *event;
+                if let winit::keyboard::PhysicalKey::Code(code) = physical_key {
+                    self.input
+                        .update_key(code.into(), state == winit::event::ElementState::Pressed);
                 }
                 self.ui.keyboard_input(
                     text.as_deref(),

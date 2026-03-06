@@ -1,7 +1,7 @@
 //! `EditorApp::run_draw_ui` — HUD text, material inspector, light panel.
 
 use ferrous_app::AppContext;
-use ferrous_assets::font::Font;
+use ferrous_assets::Font;
 use ferrous_core::scene::{Axis, GizmoMode};
 use ferrous_gui::{GuiBatch, TextBatch};
 

@@ -22,7 +22,7 @@
 //! }
 //! ```
 
-use crate::asset_trait::Asset;
+use ferrous_asset_types::Asset;
 use anyhow::{bail, Context, Result};
 use std::path::Path;
 

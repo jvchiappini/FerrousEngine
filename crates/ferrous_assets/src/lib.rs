@@ -28,32 +28,38 @@
 //! - `GltfModel: Asset` and `ImageData: Asset` importers.
 
 // ── existing modules ────────────────────────────────────────────────────────
-#[cfg(feature = "gpu")]
-pub mod font;
+// font support has been extracted to the `ferrous_font` crate.  The old
+// module declaration is removed; consumers enable text support via the
+// `text` feature (see below).
 pub mod gltf_loader;
 #[cfg(feature = "gpu")]
 pub mod texture;
 
 // ── Phase 5: asset pipeline ─────────────────────────────────────────────────
-pub mod asset_trait;
+// The core asset types have been extracted into `ferrous_asset_types`.
+// We retain re-exports here for backward compatibility so existing imports
+// continue to work.  The implementation logic (importers, server,
+// etc.) still lives in this crate.
 pub mod font_importer;
 pub mod gltf_importer;
-pub mod handle;
 pub mod image_importer;
 pub mod server;
 
 // ── re-exports: legacy API (unchanged) ──────────────────────────────────────
-#[cfg(feature = "gpu")]
-pub use font::Font;
+// Re-export `Font` from the new crate when text support is enabled so
+// existing import paths continue to work.
+#[cfg(feature = "text")]
+pub use ferrous_font::Font;
 pub use gltf_loader::{load_gltf, AssetMesh, AssetModel, RawMaterial};
 #[cfg(feature = "gpu")]
 pub use texture::Texture2d;
 
 // ── re-exports: Phase 5 API ──────────────────────────────────────────────────
-pub use asset_trait::Asset;
+// types moved to `ferrous_asset_types`
+pub use ferrous_asset_types::Asset;
 pub use font_importer::FontData;
 pub use gltf_importer::GltfModel;
-pub use handle::{AssetHandle, AssetState};
+pub use ferrous_asset_types::{AssetHandle, AssetState};
 pub use image_importer::ImageData;
 pub use server::AssetServer;
 

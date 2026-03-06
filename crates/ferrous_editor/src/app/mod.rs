@@ -15,7 +15,7 @@ mod update;
 pub use types::EditorApp;
 
 use ferrous_app::{App, AppContext, Color, FerrousApp};
-use ferrous_assets::font::Font;
+use ferrous_assets::Font;
 use ferrous_gui::{GuiBatch, TextBatch, Ui};
 
 impl FerrousApp for EditorApp {

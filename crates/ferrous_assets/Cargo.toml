@@ -10,13 +10,16 @@ bytemuck = { version = "1.14", features = ["derive"], optional = true }
 image = "0.24"
 gltf = { version = "1.4", features = ["import", "utils"] }
 half = { version = "2.3", optional = true }
+ferrous_font = { path = "../ferrous_font", optional = true }
 
 [features]
 default = []
 gpu = ["dep:wgpu", "dep:bytemuck", "dep:half"]
+text = ["dep:ferrous_font", "gpu"]
 
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ferrous_asset_types = { path = "../ferrous_asset_types" }
 rayon = "1.7"
 notify = "6.1"
 

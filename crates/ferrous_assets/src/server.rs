@@ -3,7 +3,7 @@
 //! ## Overview
 //!
 //! The `AssetServer` is the central registry for all runtime assets.
-//! It tracks every asset by a type-safe [`crate::handle::AssetHandle<T>`] and
+//! It tracks every asset by a type-safe [`ferrous_asset_types::AssetHandle<T>`] and
 //! drives the two-phase `import → ready` pipeline:
 //!
 //! ```text
@@ -36,8 +36,8 @@
 //! loaded `Arc<T>`.  Old `Arc<T>` values held by callers remain valid until
 //! they are dropped.
 
-use crate::asset_trait::Asset;
-use crate::handle::{AssetHandle, AssetState};
+use ferrous_asset_types::Asset;
+use ferrous_asset_types::{AssetHandle, AssetState};
 use anyhow::Result;
 use std::any::{Any, TypeId};
 use std::collections::HashMap;

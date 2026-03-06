@@ -28,7 +28,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use ferrous_app::AppContext;
-use ferrous_assets::font::Font;
+use ferrous_assets::Font;
 use ferrous_core::scene::{AlphaMode, MaterialDescriptor};
 use ferrous_core::Handle;
 use ferrous_gui::{ColorPicker, GuiBatch, PickerShape, Slider, TextBatch, Ui};

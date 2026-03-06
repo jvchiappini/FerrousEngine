@@ -109,7 +109,7 @@ impl TextBatch {
     #[cfg(feature = "text")]
     pub fn draw_text(
         &mut self,
-        font: &ferrous_assets::font::Font,
+        font: &ferrous_assets::Font,
         text: &str,
         position: [f32; 2],
         size: f32,

@@ -1,0 +1,12 @@
+[package]
+name = "ferrous_font"
+version = "0.1.0"
+edition = "2021"
+description = "MSDF font rasterizer and GPU atlas for FerrousEngine"
+
+[dependencies]
+wgpu = "23.0"
+anyhow = "1.0"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rayon = "1.7"

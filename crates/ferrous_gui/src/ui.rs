@@ -89,7 +89,7 @@ impl Ui {
         &self,
         quad_batch: &mut crate::renderer::GuiBatch,
         text_batch: &mut crate::renderer::TextBatch,
-        font: Option<&ferrous_assets::font::Font>,
+        font: Option<&ferrous_assets::Font>,
     ) {
         let mut cmds = Vec::new();
         self.canvas.collect(&mut cmds);

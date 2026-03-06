@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use ferrous_app::AppContext;
-use ferrous_assets::font::Font;
+use ferrous_assets::Font;
 use ferrous_gui::{GuiBatch, Slider, TextBatch, Ui};
 
 use crate::ui::material_inspector::PANEL_W;

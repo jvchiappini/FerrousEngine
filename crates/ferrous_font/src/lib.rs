@@ -1,31 +1,35 @@
+//! High‑level font handling: parsing TrueType/OTF files, generating MSDF glyph
+//! bitmaps and packing them into a GPU texture atlas.
+//!
+//! This crate powers text rendering across the engine but is optional; code that
+//! does not need fonts can depend on `ferrous_assets --no-default-features` and
+//! `ferrous_gui --no-default-features` to avoid pulling in the GPU/font logic.
+
 pub mod atlas;
 pub mod binary_reader;
-pub mod msdf_gen;
 pub mod parser;
 pub mod path;
 pub mod tables;
+pub mod msdf_gen;
 
 pub use atlas::{FontAtlas, GlyphMetrics};
-use parser::FontParser;
-use wgpu::{Device, Queue};
 
-/// Estructura de alto nivel que representa una fuente lista para usar.
+/// High‑level font object holding an atlas; previously in `ferrous_assets`.
 pub struct Font {
     pub atlas: FontAtlas,
 }
 
 impl Font {
-    /// Carga una fuente desde el disco (desktop) o usa la fuente de respaldo
-    /// (wasm32, donde no existe sistema de ficheros).
+    /// Load a font from the filesystem (desktop) or use a fallback (wasm).
     pub fn load(
         path: &str,
-        device: &Device,
-        queue: &Queue,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
         chars: impl IntoIterator<Item = char>,
     ) -> Self {
         let char_list: Vec<char> = chars.into_iter().collect();
 
-        // ── Desktop: leer del sistema de ficheros ──────────────────────────────
+        // ── Desktop: read from filesystem ─────────────────────────────
         #[cfg(not(target_arch = "wasm32"))]
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
@@ -38,44 +42,37 @@ impl Font {
             }
         };
 
-        // ── wasm32: no hay fs — usar siempre la fuente de respaldo ─────────
-        // Use `Font::load_bytes` to supply a real font in a web build.
+        // ── wasm32: no filesystem, always use fallback
         #[cfg(target_arch = "wasm32")]
         let bytes = {
-            let _ = path; // evitar warning de variable no usada
+            let _ = path; // avoid unused variable warning
             Self::build_fallback_font()
         };
 
         Self::from_bytes_and_chars(bytes, char_list, device, queue)
     }
 
-    /// Carga una fuente desde un slice de bytes en memoria.  Útil en wasm32
-    /// donde los assets se embeben con `include_bytes!` o se reciben via fetch.
+    /// Load a font from raw bytes in memory.  Useful for wasm builds or
+    /// embedded assets.
     pub fn load_bytes(
         bytes: &[u8],
-        device: &Device,
-        queue: &Queue,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
         chars: impl IntoIterator<Item = char>,
     ) -> Self {
         let char_list: Vec<char> = chars.into_iter().collect();
         Self::from_bytes_and_chars(bytes.to_vec(), char_list, device, queue)
     }
 
-    // ── private helpers ────────────────────────────────────────────────
-
     fn from_bytes_and_chars(
         bytes: Vec<u8>,
         char_list: Vec<char>,
-        device: &Device,
-        queue: &Queue,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
     ) -> Self {
-        let parser = FontParser::new(bytes).expect("Failed to parse font data");
+        let parser = parser::FontParser::new(bytes).expect("Failed to parse font data");
 
-        let final_chars = if char_list.is_empty() {
-            vec!['A']
-        } else {
-            char_list
-        };
+        let final_chars = if char_list.is_empty() { vec!['A'] } else { char_list };
 
         let atlas = FontAtlas::new(device, queue, &parser, final_chars)
             .expect("Failed to build font atlas");
@@ -83,8 +80,10 @@ impl Font {
         Self { atlas }
     }
 
-    /// Genera una fuente TrueType mínima en memoria ('A' únicamente).
+    /// Generate a minimal in-memory TrueType fallback font containing only
+    /// the character 'A'.  Used when loading fails or on wasm targets.
     fn build_fallback_font() -> Vec<u8> {
+        // (copy of the implementation previously in ferrous_assets)
         let mut tables: Vec<([u8; 4], Vec<u8>)> = Vec::new();
 
         // cmap: 'A' -> ID 0
@@ -128,7 +127,7 @@ impl Font {
         glyf.extend(&0u16.to_be_bytes()); // instLen
         for _ in 0..4 {
             glyf.push(0x01);
-        } // flags
+        }
         for v in &[0, 0, 0, 100, 100, 0, 0, -100] {
             glyf.extend(&((*v as i16).to_be_bytes()));
         }
@@ -141,7 +140,7 @@ impl Font {
         loca.extend(&glen.to_be_bytes());
         tables.push((*b"loca", loca));
 
-        // hhea & hmtx (necesarios para el avance)
+        // hhea & hmtx (necessary for advance)
         let mut hhea = vec![0u8; 36];
         hhea[34..36].copy_from_slice(&1u16.to_be_bytes()); // numOfLongHorMetrics
         tables.push((*b"hhea", hhea));

@@ -22,7 +22,7 @@
 //! }
 //! ```
 
-use crate::asset_trait::Asset;
+use ferrous_asset_types::Asset;
 use crate::gltf_loader::{self, AssetMesh, AssetModel, RawMaterial};
 use std::path::Path;
 

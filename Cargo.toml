@@ -7,6 +7,8 @@ members = [
     "crates/ferrous_gui",
     "crates/ferrous_assets",
     "crates/ferrous_app",
+    "crates/ferrous_asset_types",
+    "crates/ferrous_font",
 ]
 resolver = "2"
 

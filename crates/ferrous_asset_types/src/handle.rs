@@ -1,5 +1,6 @@
 //! Type-safe asset handles and state.
 //!
+//!
 //! An [`AssetHandle<T>`] is a lightweight, `Copy` identifier (8 bytes) that
 //! refers to a specific asset inside the [`crate::server::AssetServer`].
 //! Handles are generation-tracked: once an asset is evicted and a new one
@@ -65,9 +66,14 @@ impl<T> std::hash::Hash for AssetHandle<T> {
 
 impl<T> AssetHandle<T> {
     /// Construct a handle from raw parts.  Only the `AssetServer` should call
-    /// this — external code should obtain handles via [`crate::server::AssetServer::load`].
+    /// this — external code should obtain handles via
+    /// [`crate::server::AssetServer::load`].
+    ///
+    /// This method must remain public because the server lives in a different
+    /// crate than the type definitions; we rely on documentation rather than
+    /// visibility to discourage arbitrary use.
     #[inline]
-    pub(crate) fn new(id: u32, generation: u16) -> Self {
+    pub fn new(id: u32, generation: u16) -> Self {
         Self {
             id,
             generation,

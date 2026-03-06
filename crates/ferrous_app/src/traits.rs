@@ -1,5 +1,5 @@
 use crate::context::AppContext;
-use ferrous_assets::font::Font;
+use ferrous_assets::Font;
 use ferrous_gui::{GuiBatch, TextBatch, Ui};
 
 /// The core trait that every FerrousApp application or game implements.

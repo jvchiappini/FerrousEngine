@@ -1,0 +1,11 @@
+[package]
+name = "ferrous_asset_types"
+version = "0.1.0"
+edition = "2021"
+description = "Core asset trait and handle types split out from ferrous_assets"
+
+[dependencies]
+anyhow = "1.0"
+
+[features]
+# no default features; consumers opt-in to winit/font etc as needed

@@ -2,9 +2,9 @@
 //!
 //! ## Why a separate `FontData` type?
 //!
-//! The existing [`crate::font::Font`] type is not `Asset`-compatible because
-//! it requires a live `wgpu::Device` and `wgpu::Queue` to bake the MSDF atlas
-//! at construction time — those objects only exist on the GPU thread.
+//! [`ferrous_font::Font`] is not `Asset`-compatible because it requires a live
+//! `wgpu::Device` and `wgpu::Queue` to bake the MSDF atlas at construction
+//! time — those objects only exist on the GPU thread.
 //!
 //! `FontData` breaks the dependency by storing only the raw font bytes on
 //! load.  The GPU atlas is built later when a `Device` and `Queue` are
@@ -25,7 +25,7 @@
 //! }
 //! ```
 
-use crate::asset_trait::Asset;
+use ferrous_asset_types::Asset;
 use std::path::Path;
 
 // wgpu and the `font` module are only needed when the `gpu` feature is
@@ -56,15 +56,15 @@ impl FontData {
     /// This is the *second phase* of font loading and requires a live
     /// `wgpu::Device` + `wgpu::Queue`.  Call this from the main (GPU) thread
     /// once [`crate::server::AssetServer::get`] returns
-    /// [`crate::handle::AssetState::Ready`].
+    /// [`ferrous_asset_types::AssetState::Ready`].
     #[cfg(feature = "gpu")]
     pub fn into_font(
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         chars: impl IntoIterator<Item = char>,
-    ) -> crate::font::Font {
-        crate::font::Font::load_bytes(&self.bytes, device, queue, chars)
+    ) -> ferrous_font::Font {
+        ferrous_font::Font::load_bytes(&self.bytes, device, queue, chars)
     }
 }
 
