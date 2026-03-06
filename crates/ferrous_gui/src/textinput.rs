@@ -1,5 +1,5 @@
 use crate::{layout::Rect, RenderCommand, Widget};
-use crate::KeyCode;
+use crate::GuiKey;
 
 /// Simple single-line text input widget.
 ///
@@ -139,7 +139,9 @@ impl Widget for TextInput {
         }
     }
 
-    fn keyboard_input(&mut self, text: Option<&str>, key: Option<KeyCode>, pressed: bool) {
+    fn keyboard_input(&mut self, text: Option<&str>, key: Option<GuiKey>, pressed: bool) {
+        #[cfg(not(feature = "winit-backend"))]
+        let _ = key; // avoid unused-variable warning when backend is disabled
         if !self.focused {
             return;
         }
@@ -151,12 +153,13 @@ impl Widget for TextInput {
             }
         }
         if pressed {
+            // only perform key-specific logic when the winit backend is
+            // enabled; this also avoids the unused-variable warning when the
+            // feature is disabled.
+            #[cfg(feature = "winit-backend")]
             if let Some(k) = key {
-                #[cfg(feature = "winit-backend")]
-                {
-                    if k == KeyCode::Backspace {
-                        self.backspace();
-                    }
+                if k == GuiKey::Backspace {
+                    self.backspace();
                 }
             }
         }

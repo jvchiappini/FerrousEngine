@@ -188,13 +188,15 @@ mod tests {
         let mut t = Transform::from_position(Vec3::new(1.0, 0.0, 0.0));
         // rotate 90° about Z around the origin; object should move to (0,1,0)
         t.rotate_around(Vec3::ZERO, Vec3::Z, std::f32::consts::FRAC_PI_2);
-        assert!((t.position - Vec3::new(0.0, 1.0, 0.0)).length() < 1e-4,
-            "position={:?}", t.position);
+        assert!(
+            (t.position - Vec3::new(0.0, 1.0, 0.0)).length() < 1e-4,
+            "position={:?}",
+            t.position
+        );
         // After 90° Z rotation: right (X) becomes Y, so up() should point toward NEG_X
         // right() = rotation * X => after 90° around Z, X maps to Y
         let right = t.right();
-        assert!((right - Vec3::Y).length() < 1e-4,
-            "right={:?}", right);
+        assert!((right - Vec3::Y).length() < 1e-4, "right={:?}", right);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use crate::layout::RenderCommand;
 use crate::widget::Widget;
-use crate::KeyCode;
+use crate::GuiKey;
 
 /// Generic container that holds a heterogeneous collection of widgets and
 /// draws them in order.  The container handles focus tracking so that a
@@ -67,7 +67,7 @@ impl Canvas {
     }
 
     /// forward keyboard events to the currently focused widget (if any).
-    pub fn keyboard_input(&mut self, text: Option<&str>, key: Option<KeyCode>, pressed: bool) {
+    pub fn keyboard_input(&mut self, text: Option<&str>, key: Option<GuiKey>, pressed: bool) {
         if let Some(idx) = self.focused {
             if let Some(child) = self.children.get_mut(idx) {
                 child.keyboard_input(text, key, pressed);

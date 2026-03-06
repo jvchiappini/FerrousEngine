@@ -40,27 +40,15 @@ pub use button::Button as InteractiveButton;
 pub use slider::Slider;
 pub use textinput::TextInput;
 
-// Re-export or stub the key code type depending on the backend feature. When
-// the winit backend is enabled we simply re‑export the real type so downstream
-// code can work with it directly.  When the backend is disabled we need a
-// placeholder so that the public API signatures remain the same; rather than
-// an entirely empty enum we include the few variants that the GUI logic
-// actually compares against (currently only `Backspace` used by the text
-// input widget).  This keeps `cargo check --no-default-features` from
-// failing while avoiding a hard dependency on winit.
+// GuiKey is a lightweight enum used throughout the GUI crate instead of
+// depending directly on winit's key code type.  The variant set is kept
+// minimal; additional entries can be added as widgets need them.  When the
+// `winit-backend` feature is enabled we provide an `impl From<winit::keyboard::KeyCode>`
+// so that callers can convert incoming events without pulling winit into the
+// public API.
 
-#[cfg(feature = "winit-backend")]
-pub use winit::keyboard::KeyCode;
-
-#[cfg(not(feature = "winit-backend"))]
-/// Minimal stub used when the winit backend is disabled. Variant list may
-/// grow as the GUI code begins to depend on additional key codes, but for the
-/// moment only backspace is required.
-pub enum KeyCode {
-	/// Represents the backspace key, used by text input widgets to delete
-	/// characters.
-	Backspace,
-}
+pub mod key;
+pub use key::GuiKey;
 pub use widget::Widget;
 // container/grouping widget
 pub use container::Container;

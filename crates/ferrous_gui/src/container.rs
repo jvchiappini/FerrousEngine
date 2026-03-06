@@ -1,7 +1,7 @@
 use crate::canvas::Canvas;
 use crate::layout::{Rect, RenderCommand};
 use crate::widget::Widget;
-use crate::KeyCode;
+use crate::GuiKey;
 
 /// Simple container widget that groups other widgets together.  The
 /// container itself may optionally draw a background quad, but otherwise
@@ -101,7 +101,7 @@ impl Container {
 
     /// Keyboard events are always forwarded to the focused child, since the
     /// container itself does not take focus.
-    pub fn keyboard_input(&mut self, text: Option<&str>, key: Option<KeyCode>, pressed: bool) {
+    pub fn keyboard_input(&mut self, text: Option<&str>, key: Option<GuiKey>, pressed: bool) {
         self.canvas.keyboard_input(text, key, pressed);
     }
 }
@@ -140,7 +140,7 @@ impl Widget for Container {
         self.mouse_input(mx, my, pressed);
     }
 
-    fn keyboard_input(&mut self, text: Option<&str>, key: Option<KeyCode>, pressed: bool) {
+    fn keyboard_input(&mut self, text: Option<&str>, key: Option<GuiKey>, pressed: bool) {
         self.keyboard_input(text, key, pressed);
     }
 }

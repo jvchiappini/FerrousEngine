@@ -1,5 +1,5 @@
 use crate::layout::{Node, RenderCommand};
-use crate::KeyCode;
+use crate::GuiKey;
 
 /// Cualquier elemento de la interfaz que pueda "dibujarse".
 ///
@@ -34,7 +34,7 @@ pub trait Widget {
     /// can be used for handling non-text keys such as backspace. `pressed`
     /// indicates whether the key was pressed (true) or released (false).
     /// The default implementation is a no-op.
-    fn keyboard_input(&mut self, _text: Option<&str>, _key: Option<KeyCode>, _pressed: bool) {}
+    fn keyboard_input(&mut self, _text: Option<&str>, _key: Option<GuiKey>, _pressed: bool) {}
 
     /// Optional rectangle occupied by the widget in window coordinates.  The
     /// default implementation returns `None`, meaning the container cannot
@@ -77,7 +77,7 @@ impl<T: Widget> Widget for std::rc::Rc<std::cell::RefCell<T>> {
     fn keyboard_input(
         &mut self,
         text: Option<&str>,
-        key: Option<KeyCode>,
+        key: Option<GuiKey>,
         pressed: bool,
     ) {
         self.borrow_mut().keyboard_input(text, key, pressed);

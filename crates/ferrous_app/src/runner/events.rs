@@ -173,7 +173,37 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
             _ => self.last_action_time = Instant::now(),
         }
 
-        self.ui.handle_window_event(&event, &mut self.input);
+        // translate the winit event into primitive calls on `Ui` so that the
+        // GUI crate itself remains backend‑agnostic.
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.input.set_mouse_position(position.x, position.y);
+                self.ui.mouse_move(position.x, position.y);
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                let pressed = state == winit::event::ElementState::Pressed;
+                self.input.update_mouse_button(button, pressed);
+                let (mx, my) = self.input.mouse_position();
+                self.ui.mouse_input(mx, my, pressed);
+            }
+            WindowEvent::KeyboardInput { ref event, .. } => {
+                // borrow `text` so we don't move it out of the event
+                let winit::event::KeyEvent { physical_key, state, ref text, .. } = *event;
+                if let winit::keyboard::PhysicalKey::Code(code) = physical_key {
+                    self.input.update_key(code, state == winit::event::ElementState::Pressed);
+                }
+                self.ui.keyboard_input(
+                    text.as_deref(),
+                    if let winit::keyboard::PhysicalKey::Code(k) = physical_key {
+                        Some((k).into())
+                    } else {
+                        None
+                    },
+                    state == winit::event::ElementState::Pressed,
+                );
+            }
+            _ => {}
+        }
 
         if let Some(window) = self.window.clone() {
             let time = self.clock.peek();

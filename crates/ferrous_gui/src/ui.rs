@@ -1,20 +1,12 @@
 use crate::canvas::Canvas;
-use ferrous_core::InputState;
 use crate::Widget;
-// window-event handling is only available when the winit backend is enabled.
-#[cfg(feature = "winit-backend")]
-use winit::event::WindowEvent;
+use crate::GuiKey;
+// winit is re-exported only when the backend feature is enabled; UI methods
+// no longer depend on it directly, hence we can drop the import entirely.
 
 /// Higher‑level UI object intended to be held by applications. It wraps a
-/// [`Canvas`] and provides convenience helpers for routing `winit` events and
-/// drawing the aggregated widget tree.
-///
-/// The goal is to let users write very little boilerplate: they create one
-/// `Ui`, add widgets to it, and then in their event loop call
-/// `ui.handle_window_event(&event, &mut input_state)` followed by
-/// `ui.draw(...)` when rendering. The `Canvas` still does all the hard work
-/// (focus, hit tests, etc.), but the application no longer needs to know the
-/// details of which methods to call for each type of event.
+/// [`Canvas`] and provides convenience helpers for routing events and drawing
+/// the aggregated widget tree.
 pub struct Ui {
     canvas: Canvas,
     /// optional handle to a viewport widget previously registered via
@@ -41,7 +33,10 @@ impl Ui {
     /// internally and also added to the canvas; later calls to
     /// `set_viewport_rect` will update the stored widget so the application
     /// does not need to keep its own copy.
-    pub fn register_viewport(&mut self, vp: std::rc::Rc<std::cell::RefCell<crate::viewport_widget::ViewportWidget>>) {
+    pub fn register_viewport(
+        &mut self,
+        vp: std::rc::Rc<std::cell::RefCell<crate::viewport_widget::ViewportWidget>>,
+    ) {
         self.viewport = Some(vp.clone());
         self.add(vp);
     }
@@ -65,48 +60,58 @@ impl Ui {
             .unwrap_or(false)
     }
 
-    /// Handle a winit window event, updating both the provided `InputState`
-    /// (so that the rest of the engine sees the mouse position/keys) and
-    /// dispatching the event to the widget tree.
-    #[cfg(feature = "winit-backend")]
-    pub fn handle_window_event(&mut self, event: &WindowEvent, input: &mut InputState) {
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                input.set_mouse_position(position.x, position.y);
-                self.canvas.mouse_move(position.x, position.y);
-            }
-            WindowEvent::MouseInput { state, button, .. } => {
-                let pressed = *state == winit::event::ElementState::Pressed;
-                input.update_mouse_button(*button, pressed);
-                let (mx, my) = input.mouse_position();
-                self.canvas.mouse_input(mx, my, pressed);
-            }
-            WindowEvent::KeyboardInput { event, .. } => {
-                let winit::event::KeyEvent { physical_key, state, text, .. } = event;
-                if let winit::keyboard::PhysicalKey::Code(code) = physical_key {
-                    input.update_key(*code, *state == winit::event::ElementState::Pressed);
-                }
-                self.canvas.keyboard_input(
-                    text.as_deref(),
-                    if let winit::keyboard::PhysicalKey::Code(k) = physical_key { Some(*k) } else { None },
-                    *state == winit::event::ElementState::Pressed,
-                );
-            }
-            _ => {}
-        }
+    /// Inform the UI that the cursor has moved. Coordinates are in window
+    /// space and should match whatever coordinate system the caller is using
+    /// for rendering.
+    pub fn mouse_move(&mut self, mx: f64, my: f64) {
+        self.canvas.mouse_move(mx, my);
+    }
+
+    /// Notify the UI that a mouse button was pressed or released.
+    pub fn mouse_input(&mut self, mx: f64, my: f64, pressed: bool) {
+        self.canvas.mouse_input(mx, my, pressed);
+    }
+
+    /// Deliver a keyboard event to the UI. `text` is any generated Unicode
+    /// string, `key` is an optional non-text key (e.g. `GuiKey::Backspace`),
+    /// and `pressed` indicates whether the key went down or up.
+    pub fn keyboard_input(
+        &mut self,
+        text: Option<&str>,
+        key: Option<GuiKey>,
+        pressed: bool,
+    ) {
+        self.canvas.keyboard_input(text, key, pressed);
     }
 
     /// Collect draw commands from the widget tree and convert them into the
-    /// provided GUI/text batches. The `font` parameter is passed through to
-    /// `RenderCommand::to_batches`, so `None` is valid when no font is
-    /// available yet.
-    pub fn draw(&self, quad_batch: &mut crate::renderer::GuiBatch, text_batch: &mut crate::renderer::TextBatch, font: Option<&ferrous_assets::font::Font>) {
+    /// provided GUI/text batches. When the `text` feature is enabled the
+    /// caller must also supply an optional font; otherwise the font parameter
+    /// is omitted entirely to avoid pulling in `ferrous_assets` when it's not
+    /// needed.
+    #[cfg(feature = "text")]
+    pub fn draw(
+        &self,
+        quad_batch: &mut crate::renderer::GuiBatch,
+        text_batch: &mut crate::renderer::TextBatch,
+        font: Option<&ferrous_assets::font::Font>,
+    ) {
         let mut cmds = Vec::new();
         self.canvas.collect(&mut cmds);
         for cmd in &cmds {
-            #[cfg(feature = "text")]
             cmd.to_batches(quad_batch, text_batch, font);
-            #[cfg(not(feature = "text"))]
+        }
+    }
+
+    #[cfg(not(feature = "text"))]
+    pub fn draw(
+        &self,
+        quad_batch: &mut crate::renderer::GuiBatch,
+        text_batch: &mut crate::renderer::TextBatch,
+    ) {
+        let mut cmds = Vec::new();
+        self.canvas.collect(&mut cmds);
+        for cmd in &cmds {
             cmd.to_batches(quad_batch, text_batch);
         }
     }
@@ -117,3 +122,4 @@ impl Ui {
         &mut self.canvas
     }
 }
+// end of file

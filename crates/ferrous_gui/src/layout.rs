@@ -467,7 +467,7 @@ impl RenderCommand {
     pub fn to_batches(
         &self,
         quad_batch: &mut GuiBatch,
-        text_batch: &mut TextBatch,
+        _text_batch: &mut TextBatch,
     ) {
         match self {
             RenderCommand::Quad { rect, color, radii, flags } => {
