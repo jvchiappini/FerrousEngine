@@ -52,22 +52,22 @@ pub use winit::keyboard::KeyCode;
 pub struct InputState {
     // ── Keyboard ─────────────────────────────────────────────────────────
     /// Keys held down this frame.
-    keys_down:     HashSet<KeyCode>,
+    keys_down: HashSet<KeyCode>,
     /// Keys that transitioned from up → down this frame.
-    keys_pressed:  HashSet<KeyCode>,
+    keys_pressed: HashSet<KeyCode>,
     /// Keys that transitioned from down → up this frame.
     keys_released: HashSet<KeyCode>,
 
     // ── Mouse buttons ─────────────────────────────────────────────────────
-    buttons_down:     HashSet<MouseButton>,
-    buttons_pressed:  HashSet<MouseButton>,
+    buttons_down: HashSet<MouseButton>,
+    buttons_pressed: HashSet<MouseButton>,
     buttons_released: HashSet<MouseButton>,
 
     // ── Mouse position & movement ──────────────────────────────────────────
-    mouse_pos:         (f64, f64),
-    mouse_delta:       (f32, f32),
+    mouse_pos: (f64, f64),
+    mouse_delta: (f32, f32),
     /// Accumulated scroll this frame (lines, positive = up / zoom-in).
-    scroll_delta:      (f32, f32),
+    scroll_delta: (f32, f32),
 }
 
 impl InputState {

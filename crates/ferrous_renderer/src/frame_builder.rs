@@ -17,9 +17,7 @@ use ferrous_core::transform::Transform;
 use crate::geometry::primitives::{
     cube::cube as create_cube, quad::quad as create_quad, sphere::sphere as create_sphere,
 };
-use crate::graph::frame_packet::{
-    CameraPacket, FramePacket, InstancedDrawCommand, Viewport,
-};
+use crate::graph::frame_packet::{CameraPacket, FramePacket, InstancedDrawCommand, Viewport};
 use crate::render_stats::RenderStats;
 use crate::resources::InstanceBuffer;
 use crate::scene::Frustum;
