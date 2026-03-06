@@ -36,9 +36,9 @@
 //! loaded `Arc<T>`.  Old `Arc<T>` values held by callers remain valid until
 //! they are dropped.
 
+use anyhow::Result;
 use ferrous_asset_types::Asset;
 use ferrous_asset_types::{AssetHandle, AssetState};
-use anyhow::Result;
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

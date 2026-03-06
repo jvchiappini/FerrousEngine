@@ -57,9 +57,9 @@ pub use texture::Texture2d;
 // ── re-exports: Phase 5 API ──────────────────────────────────────────────────
 // types moved to `ferrous_asset_types`
 pub use ferrous_asset_types::Asset;
+pub use ferrous_asset_types::{AssetHandle, AssetState};
 pub use font_importer::FontData;
 pub use gltf_importer::GltfModel;
-pub use ferrous_asset_types::{AssetHandle, AssetState};
 pub use image_importer::ImageData;
 pub use server::AssetServer;
 

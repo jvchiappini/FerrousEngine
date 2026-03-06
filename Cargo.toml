@@ -9,6 +9,7 @@ members = [
     "crates/ferrous_app",
     "crates/ferrous_asset_types",
     "crates/ferrous_font",
+    "crates/ferrous_render_graph",
 ]
 resolver = "2"
 

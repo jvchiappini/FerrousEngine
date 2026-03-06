@@ -8,6 +8,7 @@ wgpu = "23.0"
 anyhow = "1.0"
 thiserror = "1.0"
 ferrous_core = { path = "../ferrous_core", features = ["ecs", "input", "gpu"] }
+ferrous_render_graph = { path = "../ferrous_render_graph" }
 ferrous_gui = { path = "../ferrous_gui", optional = true }
 bytemuck = { version = "1.14", features = ["derive"] }
 glam = { workspace = true }

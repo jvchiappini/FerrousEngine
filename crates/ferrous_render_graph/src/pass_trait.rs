@@ -11,7 +11,7 @@
 /// renderer-level management methods.
 use wgpu::{CommandEncoder, Device, Queue, TextureView};
 
-use crate::graph::FramePacket;
+use crate::FramePacket;
 
 // On wasm32, wgpu types (BindGroup, RenderPipeline, …) do not implement Send/Sync
 // because the browser JS runtime is single-threaded. We conditionally remove
