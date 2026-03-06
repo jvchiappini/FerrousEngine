@@ -5,9 +5,9 @@ edition = "2021"
 description = "Archetype-based Entity Component System for Ferrous Engine"
 
 [dependencies]
-# Compact type-erased storage key
-# No wgpu deps — ECS is pure data, no GPU
-glam = { workspace = true }
+# ECS is pure data; it doesn't actually use `glam` in any source files.  the
+# dependency was accidental and just increased compile times.  remove it to
+# keep this crate lightweight.
 
 [dev-dependencies]
 # nothing yet

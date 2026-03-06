@@ -1,6 +1,6 @@
 use crate::canvas::Canvas;
-use crate::Widget;
 use crate::GuiKey;
+use crate::Widget;
 // winit is re-exported only when the backend feature is enabled; UI methods
 // no longer depend on it directly, hence we can drop the import entirely.
 
@@ -75,12 +75,7 @@ impl Ui {
     /// Deliver a keyboard event to the UI. `text` is any generated Unicode
     /// string, `key` is an optional non-text key (e.g. `GuiKey::Backspace`),
     /// and `pressed` indicates whether the key went down or up.
-    pub fn keyboard_input(
-        &mut self,
-        text: Option<&str>,
-        key: Option<GuiKey>,
-        pressed: bool,
-    ) {
+    pub fn keyboard_input(&mut self, text: Option<&str>, key: Option<GuiKey>, pressed: bool) {
         self.canvas.keyboard_input(text, key, pressed);
     }
 

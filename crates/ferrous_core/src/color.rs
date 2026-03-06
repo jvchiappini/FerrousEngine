@@ -114,6 +114,7 @@ impl Color {
     }
 
     /// Convert to a `wgpu::Color` for use as a clear / blend value.
+    #[cfg(feature = "gpu")]
     pub fn to_wgpu(self) -> wgpu::Color {
         wgpu::Color {
             r: self.r as f64,

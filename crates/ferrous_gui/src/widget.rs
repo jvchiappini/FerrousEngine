@@ -74,12 +74,7 @@ impl<T: Widget> Widget for std::rc::Rc<std::cell::RefCell<T>> {
     fn mouse_move(&mut self, mx: f64, my: f64) {
         self.borrow_mut().mouse_move(mx, my);
     }
-    fn keyboard_input(
-        &mut self,
-        text: Option<&str>,
-        key: Option<GuiKey>,
-        pressed: bool,
-    ) {
+    fn keyboard_input(&mut self, text: Option<&str>, key: Option<GuiKey>, pressed: bool) {
         self.borrow_mut().keyboard_input(text, key, pressed);
     }
 }

@@ -45,7 +45,10 @@ pub struct FrameBuilder {
     pub shared_quad_mesh: Option<crate::geometry::Mesh>,
     /// Shared sphere mesh + (latitudes, longitudes) key.
     pub shared_sphere_mesh: Option<(crate::geometry::Mesh, u32, u32)>,
-    /// Cache of arbitrary meshes keyed by asset string.
+    /// Cache of arbitrary meshes keyed by asset string. Only available when
+    /// the `assets` feature is enabled; otherwise the field is omitted and
+    /// related logic is compiled away.
+    #[cfg(feature = "assets")]
     pub mesh_cache: HashMap<String, crate::geometry::Mesh>,
 
     // ── Phase 8: ECS-derived world draw commands (replaces world_objects) ───
@@ -78,6 +81,7 @@ impl FrameBuilder {
             shared_cube_mesh: None,
             shared_quad_mesh: None,
             shared_sphere_mesh: None,
+            #[cfg(feature = "assets")]
             mesh_cache: HashMap::new(),
             world_instanced: Vec::new(),
             world_shadow_instanced: Vec::new(),
@@ -116,6 +120,7 @@ impl FrameBuilder {
         queue: &wgpu::Queue,
     ) {
         // prune mesh cache of any keys that are no longer referenced by the world
+        #[cfg(feature = "assets")]
         {
             let live_keys: std::collections::HashSet<&str> = world
                 .iter()
@@ -165,9 +170,19 @@ impl FrameBuilder {
                     .get_or_insert_with(|| create_cube(device))
                     .clone(),
                 ElementKind::Mesh { asset_key } => {
-                    if let Some(m) = self.mesh_cache.get(asset_key.as_str()) {
-                        m.clone()
-                    } else {
+                    #[cfg(feature = "assets")]
+                    {
+                        if let Some(m) = self.mesh_cache.get(asset_key.as_str()) {
+                            m.clone()
+                        } else {
+                            self.shared_cube_mesh
+                                .get_or_insert_with(|| create_cube(device))
+                                .clone()
+                        }
+                    }
+                    #[cfg(not(feature = "assets"))]
+                    {
+                        // without asset support we just fall back to a cube mesh
                         self.shared_cube_mesh
                             .get_or_insert_with(|| create_cube(device))
                             .clone()

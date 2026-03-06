@@ -4,16 +4,16 @@ version = "0.1.0"
 edition = "2021"
 
 # core types depend on simple math utilities; use the workspace version of glam
-[dependencies]
-glam = { workspace = true }
-wgpu = "23.0"
-anyhow = "1.0"
-thiserror = "1.0"
-# needed for input types and later editor/event loop
-winit = "0.30"
+ [dependencies]
+ glam = { workspace = true }
+ wgpu = { version = "23.0", optional = true }
+ anyhow = "1.0"
+ thiserror = "1.0"
+ # needed for input types and later editor/event loop
+ winit = { version = "0.30", optional = true }
 
-# used by camera uniform definitions
-bytemuck = { version = "1.17", features = ["derive"] }
+ # used by camera uniform definitions
+ bytemuck = { version = "1.17", features = ["derive"], optional = true }
 
 # NOTE: we intentionally do *not* depend on `ferrous_renderer` here.  the
 # material handle/descriptor types used by the core scene live in this
@@ -31,6 +31,17 @@ sysinfo = "0.28"
 # Drop-in replacement for std::time::Instant that works in the browser.
 web-time = "1.1"
 
+# features
 [features]
 default = []
 ecs = ["dep:ferrous_ecs"]
+
+# The `gpu` feature gates all wgpu-related types in this crate, allowing
+# downstream consumers to compile `ferrous_core` without dragging in the
+# heavy GPU dependency.  Engine apps such as the editor or renderer will
+# enable this unconditionally.
+gpu = ["wgpu", "bytemuck"]
+
+# Input events (winit) are only pulled in when the `input` feature is
+# requested.  This keeps headless builds free of windowing dependencies.
+input = ["winit"]

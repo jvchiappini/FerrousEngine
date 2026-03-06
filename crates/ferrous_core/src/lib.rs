@@ -44,7 +44,9 @@ pub mod time;
 /// Keyboard and mouse input state.
 pub mod input;
 
-/// wgpu device + queue container.
+/// wgpu device + queue container.  Only compiled when the `gpu` feature is
+/// enabled; headless builds do not include any of the types or dependencies.
+#[cfg(feature = "gpu")]
 pub mod context;
 
 /// Scene graph: `World`, `Element`, `Handle`, `ElementKind`, `Camera`, `Controller`.
@@ -107,7 +109,8 @@ pub use scene::{Element, ElementKind, Handle, PointLightComponent, World};
 #[cfg(feature = "ecs")]
 pub use scene::{Material, MaterialBuilder};
 
-// Context
+// Context (re-export only when GPU support is active)
+#[cfg(feature = "gpu")]
 pub use context::EngineContext;
 
 // Metrics shortcuts (the most common two)

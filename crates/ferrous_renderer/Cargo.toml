@@ -12,7 +12,7 @@ ferrous_gui = { path = "../ferrous_gui", optional = true }
 bytemuck = { version = "1.14", features = ["derive"] }
 glam = { workspace = true }
 image = { version = "0.25", optional = true, default-features = false, features = ["png", "jpeg"] }
-ferrous_assets = { path = "../ferrous_assets" }
+ferrous_assets = { path = "../ferrous_assets", optional = true }
 log = "0.4"
 rand = "0.8"
 
@@ -30,3 +30,7 @@ pollster = "0.3"
 default = ["gui"]
 gui = ["dep:ferrous_gui"]
 image = ["dep:image"]
+
+# optional assets support; when disabled the renderer does not depend on the
+# asset crate and mesh caches are omitted at compile time.
+assets = ["dep:ferrous_assets"]
