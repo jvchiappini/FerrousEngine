@@ -61,8 +61,8 @@ pub use render_context::RenderContext;
 pub use traits::FerrousApp;
 
 // ── Render style ───────────────────────────────────────────────────────────
-pub use ferrous_renderer::RenderStyle;
 pub use ferrous_core::RenderQuality;
+pub use ferrous_renderer::RenderStyle;
 
 // ── Re-export the most-used ferrous_core primitives ────────────────────────
 // Users can do `use ferrous_app::{Color, Time, World, Handle, Vec3};` without

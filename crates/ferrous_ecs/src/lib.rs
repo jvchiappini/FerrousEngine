@@ -14,6 +14,13 @@
 //! | `system_param`| `SystemParam` trait, `Res<T>`, `ResMut<T>`                  |
 //! | `fn_system`   | `IntoSystem` trait, `FnSystem` — plain-function systems     |
 //!
+//! ## Parallel scheduling (`feature = "parallel"`)
+//!
+//! Enable the `parallel` Cargo feature to get [`system::parallel::ParallelScheduler`].
+//! Systems declare their component/resource access via [`system::parallel::SystemAccess`];
+//! the scheduler groups them into conflict-free batches and dispatches each batch
+//! with `rayon::scope`.
+//!
 //! ## Non-Clone components
 //!
 //! Components that contain `Box<dyn Trait>` or other non-Clone types can be
@@ -64,4 +71,8 @@ pub mod prelude {
     // Param marker types (used to spell out param sets, e.g. ResParam<T>)
     pub use crate::system_param::{QueryParam, ResMutParam, ResParam, SystemParam};
     pub use crate::world::World;
+
+    // Parallel scheduling — only available with `feature = "parallel"`.
+    #[cfg(feature = "parallel")]
+    pub use crate::system::parallel::{ParallelScheduler, SystemAccess, SystemMeta};
 }

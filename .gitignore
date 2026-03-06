@@ -41,3 +41,5 @@ flowmap_tool.py
 doc_manager.py
 analysis.md
 FerrousEngine_Architecture.md
+
+__pycache__

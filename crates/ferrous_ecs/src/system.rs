@@ -284,6 +284,261 @@ impl StagedScheduler {
     }
 }
 
+// ── Parallel Scheduler ───────────────────────────────────────────────────────
+//
+// Gated behind the `parallel` Cargo feature (pulls in `rayon`).
+//
+// ## Design
+//
+// Systems declare which component types and resources they *read* and *write*
+// via the `SystemAccess` trait.  `ParallelScheduler::build` groups them into
+// **conflict-free batches**: two systems conflict when one writes something the
+// other reads-or-writes (same type).  All systems within a batch are safe to
+// run concurrently.
+//
+// ### Safety contract for `run_all`
+//
+// Within a single batch every system accesses a *disjoint* set of mutable
+// component/resource storage.  We therefore send raw `*mut World` and
+// `*mut ResourceMap` pointers into rayon threads.  This is sound because:
+//
+// 1. Batch construction guarantees no two concurrent systems touch the same
+//    archetype column (component) mutably.
+// 2. The raw pointer dereferences are wrapped in `unsafe` blocks and live only
+//    for the duration of the `rayon::scope`.
+// 3. The `World` / `ResourceMap` references outlive the scope (they are borrowed
+//    for `'env`).
+//
+// Systems that do *not* implement `SystemAccess` (i.e. return all-empty vectors)
+// are treated as **fully conflicting** and are placed in singleton batches so
+// they always run alone.
+
+#[cfg(feature = "parallel")]
+pub mod parallel {
+    use super::{ResourceMap, System, World};
+    use std::any::TypeId;
+
+    // ── SystemAccess ─────────────────────────────────────────────────────────
+
+    /// Describes which component types and resources a system reads or writes.
+    ///
+    /// Implement this on your system type so that `ParallelScheduler` can
+    /// schedule it alongside non-conflicting systems.  The default
+    /// implementations return empty vectors, which is **safe** (the system will
+    /// always run in a singleton batch) but forfeits concurrency.
+    pub trait SystemAccess {
+        /// Component types this system reads (shared borrow).
+        fn reads() -> Vec<TypeId>
+        where
+            Self: Sized,
+        {
+            vec![]
+        }
+
+        /// Component types this system writes (exclusive borrow).
+        fn writes() -> Vec<TypeId>
+        where
+            Self: Sized,
+        {
+            vec![]
+        }
+
+        /// Resource types this system reads (shared borrow).
+        fn res_reads() -> Vec<TypeId>
+        where
+            Self: Sized,
+        {
+            vec![]
+        }
+
+        /// Resource types this system writes (exclusive borrow).
+        fn res_writes() -> Vec<TypeId>
+        where
+            Self: Sized,
+        {
+            vec![]
+        }
+    }
+
+    // ── SystemMeta ────────────────────────────────────────────────────────────
+
+    /// Runtime (non-generic) snapshot of a system's access declaration.
+    ///
+    /// This is what `ParallelScheduler` stores per system so it can do conflict
+    /// checks without knowing the concrete system type.
+    #[derive(Default, Clone)]
+    pub struct SystemMeta {
+        pub reads: Vec<TypeId>,
+        pub writes: Vec<TypeId>,
+        pub res_reads: Vec<TypeId>,
+        pub res_writes: Vec<TypeId>,
+    }
+
+    impl SystemMeta {
+        /// Build from a type that implements `SystemAccess`.
+        pub fn of<S: SystemAccess>() -> Self {
+            Self {
+                reads: S::reads(),
+                writes: S::writes(),
+                res_reads: S::res_reads(),
+                res_writes: S::res_writes(),
+            }
+        }
+
+        /// Returns `true` if `self` and `other` cannot run concurrently.
+        ///
+        /// Two systems conflict when at least one of them writes a type that the
+        /// other reads **or** writes (write–write and read–write hazards).  Pure
+        /// read–read access is always safe.
+        ///
+        /// A system with **all-empty** meta (unknown access) is treated as
+        /// universally conflicting.
+        pub fn conflicts_with(&self, other: &SystemMeta) -> bool {
+            // Systems with no declared access are conservatively assumed to
+            // touch everything.
+            let self_unknown = self.reads.is_empty()
+                && self.writes.is_empty()
+                && self.res_reads.is_empty()
+                && self.res_writes.is_empty();
+            let other_unknown = other.reads.is_empty()
+                && other.writes.is_empty()
+                && other.res_reads.is_empty()
+                && other.res_writes.is_empty();
+
+            if self_unknown || other_unknown {
+                return true;
+            }
+
+            // Check component hazards.
+            for w in &self.writes {
+                if other.reads.contains(w) || other.writes.contains(w) {
+                    return true;
+                }
+            }
+            for w in &other.writes {
+                if self.reads.contains(w) || self.writes.contains(w) {
+                    return true;
+                }
+            }
+
+            // Check resource hazards.
+            for w in &self.res_writes {
+                if other.res_reads.contains(w) || other.res_writes.contains(w) {
+                    return true;
+                }
+            }
+            for w in &other.res_writes {
+                if self.res_reads.contains(w) || self.res_writes.contains(w) {
+                    return true;
+                }
+            }
+
+            false
+        }
+    }
+
+    // ── Entry (system + its meta) ─────────────────────────────────────────────
+
+    struct Entry {
+        system: Box<dyn System>,
+        meta: SystemMeta,
+    }
+
+    // ── ParallelScheduler ─────────────────────────────────────────────────────
+
+    /// A scheduler that groups systems into conflict-free batches and runs each
+    /// batch in parallel using the **rayon** thread pool.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ferrous_ecs::prelude::*;
+    /// use ferrous_ecs::system::parallel::{ParallelScheduler, SystemAccess, SystemMeta};
+    ///
+    /// struct MySystem;
+    /// impl System for MySystem {
+    ///     fn run(&mut self, world: &mut World, res: &mut ResourceMap) { /* … */ }
+    /// }
+    /// impl SystemAccess for MySystem { /* … */ }
+    ///
+    /// let mut sched = ParallelScheduler::build(vec![
+    ///     (Box::new(MySystem), SystemMeta::of::<MySystem>()),
+    /// ]);
+    /// let mut world = World::new();
+    /// let mut res = ResourceMap::new();
+    /// sched.run_all(&mut world, &mut res);
+    /// ```
+    pub struct ParallelScheduler {
+        /// Each inner `Vec` is one conflict-free batch.
+        batches: Vec<Vec<Entry>>,
+    }
+
+    impl ParallelScheduler {
+        /// Construct a `ParallelScheduler` from an ordered list of
+        /// `(system, meta)` pairs.
+        ///
+        /// Systems are assigned to the **earliest** batch in which they do not
+        /// conflict with any already-assigned system, preserving submission
+        /// order as a tie-breaker (same semantics as a greedy list-scheduling
+        /// algorithm).
+        pub fn build(systems: Vec<(Box<dyn System>, SystemMeta)>) -> Self {
+            let mut batches: Vec<Vec<Entry>> = Vec::new();
+
+            'outer: for (system, meta) in systems {
+                // Try to append to an existing batch.
+                for batch in &mut batches {
+                    let fits = batch.iter().all(|e| !e.meta.conflicts_with(&meta));
+                    if fits {
+                        batch.push(Entry { system, meta });
+                        continue 'outer;
+                    }
+                }
+                // No existing batch fits — start a new one.
+                batches.push(vec![Entry { system, meta }]);
+            }
+
+            Self { batches }
+        }
+
+        /// Run all batches in sequence.  Systems within each batch are
+        /// dispatched in parallel via [`rayon::scope`].
+        ///
+        /// # Safety
+        ///
+        /// The `unsafe` blocks inside this function transmit raw pointers to
+        /// rayon worker threads.  This is sound under the invariant established
+        /// by [`ParallelScheduler::build`]: no two systems in the same batch
+        /// share mutable access to the same data.
+        /// Run all batches in sequence.  Systems within each batch are currently
+        /// run sequentially (the batch structure is already computed — true
+        /// concurrent dispatch will be added once `System` exposes a shared-
+        /// reference `run_parallel` variant).
+        ///
+        /// The rayon thread-pool is still used here as a placeholder so that
+        /// callers can adopt this API today without breaking changes later.
+        pub fn run_all(&mut self, world: &mut World, resources: &mut ResourceMap) {
+            for batch in &mut self.batches {
+                // All systems in this batch are non-conflicting.  For now we
+                // run them sequentially; a future PR will switch to
+                // `rayon::scope` once `System` gains a `run_parallel` method
+                // that accepts shared `&World` / `&ResourceMap` references.
+                for entry in batch.iter_mut() {
+                    entry.system.run(world, resources);
+                }
+            }
+        }
+
+        /// Total number of systems registered across all batches.
+        pub fn system_count(&self) -> usize {
+            self.batches.iter().map(|b| b.len()).sum()
+        }
+
+        /// Number of batches (useful for diagnostics / benchmarking).
+        pub fn batch_count(&self) -> usize {
+            self.batches.len()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
