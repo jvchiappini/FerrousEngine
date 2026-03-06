@@ -19,7 +19,7 @@ pub use systems::{
 };
 
 // Camera
-pub use camera::{Camera, CameraUniform};
+pub use camera::Camera;
 
 // Controller (key mappings + motion parameters)
 pub use controller::Controller;

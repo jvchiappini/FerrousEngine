@@ -30,22 +30,10 @@
 
 use std::collections::HashSet;
 
-// when the `input` feature is disabled we still need the KeyCode/MouseButton
-// types for signatures but we don't want to depend on winit.  provide tiny
-// stub enums that cannot be instantiated.
-#[cfg(not(feature = "input"))]
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub enum KeyCode {}
-#[cfg(not(feature = "input"))]
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MouseButton {}
-
-// the `input` feature gates an actual winit dependency and re-exports the
-// concrete types.
-#[cfg(feature = "input")]
-pub use winit::event::MouseButton;
-#[cfg(feature = "input")]
-pub use winit::keyboard::KeyCode;
+// re-export our own keycode types rather than exposing winit directly.  this
+// keeps the public API clean and allows consumers to disable the entire
+// windowing stack with `--no-default-features`.
+pub use crate::key::{KeyCode, MouseButton};
 
 /// Full keyboard + mouse state for one frame.
 #[derive(Default, Clone)]

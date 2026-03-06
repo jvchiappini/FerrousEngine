@@ -182,15 +182,15 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let pressed = state == winit::event::ElementState::Pressed;
-                self.input.update_mouse_button(button, pressed);
+                self.input.update_mouse_button(button.into(), pressed);
                 let (mx, my) = self.input.mouse_position();
                 self.ui.mouse_input(mx, my, pressed);
             }
             WindowEvent::KeyboardInput { ref event, .. } => {
                 // borrow `text` so we don't move it out of the event
                 let winit::event::KeyEvent { physical_key, state, ref text, .. } = *event;
-                if let winit::keyboard::PhysicalKey::Code(code) = physical_key {
-                    self.input.update_key(code, state == winit::event::ElementState::Pressed);
+                    if let winit::keyboard::PhysicalKey::Code(code) = physical_key {
+                    self.input.update_key(code.into(), state == winit::event::ElementState::Pressed);
                 }
                 self.ui.keyboard_input(
                     text.as_deref(),

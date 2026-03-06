@@ -5,7 +5,8 @@
 /// bridge between the CPU `Camera` (in `ferrous_core`) and the GPU pipeline.
 use std::sync::Arc;
 
-use ferrous_core::scene::{Camera, CameraUniform};
+use crate::camera::Camera;
+use crate::resources::camera::CameraUniform;
 
 use crate::resources::buffer;
 

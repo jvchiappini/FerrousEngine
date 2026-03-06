@@ -41,6 +41,9 @@ pub mod color;
 /// Frame timing: delta, elapsed, FPS.
 pub mod time;
 
+/// Local key/mouse types used by [`InputState`].
+pub mod key;
+
 /// Keyboard and mouse input state.
 pub mod input;
 
@@ -101,7 +104,7 @@ pub use scene::{
 };
 
 #[cfg(feature = "ecs")]
-pub use scene::{Camera, CameraUniform, Controller};
+pub use scene::{Camera, Controller};
 
 #[cfg(feature = "ecs")]
 pub use scene::{Element, ElementKind, Handle, PointLightComponent, World};

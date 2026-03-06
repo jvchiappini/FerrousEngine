@@ -8,6 +8,7 @@ pub mod shadow;
 pub mod ssao;
 pub mod texture;
 pub mod texture_registry;
+pub mod camera;
 
 pub use draw_indirect::{
     DrawIndirectBuffer, GpuDrawIndexedIndirect, InstanceCullBuffer, InstanceCullData,
@@ -18,6 +19,8 @@ pub use light::{DirectionalLightUniform, LightStorageHeader, PointLightUniform, 
 pub use material::{Material, Texture};
 pub use shadow::ShadowResources;
 pub use ssao::SsaoResources;
+
+pub use camera::CameraUniform;
 
 // registry exports
 pub use texture_registry::{
