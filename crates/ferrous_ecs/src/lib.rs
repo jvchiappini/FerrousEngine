@@ -12,6 +12,7 @@
 //! | `resource`    | Non-entity global state (ResourceMap)                       |
 //! | `system`      | `System` trait, `SystemScheduler`, `StagedScheduler`        |
 //! | `system_param`| `SystemParam` trait, `Res<T>`, `ResMut<T>`                  |
+//! | `event`       | typed events + `EventWriter`/`EventReader`                |
 //! | `fn_system`   | `IntoSystem` trait, `FnSystem` — plain-function systems     |
 //!
 //! ## Parallel scheduling (`feature = "parallel"`)
@@ -54,6 +55,7 @@ pub mod resource;
 pub mod system;
 pub mod system_param;
 pub mod world;
+pub mod event;
 
 pub mod prelude {
     pub use crate::component::Component;
@@ -72,7 +74,15 @@ pub mod prelude {
     pub use crate::system_param::{QueryParam, ResMutParam, ResParam, SystemParam};
     pub use crate::world::World;
 
+    // Event API
+    pub use crate::event::{Events, EventWriter, EventReader};
+
     // Parallel scheduling — only available with `feature = "parallel"`.
     #[cfg(feature = "parallel")]
     pub use crate::system::parallel::{ParallelScheduler, SystemAccess, SystemMeta};
+    // Derive macro for Component (re-exported so users only need
+    // `use ferrous_ecs::prelude::*;` and `#[derive(Component)]`).
+    #[cfg(feature = "derive")]
+    pub use ferrous_ecs_macros::Component;
+
 }

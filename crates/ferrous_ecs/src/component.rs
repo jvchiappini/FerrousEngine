@@ -169,6 +169,21 @@ impl ComponentSet {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Ensure the derive macro is available and produces a valid impl.
+    #[derive(Component)]
+    struct DeriveCheck(u8);
+
+    #[test]
+    fn derived_type_is_component() {
+        fn needs_component<T: Component>() {}
+        needs_component::<DeriveCheck>();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Bundle trait — heterogeneous tuples of components that can be spawned together
 

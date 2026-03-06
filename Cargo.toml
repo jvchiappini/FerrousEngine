@@ -2,7 +2,6 @@
 members = [
     "crates/ferrous_ecs",
     "crates/ferrous_core",
-    "crates/ferrous_gpu",
     "crates/ferrous_renderer",
     "crates/ferrous_editor",
     "crates/ferrous_gui",
@@ -11,6 +10,7 @@ members = [
     "crates/ferrous_asset_types",
     "crates/ferrous_font",
     "crates/ferrous_render_graph",
+    "crates/ferrous_ecs_macros",
 ]
 resolver = "2"
 
