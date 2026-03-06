@@ -7,7 +7,7 @@ edition = "2021"
 wgpu = "23.0"
 anyhow = "1.0"
 thiserror = "1.0"
-ferrous_core = { path = "../ferrous_core", features = ["ecs"] }
+ferrous_core = { path = "../ferrous_core", features = ["ecs", "input", "gpu"] }
 ferrous_gui = { path = "../ferrous_gui", optional = true }
 bytemuck = { version = "1.14", features = ["derive"] }
 glam = { workspace = true }
@@ -33,4 +33,4 @@ image = ["dep:image"]
 
 # optional assets support; when disabled the renderer does not depend on the
 # asset crate and mesh caches are omitted at compile time.
-assets = ["dep:ferrous_assets"]
+assets = ["dep:ferrous_assets", "ferrous_assets/gpu"]

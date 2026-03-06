@@ -80,11 +80,18 @@ use ferrous_gui::TextBatch;
 
 use camera::controller::OrbitState;
 use graph::frame_packet::CameraPacket;
+
+// some pass-related types are only required when GUI is enabled
+#[cfg(feature = "gui")]
 use passes::{CelFrameData, FlatFrameData, OutlineFrameData};
+
 use passes::{
     CelShadedPass, CullPass, FlatShadedPass, OutlinePass, PostProcessPass, PrePass, SsaoBlurPass,
-    SsaoPass, UiPass, WorldPass,
+    SsaoPass, WorldPass,
 };
+
+#[cfg(feature = "gui")]
+use passes::UiPass;
 use pipeline::{PbrPipeline, PipelineLayouts};
 use resources::SsaoResources;
 
@@ -540,6 +547,7 @@ impl Renderer {
     /// cache; calling `sync_world` will cause any `ElementKind::Mesh`
     /// elements referencing `key` to use the provided geometry.  If a mesh
     /// already existed at that key it is overwritten.
+    #[cfg(feature = "assets")]
     pub fn register_mesh(&mut self, key: &str, mesh: geometry::Mesh) {
         self.frame_builder.mesh_cache.insert(key.to_string(), mesh);
     }
@@ -547,6 +555,7 @@ impl Renderer {
     /// Remove a previously-registered mesh.  Any world elements still
     /// referring to the key will fall back to the cube primitive when the
     /// next `sync_world` runs.
+    #[cfg(feature = "assets")]
     pub fn free_mesh(&mut self, key: &str) {
         self.frame_builder.mesh_cache.remove(key);
     }
@@ -1056,12 +1065,15 @@ impl Renderer {
             new_width,
             new_height,
         );
-        self.ui_pass.on_resize(
-            &self.context.device,
-            &self.context.queue,
-            new_width,
-            new_height,
-        );
+        #[cfg(feature = "gui")]
+        {
+            self.ui_pass.on_resize(
+                &self.context.device,
+                &self.context.queue,
+                new_width,
+                new_height,
+            );
+        }
         // User passes
         for pass in &mut self.extra_passes {
             pass.on_resize(
@@ -1091,7 +1103,10 @@ impl Renderer {
     /// Uploads a font atlas texture to the UI pass. Call once after font loading.
     #[inline]
     pub fn set_font_atlas(&mut self, view: &wgpu::TextureView, sampler: &wgpu::Sampler) {
-        self.ui_pass.set_font_atlas(view, sampler);
+        #[cfg(feature = "gui")]
+        {
+            self.ui_pass.set_font_atlas(view, sampler);
+        }
     }
 
     // -- Input ----------------------------------------------------------------
