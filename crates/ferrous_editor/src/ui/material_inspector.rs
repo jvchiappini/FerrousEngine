@@ -442,7 +442,7 @@ impl MaterialInspector {
         // ── Flush changes to World + Renderer ────────────────────────────────
         if changed {
             ctx.world.set_material_descriptor(handle, desc.clone());
-            ctx.renderer.update_material_params(mat_handle, &desc);
+            ctx.render.update_material(mat_handle, &desc);
             self.last_desc = desc;
         }
 

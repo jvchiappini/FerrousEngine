@@ -110,7 +110,7 @@ impl GlobalLightPanel {
         let dir_z = elevation.cos() * azimuth.cos();
         let dir = [-dir_x, -dir_y, -dir_z];
 
-        ctx.renderer
+        ctx.render
             .set_directional_light(dir, [1.0, 0.98, 0.95], intensity);
 
         // Draw rows.

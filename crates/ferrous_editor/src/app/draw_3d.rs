@@ -37,7 +37,7 @@ impl EditorApp {
             );
             let mut desc = MaterialDescriptor::default();
             desc.base_color = color.to_array();
-            let mat = ctx.renderer.create_material(&desc);
+            let mat = ctx.render.create_material(&desc);
             ctx.world.set_material_handle(handle, mat);
             ctx.world.set_material_descriptor(handle, desc.clone());
             let qh = ctx.world.spawn_quad(

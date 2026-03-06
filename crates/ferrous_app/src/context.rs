@@ -5,6 +5,8 @@ use ferrous_core::{Handle, InputState, MouseButton, RenderStats, Time, Viewport,
 use ferrous_renderer::scene::GizmoDraw;
 use winit::window::Window;
 
+use crate::render_context::RenderContext;
+
 /// Per-frame context passed to every [`FerrousApp`] callback.
 ///
 /// `AppContext` bundles together all the read/write access a game or app
@@ -70,12 +72,21 @@ pub struct AppContext<'a> {
     /// ```
     pub gizmos: Vec<GizmoDraw>,
 
-    /// Mutable reference to the renderer owned by the runner.  This is made
-    /// available so that higher-level code (editor, game) can create or
-    /// update GPU resources such as materials without needing to reach into
-    /// the runner itself.  The reference lives for the duration of the
-    /// callback, so it is safe to mutate.
-    pub renderer: &'a mut ferrous_renderer::Renderer,
+    /// User-facing renderer facade — the primary API for controlling rendering
+    /// without touching GPU internals.
+    ///
+    /// ```rust,ignore
+    /// // Switch to cel shading
+    /// ctx.render.set_style(RenderStyle::CelShaded { toon_levels: 4, outline_width: 1.5 });
+    /// // Disable SSAO
+    /// ctx.render.set_ssao(false);
+    /// // Create a material
+    /// let mat = ctx.render.create_material(&desc);
+    /// ```
+    ///
+    /// For advanced engine-internal use, the raw renderer is accessible via
+    /// `ctx.render.inner` (crate-internal only).
+    pub render: RenderContext<'a>,
 
     /// Asset server — call `load()` to begin loading an asset in the
     /// background and `get()` to poll its state.  The same handle returned
@@ -121,13 +132,15 @@ impl<'a> AppContext<'a> {
         }
     }
 
-    /// Switch the renderer's active shading style without touching `ctx.renderer`.
+    /// Switch the renderer's active shading style.
+    ///
+    /// This is a convenience shortcut for `ctx.render.set_style(style)`.
     ///
     /// ```rust,ignore
     /// ctx.set_render_style(RenderStyle::CelShaded { toon_levels: 4, outline_width: 0.02 });
     /// ```
     pub fn set_render_style(&mut self, style: ferrous_renderer::RenderStyle) {
-        self.renderer.set_render_style(style);
+        self.render.set_style(style);
     }
 
     /// Shortcut: window width in physical pixels.

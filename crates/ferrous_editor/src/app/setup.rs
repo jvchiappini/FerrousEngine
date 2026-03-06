@@ -47,7 +47,7 @@ impl EditorApp {
             if preset.emissive_strength > 0.0 {
                 desc.emissive = [1.0, 0.4, 0.1];
             }
-            let mat = ctx.renderer.create_material(&desc);
+            let mat = ctx.render.create_material(&desc);
             let h = ctx
                 .world
                 .spawn(preset.name)
@@ -69,7 +69,7 @@ impl EditorApp {
             desc.base_color = to_linear(*col);
             desc.metallic = 0.0;
             desc.roughness = 0.3;
-            let mat = ctx.renderer.create_material(&desc);
+            let mat = ctx.render.create_material(&desc);
             let h = ctx
                 .world
                 .spawn(*name)
@@ -85,7 +85,7 @@ impl EditorApp {
         {
             let mut desc = MaterialDescriptor::default();
             desc.metallic = 1.0;
-            let mat = ctx.renderer.create_material(&desc);
+            let mat = ctx.render.create_material(&desc);
             let hs = ctx.world.spawn_sphere("Sphere", Vec3::new(2.0, 0.0, 0.0), 1.0, 32);
             ctx.world.set_material_handle(hs, mat);
             ctx.world.set_material_descriptor(hs, desc);
@@ -103,18 +103,18 @@ impl EditorApp {
         ctx.world.ecs.spawn((OrbitCamera {
             yaw: -0.52,
             pitch: 0.35,
-            distance: ctx.renderer.camera().controller.orbit_distance,
-            target: ctx.renderer.camera().target,
+            distance: ctx.render.camera_eye().distance(ctx.render.camera_target()),
+            target: ctx.render.camera_target(),
         },));
         {
             let yaw = -0.52_f32;
             let pitch = 0.35_f32;
-            let dist = ctx.renderer.camera().controller.orbit_distance;
+            let dist = ctx.render.camera_orbit_distance();
             let cy = pitch.cos();
             let sy = pitch.sin();
             let offset = Vec3::new(yaw.sin() * cy, sy, yaw.cos() * cy) * dist;
-            let target = ctx.renderer.camera().target;
-            ctx.renderer.camera_mut().eye = target + offset;
+            let target = ctx.render.camera_target();
+            ctx.render.set_camera_eye(target + offset);
         }
 
         self.gpu_backend = ctx.gpu_backend().to_string();
@@ -124,7 +124,7 @@ impl EditorApp {
             r"C:\Users\jvchi\CARPETAS\FerrousEngine\assets\models\DamagedHelmet.glb";
         if std::path::Path::new(test_model).exists() {
             if let Ok(handles) =
-                ferrous_app::spawn_gltf(&mut ctx.world, &mut ctx.renderer, test_model)
+                ferrous_app::spawn_gltf(&mut ctx.world, ctx.render.renderer_mut(), test_model)
             {
                 log::info!("spawned {} meshes from {}", handles.len(), test_model);
                 for h in &handles {
@@ -138,7 +138,7 @@ impl EditorApp {
             for p in &["model.gltf", "model.glb"] {
                 if std::path::Path::new(p).exists() {
                     if let Ok(handles) =
-                        ferrous_app::spawn_gltf(&mut ctx.world, &mut ctx.renderer, p)
+                        ferrous_app::spawn_gltf(&mut ctx.world, ctx.render.renderer_mut(), p)
                     {
                         log::info!("spawned {} meshes from {}", handles.len(), p);
                     } else {
@@ -169,7 +169,7 @@ impl EditorApp {
             desc.metallic = 0.0;
             desc.roughness = 0.8;
             desc.alpha_mode = AlphaMode::Opaque;
-            let mat = ctx.renderer.create_material(&desc);
+            let mat = ctx.render.create_material(&desc);
             let h = ctx
                 .world
                 .spawn(*name)
@@ -189,7 +189,7 @@ impl EditorApp {
             desc.roughness = 0.1;
             desc.alpha_mode = AlphaMode::Blend;
             desc.double_sided = true;
-            let mat = ctx.renderer.create_material(&desc);
+            let mat = ctx.render.create_material(&desc);
             let hs = ctx.world.spawn_sphere(
                 "Glass Sphere (Cyan)", Vec3::new(0.0, 0.0, -2.0), 0.6, 32,
             );
@@ -205,7 +205,7 @@ impl EditorApp {
             desc.roughness = 0.1;
             desc.alpha_mode = AlphaMode::Blend;
             desc.double_sided = true;
-            let mat = ctx.renderer.create_material(&desc);
+            let mat = ctx.render.create_material(&desc);
             let h = ctx
                 .world
                 .spawn("Glass Cube (Red)")

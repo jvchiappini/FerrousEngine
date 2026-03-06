@@ -46,6 +46,7 @@ pub mod config;
 pub mod context;
 mod graphics;
 pub mod plugin;
+pub mod render_context;
 mod runner;
 pub mod traits;
 
@@ -56,6 +57,7 @@ pub use plugin::{
     AppBuilder, AssetPlugin, CorePlugin, DefaultPlugins, GuiPlugin, InputPlugin, Plugin,
     RendererPlugin, TimePlugin, WindowPlugin,
 };
+pub use render_context::RenderContext;
 pub use traits::FerrousApp;
 
 // ── Render style ───────────────────────────────────────────────────────────

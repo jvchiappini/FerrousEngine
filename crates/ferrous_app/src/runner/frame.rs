@@ -13,6 +13,7 @@ use std::time::Instant;
 use web_time::Instant;
 
 use crate::context::AppContext;
+use crate::render_context::RenderContext;
 use crate::traits::FerrousApp;
 
 use super::types::Runner;
@@ -44,7 +45,7 @@ impl<A: FerrousApp> Runner<A> {
                                 world: &mut self.world,
                                 exit_requested: false,
                                 _gpu_backend: gfx.renderer.context.backend,
-                                renderer: &mut gfx.renderer,
+                                render: RenderContext::new(&mut gfx.renderer),
                                 asset_server: &mut self.asset_server,
                             };
                             self.app.setup(&mut ctx);
@@ -132,7 +133,7 @@ impl<A: FerrousApp> Runner<A> {
                 camera_target: Vec3::ZERO,
                 gizmos: Vec::new(),
                 world: &mut self.world,
-                renderer: &mut gfx.renderer,
+                render: RenderContext::new(&mut gfx.renderer),
                 exit_requested: false,
                 _gpu_backend: backend,
                 asset_server: &mut self.asset_server,
@@ -189,7 +190,7 @@ impl<A: FerrousApp> Runner<A> {
                 camera_target,
                 gizmos: Vec::new(),
                 world: &mut self.world,
-                renderer: &mut gfx.renderer,
+                render: RenderContext::new(&mut gfx.renderer),
                 exit_requested: false,
                 _gpu_backend: backend,
                 asset_server: &mut self.asset_server,
@@ -200,7 +201,7 @@ impl<A: FerrousApp> Runner<A> {
             }
 
             for gizmo in ctx.gizmos.drain(..) {
-                ctx.renderer.queue_gizmo(gizmo);
+                ctx.render.inner.queue_gizmo(gizmo);
             }
 
             let mut gui_batch = GuiBatch::new();

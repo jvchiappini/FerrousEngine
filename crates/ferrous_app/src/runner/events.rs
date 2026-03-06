@@ -21,6 +21,7 @@ use std::rc::Rc;
 
 use crate::context::AppContext;
 use crate::graphics::GraphicsState;
+use crate::render_context::RenderContext;
 use crate::traits::FerrousApp;
 use ferrous_assets::Font;
 
@@ -91,7 +92,7 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                     camera_target: Vec3::ZERO,
                     gizmos: Vec::new(),
                     world: &mut self.world,
-                    renderer: &mut gfx.renderer,
+                    render: RenderContext::new(&mut gfx.renderer),
                     exit_requested: false,
                     _gpu_backend: backend,
                     asset_server: &mut self.asset_server,
@@ -193,7 +194,7 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                     camera_target: Vec3::ZERO,
                     gizmos: Vec::new(),
                     world: &mut self.world,
-                    renderer: &mut gfx.renderer,
+                    render: RenderContext::new(&mut gfx.renderer),
                     exit_requested: false,
                     _gpu_backend: backend,
                     asset_server: &mut self.asset_server,
@@ -229,7 +230,7 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                             camera_target: Vec3::ZERO,
                             gizmos: Vec::new(),
                             world: &mut self.world,
-                            renderer: &mut gfx.renderer,
+                            render: RenderContext::new(&mut gfx.renderer),
                             exit_requested: false,
                             _gpu_backend: backend,
                             asset_server: &mut self.asset_server,
