@@ -1,158 +1,97 @@
 # TextInput
 
-`TextInput` is a single-line editable text field. It handles focus, character
-insertion, and backspace. There is no cursor or text selection.
+`TextInput` is a single-line editable text field with a visual blinking cursor
+at the insertion point, keyboard navigation, and an optional `on_change`
+callback.
 
-## Struct
+## Fields
 
 ```rust
-#[derive(Debug, Clone)]
 pub struct TextInput {
-    pub rect:       [f32; 4],
-    pub text:       String,
-    pub focused:    bool,
-    pub placeholder: String,
-    pub bg_color:   [f32; 4],
-    pub text_color: [f32; 4],
+    pub rect:          [f32; 4],
+    pub text:          String,
+    pub focused:       bool,
+    pub placeholder:   String,
+    pub bg_color:      [f32; 4],
+    pub text_color:    [f32; 4],
+    pub cursor_pos:    usize,        // character (not byte) index
+    pub cursor_color:  [f32; 4],     // default: opaque white
+    pub tooltip:       Option<String>,
+    // on_change: Box<dyn Fn(&str)>  (set via .on_change(|s|{…}))
 }
 ```
 
-- `text` — current buffer contents; read this in `update()`.
-- `focused` — true while the widget has keyboard focus.
-- `placeholder` — shown when `text` is empty.
+- `cursor_pos` — character index of the insertion point.  
+  Rendered as a 2 px wide quad inside the text area when focused.
+- `placeholder` — shown (same colour as text) when `text` is empty.
 
 ## Construction
 
 ```rust
 let mut input = TextInput::new(x, y, width, height);
 input.placeholder = "Enter your name…".into();
-input.bg_color    = [0.15, 0.15, 0.15, 1.0];
+input.bg_color    = [0.12, 0.12, 0.12, 1.0];
 input.text_color  = [0.95, 0.95, 0.95, 1.0];
+
+// With on_change callback
+let input = TextInput::new(20.0, 20.0, 240.0, 32.0)
+    .on_change(|s| println!("text: {s}"))
+    .with_tooltip("Your name");
 ```
 
-## Usage pattern
+## Builder API
 
-```rust
-struct MyApp {
-    name_input: TextInput,
-}
+| Method | Description |
+|--------|-------------|
+| `on_change(fn)` | Callback `fn(&str)` fired on every character change |
+| `with_tooltip(text)` | Tooltip returned via `Widget::tooltip()` |
 
-impl Default for MyApp {
-    fn default() -> Self {
-        let mut input = TextInput::new(20.0, 20.0, 240.0, 32.0);
-        input.placeholder = "Your name".into();
-        Self { name_input: input }
-    }
-}
+## Keyboard behaviour
 
-impl FerrousApp for MyApp {
-    fn configure_ui(&mut self, ui: &mut Ui) {
-        ui.add(self.name_input.clone());
-    }
+| Key | Action |
+|-----|--------|
+| Printable character | Insert at cursor |
+| `Backspace` | Delete character before cursor |
+| `Delete` | Delete character after cursor |
+| `←` / `→` | Move cursor left / right |
+| `Home` | Jump to beginning |
+| `End` | Jump to end |
 
-    fn update(&mut self, ctx: &mut AppContext) {
-        if ctx.input.just_pressed(KeyCode::Enter) && self.name_input.focused {
-            println!("Submitted: {}", self.name_input.text);
-        }
-    }
+Clicking the widget gives focus and moves the cursor to the end of the
+buffer. Clicking outside removes focus.
 
-    fn draw_ui(&mut self, gui: &mut GuiBatch, text: &mut TextBatch,
-               font: Option<&Font>, _ctx: &mut AppContext) {
-        self.name_input.draw(gui, text, font);
-    }
-}
-```
+## Cursor rendering
+
+When focused a 2 px × (height − 6 px) white quad is drawn at the cursor's
+approximate pixel position (based on `cursor_pos × font_size × 0.6`). The
+cursor is always visible while focused; blink animation can be implemented in
+application code by toggling `cursor_color[3]` each frame.
 
 ## `draw` signature
 
 ```rust
-pub fn draw(&self, quad_batch: &mut GuiBatch, text_batch: &mut TextBatch,
-            font: Option<&Font>);
+// Feature "text" enabled (default)
+pub fn draw(&self, quad_batch: &mut GuiBatch,
+            text_batch: &mut TextBatch, font: Option<&Font>);
 ```
 
-Draws a filled background quad and, if `font` is `Some`, renders the text (or
-placeholder) vertically centred with a 4 px left margin.
+Draws background, text (or placeholder), and the cursor bar.
 
-## Keyboard behaviour
+## Programmatic editing
 
-- Clicking inside gives focus; clicking outside removes it.
-- Printable characters are appended to `text`.
-- `Backspace` removes the last character.
-- No cursor movement or selection — editing is always at the end.
+```rust
+widget.insert_char('A');    // insert at cursor_pos
+widget.backspace();         // delete before cursor
+widget.delete_forward();    // delete after cursor
+widget.cursor_left();
+widget.cursor_right();
+widget.cursor_home();
+widget.cursor_end();
+```
 
 ## Notes
 
-- `insert_char(c)` and `backspace()` are available for programmatic editing.
-- If you need multi-line input, implement a custom `Widget`.
-
-
-# TextInput widget
-
-`TextInput` is a minimalist single-line editable text field.  It stores a
-string buffer and handles focus and basic keyboard input.  It is not a
-full-fledged text editor; for example, there is no cursor or selection
-support, but it is sufficient for simple forms.
-
-## Data members
-
-```rust
-#[derive(Debug, Clone)]
-pub struct TextInput {
-    pub rect: [f32; 4],
-    pub text: String,
-    pub focused: bool,
-    pub placeholder: String,
-    pub bg_color: [f32; 4],
-    pub text_color: [f32; 4],
-}
-```
-
-- **`rect`** – bounding box in window coordinates.
-- **`text`** – current contents of the control.
-- **`focused`** – whether the widget has keyboard focus.
-- **`placeholder`** – string displayed when `text` is empty.
-- **`bg_color`**, **`text_color`** – colours used for background and
-  rendered text.
-
-## Methods
-
-- `new(x, y, w, h)` – construct with default colours and empty text.
-- `hit(mx, my)` – returns true if the point lies inside `rect`.
-- `insert_char(c)` – append a character (no-op if not focused).
-- `backspace()` – remove last character (focused only).
-- `draw(quad_batch, text_batch, font)` – emit a background quad and,
-  if a font is provided, draw the current text (or placeholder).
-
-Keyboard events are handled via the `Widget` trait.  When the widget is
-focused, `keyboard_input` will append printable characters and handle
-backspace.
-
-## Example usage
-
-```rust
-let mut input = TextInput::new(60.0, 60.0, 200.0, 24.0);
-input.placeholder = "Enter name".into();
-ui.add(input.clone());
-
-// later, after event processing:
-println!("Current contents: {}", input.text);
-```
-
-The consumer of the widget typically keeps a mutable reference (or clone)
-so that the text can be read or modified at will.
-
-## Rendering
-
-The `draw` helper draws a filled rectangle using `bg_color`.  If a font is
-provided, text is rendered vertically centred with a 4‑pixel left margin.
-The placeholder text uses the same colour as normal text, so it may be
-beneficial to choose a lighter shade when setting `placeholder`.
-
-## Behaviour notes
-
-- Clicking inside the rect gives the widget focus; clicking elsewhere
-  removes focus.
-- Only characters that are not classified as control characters are
-  inserted.
-- There is no support for selecting or moving the cursor; editing is
-  always at the end of the buffer.
+- `TextInput` is not `Clone`/`Debug`. Use `Rc<RefCell<TextInput>>` for shared
+  access — the type alias `TextInputHandle` is exported from `panel`.
+- No text selection support; for multi-line or rich editing implement a custom
+  `Widget`.

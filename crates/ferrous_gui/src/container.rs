@@ -10,6 +10,13 @@ use crate::GuiKey;
 /// set of widgets as a single unit (for example, to hit‑test or move them
 /// together) or to provide an enclosing visual frame.
 ///
+/// ## Clip / scissor
+///
+/// When `clip` is `true` (the default is `false`) the container emits a
+/// `RenderCommand::PushClip` before its children and a `RenderCommand::PopClip`
+/// after them.  This signals to any renderer integration that children
+/// should be scissored to the container's bounding rectangle.
+///
 /// The container implements `Widget` itself so it can be added directly to
 /// a `Ui`/`Canvas`.  Input events are only propagated to children when the
 /// pointer lies inside the container's rectangle; keyboard events are always
@@ -21,6 +28,9 @@ pub struct Container {
     pub rect: [f32; 4],
     /// optional background colour (RGBA).  `None` means transparent.
     pub bg_color: Option<[f32; 4]>,
+    /// When `true` the container emits clip commands around its children so
+    /// that a renderer can scissor-test them to the container's rect.
+    pub clip: bool,
     canvas: Canvas,
 }
 
@@ -30,6 +40,7 @@ impl Container {
         Self {
             rect: [x, y, w, h],
             bg_color: None,
+            clip: false,
             canvas: Canvas::new(),
         }
     }
@@ -67,6 +78,13 @@ impl Container {
     /// Set a solid background colour for the container.
     pub fn with_background(mut self, color: [f32; 4]) -> Self {
         self.bg_color = Some(color);
+        self
+    }
+
+    /// Enable scissor/clip rect for children.  When set, the container emits
+    /// `PushClip` / `PopClip` commands around its children during `collect`.
+    pub fn with_clip(mut self) -> Self {
+        self.clip = true;
         self
     }
 
@@ -122,7 +140,20 @@ impl Widget for Container {
                 flags: 0,
             });
         }
+        if self.clip {
+            cmds.push(RenderCommand::PushClip {
+                rect: Rect {
+                    x: r[0],
+                    y: r[1],
+                    width: r[2],
+                    height: r[3],
+                },
+            });
+        }
         self.canvas.collect(cmds);
+        if self.clip {
+            cmds.push(RenderCommand::PopClip);
+        }
     }
 
     fn hit(&self, mx: f64, my: f64) -> bool {

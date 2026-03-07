@@ -7,17 +7,25 @@ Every GUI element implements `Widget`:
 ```rust
 pub trait Widget {
     fn collect(&self, cmds: &mut Vec<RenderCommand>);
-    fn hit(&self, mx: f64, my: f64) -> bool { false }
-    fn mouse_input(&mut self, mx: f64, my: f64, pressed: bool) {}
-    fn mouse_move(&mut self, mx: f64, my: f64) {}
-    fn keyboard_input(&mut self, text: Option<&str>, key: Option<GuiKey>, pressed: bool) {}
+    fn hit(&self, _mx: f64, _my: f64) -> bool { false }
+    fn mouse_input(&mut self, _mx: f64, _my: f64, _pressed: bool) {}
+    fn mouse_move(&mut self, _mx: f64, _my: f64) {}
+    fn keyboard_input(&mut self, _text: Option<&str>,
+                      _key: Option<GuiKey>, _pressed: bool) {}
+    fn bounding_rect(&self) -> Option<[f32; 4]> { None }
+    fn tooltip(&self) -> Option<&str> { None }
 }
 ```
 
-- `collect` - push draw commands for this frame
-- `hit` - point-in-widget test used for focus tracking
-- `mouse_input` / `mouse_move` - update hover/press/drag state
-- `keyboard_input` - handle text and key events when focused
+- `collect` — push draw commands for this frame
+- `hit` — point-in-widget test used for focus tracking
+- `mouse_input` / `mouse_move` — update hover/press/drag state
+- `keyboard_input` — handle text and key events when focused
+- `bounding_rect` — optional `[x, y, w, h]` used by containers for auto-sizing
+- `tooltip` — optional string; callers query hovered widgets and render it
+
+`Rc<RefCell<T>>` where `T: Widget` also implements `Widget`, so shared handles
+can be added directly to a `Ui` or `Canvas`.
 
 You can implement this trait to create completely custom widgets.
 
@@ -106,15 +114,21 @@ on winit:
 pub enum GuiKey {
     Backspace,
     Delete,
-    Left,
-    Right,
+    ArrowLeft,
+    ArrowRight,
+    ArrowUp,
+    ArrowDown,
     Home,
     End,
     Enter,
-    Tab,
     Escape,
+    Tab,
 }
 ```
+
+When the `winit-backend` feature is enabled, `impl From<winit::keyboard::KeyCode>`
+is provided. All variants above are mapped; unrecognised keys fall through to
+`Backspace` (compile-time exhaustiveness requirement).
 
 ---
 
@@ -125,7 +139,25 @@ calls by `UiPass`. You only need this when writing custom widgets.
 
 ```rust
 pub enum RenderCommand {
-    Quad { rect, color, radii, texture },
-    Text { content, x, y, size, color },
+    Quad {
+        rect:  Rect,
+        color: [f32; 4],
+        radii: [f32; 4],   // per-corner radii [TL, TR, BL, BR]
+        flags: u32,        // bit 0 = colour-wheel gradient
+    },
+    Text {
+        rect:      Rect,   // origin; width/height informational only
+        text:      String,
+        color:     [f32; 4],
+        font_size: f32,
+    },
+    /// Signal the renderer to begin scissoring to `rect`.
+    PushClip { rect: Rect },
+    /// End the most recent scissor region.
+    PopClip,
 }
 ```
+
+`PushClip`/`PopClip` are emitted by `Container` when `clip = true`.
+The `GuiBatch`/`TextBatch` conversion layer ignores them; a renderer pass that
+wants clipping must consume them and set the GPU scissor rect.

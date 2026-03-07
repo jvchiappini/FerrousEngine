@@ -3,11 +3,18 @@ use crate::{layout::Rect, RenderCommand, Widget};
 /// Simple rectangular button widget used for interactive UIs.
 ///
 /// Tracks hover/press state and produces a coloured quad when collected.
+/// Supports an optional centred text label, per-corner rounding, a tooltip
+/// string and an `on_click` callback that is fired on mouse-release inside
+/// the widget.
 ///
-/// The `radius` field added to the struct can be used to request rounded
-/// corners; the value is interpreted in pixels. Use `with_radius` helper or
-/// set the field directly before drawing.
-#[derive(Debug, Clone)]
+/// ## Example
+/// ```rust
+/// use ferrous_gui::Button;
+/// let btn = Button::new(10.0, 10.0, 120.0, 32.0)
+///     .with_label("Save")
+///     .with_radius(6.0)
+///     .with_tooltip("Save the current file");
+/// ```
 pub struct Button {
     pub rect: [f32; 4], // x, y, width, height
     pub hovered: bool,
@@ -17,6 +24,17 @@ pub struct Button {
     /// corner radius in pixels; zero means sharp corners
     /// radii for each corner ([top-left, top-right, bottom-left, bottom-right]).
     pub radii: [f32; 4],
+    /// optional text label rendered centred inside the button
+    pub label: Option<String>,
+    /// font size used when rendering the label (default 14.0)
+    pub label_font_size: f32,
+    /// label text colour (default white)
+    pub label_color: [f32; 4],
+    /// optional tooltip string shown on hover
+    pub tooltip: Option<String>,
+    /// optional callback fired when the button is released while hovered.
+    /// Stored as a boxed closure so it is not `Clone`/`Debug`.
+    on_click: Option<Box<dyn Fn() + Send + Sync>>,
 }
 
 impl Button {
@@ -28,7 +46,42 @@ impl Button {
             pressed: false,
             color: [0.2, 0.2, 0.8, 1.0],
             radii: [0.0; 4],
+            label: None,
+            label_font_size: 14.0,
+            label_color: [1.0, 1.0, 1.0, 1.0],
+            tooltip: None,
+            on_click: None,
         }
+    }
+
+    /// Set the label text that will be centered inside the button.
+    pub fn with_label(mut self, text: impl Into<String>) -> Self {
+        self.label = Some(text.into());
+        self
+    }
+
+    /// Override the font size used for the label (default 14.0).
+    pub fn with_label_font_size(mut self, size: f32) -> Self {
+        self.label_font_size = size;
+        self
+    }
+
+    /// Override the label text colour.
+    pub fn with_label_color(mut self, color: [f32; 4]) -> Self {
+        self.label_color = color;
+        self
+    }
+
+    /// Attach a tooltip string shown when the button is hovered.
+    pub fn with_tooltip(mut self, text: impl Into<String>) -> Self {
+        self.tooltip = Some(text.into());
+        self
+    }
+
+    /// Register a callback that fires when the button is clicked.
+    pub fn on_click<F: Fn() + Send + Sync + 'static>(mut self, f: F) -> Self {
+        self.on_click = Some(Box::new(f));
+        self
     }
 
     /// Set a uniform radius for all four corners.
@@ -84,34 +137,64 @@ impl Button {
             && y <= self.rect[1] + self.rect[3]
     }
 
-    /// Convenience drawing method that pushes directly into a `GuiBatch`.
-    pub fn draw(&self, batch: &mut crate::renderer::GuiBatch) {
-        let color = if self.pressed {
-            [0.8, 0.2, 0.2, 1.0]
+    /// Returns the computed tint colour for the current hover/press state.
+    fn tinted_color(&self) -> [f32; 4] {
+        if self.pressed {
+            [
+                (self.color[0] * 0.7).min(1.0),
+                (self.color[1] * 0.7).min(1.0),
+                (self.color[2] * 0.7).min(1.0),
+                self.color[3],
+            ]
         } else if self.hovered {
-            [0.2, 0.8, 0.2, 1.0]
+            [
+                (self.color[0] * 1.3).min(1.0),
+                (self.color[1] * 1.3).min(1.0),
+                (self.color[2] * 1.3).min(1.0),
+                self.color[3],
+            ]
         } else {
             self.color
-        };
+        }
+    }
+
+    /// Convenience drawing method that pushes the button background quad
+    /// directly into a `GuiBatch`. Does **not** emit a label; use
+    /// [`draw_with_text`] when a font is available.
+    pub fn draw(&self, batch: &mut crate::renderer::GuiBatch) {
         batch.push(crate::renderer::GuiQuad {
             pos: [self.rect[0], self.rect[1]],
             size: [self.rect[2], self.rect[3]],
-            color,
+            color: self.tinted_color(),
             radii: self.radii,
             flags: 0,
         });
+    }
+
+    /// Draw the button background **and** its centred label into the
+    /// provided batches.  When `font` is `None` the label is silently
+    /// skipped (matching the pre-label behaviour).
+    #[cfg(feature = "text")]
+    pub fn draw_with_text(
+        &self,
+        quad_batch: &mut crate::renderer::GuiBatch,
+        text_batch: &mut crate::renderer::TextBatch,
+        font: Option<&ferrous_assets::Font>,
+    ) {
+        self.draw(quad_batch);
+        if let (Some(label), Some(f)) = (&self.label, font) {
+            // Approximate horizontal centering: each character ≈ font_size * 0.6
+            let approx_text_w = label.len() as f32 * self.label_font_size * 0.6;
+            let tx = self.rect[0] + (self.rect[2] - approx_text_w) * 0.5;
+            let ty = self.rect[1] + (self.rect[3] - self.label_font_size) * 0.5;
+            text_batch.draw_text(f, label, [tx, ty], self.label_font_size, self.label_color);
+        }
     }
 }
 
 impl Widget for Button {
     fn collect(&self, cmds: &mut Vec<RenderCommand>) {
-        let color = if self.pressed {
-            [0.8, 0.2, 0.2, 1.0]
-        } else if self.hovered {
-            [0.2, 0.8, 0.2, 1.0]
-        } else {
-            self.color
-        };
+        let color = self.tinted_color();
         let rect = Rect {
             x: self.rect[0],
             y: self.rect[1],
@@ -124,6 +207,23 @@ impl Widget for Button {
             radii: self.radii,
             flags: 0,
         });
+        // Emit a centred text command when a label is set.
+        if let Some(label) = &self.label {
+            let approx_text_w = label.len() as f32 * self.label_font_size * 0.6;
+            let tx = self.rect[0] + (self.rect[2] - approx_text_w) * 0.5;
+            let ty = self.rect[1] + (self.rect[3] - self.label_font_size) * 0.5;
+            cmds.push(RenderCommand::Text {
+                rect: Rect {
+                    x: tx,
+                    y: ty,
+                    width: 0.0,
+                    height: 0.0,
+                },
+                text: label.clone(),
+                color: self.label_color,
+                font_size: self.label_font_size,
+            });
+        }
     }
 
     fn hit(&self, mx: f64, my: f64) -> bool {
@@ -139,12 +239,21 @@ impl Widget for Button {
             // press only when the cursor is over us
             self.pressed = self.hit(mx, my);
         } else {
-            // release on any mouse-up
+            // release: fire on_click if released while still hovered
+            if self.pressed && self.hit(mx, my) {
+                if let Some(cb) = &self.on_click {
+                    cb();
+                }
+            }
             self.pressed = false;
         }
     }
 
     fn bounding_rect(&self) -> Option<[f32; 4]> {
         Some(self.rect)
+    }
+
+    fn tooltip(&self) -> Option<&str> {
+        self.tooltip.as_deref()
     }
 }

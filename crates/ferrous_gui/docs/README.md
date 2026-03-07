@@ -1,8 +1,9 @@
 # ferrous_gui
 
 `ferrous_gui` is the 2D widget toolkit for FerrousEngine. It provides interactive
-widgets, a flex-like layout system, and helpers for integrating with the engine
-frame loop and input state.
+widgets, automatic column/row layout via `PanelBuilder`, shared widget handles
+(`Rc<RefCell<…>>`), and helpers for integrating with the engine frame loop and
+input state.
 
 ---
 
@@ -12,15 +13,100 @@ frame loop and input state.
 |--------|-------------|-------------|
 | `ui` | `Ui` | Top-level container; add widgets and route input events |
 | `canvas` | `Canvas` | Focus-aware widget collection |
-| `widget` | `Widget` | Trait every widget implements |
-| `button` | `Button` | Clickable rectangle, optional rounded corners |
-| `slider` | `Slider` | Horizontal drag control, normalised 0.0-1.0 |
-| `textinput` | `TextInput` | Single-line editable text field |
-| `color_picker` | `ColorPicker`, `PickerShape` | Colour selection widget |
-| `container` | `Container` | Grouping panel with optional background |
-| `layout` | `Node`, `Style`, `Row`, `Column`, `UiButton`, `Text` | Declarative layout |
+| `widget` | `Widget` | Trait every widget implements (`collect`, `hit`, `tooltip`, …) |
+| `button` | `Button` | Clickable rectangle with optional centred label, tooltip, `on_click` |
+| `slider` | `Slider` | Horizontal drag control with configurable `min`/`max` range and `on_change` |
+| `textinput` | `TextInput` | Single-line text field with visual cursor and `on_change` |
+| `label` | `Label` | First-class static text label registrable in `Ui` |
+| `checkbox` | `Checkbox` | Tick-box with label and `on_change` |
+| `dropdown` | `Dropdown` | Drop-down / combo-box with `on_change` |
+| `panel` | `PanelBuilder`, `Panel` | Automatic column/row layout; returns shared widget handles |
+| `color_picker` | `ColorPicker`, `PickerShape` | HSV colour picker wheel |
+| `container` | `Container` | Grouping panel with optional background and scissor clip |
+| `layout` | `Node`, `Style`, `Row`, `Column`, `UiButton`, `Text`, `RenderCommand` | Declarative layout + render commands |
+| `key` | `GuiKey` | Lightweight key enum (Backspace, Delete, Arrows, Home, End, Enter, …) |
 | `viewport_widget` | `ViewportWidget` | Embedded 3D viewport region |
 | `renderer` | `GuiBatch`, `TextBatch`, `GuiRenderer` | Low-level draw batches |
+
+---
+
+## Recommended workflow — shared handles via `PanelBuilder`
+
+The cleanest way to build a panel of controls is `PanelBuilder`. It positions
+widgets automatically and returns `Rc<RefCell<…>>` handles so your struct and
+the `Ui` share a **single copy** of each widget — no manual clone/sync needed.
+
+```rust
+use ferrous_gui::{PanelBuilder, Panel, Ui};
+
+struct MyApp {
+    panel: Panel,
+}
+
+impl Default for MyApp {
+    fn default() -> Self {
+        let panel = PanelBuilder::column(20.0, 20.0, 200.0)
+            .padding(8.0)
+            .gap(6.0)
+            .with_background([0.1, 0.1, 0.1, 0.9])
+            .add_button("Save")
+            .add_button("Load")
+            .add_slider(0.0, 100.0, 50.0)
+            .add_label("Name:")
+            .add_text_input("Enter name…")
+            .add_checkbox("Enable VSync", true)
+            .add_dropdown(vec!["Low", "Medium", "High"], 1)
+            .build();
+
+        Self { panel }
+    }
+}
+
+impl FerrousApp for MyApp {
+    fn configure_ui(&mut self, ui: &mut Ui) {
+        // Panel implements Widget — add it directly.
+        // The Rc handles inside panel.buttons etc. are shared with Ui.
+        ui.add(self.panel.clone());
+    }
+
+    fn update(&mut self, _ctx: &mut AppContext) {
+        // Read from the shared handles — always in sync with Ui input routing.
+        if self.panel.buttons[0].borrow().pressed {
+            println!("Save clicked!");
+        }
+        let volume = self.panel.sliders[0].borrow().value;
+        let name   = self.panel.text_inputs[0].borrow().text.clone();
+        let vsync  = self.panel.checkboxes[0].borrow().checked;
+        let preset = self.panel.dropdowns[0].borrow().selected;
+    }
+
+    fn draw_ui(&mut self, dc: &mut DrawContext<'_, '_>) {
+        // The panel (and all its children) are already in the Ui widget tree;
+        // Ui::draw() handles everything — no manual draw calls needed.
+    }
+}
+```
+
+---
+
+## Alternative workflow — individual widgets with callbacks
+
+For simpler cases or when you prefer callbacks over polling:
+
+```rust
+let save_btn = Button::new(20.0, 20.0, 120.0, 36.0)
+    .with_label("Save")
+    .with_radius(6.0)
+    .with_tooltip("Save the current file")
+    .on_click(|| println!("Saved!"));
+
+let volume = Slider::new(20.0, 70.0, 200.0, 20.0, 80.0)
+    .range(0.0, 100.0)
+    .on_change(|v| println!("Volume: {v:.0}"));
+
+ui.add(save_btn);
+ui.add(volume);
+```
 
 ---
 
@@ -45,55 +131,19 @@ dc.gui.line(x0, y0, x1, y1, thickness, color);
 
 ---
 
-## Three-step workflow
-
-### Step 1 - Add widgets once (in `configure_ui`)
-
-```rust
-fn configure_ui(&mut self, ui: &mut Ui) {
-    ui.add(self.my_button.clone());
-    ui.add(self.my_slider.clone());
-    ui.add(self.my_input.clone());
-}
-```
-
-`Ui` takes ownership of the widgets and routes mouse/keyboard input to them
-automatically every frame. Keep your own copy in your struct to read state.
-
-### Step 2 - Draw every frame (in `draw_ui`)
-
-```rust
-fn draw_ui(&mut self, dc: &mut DrawContext<'_, '_>) {
-    self.my_button.draw(dc.gui);
-    self.my_slider.draw(dc.gui);
-    dc.text.draw_text(dc.font, "Hello world", [20.0, 20.0], 18.0, [1.0; 4]);
-}
-```
-
-### Step 3 - Read state in `update`
-
-```rust
-fn update(&mut self, ctx: &mut AppContext) {
-    if self.my_button.pressed {
-        self.my_button.pressed = false;   // consume
-        println!("Clicked!");
-    }
-    println!("Slider: {:.2}", self.my_slider.value);
-    println!("Input:  {}", self.my_input.text);
-}
-```
-
----
-
 ## Widget reference
 
 - [Button](widgets/button.md)
 - [Slider](widgets/slider.md)
 - [TextInput](widgets/textinput.md)
+- [Label](widgets/label.md)
+- [Checkbox](widgets/checkbox.md)
+- [Dropdown](widgets/dropdown.md)
+- [Panel / PanelBuilder](widgets/panel.md)
 - [ColorPicker](widgets/color_picker.md)
 - [Container](widgets/container.md)
 
 ## Further reading
 
-- [Layout system - Row, Column, Node, Style](layout.md)
-- [Core API - Ui, Canvas, Widget trait](api/core.md)
+- [Layout system — Row, Column, Node, Style](layout.md)
+- [Core API — Ui, Canvas, Widget trait, GuiKey](api/core.md)

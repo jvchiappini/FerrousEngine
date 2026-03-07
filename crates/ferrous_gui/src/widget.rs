@@ -45,6 +45,13 @@ pub trait Widget {
     fn bounding_rect(&self) -> Option<[f32; 4]> {
         None
     }
+
+    /// Optional tooltip string for this widget.  When `Some` the calling
+    /// application may display it near the cursor while the widget is hovered.
+    /// The default implementation returns `None`.
+    fn tooltip(&self) -> Option<&str> {
+        None
+    }
 }
 
 // make Node itself a widget so containers composed of nodes can be used as widgets
@@ -76,5 +83,14 @@ impl<T: Widget> Widget for std::rc::Rc<std::cell::RefCell<T>> {
     }
     fn keyboard_input(&mut self, text: Option<&str>, key: Option<GuiKey>, pressed: bool) {
         self.borrow_mut().keyboard_input(text, key, pressed);
+    }
+    fn bounding_rect(&self) -> Option<[f32; 4]> {
+        self.borrow().bounding_rect()
+    }
+    fn tooltip(&self) -> Option<&str> {
+        // We can't return a reference into the RefCell borrow here, so we
+        // intentionally return None; callers that need the tooltip of a
+        // shared widget should access it through the inner borrow directly.
+        None
     }
 }

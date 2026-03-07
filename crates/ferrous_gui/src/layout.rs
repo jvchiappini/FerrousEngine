@@ -427,6 +427,11 @@ pub enum RenderCommand {
         color: [f32; 4],
         font_size: f32,
     },
+    /// Begin a scissor/clip region.  Any draw commands that follow (until the
+    /// matching `PopClip`) should be clipped to this rectangle.
+    PushClip { rect: Rect },
+    /// End the most recently pushed scissor/clip region.
+    PopClip,
 }
 
 impl RenderCommand {
@@ -465,6 +470,11 @@ impl RenderCommand {
                     text_batch.draw_text(f, text, [rect.x, rect.y], *font_size, *color);
                 }
             }
+            // Clip commands are hints for the renderer; the GuiBatch/TextBatch
+            // layer does not currently implement scissoring, so we silently
+            // ignore them here.  A full renderer integration would consume these
+            // to set a scissor rect on the GPU pass.
+            RenderCommand::PushClip { .. } | RenderCommand::PopClip => {}
         }
     }
 
@@ -488,6 +498,7 @@ impl RenderCommand {
             RenderCommand::Text { .. } => {
                 // text commands are ignored when text feature is disabled
             }
+            RenderCommand::PushClip { .. } | RenderCommand::PopClip => {}
         }
     }
 }
