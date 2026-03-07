@@ -3,9 +3,14 @@ use ferrous_core::glam::{Mat4, Vec3, Vec4};
 use ferrous_core::scene::{axis_vector, Axis, GizmoMode, GizmoState, Plane};
 use ferrous_core::{Handle, InputState, MouseButton, RenderStats, Time, Viewport, World};
 use ferrous_renderer::scene::GizmoDraw;
-use winit::window::Window;
+use winit::window::{ResizeDirection, Window};
 
 use crate::render_context::RenderContext;
+
+/// Direction from which the user is dragging a window edge or corner to resize it.
+///
+/// Re-exported from winit so callers don't need a direct winit dependency.
+pub use winit::window::ResizeDirection as WindowResizeDirection;
 
 /// Per-frame context passed to every [`FerrousApp`] callback.
 ///
@@ -153,6 +158,86 @@ impl<'a> AppContext<'a> {
     #[inline]
     pub fn height(&self) -> u32 {
         self.window_size.1
+    }
+
+    /// Move the OS window so that its top-left corner is at `(x, y)` in
+    /// physical screen pixels (relative to the primary monitor's origin).
+    ///
+    /// This is a no-op on platforms where the OS does not allow programmatic
+    /// window positioning (e.g. some Wayland compositors).  On those platforms
+    /// the call is silently ignored.
+    ///
+    /// # Example — drag the window by a custom title bar
+    /// ```rust,ignore
+    /// fn update(&mut self, ctx: &mut AppContext) {
+    ///     // `self.drag_offset` is set when the user presses on the title bar.
+    ///     if ctx.input.button_held(MouseButton::Left) {
+    ///         if let Some(offset) = self.drag_offset {
+    ///             let (mx, my) = ctx.input.mouse_position();
+    ///             ctx.set_window_position(mx as i32 - offset.0, my as i32 - offset.1);
+    ///         }
+    ///     } else {
+    ///         self.drag_offset = None;
+    ///     }
+    /// }
+    /// ```
+    pub fn set_window_position(&self, x: i32, y: i32) {
+        self.window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
+    }
+
+    /// Returns the current position of the window's top-left corner in
+    /// physical screen pixels, or `None` if the platform does not support
+    /// querying the window position.
+    pub fn window_position(&self) -> Option<(i32, i32)> {
+        self.window.outer_position().ok().map(|p| (p.x, p.y))
+    }
+
+    /// Begin an OS-native resize drag in the given direction.
+    ///
+    /// Call this on the frame the user **presses** the left mouse button while
+    /// the cursor is over a resize handle you drew with `ferrous_gui`.  The OS
+    /// then takes over the resize interaction until the button is released —
+    /// you don't need to track mouse deltas yourself.
+    ///
+    /// This is a no-op on platforms that don't support it (e.g. some Wayland
+    /// compositors).  The call is silently ignored in those cases.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use ferrous_app::WindowResizeDirection;
+    ///
+    /// fn update(&mut self, ctx: &mut AppContext) {
+    ///     let (mx, my) = ctx.input.mouse_pos_f32();
+    ///     let dir = resize_direction_for_pos(mx, my, ctx.width(), ctx.height());
+    ///
+    ///     if let Some(dir) = dir {
+    ///         // Change cursor to a resize arrow
+    ///         if ctx.input.button_just_pressed(MouseButton::Left) {
+    ///             ctx.start_window_resize(dir);
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// fn resize_direction_for_pos(
+    ///     mx: f32, my: f32, w: u32, h: u32,
+    /// ) -> Option<WindowResizeDirection> {
+    ///     const E: f32 = 8.0; // edge hit zone in pixels
+    ///     let (w, h) = (w as f32, h as f32);
+    ///     match (mx < E, mx > w - E, my < E, my > h - E) {
+    ///         (true,  false, true,  false) => Some(WindowResizeDirection::NorthWest),
+    ///         (false, true,  true,  false) => Some(WindowResizeDirection::NorthEast),
+    ///         (true,  false, false, true)  => Some(WindowResizeDirection::SouthWest),
+    ///         (false, true,  false, true)  => Some(WindowResizeDirection::SouthEast),
+    ///         (true,  false, false, false) => Some(WindowResizeDirection::West),
+    ///         (false, true,  false, false) => Some(WindowResizeDirection::East),
+    ///         (false, false, true,  false) => Some(WindowResizeDirection::North),
+    ///         (false, false, false, true)  => Some(WindowResizeDirection::South),
+    ///         _ => None,
+    ///     }
+    /// }
+    /// ```
+    pub fn start_window_resize(&self, direction: ResizeDirection) {
+        let _ = self.window.drag_resize_window(direction);
     }
 
     /// Aspect ratio (width / height). Returns 1.0 if height is zero.

@@ -38,7 +38,26 @@ default configuration (1280×720, vsync on, 60 fps cap, dark background).
 | `.with_title(title)` | `&str` | `"Ferrous Application"` | Window title bar text |
 | `.with_size(w, h)` | `u32, u32` | `1280, 720` | Initial window size in logical pixels |
 | `.with_resizable(r)` | `bool` | `true` | Allow the user to resize the window |
+| `.with_decorations(d)` | `bool` | `true` | Show/hide the OS title bar and min/max/close buttons; set `false` for a fully-custom borderless window |
 | `.with_vsync(v)` | `bool` | `true` | Lock present rate to monitor refresh; set `false` for uncapped |
+
+### Custom title bar (borderless window)
+
+Set `.with_decorations(false)` to remove the OS-native title bar and control
+buttons entirely.  The window becomes a plain borderless surface — use
+`ferrous_gui` to draw your own title bar, drag region, and close/minimize/
+maximize buttons.
+
+```rust
+App::new(MyApp::default())
+    .with_title("My App")          // still used as the taskbar / alt-tab label
+    .with_decorations(false)       // no OS title bar
+    .with_resizable(false)         // optional: prevent resize handles too
+    .run();
+```
+
+> **Tip** — pair this with `AppMode::Desktop2D` for a lightweight GUI tool
+> that has zero 3-D overhead.
 
 ---
 

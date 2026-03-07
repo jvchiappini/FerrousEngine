@@ -46,6 +46,11 @@ pub struct AppConfig {
     pub vsync: bool,
     /// Whether the user can resize the window. Defaults to `true`.
     pub resizable: bool,
+    /// Whether the window should show OS-native decorations (title bar, minimize /
+    /// maximise / close buttons).  Set to `false` to get a bare borderless
+    /// window — useful when you want to draw a fully-custom title bar with
+    /// `ferrous_gui`.  Defaults to `true`.
+    pub decorations: bool,
     /// Color used to clear the 3-D viewport every frame.
     pub background_color: Color,
     /// Maximum frames per second.  The runner sleeps the remainder of each
@@ -97,6 +102,7 @@ impl Default for AppConfig {
             font_bytes: None,
             vsync: true,
             resizable: true,
+            decorations: true,
             background_color: Color::rgb(0.1, 0.1, 0.1),
             target_fps: Some(60),
             idle_timeout: None,
@@ -175,6 +181,23 @@ impl<A: FerrousApp + 'static> App<A> {
     /// Allow or prevent the user from resizing the window (default: allowed).
     pub fn with_resizable(mut self, resizable: bool) -> Self {
         self.config.resizable = resizable;
+        self
+    }
+
+    /// Show or hide the OS-native window decorations (title bar, minimize /
+    /// maximise / close buttons).  Defaults to `true` (decorated).
+    ///
+    /// Set to `false` when you want a fully-borderless window and intend to
+    /// implement a custom title bar with `ferrous_gui`.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// App::new(MyApp)
+    ///     .with_decorations(false)
+    ///     .run();
+    /// ```
+    pub fn with_decorations(mut self, decorations: bool) -> Self {
+        self.config.decorations = decorations;
         self
     }
 

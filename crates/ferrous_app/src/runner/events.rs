@@ -34,6 +34,7 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
         let attributes = Window::default_attributes()
             .with_title(&self.config.title)
             .with_resizable(self.config.resizable)
+            .with_decorations(self.config.decorations)
             .with_inner_size(winit::dpi::PhysicalSize::new(
                 self.config.width,
                 self.config.height,

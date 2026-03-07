@@ -59,6 +59,9 @@ pub struct WindowSection {
     pub height: Option<u32>,
     /// Whether the window can be resized by the user.
     pub resizable: Option<bool>,
+    /// Whether to show OS-native decorations (title bar, minimize / maximise /
+    /// close buttons).  Set to `false` for a fully-custom borderless window.
+    pub decorations: Option<bool>,
 }
 
 /// Cel-shading sub-config (inside `[renderer.cel]`).
@@ -137,6 +140,9 @@ impl EngineConfig {
         }
         if let Some(r) = self.window.resizable {
             cfg.resizable = r;
+        }
+        if let Some(d) = self.window.decorations {
+            cfg.decorations = d;
         }
 
         // [renderer] quality

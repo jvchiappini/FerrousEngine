@@ -18,11 +18,12 @@ App::new(MyApp::default())
 
 ```toml
 [window]
-title      = "My App"   # window title
-width      = 1280       # initial width  (logical pixels)
-height     = 720        # initial height (logical pixels)
-resizable  = true
-vsync      = true
+title       = "My App"   # window title
+width       = 1280       # initial width  (logical pixels)
+height      = 720        # initial height (logical pixels)
+resizable   = true
+decorations = true       # false → no OS title bar / control buttons
+vsync       = true
 
 [performance]
 target_fps    = 60      # integer FPS cap; omit for unlimited
@@ -53,6 +54,7 @@ let config = AppConfig {
     height:           720,
     vsync:            true,
     resizable:        true,
+    decorations:      true,
     background_color: Color::rgb(0.1, 0.1, 0.1),
     target_fps:       Some(60),
     idle_timeout:     None,

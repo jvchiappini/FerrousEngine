@@ -52,7 +52,7 @@ pub mod traits;
 
 pub use builder::{App, AppConfig, AppMode};
 pub use config::{load_config, ConfigError, EngineConfig};
-pub use context::AppContext;
+pub use context::{AppContext, WindowResizeDirection};
 pub use plugin::{
     AppBuilder, AssetPlugin, CorePlugin, DefaultPlugins, GuiPlugin, InputPlugin, Plugin,
     RendererPlugin, TimePlugin, WindowPlugin,

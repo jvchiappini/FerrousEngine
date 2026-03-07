@@ -1,4 +1,4 @@
-# `AppContext` Reference
+﻿# `AppContext` Reference
 
 `AppContext<'_>` is the handle passed to every [`FerrousApp`](ferrous-app-trait.md)
 callback. It bundles all per-frame access an application needs.
@@ -75,107 +75,81 @@ ctx.aspect()             // f32 — width / height
 ctx.gpu_backend()        // &str — "Vulkan", "Dx12", "Metal", "WebGPU", etc.
 ```
 
----
-
-## World — `ctx.world`
-
-The ECS scene graph. Mutate it in `update()`; the runner syncs it to the
-renderer automatically.
+### Moving the window
 
 ```rust
-// Spawn built-in primitives
-let id = ctx.world.spawn_cube("MyCube", Vec3::new(0.0, 1.0, 0.0));
-let id = ctx.world.spawn_sphere("MySphere", Vec3::ZERO);
-let id = ctx.world.spawn_plane("Ground", Vec3::ZERO);
+// Move the OS window so its top-left corner is at (x, y) in physical screen pixels.
+ctx.set_window_position(x, y);
 
-// Transform
-ctx.world.set_position(id, Vec3::new(1.0, 0.0, 0.0));
-ctx.world.set_rotation(id, Quat::from_rotation_y(0.5));
-ctx.world.set_scale(id, Vec3::splat(2.0));
-ctx.world.transform(id)          // Option<&Transform>
-
-// Despawn
-ctx.world.despawn(id);
+// Query the current position (returns None on platforms that don't support it).
+if let Some((x, y)) = ctx.window_position() { … }
 ```
 
----
-
-## Render — `ctx.render`
-
-A safe facade over the renderer. See the full [RenderContext reference](render-context.md).
-
-```rust
-ctx.render.set_style(RenderStyle::CelShaded { toon_levels: 4, outline_width: 1.5 });
-ctx.render.set_ssao(false);
-ctx.render.set_clear_color(Color::rgb(0.1, 0.1, 0.1));
-let mat = ctx.render.create_material(&MaterialDescriptor::default());
-ctx.render.set_directional_light([0.0, -1.0, 0.0], [1.0; 3], 2.0);
-```
-
----
-
-## Asset server — `ctx.asset_server`
-
-```rust
-// Start loading an asset (non-blocking)
-let handle = ctx.asset_server.load::<GltfModel>("assets/player.glb");
-
-// Poll in subsequent frames
-match ctx.asset_server.get(handle) {
-    AssetState::Loading   => { /* still in flight */ }
-    AssetState::Ready(m)  => { /* use the model */ }
-    AssetState::Failed(e) => { eprintln!("load failed: {e}"); }
-}
-```
-
----
-
-## Viewport — `ctx.viewport`
-
-```rust
-pub struct Viewport { pub x: u32, pub y: u32, pub width: u32, pub height: u32 }
-```
-
-Set this in `update()` to control where the 3D scene is rendered.  Useful for
-split-panel UIs where the 3D view occupies only part of the window.
+This is the primary way to implement a **custom drag-to-move title bar** when
+you create a decorations-off window with `.with_decorations(false)`:
 
 ```rust
 fn update(&mut self, ctx: &mut AppContext) {
-    // Render 3D scene in the right 80 % of the window
-    ctx.viewport = Viewport {
-        x:      (ctx.width() as f32 * 0.2) as u32,
-        y:      0,
-        width:  (ctx.width() as f32 * 0.8) as u32,
-        height: ctx.height(),
-    };
+    let (mx, my) = ctx.input.mouse_position();
+    let (mx, my) = (mx as i32, my as i32);
+
+    if ctx.input.button_just_pressed(MouseButton::Left) {
+        // Record drag offset relative to the window's current position.
+        if let Some((wx, wy)) = ctx.window_position() {
+            if /* mouse is inside the title bar rect */ {
+                self.drag_offset = Some((mx - wx, my - wy));
+            }
+        }
+    }
+
+    if ctx.input.button_held(MouseButton::Left) {
+        if let Some((ox, oy)) = self.drag_offset {
+            ctx.set_window_position(mx - ox, my - oy);
+        }
+    } else {
+        self.drag_offset = None;
+    }
 }
 ```
 
----
+> **Note** — on some Wayland compositors the OS ignores `set_window_position`
+> silently.  On Windows, macOS and X11 it works as expected.
 
-## Camera info (read-only)
+### Resizing the window
 
-```rust
-ctx.camera_eye     // Vec3 — world-space eye position this frame
-ctx.camera_target  // Vec3 — world-space look-at target this frame
-```
-
-Populated at the start of `draw_3d`. Zero before the first frame.
-
----
-
-## Exiting
+When `with_decorations(false)` is used you also lose the OS resize handles.
+Call `start_window_resize` on the frame the user presses the left button while
+hovering a resize edge/corner you drew with `ferrous_gui`.  The OS takes over
+the rest of the interaction — no mouse-delta tracking needed.
 
 ```rust
-ctx.request_exit();  // gracefully stops the event loop after the current frame
+use ferrous_app::WindowResizeDirection;
+
+// Typical 8-zone hit test (8 px edge zone)
+fn resize_direction(mx: f32, my: f32, w: u32, h: u32) -> Option<WindowResizeDirection> {
+    const E: f32 = 8.0;
+    let (w, h) = (w as f32, h as f32);
+    match (mx < E, mx > w - E, my < E, my > h - E) {
+        (true,  false, true,  false) => Some(WindowResizeDirection::NorthWest),
+        (false, true,  true,  false) => Some(WindowResizeDirection::NorthEast),
+        (true,  false, false, true)  => Some(WindowResizeDirection::SouthWest),
+        (false, true,  false, true)  => Some(WindowResizeDirection::SouthEast),
+        (true,  false, false, false) => Some(WindowResizeDirection::West),
+        (false, true,  false, false) => Some(WindowResizeDirection::East),
+        (false, false, true,  false) => Some(WindowResizeDirection::North),
+        (false, false, false, true)  => Some(WindowResizeDirection::South),
+        _ => None,
+    }
+}
+
+// In update():
+let (mx, my) = ctx.input.mouse_pos_f32();
+if ctx.input.button_just_pressed(MouseButton::Left) {
+    if let Some(dir) = resize_direction(mx, my, ctx.width(), ctx.height()) {
+        ctx.start_window_resize(dir);
+    }
+}
 ```
 
----
-
-## Statistics
-
-```rust
-ctx.render_stats.vertices    // u64
-ctx.render_stats.triangles   // u64
-ctx.render_stats.draw_calls  // u32
-```
+> **Note** — like `set_window_position`, this is silently ignored on Wayland
+> and other platforms that manage window geometry themselves.
