@@ -37,6 +37,12 @@ impl Canvas {
         &self.children
     }
 
+    /// Returns a mutable slice of child widgets, used by
+    /// [`Ui::resolve_constraints`] to propagate constraint resolution.
+    pub fn children_mut(&mut self) -> &mut Vec<Box<dyn Widget>> {
+        &mut self.children
+    }
+
     /// route a mouse-move event to all children; this is important for
     /// things like slider dragging or hover state. It does **not** change
     /// focus.

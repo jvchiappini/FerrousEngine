@@ -1,14 +1,15 @@
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 use crate::button::Button;
+use crate::canvas::Canvas;
 use crate::checkbox::Checkbox;
+use crate::constraint::Constraint;
 use crate::dropdown::Dropdown;
 use crate::label::Label;
+use crate::layout::{Rect, RenderCommand};
 use crate::slider::Slider;
 use crate::textinput::TextInput;
-use crate::canvas::Canvas;
-use crate::layout::{Rect, RenderCommand};
 use crate::widget::Widget;
 use crate::GuiKey;
 
@@ -57,6 +58,8 @@ pub struct Panel {
     pub bg_color: Option<[f32; 4]>,
     /// Bounding rect computed at build time.
     pub rect: [f32; 4],
+    /// Optional reactive layout constraint.
+    pub constraint: Option<Constraint>,
     canvas: Canvas,
 }
 
@@ -102,6 +105,25 @@ impl Widget for Panel {
     fn bounding_rect(&self) -> Option<[f32; 4]> {
         Some(self.rect)
     }
+
+    fn apply_constraint(&mut self, container_w: f32, container_h: f32) {
+        if let Some(c) = self.constraint.clone() {
+            let old_x = self.rect[0];
+            let old_y = self.rect[1];
+            c.apply_to_rect(&mut self.rect, container_w, container_h);
+            let dx = self.rect[0] - old_x;
+            let dy = self.rect[1] - old_y;
+            if dx != 0.0 || dy != 0.0 {
+                for child in self.canvas.children_mut() {
+                    child.shift(dx, dy);
+                }
+            }
+        }
+    }
+
+    fn apply_constraint_with(&mut self, c: &Constraint, cw: f32, ch: f32) {
+        c.apply_to_rect(&mut self.rect, cw, ch);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -135,6 +157,8 @@ pub struct PanelBuilder {
     gap: f32,
     bg_color: Option<[f32; 4]>,
     items: Vec<PanelItem>,
+    /// Optional reactive layout constraint applied to the finished panel.
+    constraint: Option<Constraint>,
 }
 
 enum PanelItem {
@@ -144,6 +168,31 @@ enum PanelItem {
     Label(String),
     Checkbox(String, bool /* initial */),
     Dropdown(Vec<String>, usize /* selected */),
+    Row(Vec<RowItem>),
+}
+
+/// An item inside an [`add_row`](PanelBuilder::add_row) horizontal sub-row.
+///
+/// Row items are placed left-to-right within the row's allotted height.
+/// Spacers distribute remaining space proportionally between them.
+///
+/// ## Example
+/// ```ignore
+/// PanelBuilder::column(0.0, 0.0, 160.0)
+///     .add_row(vec![
+///         RowItem::Button { label: "−", radius: 4.0 },
+///         RowItem::Spacer { flex: 1.0 },
+///         RowItem::Button { label: "+", radius: 4.0 },
+///     ])
+/// ```
+#[derive(Debug, Clone)]
+pub enum RowItem {
+    /// A small button placed inside a row.
+    Button { label: &'static str, radius: f32 },
+    /// A static label placed inside a row.
+    Label { text: &'static str },
+    /// Flexible spacer: consumes proportional remaining space.
+    Spacer { flex: f32 },
 }
 
 impl PanelBuilder {
@@ -159,6 +208,7 @@ impl PanelBuilder {
             gap: 4.0,
             bg_color: None,
             items: Vec::new(),
+            constraint: None,
         }
     }
 
@@ -174,6 +224,7 @@ impl PanelBuilder {
             gap: 4.0,
             bg_color: None,
             items: Vec::new(),
+            constraint: None,
         }
     }
 
@@ -244,6 +295,25 @@ impl PanelBuilder {
         self
     }
 
+    /// Attach a reactive layout constraint to the finished panel.
+    /// The constraint is resolved each frame by
+    /// [`Ui::resolve_constraints`](crate::ui::Ui::resolve_constraints).
+    pub fn with_constraint(mut self, c: Constraint) -> Self {
+        self.constraint = Some(c);
+        self
+    }
+
+    /// Add a horizontal sub-row of [`RowItem`]s.
+    ///
+    /// Items are laid out left-to-right within the row's allotted height
+    /// (`item_size` for column panels).  `Spacer` items absorb remaining space
+    /// proportionally; `Button` and `Label` items receive equal fixed widths
+    /// after subtracting spacer fractions.
+    pub fn add_row(mut self, items: Vec<RowItem>) -> Self {
+        self.items.push(PanelItem::Row(items));
+        self
+    }
+
     /// Consume the builder and produce a ready-to-use [`Panel`].
     pub fn build(self) -> Panel {
         let mut canvas = Canvas::new();
@@ -264,12 +334,18 @@ impl PanelBuilder {
 
         for item in &self.items {
             let (ix, iy, iw, ih) = match self.direction {
-                PanelDirection::Column => {
-                    (self.origin[0] + p, self.origin[1] + cursor, cross, self.item_size)
-                }
-                PanelDirection::Row => {
-                    (self.origin[0] + cursor, self.origin[1] + p, self.item_size, cross)
-                }
+                PanelDirection::Column => (
+                    self.origin[0] + p,
+                    self.origin[1] + cursor,
+                    cross,
+                    self.item_size,
+                ),
+                PanelDirection::Row => (
+                    self.origin[0] + cursor,
+                    self.origin[1] + p,
+                    self.item_size,
+                    cross,
+                ),
             };
 
             let item_main = match self.direction {
@@ -302,16 +378,17 @@ impl PanelBuilder {
                     text_inputs.push(ti);
                 }
                 PanelItem::Label(text) => {
-                    let lbl = Rc::new(RefCell::new(
-                        Label::new(ix, iy + (ih - 14.0) * 0.5, text.clone()),
-                    ));
+                    let lbl = Rc::new(RefCell::new(Label::new(
+                        ix,
+                        iy + (ih - 14.0) * 0.5,
+                        text.clone(),
+                    )));
                     canvas.add(Rc::clone(&lbl));
                     labels.push(lbl);
                 }
                 PanelItem::Checkbox(label, checked) => {
                     let cb = Rc::new(RefCell::new(
-                        Checkbox::new(ix, iy + (ih - 16.0) * 0.5, label.clone())
-                            .checked(*checked),
+                        Checkbox::new(ix, iy + (ih - 16.0) * 0.5, label.clone()).checked(*checked),
                     ));
                     canvas.add(Rc::clone(&cb));
                     checkboxes.push(cb);
@@ -324,6 +401,68 @@ impl PanelBuilder {
                     ));
                     canvas.add(Rc::clone(&dd));
                     dropdowns.push(dd);
+                }
+                PanelItem::Row(row_items) => {
+                    // Lay items out horizontally inside the row's allotted rect.
+                    let total_flex: f32 = row_items
+                        .iter()
+                        .filter_map(|ri| {
+                            if let RowItem::Spacer { flex } = ri {
+                                Some(*flex)
+                            } else {
+                                None
+                            }
+                        })
+                        .sum();
+                    let n_fixed = row_items
+                        .iter()
+                        .filter(|ri| !matches!(ri, RowItem::Spacer { .. }))
+                        .count();
+                    // Width allocated per fixed item (divide available space
+                    // equally; spacers take a fraction proportional to flex).
+                    let available = iw;
+                    let spacer_total = if total_flex > 0.0 {
+                        available * 0.3
+                    } else {
+                        0.0
+                    };
+                    let fixed_total = available - spacer_total;
+                    let fixed_w = if n_fixed > 0 {
+                        fixed_total / n_fixed as f32
+                    } else {
+                        0.0
+                    };
+
+                    let mut rx = ix;
+                    for ri in row_items {
+                        match ri {
+                            RowItem::Button { label, radius } => {
+                                let btn = Rc::new(RefCell::new(
+                                    Button::new(rx, iy, fixed_w, ih)
+                                        .with_label(*label)
+                                        .with_radius(*radius),
+                                ));
+                                canvas.add(Rc::clone(&btn));
+                                buttons.push(btn);
+                                rx += fixed_w;
+                            }
+                            RowItem::Label { text } => {
+                                let lbl = Rc::new(RefCell::new(Label::new(
+                                    rx,
+                                    iy + (ih - 14.0) * 0.5,
+                                    *text,
+                                )));
+                                canvas.add(Rc::clone(&lbl));
+                                labels.push(lbl);
+                                rx += fixed_w;
+                            }
+                            RowItem::Spacer { flex } => {
+                                if total_flex > 0.0 {
+                                    rx += spacer_total * (*flex / total_flex);
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -350,6 +489,7 @@ impl PanelBuilder {
             dropdowns,
             bg_color: self.bg_color,
             rect: [self.origin[0], self.origin[1], pw, ph],
+            constraint: self.constraint,
             canvas,
         }
     }

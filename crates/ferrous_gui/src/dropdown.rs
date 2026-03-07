@@ -1,3 +1,4 @@
+use crate::constraint::Constraint;
 use crate::{layout::Rect, RenderCommand, Widget};
 
 /// Drop-down (combo-box) widget.
@@ -41,6 +42,8 @@ pub struct Dropdown {
     hovered_item: Option<usize>,
     /// Optional callback fired when the selection changes.
     on_change: Option<Box<dyn Fn(usize, &str) + Send + Sync>>,
+    /// Optional reactive layout constraint.
+    pub constraint: Option<Constraint>,
 }
 
 impl Dropdown {
@@ -61,6 +64,7 @@ impl Dropdown {
             tooltip: None,
             hovered_item: None,
             on_change: None,
+            constraint: None,
         }
     }
 
@@ -94,6 +98,12 @@ impl Dropdown {
     /// Register a callback fired when the selection changes.
     pub fn on_change<F: Fn(usize, &str) + Send + Sync + 'static>(mut self, f: F) -> Self {
         self.on_change = Some(Box::new(f));
+        self
+    }
+
+    /// Attach a reactive layout constraint.
+    pub fn with_constraint(mut self, c: Constraint) -> Self {
+        self.constraint = Some(c);
         self
     }
 
@@ -274,5 +284,15 @@ impl Widget for Dropdown {
 
     fn tooltip(&self) -> Option<&str> {
         self.tooltip.as_deref()
+    }
+
+    fn apply_constraint(&mut self, container_w: f32, container_h: f32) {
+        if let Some(c) = &self.constraint.clone() {
+            c.apply_to_rect(&mut self.rect, container_w, container_h);
+        }
+    }
+
+    fn apply_constraint_with(&mut self, c: &crate::constraint::Constraint, cw: f32, ch: f32) {
+        c.apply_to_rect(&mut self.rect, cw, ch);
     }
 }

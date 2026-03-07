@@ -11,16 +11,17 @@ input state.
 
 | Module | Key exports | Description |
 |--------|-------------|-------------|
-| `ui` | `Ui` | Top-level container; add widgets and route input events |
+| `ui` | `Ui` | Top-level container; add widgets, route events, and resolve constraints |
 | `canvas` | `Canvas` | Focus-aware widget collection |
-| `widget` | `Widget` | Trait every widget implements (`collect`, `hit`, `tooltip`, …) |
+| `widget` | `Widget` | Trait every widget implements (`collect`, `hit`, `tooltip`, `apply_constraint`, …) |
+| `constraint` | `SizeExpr`, `Constraint` | Reactive layout expressions — position/size relative to the window |
 | `button` | `Button` | Clickable rectangle with optional centred label, tooltip, `on_click` |
 | `slider` | `Slider` | Horizontal drag control with configurable `min`/`max` range and `on_change` |
 | `textinput` | `TextInput` | Single-line text field with visual cursor and `on_change` |
 | `label` | `Label` | First-class static text label registrable in `Ui` |
 | `checkbox` | `Checkbox` | Tick-box with label and `on_change` |
 | `dropdown` | `Dropdown` | Drop-down / combo-box with `on_change` |
-| `panel` | `PanelBuilder`, `Panel` | Automatic column/row layout; returns shared widget handles |
+| `panel` | `PanelBuilder`, `Panel`, `RowItem` | Automatic column/row layout; reactive constraints; sub-row items |
 | `color_picker` | `ColorPicker`, `PickerShape` | HSV colour picker wheel |
 | `container` | `Container` | Grouping panel with optional background and scissor clip |
 | `layout` | `Node`, `Style`, `Row`, `Column`, `UiButton`, `Text`, `RenderCommand` | Declarative layout + render commands |
@@ -89,7 +90,65 @@ impl FerrousApp for MyApp {
 
 ---
 
-## Alternative workflow — individual widgets with callbacks
+## Reactive layout — `Constraint` + `SizeExpr`
+
+Every widget accepts a `.with_constraint(c)` builder call. The constraint
+describes position/size *relative to the window* and is resolved automatically
+each frame by `Ui::resolve_constraints` — called by the engine runner before
+your `draw_ui` callback.
+
+```rust
+use ferrous_gui::{Constraint, SizeExpr};
+
+// Button pinned 20 px from the right edge, 12 px from the top
+Button::new(0.0, 0.0, 120.0, 36.0)
+    .with_label("Settings")
+    .with_constraint(
+        Constraint::new()
+            .x(SizeExpr::from_right(20.0))
+            .y(SizeExpr::px(12.0))
+    );
+
+// Panel that always fills 100 % of the window width minus 16 px margins
+PanelBuilder::column(0.0, 0.0, 0.0)
+    .with_constraint(
+        Constraint::new()
+            .x(SizeExpr::px(8.0))
+            .y(SizeExpr::px(44.0))
+            .width(SizeExpr::pct(1.0).add(SizeExpr::px(-16.0)))
+    )
+    .add_button("Save")
+    .build();
+
+// Slider centred horizontally
+Slider::new(0.0, 200.0, 300.0, 24.0, 0.5)
+    .with_constraint(Constraint::new().x(SizeExpr::center()));
+```
+
+Widgets **without** a constraint keep their original pixel coordinates — fully
+backwards-compatible. See [constraint.md](constraint.md) for the full reference.
+
+---
+
+## `add_row` — horizontal sub-rows inside a column panel
+
+`PanelBuilder::add_row` places a set of [`RowItem`](constraint.md)s
+side-by-side within one row slot:
+
+```rust
+use ferrous_gui::RowItem;
+
+PanelBuilder::column(20.0, 20.0, 200.0)
+    .add_row(vec![
+        RowItem::Button { label: "−", radius: 4.0 },
+        RowItem::Spacer  { flex: 1.0 },
+        RowItem::Button { label: "+", radius: 4.0 },
+    ])
+    .build();
+```
+
+`Spacer { flex }` absorbs remaining horizontal space proportional to its flex
+value; `Button` and `Label` items share the remaining width equally.
 
 For simpler cases or when you prefer callbacks over polling:
 
@@ -145,5 +204,6 @@ dc.gui.line(x0, y0, x1, y1, thickness, color);
 
 ## Further reading
 
+- [Reactive constraints — SizeExpr, Constraint, resolve_constraints](constraint.md)
 - [Layout system — Row, Column, Node, Style](layout.md)
 - [Core API — Ui, Canvas, Widget trait, GuiKey](api/core.md)

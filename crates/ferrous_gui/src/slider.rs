@@ -1,3 +1,4 @@
+use crate::constraint::Constraint;
 use crate::{layout::Rect, RenderCommand, Widget};
 
 /// Slider widget for selecting a value within a configurable range.
@@ -27,6 +28,8 @@ pub struct Slider {
     pub tooltip: Option<String>,
     /// Optional callback fired whenever the value changes.
     on_change: Option<Box<dyn Fn(f32) + Send + Sync>>,
+    /// Optional reactive layout constraint.
+    pub constraint: Option<Constraint>,
 }
 
 impl Slider {
@@ -44,6 +47,7 @@ impl Slider {
             max: 1.0,
             tooltip: None,
             on_change: None,
+            constraint: None,
         }
     }
 
@@ -70,6 +74,12 @@ impl Slider {
     /// Register a callback that fires whenever the slider value changes.
     pub fn on_change<F: Fn(f32) + Send + Sync + 'static>(mut self, f: F) -> Self {
         self.on_change = Some(Box::new(f));
+        self
+    }
+
+    /// Attach a reactive layout constraint.
+    pub fn with_constraint(mut self, c: Constraint) -> Self {
+        self.constraint = Some(c);
         self
     }
 
@@ -189,5 +199,15 @@ impl Widget for Slider {
 
     fn tooltip(&self) -> Option<&str> {
         self.tooltip.as_deref()
+    }
+
+    fn apply_constraint(&mut self, container_w: f32, container_h: f32) {
+        if let Some(c) = &self.constraint.clone() {
+            c.apply_to_rect(&mut self.rect, container_w, container_h);
+        }
+    }
+
+    fn apply_constraint_with(&mut self, c: &crate::constraint::Constraint, cw: f32, ch: f32) {
+        c.apply_to_rect(&mut self.rect, cw, ch);
     }
 }

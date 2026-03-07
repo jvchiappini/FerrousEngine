@@ -27,6 +27,7 @@ pub struct Panel {
     pub labels:      Vec<LabelHandle>,
     pub checkboxes:  Vec<CheckboxHandle>,
     pub dropdowns:   Vec<DropdownHandle>,
+    pub constraint:  Option<Constraint>, // reactive layout (optional)
     // internal container widget — not pub
 }
 ```
@@ -54,6 +55,7 @@ PanelBuilder::row(x: f32, y: f32, height: f32) -> PanelBuilder
 | `.gap(f32)` | `4.0` | Space between items |
 | `.item_size(f32)` | `28.0` | Height (column) or width (row) of each item |
 | `.with_background(color)` | `None` | Filled background behind all items |
+| `.with_constraint(c)` | `None` | Attach a reactive [`Constraint`](../constraint.md) |
 
 ### Adding widgets
 
@@ -66,6 +68,7 @@ PanelBuilder::row(x: f32, y: f32, height: f32) -> PanelBuilder
 | `.add_label(text)` | `&mut Self` | Static text label |
 | `.add_checkbox(label, checked)` | `&mut Self` | Boolean toggle |
 | `.add_dropdown(options, selected)` | `&mut Self` | Drop-down combo box |
+| `.add_row(items)` | `&mut Self` | Horizontal sub-row of [`RowItem`](#rowitem) widgets |
 
 ### Finalise
 
@@ -178,3 +181,68 @@ auto-sizes instead.
   reflected in `Ui` rendering.
 - Nested panels are supported: call `ui.add(panel)` after building; or add a
   `Panel` as a child of a `Container`.
+
+## `RowItem`
+
+`RowItem` describes a single cell in a horizontal sub-row created by `add_row`.
+The row occupies exactly one `item_size`-tall slot in the column.
+
+```rust
+pub enum RowItem {
+    Button { label: &'static str, radius: f32 },
+    Label  { text:  &'static str },
+    Spacer { flex:  f32 },
+}
+```
+
+| Variant | Description |
+|---------|-------------|
+| `Button { label, radius }` | A labelled push-button. Added to `panel.buttons`. |
+| `Label { text }` | A static text label. Added to `panel.labels`. |
+| `Spacer { flex }` | Invisible flexible gap. Width is `flex` divided by the total flex of all spacers in the row, multiplied by the remaining width after fixed items. |
+
+### Layout algorithm for `add_row`
+
+1. Count all non-`Spacer` items and assign each the same fixed width
+   (`(row_width - 2*padding - (n-1)*gap) / n_fixed`).
+2. Remaining width is divided proportionally among `Spacer` items by `flex`.
+3. Items are placed left-to-right with `gap` between them.
+
+### `add_row` example
+
+```rust
+use ferrous_gui::{PanelBuilder, RowItem};
+
+let panel = PanelBuilder::column(20.0, 20.0, 240.0)
+    .padding(8.0)
+    .gap(4.0)
+    .item_size(30.0)
+    .add_label("Actions")
+    .add_row(vec![
+        RowItem::Button { label: "OK",     radius: 4.0 },
+        RowItem::Spacer { flex: 1.0 },
+        RowItem::Button { label: "Cancel", radius: 4.0 },
+    ])
+    .build();
+
+// panel.buttons[0] → "OK", panel.buttons[1] → "Cancel"
+```
+
+## Reactive positioning
+
+```rust
+use ferrous_gui::{Constraint, SizeExpr, PanelBuilder};
+
+// Panel pinned 16 px from the right and always vertically centred
+let panel = PanelBuilder::column(0.0, 0.0, 200.0)
+    .add_label("Tools")
+    .add_button("Inspect")
+    .with_constraint(
+        Constraint::new()
+            .x(SizeExpr::from_right(16.0))
+            .y(SizeExpr::center())
+    )
+    .build();
+```
+
+See [constraint.md](../constraint.md).

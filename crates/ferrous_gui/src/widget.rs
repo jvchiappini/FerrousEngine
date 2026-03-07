@@ -1,3 +1,4 @@
+use crate::constraint::Constraint;
 use crate::layout::{Node, RenderCommand};
 use crate::GuiKey;
 
@@ -52,6 +53,37 @@ pub trait Widget {
     fn tooltip(&self) -> Option<&str> {
         None
     }
+
+    /// Apply a [`Constraint`] to this widget given the container (or window)
+    /// dimensions.  The default implementation is a no-op; widgets that have
+    /// a `rect` field and a `constraint` field override this to call
+    /// [`Constraint::apply_to_rect`].
+    fn apply_constraint(&mut self, _container_w: f32, _container_h: f32) {}
+
+    /// Shift the widget's position by `(dx, dy)` pixels.  The default
+    /// implementation uses `bounding_rect` to read the current position and
+    /// then calls `apply_constraint` with a `Px` constraint so that
+    /// concrete widgets update their internal rect.
+    fn shift(&mut self, dx: f32, dy: f32) {
+        if let Some(r) = self.bounding_rect() {
+            // Apply a pure-Px position override; container sizes are 0 because
+            // Px expressions ignore them entirely.
+            let c = Constraint::new()
+                .x(crate::constraint::SizeExpr::px(r[0] + dx))
+                .y(crate::constraint::SizeExpr::px(r[1] + dy));
+            // Temporarily hijack apply_constraint with this synthetic constraint.
+            // We store + restore the widget's own constraint around the call so
+            // we don't clobber it.  Because trait objects can't do that generically,
+            // we instead call apply_constraint_with.
+            self.apply_constraint_with(&c, 0.0, 0.0);
+        }
+    }
+
+    /// Apply an *external* constraint (not necessarily the widget's own stored
+    /// one) given container dimensions.  The default no-op is fine for widgets
+    /// that don't have a rect; concrete widgets override this to update their
+    /// position/size.
+    fn apply_constraint_with(&mut self, _c: &Constraint, _cw: f32, _ch: f32) {}
 }
 
 // make Node itself a widget so containers composed of nodes can be used as widgets
@@ -92,5 +124,14 @@ impl<T: Widget> Widget for std::rc::Rc<std::cell::RefCell<T>> {
         // intentionally return None; callers that need the tooltip of a
         // shared widget should access it through the inner borrow directly.
         None
+    }
+    fn apply_constraint(&mut self, container_w: f32, container_h: f32) {
+        self.borrow_mut().apply_constraint(container_w, container_h);
+    }
+    fn shift(&mut self, dx: f32, dy: f32) {
+        self.borrow_mut().shift(dx, dy);
+    }
+    fn apply_constraint_with(&mut self, c: &Constraint, cw: f32, ch: f32) {
+        self.borrow_mut().apply_constraint_with(c, cw, ch);
     }
 }

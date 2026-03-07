@@ -9,9 +9,10 @@ applied (use [`PanelBuilder`](panel.md) for automatic layout).
 
 ```rust
 pub struct Container {
-    pub rect:     [f32; 4],         // [x, y, w, h]
-    pub bg_color: Option<[f32; 4]>, // optional filled background
-    pub clip:     bool,             // scissor children to rect (default false)
+    pub rect:       [f32; 4],         // [x, y, w, h]
+    pub bg_color:   Option<[f32; 4]>, // optional filled background
+    pub clip:       bool,             // scissor children to rect (default false)
+    pub constraint: Option<Constraint>, // reactive layout (optional)
     // canvas: Canvas  (internal)
 }
 ```
@@ -39,9 +40,10 @@ let c = Container::new(x, y, 300.0, 200.0)
 ## Builder API
 
 | Method | Description |
-|--------|-------------|
+|--------|-----------|
 | `with_background(color)` | Solid RGBA background drawn before children |
 | `with_clip()` | Enable scissor clipping — emits `PushClip`/`PopClip` |
+| `with_constraint(c)` | Attach a reactive [`Constraint`](../constraint.md); position delta is propagated to children |
 | `add(widget)` | Add any `Widget + 'static` child |
 
 ## Usage pattern
@@ -82,3 +84,20 @@ sets the GPU scissor rect accordingly.
 - Keyboard input is always forwarded to the focused child.
 - Background quads are drawn before children, so children render on top.
 - `Container` itself implements `Widget` and can be nested inside another `Container`.
+
+## Reactive positioning
+
+When a `Constraint` changes the container’s origin, the position delta is
+automatically propagated to all direct child widgets via `Widget::shift`:
+
+```rust
+use ferrous_gui::{Constraint, SizeExpr};
+
+// Container always centred in the window
+let mut popup = Container::new(0.0, 0.0, 360.0, 240.0)
+    .with_background([0.12, 0.12, 0.12, 0.95])
+    .with_constraint(Constraint::center(360.0, 240.0));
+popup.add(Button::new(120.0, 190.0, 120.0, 32.0).with_label("OK"));
+```
+
+See [constraint.md](../constraint.md).

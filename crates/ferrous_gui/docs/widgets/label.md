@@ -8,13 +8,13 @@ or `Canvas` directly. It renders a single line (or word-wrapped lines up to
 
 ```rust
 pub struct Label {
-    pub x:          f32,
-    pub y:          f32,
+    pub pos:        [f32; 2],    // [x, y] top-left origin
     pub text:       String,
     pub color:      [f32; 4],    // default opaque white
     pub font_size:  f32,         // default 14.0
-    pub max_width:  Option<f32>, // word-wrap boundary (not yet implemented)
+    pub max_width:  Option<f32>, // word-wrap boundary (not yet fully implemented)
     pub tooltip:    Option<String>,
+    pub constraint: Option<Constraint>, // reactive layout (optional)
 }
 ```
 
@@ -38,11 +38,12 @@ let lbl = Label::new(20.0, 20.0, "A long description…")
 ## Builder API
 
 | Method | Description |
-|--------|-------------|
+|--------|-----------|
 | `with_color([f32;4])` | Text colour (RGBA) |
 | `with_font_size(f32)` | Font size in pixels (default `14.0`) |
 | `with_max_width(f32)` | Horizontal wrap boundary |
 | `with_tooltip(text)` | Tooltip returned via `Widget::tooltip()` |
+| `with_constraint(c)` | Attach a reactive [`Constraint`](../constraint.md) |
 
 ## Runtime text update
 
@@ -75,3 +76,16 @@ spacing.
 - `Label` does not handle mouse or keyboard input.
 - It emits a `RenderCommand::Text` from `collect`.
 - The `text` feature flag must be enabled (default) for text to render.
+- `pos` replaces the former separate `x` / `y` fields; access as `label.pos[0]` / `label.pos[1]`.
+
+## Reactive positioning
+
+```rust
+// Label always 8 px from the left, 8 px from the bottom
+Label::new(0.0, 0.0, "Status")
+    .with_constraint(ferrous_gui::Constraint::new()
+        .x(ferrous_gui::SizeExpr::px(8.0))
+        .y(ferrous_gui::SizeExpr::from_bottom(8.0)));
+```
+
+See [constraint.md](../constraint.md).

@@ -1,4 +1,5 @@
 use crate::canvas::Canvas;
+use crate::constraint::Constraint;
 use crate::layout::{Rect, RenderCommand};
 use crate::widget::Widget;
 use crate::GuiKey;
@@ -31,6 +32,8 @@ pub struct Container {
     /// When `true` the container emits clip commands around its children so
     /// that a renderer can scissor-test them to the container's rect.
     pub clip: bool,
+    /// Optional reactive layout constraint.
+    pub constraint: Option<Constraint>,
     canvas: Canvas,
 }
 
@@ -41,6 +44,7 @@ impl Container {
             rect: [x, y, w, h],
             bg_color: None,
             clip: false,
+            constraint: None,
             canvas: Canvas::new(),
         }
     }
@@ -85,6 +89,12 @@ impl Container {
     /// `PushClip` / `PopClip` commands around its children during `collect`.
     pub fn with_clip(mut self) -> Self {
         self.clip = true;
+        self
+    }
+
+    /// Attach a reactive layout constraint.
+    pub fn with_constraint(mut self, c: Constraint) -> Self {
+        self.constraint = Some(c);
         self
     }
 
@@ -174,6 +184,36 @@ impl Widget for Container {
     fn keyboard_input(&mut self, text: Option<&str>, key: Option<GuiKey>, pressed: bool) {
         self.keyboard_input(text, key, pressed);
     }
+
+    fn apply_constraint(&mut self, container_w: f32, container_h: f32) {
+        if let Some(c) = self.constraint.clone() {
+            let old_x = self.rect[0];
+            let old_y = self.rect[1];
+            c.apply_to_rect(&mut self.rect, container_w, container_h);
+            let dx = self.rect[0] - old_x;
+            let dy = self.rect[1] - old_y;
+            // Propagate position delta to all direct children.
+            if dx != 0.0 || dy != 0.0 {
+                for child in self.canvas.children_mut() {
+                    shift_widget(child.as_mut(), dx, dy);
+                }
+            }
+        }
+    }
+
+    fn apply_constraint_with(&mut self, c: &Constraint, cw: f32, ch: f32) {
+        c.apply_to_rect(&mut self.rect, cw, ch);
+    }
+}
+
+/// Shift a widget's position by `(dx, dy)`.
+///
+/// This is an internal helper used when a `Container`'s constraint changes
+/// its origin: all direct children are nudged by the same delta.
+/// Widgets that override `apply_constraint` with a `rect` field will respond;
+/// others are silently unaffected.
+pub(crate) fn shift_widget(widget: &mut dyn Widget, dx: f32, dy: f32) {
+    widget.shift(dx, dy);
 }
 
 #[cfg(test)]

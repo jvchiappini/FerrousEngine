@@ -10,13 +10,16 @@ closes the list and fires `on_change`.
 pub struct Dropdown {
     pub rect:          [f32; 4],    // [x, y, w, h] of the closed control
     pub options:       Vec<String>,
-    pub selected:      usize,       // index into options
+    pub selected:      Option<usize>,
     pub open:          bool,
-    pub hovered_item:  Option<usize>,
-    pub tooltip:       Option<String>,
-    pub bg_color:      [f32; 4],
+    pub button_color:  [f32; 4],
+    pub list_color:    [f32; 4],
     pub hover_color:   [f32; 4],
     pub text_color:    [f32; 4],
+    pub font_size:     f32,         // default 14.0
+    pub radius:        f32,
+    pub tooltip:       Option<String>,
+    pub constraint:    Option<Constraint>, // reactive layout (optional)
     // on_change: Box<dyn Fn(usize, &str)>
 }
 ```
@@ -49,11 +52,12 @@ let dd = Dropdown::new(20.0, 20.0, 200.0, 28.0)
 ## Builder API
 
 | Method | Description |
-|--------|-------------|
+|--------|-----------|
 | `with_options(vec)` | Accepts `Vec<&str>` or `Vec<String>` |
 | `with_selected(idx)` | Initial selected index (clamped to `options.len() - 1`) |
 | `with_tooltip(text)` | Tooltip returned via `Widget::tooltip()` |
 | `on_change(fn)` | Callback `fn(usize, &str)` fired on selection |
+| `with_constraint(c)` | Attach a reactive [`Constraint`](../constraint.md) |
 
 ## Reading state
 

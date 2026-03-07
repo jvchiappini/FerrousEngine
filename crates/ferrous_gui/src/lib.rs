@@ -10,6 +10,7 @@
 //! |--------|----------------|
 //! | `widget` | `Widget` trait: collect / hit-test / mouse_input / keyboard_input / tooltip |
 //! | `layout` | `Node`, `Style`, `Rect`, `Units`, `Alignment`, `DisplayMode`, `RenderCommand` |
+//! | `constraint` | `SizeExpr`, `Constraint` — reactive layout expressions |
 //! | `canvas` | Widget container with focus tracking |
 //! | `ui` | High-level `Ui` wrapper around `Canvas` |
 //! | `renderer` | `GuiRenderer`, `GuiBatch`, `GuiQuad`, `TextBatch` |
@@ -30,6 +31,7 @@ pub mod button;
 pub mod canvas;
 pub mod checkbox;
 pub mod color_picker;
+pub mod constraint;
 pub mod container;
 pub mod dropdown;
 pub mod label;
@@ -44,6 +46,8 @@ pub mod widget;
 
 pub use layout::{Alignment, DisplayMode, Node, Rect, RenderCommand, Style, Units};
 pub use renderer::{GuiBatch, GuiQuad, GuiRenderer, TextBatch};
+pub use constraint::{Constraint, SizeExpr};
+pub use panel::RowItem;
 // re-export widgets
 pub use crate::color_picker::{ColorPicker, PickerShape};
 pub use button::Button;

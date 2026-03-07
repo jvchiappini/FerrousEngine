@@ -1,3 +1,4 @@
+use crate::constraint::Constraint;
 use crate::{layout::Rect, RenderCommand, Widget};
 
 /// First-class text label widget that can be added directly to a [`Ui`] or
@@ -25,6 +26,8 @@ pub struct Label {
     pub max_width: Option<f32>,
     /// Optional tooltip string.
     pub tooltip: Option<String>,
+    /// Optional reactive layout constraint.
+    pub constraint: Option<Constraint>,
 }
 
 impl Label {
@@ -37,6 +40,7 @@ impl Label {
             font_size: 14.0,
             max_width: None,
             tooltip: None,
+            constraint: None,
         }
     }
 
@@ -61,6 +65,12 @@ impl Label {
     /// Attach a tooltip shown on hover.
     pub fn with_tooltip(mut self, text: impl Into<String>) -> Self {
         self.tooltip = Some(text.into());
+        self
+    }
+
+    /// Attach a reactive layout constraint.
+    pub fn with_constraint(mut self, c: Constraint) -> Self {
+        self.constraint = Some(c);
         self
     }
 
@@ -93,5 +103,38 @@ impl Widget for Label {
 
     fn tooltip(&self) -> Option<&str> {
         self.tooltip.as_deref()
+    }
+
+    fn apply_constraint(&mut self, container_w: f32, container_h: f32) {
+        if let Some(c) = self.constraint.clone() {
+            let approx_w = self.text.len() as f32 * self.font_size * 0.6;
+            let approx_h = self.font_size;
+            // Resolve width/height overrides first.
+            if let Some(w_expr) = &c.width {
+                self.max_width = Some(w_expr.resolve(container_w, approx_w));
+            }
+            // x
+            if let Some(x_expr) = &c.x {
+                self.pos[0] = x_expr.resolve(container_w, self.max_width.unwrap_or(approx_w));
+            }
+            // y
+            if let Some(y_expr) = &c.y {
+                self.pos[1] = y_expr.resolve(container_h, approx_h);
+            }
+        }
+    }
+
+    fn apply_constraint_with(&mut self, c: &crate::constraint::Constraint, cw: f32, ch: f32) {
+        let approx_w = self.text.len() as f32 * self.font_size * 0.6;
+        let approx_h = self.font_size;
+        if let Some(w_expr) = &c.width {
+            self.max_width = Some(w_expr.resolve(cw, approx_w));
+        }
+        if let Some(x_expr) = &c.x {
+            self.pos[0] = x_expr.resolve(cw, self.max_width.unwrap_or(approx_w));
+        }
+        if let Some(y_expr) = &c.y {
+            self.pos[1] = y_expr.resolve(ch, approx_h);
+        }
     }
 }

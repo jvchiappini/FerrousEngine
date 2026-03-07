@@ -15,6 +15,7 @@ pub struct Slider {
     pub thumb_color: [f32; 4],
     pub track_color: [f32; 4],
     pub tooltip:     Option<String>,
+    pub constraint:  Option<Constraint>, // reactive layout (optional)
     // on_change: Box<dyn Fn(f32)>  (set via .on_change(|v|{…}))
 }
 ```
@@ -47,11 +48,12 @@ s.track_color = [0.3, 0.3, 0.3, 1.0];
 ## Builder API
 
 | Method | Description |
-|--------|-------------|
+|--------|-----------|
 | `range(min, max)` | Set value range; clamps current value |
 | `with_value(v)` | Set initial value within current range |
 | `on_change(fn)` | Callback `fn(f32)` fired on every drag update |
 | `with_tooltip(text)` | Tooltip returned via `Widget::tooltip()` |
+| `with_constraint(c)` | Attach a reactive [`Constraint`](../constraint.md) |
 
 ## Reading the value
 
@@ -90,3 +92,14 @@ self.slider.draw(&mut dc.gui);
   `on_change` — called automatically during drag, exposed for manual use.
 - `Slider` is not `Clone`/`Debug` (closures). Use `Rc<RefCell<Slider>>` for
   shared access — the type alias `SliderHandle` is exported from `panel`.
+
+## Reactive positioning
+
+```rust
+// Slider always centred horizontally
+Slider::new(0.0, 200.0, 300.0, 24.0, 0.5)
+    .with_constraint(ferrous_gui::Constraint::new()
+        .x(ferrous_gui::SizeExpr::center()));
+```
+
+See [constraint.md](../constraint.md).

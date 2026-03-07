@@ -116,5 +116,20 @@ impl Ui {
     pub fn canvas_mut(&mut self) -> &mut Canvas {
         &mut self.canvas
     }
+
+    /// Resolve all reactive layout constraints in the widget tree.
+    ///
+    /// Call this once per frame (or whenever the window is resized) **before**
+    /// [`draw`](Self::draw).  Every widget that carries a
+    /// [`Constraint`](crate::constraint::Constraint) will have its
+    /// position / size updated to match the new window dimensions.
+    ///
+    /// The engine runner should call this automatically so that application
+    /// code never has to manage it manually.
+    pub fn resolve_constraints(&mut self, window_w: f32, window_h: f32) {
+        for child in self.canvas.children_mut() {
+            child.apply_constraint(window_w, window_h);
+        }
+    }
 }
 // end of file

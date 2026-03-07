@@ -1,3 +1,4 @@
+use crate::constraint::Constraint;
 use crate::{layout::Rect, RenderCommand, Widget};
 
 /// Simple rectangular button widget used for interactive UIs.
@@ -35,6 +36,9 @@ pub struct Button {
     /// optional callback fired when the button is released while hovered.
     /// Stored as a boxed closure so it is not `Clone`/`Debug`.
     on_click: Option<Box<dyn Fn() + Send + Sync>>,
+    /// Optional reactive layout constraint. Resolved each frame by
+    /// [`crate::ui::Ui::resolve_constraints`].
+    pub constraint: Option<Constraint>,
 }
 
 impl Button {
@@ -51,6 +55,7 @@ impl Button {
             label_color: [1.0, 1.0, 1.0, 1.0],
             tooltip: None,
             on_click: None,
+            constraint: None,
         }
     }
 
@@ -124,6 +129,13 @@ impl Button {
     /// Round only the bottom-right corner.
     pub fn round_br(mut self, r: f32) -> Self {
         self.radii[3] = r;
+        self
+    }
+
+    /// Attach a reactive layout constraint.  The constraint is resolved
+    /// every frame by [`crate::ui::Ui::resolve_constraints`].
+    pub fn with_constraint(mut self, c: Constraint) -> Self {
+        self.constraint = Some(c);
         self
     }
 
@@ -255,5 +267,15 @@ impl Widget for Button {
 
     fn tooltip(&self) -> Option<&str> {
         self.tooltip.as_deref()
+    }
+
+    fn apply_constraint(&mut self, container_w: f32, container_h: f32) {
+        if let Some(c) = &self.constraint.clone() {
+            c.apply_to_rect(&mut self.rect, container_w, container_h);
+        }
+    }
+
+    fn apply_constraint_with(&mut self, c: &crate::constraint::Constraint, cw: f32, ch: f32) {
+        c.apply_to_rect(&mut self.rect, cw, ch);
     }
 }

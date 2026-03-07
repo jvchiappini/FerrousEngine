@@ -8,15 +8,16 @@ text is drawn to the right of the box.
 
 ```rust
 pub struct Checkbox {
-    pub x:       f32,
-    pub y:       f32,
-    pub label:   String,
-    pub checked: bool,
-    pub size:    f32,         // outer box side length (default 16.0)
-    pub radius:  f32,         // corner radius of the box (default 3.0)
-    pub color:   [f32; 4],    // fill/check colour (default opaque white)
-    pub tooltip: Option<String>,
-    pub hovered: bool,
+    pub rect:             [f32; 4],   // [x, y, w, h] of the tick-box
+    pub checked:          bool,
+    pub label:            Option<String>,
+    pub label_font_size:  f32,        // default 14.0
+    pub label_color:      [f32; 4],
+    pub bg_color:         [f32; 4],   // box background when unchecked
+    pub check_color:      [f32; 4],   // fill colour when checked
+    pub radius:           f32,        // corner radius (default 3.0)
+    pub tooltip:          Option<String>,
+    pub constraint:       Option<Constraint>, // reactive layout (optional)
     // on_change: Box<dyn Fn(bool)>  (set via .on_change(|v|{…}))
 }
 ```
@@ -49,12 +50,13 @@ let cb = Checkbox::new(20.0, 20.0, "Experimental")
 ## Builder API
 
 | Method | Description |
-|--------|-------------|
+|--------|-----------|
 | `checked(bool)` | Initial checked state |
-| `with_size(f32)` | Override outer box size (default `16.0`) |
+| `with_size(w, h)` | Override box size (default `16 × 16`) |
 | `with_radius(f32)` | Box corner radius (default `3.0`) |
 | `with_tooltip(text)` | Tooltip returned via `Widget::tooltip()` |
 | `on_change(fn)` | Callback `fn(bool)` fired on toggle |
+| `with_constraint(c)` | Attach a reactive [`Constraint`](../constraint.md) |
 
 ## Reading state
 

@@ -14,6 +14,11 @@ pub trait Widget {
                       _key: Option<GuiKey>, _pressed: bool) {}
     fn bounding_rect(&self) -> Option<[f32; 4]> { None }
     fn tooltip(&self) -> Option<&str> { None }
+
+    // Reactive layout (all have default no-op implementations)
+    fn apply_constraint(&mut self, container_w: f32, container_h: f32) {}
+    fn apply_constraint_with(&mut self, c: &Constraint, cw: f32, ch: f32) {}
+    fn shift(&mut self, dx: f32, dy: f32) { /* nudges position via apply_constraint_with */ }
 }
 ```
 
@@ -23,11 +28,17 @@ pub trait Widget {
 - `keyboard_input` — handle text and key events when focused
 - `bounding_rect` — optional `[x, y, w, h]` used by containers for auto-sizing
 - `tooltip` — optional string; callers query hovered widgets and render it
+- `apply_constraint` — resolve the widget’s stored `Constraint` given container dims;
+  called automatically by `Ui::resolve_constraints` each frame
+- `apply_constraint_with` — apply an *external* constraint (used by the shift helper)
+- `shift` — nudge position by `(dx, dy)`; called when a parent `Container`/`Panel` moves
 
 `Rc<RefCell<T>>` where `T: Widget` also implements `Widget`, so shared handles
 can be added directly to a `Ui` or `Canvas`.
 
 You can implement this trait to create completely custom widgets.
+
+See [constraint.md](../constraint.md) for the full reactive layout reference.
 
 ---
 
@@ -99,6 +110,18 @@ Called by the runner each frame. If you need manual control:
 ```rust
 ui.draw(&mut quad_batch, &mut text_batch, Some(&font));
 ```
+
+### Reactive constraint resolution
+
+```rust
+// Resolve all Constraint expressions against the current window size.
+// The engine runner calls this automatically before draw_ui.
+ui.resolve_constraints(window_w, window_h);
+```
+
+Every widget that carries a `Constraint` has its `rect` (or `pos` for `Label`)
+updated to match the new dimensions. Widgets without a constraint are untouched.
+See [constraint.md](../constraint.md) for the full reference.
 
 In your `draw_ui` callback you receive a [`DrawContext`](../../ferrous_app/docs/ferrous-app-trait.md#drawcontext)
 which already holds `gui`, `text`, `font`, and `ctx` — use `dc.gui` and `dc.text` directly.

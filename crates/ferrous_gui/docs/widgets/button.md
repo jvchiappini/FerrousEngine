@@ -20,6 +20,7 @@ pub struct Button {
     pub label_font_size:  f32,           // default 14.0
     pub label_color:      [f32; 4],      // default opaque white
     pub tooltip:          Option<String>,
+    pub constraint:       Option<Constraint>, // reactive layout (optional)
     // on_click: Box<dyn Fn()>  (not public; set via .on_click(||{…}))
 }
 ```
@@ -67,7 +68,7 @@ let btn = Button::new(20.0, 20.0, 120.0, 36.0)
 ## Builder API
 
 | Method | Description |
-|--------|-------------|
+|--------|-----------|
 | `with_label(text)` | Centred text label |
 | `with_label_font_size(f32)` | Override label font size (default `14.0`) |
 | `with_label_color([f32;4])` | Override label colour |
@@ -77,6 +78,7 @@ let btn = Button::new(20.0, 20.0, 120.0, 36.0)
 | `with_radii([f32;4])` | Per-corner radii `[TL, TR, BL, BR]` |
 | `round(tl, tr, bl, br)` | Alias for `with_radii` |
 | `round_tl/tr/bl/br(f32)` | Set one corner at a time |
+| `with_constraint(c)` | Attach a reactive [`Constraint`](../constraint.md) |
 
 ## Usage — polling `pressed`
 
@@ -116,7 +118,24 @@ self.btn.draw_with_text(&mut dc.gui, &mut dc.text, Some(dc.font));
 ## Notes
 
 - Hit-test uses the full `rect`; corner radii do not clip the hit zone.
-- `Button` is not `Clone` or `Debug` (closures aren't). Use
+- `Button` is not `Clone` or `Debug` (closures aren’t). Use
   `Rc<RefCell<Button>>` for shared access (what `PanelBuilder` gives you).
 - `Widget::tooltip()` returns `self.tooltip.as_deref()`; the application is
   responsible for querying hovered widgets and rendering the tooltip quad.
+
+## Reactive positioning
+
+```rust
+use ferrous_gui::{Constraint, SizeExpr};
+
+// Always 20 px from the right edge, 12 px from the top
+Button::new(0.0, 0.0, 120.0, 36.0)
+    .with_label("Settings")
+    .with_constraint(
+        Constraint::new()
+            .x(SizeExpr::from_right(20.0))
+            .y(SizeExpr::px(12.0))
+    );
+```
+
+See [constraint.md](../constraint.md) for the full API.
