@@ -184,6 +184,12 @@ impl InputState {
         self.mouse_pos
     }
 
+    /// Current cursor position in window coordinates as `f32`.
+    #[inline]
+    pub fn mouse_pos_f32(&self) -> (f32, f32) {
+        (self.mouse_pos.0 as f32, self.mouse_pos.1 as f32)
+    }
+
     /// Mouse movement since last `end_frame()` call (non-consuming).
     #[inline]
     pub fn mouse_delta(&self) -> (f32, f32) {

@@ -15,7 +15,7 @@ use web_time::Instant;
 use crate::builder::AppMode;
 use crate::context::AppContext;
 use crate::render_context::RenderContext;
-use crate::traits::FerrousApp;
+use crate::traits::{DrawContext, FerrousApp};
 
 use super::types::Runner;
 
@@ -217,12 +217,15 @@ impl<A: FerrousApp> Runner<A> {
 
             let mut gui_batch = GuiBatch::new();
             let mut text_batch = TextBatch::new();
-            self.app.draw_ui(
-                &mut gui_batch,
-                &mut text_batch,
-                self.font.as_ref(),
-                &mut ctx,
-            );
+            if let Some(font) = self.font.as_ref() {
+                let mut dc = DrawContext {
+                    gui: &mut gui_batch,
+                    text: &mut text_batch,
+                    font,
+                    ctx: &mut ctx,
+                };
+                self.app.draw_ui(&mut dc);
+            }
             self.ui
                 .draw(&mut gui_batch, &mut text_batch, self.font.as_ref());
 

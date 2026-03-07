@@ -39,6 +39,7 @@ ctx.input.just_released(KeyCode::A)
 ctx.input.button_just_pressed(MouseButton::Left)
 ctx.input.button_held(MouseButton::Right)
 ctx.input.mouse_position()               // (f64, f64) in window coords
+ctx.input.mouse_pos_f32()               // (f32, f32) — convenience cast for UI math
 ctx.input.scroll_delta()                 // (f32, f32) — (x, y) lines this frame
 ```
 

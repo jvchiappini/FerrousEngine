@@ -440,7 +440,12 @@ impl RenderCommand {
         font: Option<&ferrous_assets::Font>,
     ) {
         match self {
-            RenderCommand::Quad { rect, color, radii, flags } => {
+            RenderCommand::Quad {
+                rect,
+                color,
+                radii,
+                flags,
+            } => {
                 quad_batch.push(crate::renderer::GuiQuad {
                     pos: [rect.x, rect.y],
                     size: [rect.width, rect.height],
@@ -464,13 +469,14 @@ impl RenderCommand {
     }
 
     #[cfg(not(feature = "text"))]
-    pub fn to_batches(
-        &self,
-        quad_batch: &mut GuiBatch,
-        _text_batch: &mut TextBatch,
-    ) {
+    pub fn to_batches(&self, quad_batch: &mut GuiBatch, _text_batch: &mut TextBatch) {
         match self {
-            RenderCommand::Quad { rect, color, radii, flags } => {
+            RenderCommand::Quad {
+                rect,
+                color,
+                radii,
+                flags,
+            } => {
                 quad_batch.push(crate::renderer::GuiQuad {
                     pos: [rect.x, rect.y],
                     size: [rect.width, rect.height],

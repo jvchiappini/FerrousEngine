@@ -92,6 +92,9 @@ Called by the runner each frame. If you need manual control:
 ui.draw(&mut quad_batch, &mut text_batch, Some(&font));
 ```
 
+In your `draw_ui` callback you receive a [`DrawContext`](../../ferrous_app/docs/ferrous-app-trait.md#drawcontext)
+which already holds `gui`, `text`, `font`, and `ctx` — use `dc.gui` and `dc.text` directly.
+
 ---
 
 ## `GuiKey`

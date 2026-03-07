@@ -8,12 +8,37 @@ pub trait FerrousApp {
     fn setup(&mut self, ctx: &mut AppContext) {}
     fn configure_ui(&mut self, ui: &mut Ui) {}
     fn update(&mut self, ctx: &mut AppContext) {}
-    fn draw_ui(&mut self, gui: &mut GuiBatch, text: &mut TextBatch,
-               font: Option<&Font>, ctx: &mut AppContext) {}
+    fn draw_ui(&mut self, dc: &mut DrawContext<'_, '_>) {}
     fn draw_3d(&mut self, ctx: &mut AppContext) {}   // only called in Game3D mode
     fn on_resize(&mut self, new_size: (u32, u32), ctx: &mut AppContext) {}
     fn on_window_event(&mut self, event: &winit::event::WindowEvent,
                        ctx: &mut AppContext) {}
+}
+```
+
+---
+
+## `DrawContext`
+
+`DrawContext<'a, 'b>` is passed to `draw_ui` each frame. It bundles the four
+things 2D drawing needs so you never have to thread them as separate parameters.
+
+```rust
+pub struct DrawContext<'a, 'b> {
+    pub gui:  &'a mut GuiBatch,      // push 2D quads
+    pub text: &'a mut TextBatch,     // push text strings
+    pub font: &'a Font,              // always a valid font reference
+    pub ctx:  &'a mut AppContext<'b>,// input, time, world, etc.
+}
+```
+
+Destructure with field access or bind locals for ergonomics:
+
+```rust
+fn draw_ui(&mut self, dc: &mut DrawContext<'_, '_>) {
+    let DrawContext { gui, text, font, ctx } = dc;
+    text.draw_text(font, "Score: 0", [10.0, 10.0], 20.0, [1.0; 4]);
+    gui.rect(0.0, 0.0, 200.0, 40.0, [0.0, 0.0, 0.0, 0.6]);
 }
 ```
 
@@ -122,27 +147,33 @@ Called every frame, **before** rendering. This is the main place for:
 ## `draw_ui`
 
 ```rust
-fn draw_ui(
-    &mut self,
-    gui:  &mut GuiBatch,
-    text: &mut TextBatch,
-    font: Option<&Font>,
-    ctx:  &mut AppContext,
-) {}
+fn draw_ui(&mut self, dc: &mut DrawContext<'_, '_>) {}
 ```
 
 Called every frame to emit 2D draw commands. Push quads and text into the
-provided batches. These are composited **on top** of the 3D scene.
+provided batches via `DrawContext`. These are composited **on top** of the 3D scene.
+
+`DrawContext` bundles everything you need:
 
 ```rust
-fn draw_ui(&mut self, gui: &mut GuiBatch, text: &mut TextBatch,
-           font: Option<&Font>, ctx: &mut AppContext) {
-    self.toolbar_bg.draw(gui);
-    self.color_btn.draw(gui);
+pub struct DrawContext<'a, 'b> {
+    pub gui:  &'a mut GuiBatch,
+    pub text: &'a mut TextBatch,
+    pub font: &'a Font,          // always valid — no Option unwrap needed
+    pub ctx:  &'a mut AppContext<'b>,
+}
+```
 
-    if let Some(f) = font {
-        text.push_str("FPS: 60", 10.0, 10.0, 16.0, [1.0; 4], f);
-    }
+```rust
+fn draw_ui(&mut self, dc: &mut DrawContext<'_, '_>) {
+    self.toolbar_bg.draw(dc.gui);
+    self.color_btn.draw(dc.gui);
+
+    // font is always &Font — no Option check needed
+    dc.text.draw_text(dc.font, "FPS: 60", [10.0, 10.0], 16.0, [1.0; 4]);
+
+    // shape helpers
+    dc.gui.rect(0.0, 0.0, 200.0, 30.0, [0.1, 0.1, 0.1, 0.8]);
 }
 ```
 

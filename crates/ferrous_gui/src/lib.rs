@@ -36,6 +36,7 @@ pub use renderer::{GuiBatch, GuiQuad, GuiRenderer, TextBatch};
 // re-export new widgets
 pub use crate::color_picker::{ColorPicker, PickerShape};
 // UiButton is the declarative node-based button builder
+pub use button::Button;
 pub use button::Button as InteractiveButton;
 pub use slider::Slider;
 pub use textinput::TextInput;

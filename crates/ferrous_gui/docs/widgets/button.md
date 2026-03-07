@@ -2,6 +2,9 @@
 
 `Button` is a clickable rectangular widget that tracks hover and press state.
 
+> **Import** — use `ferrous_gui::Button` (the name `InteractiveButton` is kept
+> as a deprecated alias for backward compatibility).
+
 ## Struct
 
 ```rust
@@ -70,9 +73,8 @@ impl FerrousApp for MyApp {
         }
     }
 
-    fn draw_ui(&mut self, gui: &mut GuiBatch, _text: &mut TextBatch,
-               _font: Option<&Font>, _ctx: &mut AppContext) {
-        self.save_btn.draw(gui);
+    fn draw_ui(&mut self, dc: &mut DrawContext<'_, '_>) {
+        self.save_btn.draw(dc.gui);
     }
 }
 ```

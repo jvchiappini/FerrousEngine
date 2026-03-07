@@ -24,6 +24,27 @@ frame loop and input state.
 
 ---
 
+## `GuiBatch` shape helpers
+
+`GuiBatch` exposes convenience methods so you rarely need to construct `GuiQuad`
+manually:
+
+```rust
+// Filled rectangle (sharp corners)
+dc.gui.rect(x, y, w, h, color);
+
+// Rounded rectangle — uniform radius
+dc.gui.rect_r(x, y, w, h, radius, color);
+
+// Rounded rectangle — per-corner radii [tl, tr, bl, br]
+dc.gui.rect_radii(x, y, w, h, [4.0, 4.0, 0.0, 0.0], color);
+
+// Line segment
+dc.gui.line(x0, y0, x1, y1, thickness, color);
+```
+
+---
+
 ## Three-step workflow
 
 ### Step 1 - Add widgets once (in `configure_ui`)
@@ -42,13 +63,10 @@ automatically every frame. Keep your own copy in your struct to read state.
 ### Step 2 - Draw every frame (in `draw_ui`)
 
 ```rust
-fn draw_ui(&mut self, gui: &mut GuiBatch, text: &mut TextBatch,
-           font: Option<&Font>, _ctx: &mut AppContext) {
-    self.my_button.draw(gui);
-    self.my_slider.draw(gui);
-    if let Some(f) = font {
-        text.push_str("Hello world", 20.0, 20.0, 18.0, [1.0; 4], f);
-    }
+fn draw_ui(&mut self, dc: &mut DrawContext<'_, '_>) {
+    self.my_button.draw(dc.gui);
+    self.my_slider.draw(dc.gui);
+    dc.text.draw_text(dc.font, "Hello world", [20.0, 20.0], 18.0, [1.0; 4]);
 }
 ```
 

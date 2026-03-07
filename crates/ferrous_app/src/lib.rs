@@ -58,7 +58,7 @@ pub use plugin::{
     RendererPlugin, TimePlugin, WindowPlugin,
 };
 pub use render_context::RenderContext;
-pub use traits::FerrousApp;
+pub use traits::{DrawContext, FerrousApp};
 
 // ── Render style ───────────────────────────────────────────────────────────
 pub use ferrous_core::RenderQuality;

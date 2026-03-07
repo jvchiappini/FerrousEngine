@@ -49,6 +49,58 @@ impl GuiBatch {
         self.quads.push(quad);
     }
 
+    pub fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
+        self.rect_radii(x, y, w, h, color, [0.0; 4]);
+    }
+
+    pub fn rect_r(&mut self, x: f32, y: f32, w: f32, h: f32, color: [f32; 4], radius: f32) {
+        self.rect_radii(x, y, w, h, color, [radius; 4]);
+    }
+
+    pub fn rect_radii(&mut self, x: f32, y: f32, w: f32, h: f32, color: [f32; 4], radii: [f32; 4]) {
+        self.push(GuiQuad {
+            pos: [x, y],
+            size: [w, h],
+            color,
+            radii,
+            flags: 0,
+        });
+    }
+
+    pub fn line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, thickness: f32, color: [f32; 4]) {
+        let width = thickness.max(1.0);
+        let delta_x = x2 - x1;
+        let delta_y = y2 - y1;
+        let length = (delta_x * delta_x + delta_y * delta_y).sqrt();
+        if length <= f32::EPSILON {
+            self.rect_r(
+                x1 - width * 0.5,
+                y1 - width * 0.5,
+                width,
+                width,
+                color,
+                width * 0.5,
+            );
+            return;
+        }
+
+        let step = (width * 0.5).max(1.0);
+        let segments = (length / step).ceil() as u32;
+        for segment_index in 0..=segments {
+            let t = segment_index as f32 / segments as f32;
+            let x = x1 + delta_x * t;
+            let y = y1 + delta_y * t;
+            self.rect_r(
+                x - width * 0.5,
+                y - width * 0.5,
+                width,
+                width,
+                color,
+                width * 0.5,
+            );
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.quads.len()
     }
@@ -144,7 +196,14 @@ impl TextBatch {
     }
 
     #[cfg(not(feature = "text"))]
-    pub fn draw_text(&mut self, _font: &(), _text: &str, _position: [f32; 2], _size: f32, _color: [f32; 4]) {
+    pub fn draw_text(
+        &mut self,
+        _font: &(),
+        _text: &str,
+        _position: [f32; 2],
+        _size: f32,
+        _color: [f32; 4],
+    ) {
         // text rendering disabled; no-op
     }
 }

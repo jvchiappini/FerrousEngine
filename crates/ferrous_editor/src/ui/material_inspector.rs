@@ -372,8 +372,7 @@ impl MaterialInspector {
 
         // Hit-test the checkbox (simple AABB on current mouse position).
         {
-            let (mx, my) = ctx.input.mouse_position();
-            let (mx, my) = (mx as f32, my as f32);
+            let (mx, my) = ctx.input.mouse_pos_f32();
             if ctx
                 .input
                 .button_just_pressed(ferrous_app::MouseButton::Left)
@@ -422,8 +421,7 @@ impl MaterialInspector {
             );
 
             // Hit-test the radio button.
-            let (mx, my) = ctx.input.mouse_position();
-            let (mx, my) = (mx as f32, my as f32);
+            let (mx, my) = ctx.input.mouse_pos_f32();
             if ctx
                 .input
                 .button_just_pressed(ferrous_app::MouseButton::Left)

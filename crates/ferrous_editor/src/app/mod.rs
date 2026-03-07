@@ -14,9 +14,8 @@ mod update;
 
 pub use types::EditorApp;
 
-use ferrous_app::{App, AppContext, Color, FerrousApp};
-use ferrous_assets::Font;
-use ferrous_gui::{GuiBatch, TextBatch, Ui};
+use ferrous_app::{App, AppContext, Color, DrawContext, FerrousApp};
+use ferrous_gui::Ui;
 
 impl FerrousApp for EditorApp {
     fn configure_ui(&mut self, ui: &mut Ui) {
@@ -38,14 +37,8 @@ impl FerrousApp for EditorApp {
         self.run_update(ctx);
     }
 
-    fn draw_ui(
-        &mut self,
-        gui: &mut GuiBatch,
-        text: &mut TextBatch,
-        font: Option<&Font>,
-        ctx: &mut AppContext,
-    ) {
-        self.run_draw_ui(gui, text, font, ctx);
+    fn draw_ui(&mut self, dc: &mut DrawContext<'_, '_>) {
+        self.run_draw_ui(dc);
     }
 
     fn draw_3d(&mut self, ctx: &mut AppContext) {
