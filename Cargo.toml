@@ -11,6 +11,9 @@ members = [
     "crates/ferrous_font",
     "crates/ferrous_render_graph",
     "crates/ferrous_ecs_macros",
+    "crates/ferrous_ui_core",
+    "crates/ferrous_layout",
+    "crates/ferrous_events", "crates/ferrous_ui_render",
 ]
 resolver = "2"
 

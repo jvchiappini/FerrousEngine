@@ -1,98 +1,4 @@
-// renderer types are referenced later when converting commands; bring them here
-use crate::{renderer::TEXTURED_BIT, GuiBatch, TextBatch};
-
-/// Espacio rectilíneo con origen en (x,y) y dimensiones (w,h).
-#[derive(Debug, Clone, Default)]
-pub struct Rect {
-    pub x: f32,
-    pub y: f32,
-    pub width: f32,
-    pub height: f32,
-}
-
-/// Margen o padding con valores por cada lado.
-#[derive(Debug, Clone, Copy)]
-pub struct RectOffset {
-    pub left: f32,
-    pub right: f32,
-    pub top: f32,
-    pub bottom: f32,
-}
-
-impl Default for RectOffset {
-    fn default() -> Self {
-        RectOffset {
-            left: 0.0,
-            right: 0.0,
-            top: 0.0,
-            bottom: 0.0,
-        }
-    }
-}
-
-impl RectOffset {
-    pub fn all(v: f32) -> Self {
-        RectOffset {
-            left: v,
-            right: v,
-            top: v,
-            bottom: v,
-        }
-    }
-}
-
-/// Unidad de medida para ancho/alto.
-#[derive(Debug, Clone, Copy)]
-pub enum Units {
-    Px(f32),
-    Percentage(f32),
-    Flex(f32),
-}
-
-impl Default for Units {
-    fn default() -> Self {
-        Units::Px(0.0)
-    }
-}
-
-/// Cómo alinear elementos hijos dentro de un contenedor.
-#[derive(Debug, Clone, Copy)]
-pub enum Alignment {
-    Start,
-    Center,
-    End,
-    Stretch,
-}
-
-impl Default for Alignment {
-    fn default() -> Self {
-        Alignment::Start
-    }
-}
-
-/// Tipo de flujo del contenedor.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum DisplayMode {
-    Block,
-    FlexRow,
-    FlexColumn,
-}
-
-impl Default for DisplayMode {
-    fn default() -> Self {
-        DisplayMode::Block
-    }
-}
-
-/// Reglas de estilo de un nodo.
-#[derive(Debug, Clone, Default)]
-pub struct Style {
-    pub margin: RectOffset,
-    pub padding: RectOffset,
-    pub size: (Units, Units), // (width, height)
-    pub alignment: Alignment,
-    pub display: DisplayMode,
-}
+pub use ferrous_ui_core::{Rect, RectOffset, Units, Alignment, DisplayMode, Style, RenderCommand};
 
 /// Nodo en el árbol de layout.
 #[derive(Debug, Clone, Default)]
@@ -377,7 +283,6 @@ impl Node {
                 }
             }
         }
-
         // posicionamiento de texto o cuadro de fondo no se hace aquí; solo
         // guardamos rect en self.rect
     }
@@ -407,159 +312,21 @@ impl Node {
     }
 }
 
-/// Representación simplificada de lo que el renderer consume; se puede
-/// traducir a GuiBatch / TextBatch con facilidad.
-#[derive(Debug, Clone)]
-pub enum RenderCommand {
-    Quad {
-        rect: Rect,
-        color: [f32; 4],
-        /// per-corner radii in pixels: [top-left, top-right, bottom-left, bottom-right]
-        radii: [f32; 4],
-        /// miscellaneous flags, currently only bit 0 indicates the
-        /// quad should be rendered as a colour wheel gradient instead of a
-        /// flat colour.  Other bits are reserved for future enhancements.
-        flags: u32,
-    },
-    Text {
-        rect: Rect,
-        text: String,
-        color: [f32; 4],
-        font_size: f32,
-    },
-    /// Draw a textured image.  The texture handle is stored in an `Arc` to
-    /// keep ownership simple; converting commands to batches will reserve a
-    /// slot for the texture and pass it along to the renderer.  The UV
-    /// coordinates are specified in normalized (0..1) space.
-    #[cfg(feature = "assets")]
-    Image {
-        rect: Rect,
-        texture: std::sync::Arc<ferrous_assets::Texture2d>,
-        uv0: [f32; 2],
-        uv1: [f32; 2],
-        color: [f32; 4],
-    },
-    /// Begin a scissor/clip region.  Any draw commands that follow (until the
-    /// matching `PopClip`) should be clipped to this rectangle.
-    PushClip { rect: Rect },
-    /// End the most recently pushed scissor/clip region.
-    PopClip,
-}
+/// Puente para permitir que un `Node` (sistema antiguo) se use como un `Widget`
+/// en el nuevo `UiTree` de `ferrous_ui_core`.
+pub struct LegacyNodeWidget(pub Node);
 
-impl RenderCommand {
-    /// Convierte el comando a los lotes que entiende el renderer. Requiere
-    /// una fuente para la conversión de texto a quads.
-    #[cfg(feature = "text")]
-    pub fn to_batches(
-        &self,
-        quad_batch: &mut GuiBatch,
-        text_batch: &mut TextBatch,
-        font: Option<&ferrous_assets::Font>,
-    ) {
-        match self {
-            RenderCommand::Quad {
-                rect,
-                color,
-                radii,
-                flags,
-            } => {
-                quad_batch.push(crate::renderer::GuiQuad {
-                    pos: [rect.x, rect.y],
-                    size: [rect.width, rect.height],
-                    uv0: [0.0, 0.0],
-                    uv1: [1.0, 1.0],
-                    color: *color,
-                    radii: *radii,
-                    tex_index: 0,
-                    flags: *flags,
-                });
-            }
-            #[cfg(feature = "assets")]
-            RenderCommand::Image {
-                rect,
-                texture,
-                uv0,
-                uv1,
-                color,
-            } => {
-                let idx = quad_batch.reserve_texture_slot(texture.clone());
-                quad_batch.push(crate::renderer::GuiQuad {
-                    pos: [rect.x, rect.y],
-                    size: [rect.width, rect.height],
-                    uv0: *uv0,
-                    uv1: *uv1,
-                    color: *color,
-                    radii: [0.0; 4],
-                    tex_index: idx,
-                    flags: TEXTURED_BIT,
-                });
-            }
-            RenderCommand::Text {
-                rect,
-                text,
-                color,
-                font_size,
-            } => {
-                // We'll draw text at the rect origin using the supplied size
-                if let Some(f) = font {
-                    text_batch.draw_text(f, text, [rect.x, rect.y], *font_size, *color);
-                }
-            }
-            // Clip commands are hints for the renderer; the GuiBatch/TextBatch
-            // layer does not currently implement scissoring, so we silently
-            // ignore them here.  A full renderer integration would consume these
-            // to set a scissor rect on the GPU pass.
-            RenderCommand::PushClip { .. } | RenderCommand::PopClip => {}
-        }
+impl ferrous_ui_core::Widget for LegacyNodeWidget {
+    fn draw(&self, _ctx: &mut ferrous_ui_core::DrawContext, cmds: &mut Vec<RenderCommand>) {
+        self.0.collect_render_commands(cmds);
     }
 
-    #[cfg(not(feature = "text"))]
-    pub fn to_batches(&self, quad_batch: &mut GuiBatch, _text_batch: &mut TextBatch) {
-        match self {
-            RenderCommand::Quad {
-                rect,
-                color,
-                radii,
-                flags,
-            } => {
-                quad_batch.push(crate::renderer::GuiQuad {
-                    pos: [rect.x, rect.y],
-                    size: [rect.width, rect.height],
-                    uv0: [0.0, 0.0],
-                    uv1: [1.0, 1.0],
-                    color: *color,
-                    radii: *radii,
-                    tex_index: 0,
-                    flags: *flags,
-                });
-            }
-            #[cfg(feature = "assets")]
-            RenderCommand::Image {
-                rect,
-                texture,
-                uv0,
-                uv1,
-                color,
-            } => {
-                let idx = quad_batch.reserve_texture_slot(texture.clone());
-                quad_batch.push(crate::renderer::GuiQuad {
-                    pos: [rect.x, rect.y],
-                    size: [rect.width, rect.height],
-                    uv0: *uv0,
-                    uv1: *uv1,
-                    color: *color,
-                    radii: [0.0; 4],
-                    tex_index: idx,
-                    flags: TEXTURED_BIT,
-                });
-            }
-            RenderCommand::Text { .. } => {
-                // text commands are ignored when text feature is disabled
-            }
-            RenderCommand::PushClip { .. } | RenderCommand::PopClip => {}
-        }
+    fn calculate_size(&self, _ctx: &mut ferrous_ui_core::LayoutContext) -> glam::Vec2 {
+        glam::Vec2::new(self.0.rect.width, self.0.rect.height)
     }
 }
+
+pub use ferrous_ui_render::ToBatches;
 
 // tests to validate basic layout
 #[cfg(test)]

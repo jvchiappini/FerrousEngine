@@ -9,7 +9,7 @@
 #[cfg(feature = "gui")]
 use wgpu::{CommandEncoder, Device, Queue, TextureView};
 
-use ferrous_gui::{GuiBatch, GuiRenderer, TextBatch};
+use ferrous_ui_render::{GuiBatch, GuiRenderer, TextBatch};
 
 use crate::graph::{FramePacket, RenderPass};
 

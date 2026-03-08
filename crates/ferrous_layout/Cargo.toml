@@ -1,0 +1,9 @@
+[package]
+name = "ferrous_layout"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+taffy = "0.7" # O la última versión estable
+ferrous_ui_core = { path = "../ferrous_ui_core" }
+glam = { workspace = true }

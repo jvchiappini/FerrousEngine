@@ -11,6 +11,7 @@ ferrous_core = { path = "../ferrous_core", features = ["ecs", "input", "gpu"] }
 ferrous_gpu = { path = "../ferrous_gpu" }
 ferrous_render_graph = { path = "../ferrous_render_graph" }
 ferrous_gui = { path = "../ferrous_gui", optional = true }
+ferrous_ui_render = { path = "../ferrous_ui_render", optional = true }
 bytemuck = { version = "1.14", features = ["derive"] }
 glam = { workspace = true }
 image = { version = "0.25", optional = true, default-features = false, features = ["png", "jpeg"] }
@@ -30,7 +31,7 @@ pollster = "0.3"
 # consumers when they enable `--features image`.
 [features]
 default = ["gui"]
-gui = ["dep:ferrous_gui"]
+gui = ["dep:ferrous_gui", "dep:ferrous_ui_render"]
 image = ["dep:image"]
 
 # Enable GPU-driven indirect draw path.  When disabled the renderer compiles

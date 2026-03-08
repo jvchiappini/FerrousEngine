@@ -10,6 +10,9 @@ bytemuck = { version = "1.14", features = ["derive"] } # habilita macros derive 
 
 # glam may be convenient; bring in for math types
 glam = "0.29"
+ferrous_ui_render = { path = "../ferrous_ui_render" }
+ferrous_ui_core = { path = "../ferrous_ui_core", features = ["assets"] }
+ferrous_events = { path = "../ferrous_events" }
 
 # font atlas generator lives in the assets crate
 ferrous_assets = { path = "../ferrous_assets", optional = true, features = ["gpu","text"] }
@@ -38,4 +41,4 @@ winit-backend = ["dep:winit"]
 # `ferrous_assets` crate without pulling in the `ferrous_font`/text
 # functionality. this is mainly used by the new `Image` widget and by
 # the renderer's texture slot logic.
-assets = ["dep:ferrous_assets", "ferrous_assets/gpu"]
+assets = ["dep:ferrous_assets", "ferrous_assets/gpu", "ferrous_ui_render/assets"]

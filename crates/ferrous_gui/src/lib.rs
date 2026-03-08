@@ -48,7 +48,7 @@ pub mod widget;
 pub mod image;
 
 pub use constraint::{Constraint, SizeExpr};
-pub use layout::{Alignment, DisplayMode, Node, Rect, RenderCommand, Style, Units};
+pub use layout::{Alignment, DisplayMode, Node, Rect, RenderCommand, Style, ToBatches, Units};
 pub use panel::RowItem;
 pub use renderer::{GuiBatch, GuiQuad, GuiRenderer, TextBatch};
 // re-export widgets

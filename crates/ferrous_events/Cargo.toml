@@ -1,0 +1,10 @@
+[package]
+name = "ferrous_events"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ferrous_ui_core = { path = "../ferrous_ui_core" }
+glam = { workspace = true }
+serde = { version = "1.0", features = ["derive"] }
+winit = { workspace = true }

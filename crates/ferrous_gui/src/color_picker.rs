@@ -1,4 +1,4 @@
-use crate::{layout::Rect, RenderCommand, Widget};
+use crate::{layout::Rect, RenderCommand, Widget, ToBatches};
 use std::sync::Arc;
 
 /// Shape used by the colour picker.  The built‑in `Circle` variant
@@ -289,13 +289,13 @@ impl ColorPicker {
                 // drawing by reusing the colour field and pushing quads
                 // from their own code.  as a convenience we still call the
                 // callback with an empty Vec and ignore the result.
-                let mut cmds = Vec::new();
+                let mut cmds: Vec<RenderCommand> = Vec::new();
                 f(self, &mut cmds);
                 for cmd in cmds {
                     #[cfg(feature = "text")]
-                    cmd.to_batches(batch, &mut crate::renderer::TextBatch::new(), None);
+                    ToBatches::to_batches(&cmd, batch, &mut crate::renderer::TextBatch::new(), None);
                     #[cfg(not(feature = "text"))]
-                    cmd.to_batches(batch, &mut crate::renderer::TextBatch::new());
+                    ToBatches::to_batches(&cmd, batch, &mut crate::renderer::TextBatch::new());
                 }
             }
         }

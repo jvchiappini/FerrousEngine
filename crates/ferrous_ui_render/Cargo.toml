@@ -1,0 +1,16 @@
+[package]
+name = "ferrous_ui_render"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wgpu = "23.0"
+bytemuck = { version = "1.14", features = ["derive"] }
+glam = "0.29"
+ferrous_assets = { path = "../ferrous_assets", optional = true, features = ["gpu", "text"] }
+ferrous_ui_core = { path = "../ferrous_ui_core" }
+
+[features]
+default = ["text"]
+text = ["dep:ferrous_assets"]
+assets = ["dep:ferrous_assets"]
