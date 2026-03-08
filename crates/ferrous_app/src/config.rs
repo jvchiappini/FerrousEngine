@@ -108,10 +108,10 @@ pub struct AssetsSection {
 #[derive(Debug, Clone, serde::Deserialize, Default)]
 #[serde(default)]
 pub struct EngineConfig {
-    pub engine:   EngineSection,
-    pub window:   WindowSection,
+    pub engine: EngineSection,
+    pub window: WindowSection,
     pub renderer: RendererSection,
-    pub assets:   AssetsSection,
+    pub assets: AssetsSection,
 }
 
 impl EngineConfig {
@@ -172,7 +172,7 @@ impl EngineConfig {
                 "cel" | "cel_shaded" | "celshaded" => {
                     let cel = self.renderer.cel.clone().unwrap_or_default();
                     RenderStyle::CelShaded {
-                        toon_levels:   cel.toon_levels.unwrap_or(4),
+                        toon_levels: cel.toon_levels.unwrap_or(4),
                         outline_width: cel.outline_width.unwrap_or(0.0),
                     }
                 }
@@ -185,7 +185,7 @@ impl EngineConfig {
         } else if let Some(ref cel) = self.renderer.cel {
             // [renderer.cel] present without explicit style = "cel" → infer cel
             cfg.render_style = RenderStyle::CelShaded {
-                toon_levels:   cel.toon_levels.unwrap_or(4),
+                toon_levels: cel.toon_levels.unwrap_or(4),
                 outline_width: cel.outline_width.unwrap_or(0.0),
             };
         }
@@ -431,7 +431,10 @@ mod tests {
         engine_cfg.apply_to(&mut app_cfg);
         assert_eq!(
             app_cfg.render_style,
-            RenderStyle::CelShaded { toon_levels: 3, outline_width: 0.02 }
+            RenderStyle::CelShaded {
+                toon_levels: 3,
+                outline_width: 0.02
+            }
         );
     }
 

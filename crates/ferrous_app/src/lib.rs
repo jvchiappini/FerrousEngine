@@ -59,6 +59,7 @@ pub use plugin::{
 };
 pub use render_context::RenderContext;
 pub use traits::{DrawContext, FerrousApp};
+pub use winit::window::CursorIcon;
 
 // ── Render style ───────────────────────────────────────────────────────────
 pub use ferrous_core::RenderQuality;

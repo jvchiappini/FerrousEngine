@@ -68,8 +68,11 @@ impl GlobalLightPanel {
         gui.push(ferrous_gui::GuiQuad {
             pos: [panel_x, panel_top],
             size: [PANEL_W, 130.0],
+            uv0: [0.0, 0.0],
+            uv1: [1.0, 1.0],
             color: [0.08, 0.10, 0.14, 0.90],
             radii: [0.0; 4],
+            tex_index: 0,
             flags: 0,
         });
 

@@ -182,7 +182,8 @@ impl<'a> AppContext<'a> {
     /// }
     /// ```
     pub fn set_window_position(&self, x: i32, y: i32) {
-        self.window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
+        self.window
+            .set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
     }
 
     /// Returns the current position of the window's top-left corner in

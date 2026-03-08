@@ -6,10 +6,14 @@ struct VsOut {
     @location(0) color: vec4<f32>,
     @location(1) radii: vec4<f32>,
     @location(2) uv: vec2<f32>,
+    @location(3) uv0: vec2<f32>,
+    @location(4) uv1: vec2<f32>,
     // size in pixels, required for correct corner SDF
-    @location(3) size: vec2<f32>,
+    @location(5) size: vec2<f32>,
+    // texture slot index (flat so it isn't interpolated)
+    @location(6) @interpolate(flat) tex_index: u32,
     // WebGPU requires @interpolate(flat) on integer vertex outputs
-    @location(4) @interpolate(flat) flags: u32,
+    @location(7) @interpolate(flat) flags: u32,
 };
 
 struct Uniforms {
@@ -18,6 +22,16 @@ struct Uniforms {
 
 @group(0) @binding(0)
 var<uniform> uniforms: Uniforms;
+
+// array of textures/samplers for image quads; the slot count must match
+// `MAX_TEXTURE_SLOTS` in the Rust code (currently 8).  keep the arrays
+// sufficiently small to avoid excessive bind group size.
+const MAX_TEXTURE_SLOTS: u32 = 8u;
+
+@group(1) @binding(0)
+var gui_textures: binding_array<texture_2d<f32>, MAX_TEXTURE_SLOTS>;
+@group(1) @binding(1)
+var gui_samplers: binding_array<sampler, MAX_TEXTURE_SLOTS>;
 
 // utility: convert HSV colour to RGB.  This is shared with the CPU
 // implementation so that colour computations match exactly.
@@ -33,9 +47,12 @@ fn vs_main(
     @location(0) uv: vec2<f32>,
     @location(1) i_pos: vec2<f32>,
     @location(2) i_size: vec2<f32>,
-    @location(3) i_color: vec4<f32>,
-    @location(4) i_radii: vec4<f32>,
-    @location(5) i_flags: u32,
+    @location(3) i_uv0: vec2<f32>,
+    @location(4) i_uv1: vec2<f32>,
+    @location(5) i_color: vec4<f32>,
+    @location(6) i_radii: vec4<f32>,
+    @location(7) i_tex_index: u32,
+    @location(8) i_flags: u32,
 ) -> VsOut {
     var pixel = i_pos + uv * i_size;
     var ndc = (pixel / uniforms.resolution) * 2.0 - vec2<f32>(1.0, 1.0);
@@ -44,8 +61,14 @@ fn vs_main(
     out.clip_pos = vec4<f32>(ndc, 0.0, 1.0);
     out.color = i_color;
     out.radii = i_radii;
-    out.uv = uv;
+    // compute interpolated texture coordinate; if the quad is not
+    // textured the uv0/uv1 values will default to 0..1 and behaviour
+    // matches the previous non-textured path.
+    out.uv = i_uv0 + uv * (i_uv1 - i_uv0);
+    out.uv0 = i_uv0;
+    out.uv1 = i_uv1;
     out.size = i_size;
+    out.tex_index = i_tex_index;
     out.flags = i_flags;
     return out;
 }
@@ -149,6 +172,16 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var alpha = in.color.a * (1.0 - smoothstep(0.0, aa_corner, dist));
     if (in.flags == 3u) {
         alpha = alpha * diag_alpha;
+    }
+    // if the textured bit is set we sample and tint; otherwise use the
+    // flat colour path that was previously implemented.
+    if ((in.flags & 0x2u) != 0u) {
+        // safe because tex_index is guaranteed < MAX_TEXTURE_SLOTS by the
+        // Rust code that constructs the batch
+        let tex = gui_textures[in.tex_index];
+        let samp = gui_samplers[in.tex_index];
+        let texel = textureSample(tex, samp, in.uv);
+        return texel * vec4<f32>(base_rgb, alpha);
     }
     return vec4<f32>(base_rgb, alpha);
 }

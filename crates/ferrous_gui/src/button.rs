@@ -177,8 +177,11 @@ impl Button {
         batch.push(crate::renderer::GuiQuad {
             pos: [self.rect[0], self.rect[1]],
             size: [self.rect[2], self.rect[3]],
+            uv0: [0.0, 0.0],
+            uv1: [1.0, 1.0],
             color: self.tinted_color(),
             radii: self.radii,
+            tex_index: 0,
             flags: 0,
         });
     }

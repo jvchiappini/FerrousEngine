@@ -74,6 +74,68 @@ impl Color {
         )
     }
 
+    /// Construct from a CSS-style hex string: `"#RGB"`, `"#RRGGBB"`, or
+    /// `"#RRGGBBAA"`.  The leading `#` is optional.
+    ///
+    /// Invalid digits are treated as `0`; an unrecognised length returns
+    /// magenta (`#FF00FF`) as a visible error sentinel.
+    ///
+    /// ```rust,ignore
+    /// let bg   = Color::hex("#1E1E1E");   // dark editor background
+    /// let blue = Color::hex("#007ACC");   // VS Code blue
+    /// let semi = Color::hex("#FF000080"); // half-transparent red
+    /// let wht  = Color::hex("#FFF");      // 3-digit shorthand
+    /// ```
+    pub fn hex(s: &str) -> Self {
+        let s = s.trim_start_matches('#');
+        // Helper: parse two hex chars starting at byte index `i`.
+        let parse = |i: usize| -> f32 {
+            u8::from_str_radix(s.get(i..i + 2).unwrap_or("00"), 16).unwrap_or(0) as f32 / 255.0
+        };
+        match s.len() {
+            3 => {
+                // Expand each nibble: '#F80' → '#FF8800'
+                let expand = |c: char| -> f32 {
+                    let v = c.to_digit(16).unwrap_or(0) as u8;
+                    (v | (v << 4)) as f32 / 255.0
+                };
+                let mut chars = s.chars();
+                Self::rgba(
+                    expand(chars.next().unwrap_or('0')),
+                    expand(chars.next().unwrap_or('0')),
+                    expand(chars.next().unwrap_or('0')),
+                    1.0,
+                )
+            }
+            6 => Self::rgba(parse(0), parse(2), parse(4), 1.0),
+            8 => Self::rgba(parse(0), parse(2), parse(4), parse(6)),
+            _ => Self::rgba(1.0, 0.0, 1.0, 1.0), // magenta = invalid colour
+        }
+    }
+
+    /// Construct from a packed `0xRRGGBBAA` hexadecimal `u32`.
+    ///
+    /// Identical to [`from_hex`] but named to make the byte-order explicit
+    /// when the value comes from a compile-time constant.
+    ///
+    /// ```rust,ignore
+    /// let coral = Color::from_hex_u32(0xFF6B6BFF);
+    /// ```
+    #[inline]
+    pub fn from_hex_u32(hex: u32) -> Self {
+        Self::from_hex(hex)
+    }
+
+    /// Returns `[r, g, b, a]` in linear f32 — ready to pass directly to the
+    /// renderer (e.g. `dc.gui.rect` colour arrays).
+    ///
+    /// This is identical to [`to_array`] but communicates intent clearly:
+    /// the values are already in linear light, no gamma conversion is needed.
+    #[inline]
+    pub fn to_linear_f32(self) -> [f32; 4] {
+        [self.r, self.g, self.b, self.a]
+    }
+
     /// Construct from sRGB (gamma-encoded) components.
     ///
     /// Most colour pickers and design tools work in sRGB.  This constructor
@@ -270,5 +332,62 @@ mod tests {
         assert!(w.g > 0.9 && w.g <= 1.0, "g={}", w.g);
         assert!(w.b > 0.8 && w.b < 1.0, "b={}", w.b);
         assert!((w.a - 1.0).abs() < 1e-6);
+    }
+
+    // ── Color::hex tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn hex_rrggbb_dark_gray() {
+        // #1E1E1E == r=0x1E=30, g=30, b=30
+        let c = Color::hex("#1E1E1E");
+        let expected = 30.0_f32 / 255.0;
+        assert!((c.r - expected).abs() < 1e-5, "r={}", c.r);
+        assert!((c.g - expected).abs() < 1e-5, "g={}", c.g);
+        assert!((c.b - expected).abs() < 1e-5, "b={}", c.b);
+        assert!((c.a - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn hex_rrggbb_vscode_blue() {
+        // #007ACC == r=0, g=0x7A=122, b=0xCC=204
+        let c = Color::hex("#007ACC");
+        assert!((c.r - 0.0).abs() < 1e-5, "r={}", c.r);
+        assert!((c.g - 122.0 / 255.0).abs() < 1e-5, "g={}", c.g);
+        assert!((c.b - 204.0 / 255.0).abs() < 1e-5, "b={}", c.b);
+        assert!((c.a - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn hex_3digit_shorthand() {
+        // #FFF == #FFFFFF
+        let c = Color::hex("#FFF");
+        assert!((c.r - 1.0).abs() < 1e-5);
+        assert!((c.g - 1.0).abs() < 1e-5);
+        assert!((c.b - 1.0).abs() < 1e-5);
+        assert!((c.a - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn hex_rrggbbaa_semi_transparent() {
+        // #FF000080 == red, alpha=0x80=128
+        let c = Color::hex("#FF000080");
+        assert!((c.r - 1.0).abs() < 1e-5, "r={}", c.r);
+        assert!((c.g - 0.0).abs() < 1e-5, "g={}", c.g);
+        assert!((c.b - 0.0).abs() < 1e-5, "b={}", c.b);
+        assert!((c.a - 128.0 / 255.0).abs() < 1e-5, "a={}", c.a);
+    }
+
+    #[test]
+    fn hex_invalid_returns_magenta() {
+        let c = Color::hex("#ZZZZZZZ"); // 7 chars → invalid length
+        assert!((c.r - 1.0).abs() < 1e-5);
+        assert!((c.g - 0.0).abs() < 1e-5);
+        assert!((c.b - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn to_linear_f32_matches_to_array() {
+        let c = Color::rgba(0.1, 0.2, 0.3, 0.4);
+        assert_eq!(c.to_linear_f32(), c.to_array());
     }
 }

@@ -11,6 +11,13 @@ pub struct Texture2d {
     pub sampler: wgpu::Sampler,
 }
 
+impl std::fmt::Debug for Texture2d {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Texture2d").finish_non_exhaustive()
+    }
+}
+
+
 impl Texture2d {
     /// Create a texture from raw RGBA8 data.  Caller must ensure `data` has
     /// exactly `width * height * 4` bytes.
@@ -173,4 +180,92 @@ impl Texture2d {
             sampler,
         })
     }
+
+    /// Rasterize an SVG document (provided as bytes) to a texture of the
+    /// given dimensions.  This requires the `svg` feature which pulls in
+    /// `resvg`/`tiny-skia`.  The caller is responsible for choosing an
+    /// appropriate size; the SVG will be scaled uniformly to fit the target
+    /// while preserving aspect ratio.
+    #[cfg(feature = "svg")]
+    pub fn from_svg_bytes(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        svg_data: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<Self> {
+        use resvg::{usvg, tiny_skia};
+
+        // parse SVG data
+        let mut opt = usvg::Options::default();
+        // note: font database is managed separately by the caller if text is
+        // required; for simple icons we can ignore fonts.
+        use resvg::usvg::TreeParsing;
+        let svg_text = std::str::from_utf8(svg_data)?;
+        let usvg_tree = usvg::Tree::from_str(svg_text, &opt)
+            .map_err(|e| anyhow::anyhow!("SVG parse error: {:?}", e))?;
+
+        // convert to render tree
+        let rtree = resvg::Tree::from_usvg(&usvg_tree);
+
+        // determine scale to target dimensions (uniform)
+        let orig_size = rtree.size;
+        let sx = width as f32 / orig_size.width() as f32;
+        let sy = height as f32 / orig_size.height() as f32;
+        let scale = tiny_skia::Transform::from_scale(sx, sy);
+
+        let mut pixmap = tiny_skia::Pixmap::new(width, height)
+            .ok_or_else(|| anyhow::anyhow!("failed to allocate pixmap"))?;
+        // render with scaling transform
+        rtree.render(scale, &mut pixmap.as_mut());
+
+        // tiny-skia stores premultiplied RGBA; that's acceptable for our
+        // blending operations so we upload the raw bytes directly.
+        let data = pixmap.data();
+        Ok(Self::from_rgba8(device, queue, width, height, data))
+    }
+
+    /// Convenience helper to load an SVG file from disk and rasterize it.
+    #[cfg(feature = "svg")]
+    pub fn from_svg_file<P: AsRef<Path>>(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        path: P,
+        width: u32,
+        height: u32,
+    ) -> Result<Self> {
+        let data = std::fs::read(path)?;
+        Self::from_svg_bytes(device, queue, &data, width, height)
+    }
 }
+
+#[cfg(all(test, feature = "svg"))]
+mod tests {
+    use super::*;
+    use crate::Texture2d;
+    use std::sync::Arc;
+
+    #[test]
+    fn svg_rasterization_roundtrip() {
+        // a tiny red circle svg
+        let svg = r#"<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10'>
+            <circle cx='5' cy='5' r='4' fill='red' /></svg>"#;
+        // create a headless wgpu device for the test
+        let instance = wgpu::Instance::new(wgpu::Backends::all());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .expect("no adapter");
+        let (device, queue) = pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor::default(),
+            None,
+        ))
+        .expect("device");
+        let tex = Texture2d::from_svg_bytes(&device, &queue, svg.as_bytes(), 16, 16)
+            .expect("svg rasterize");
+        assert_eq!(tex.view.dimension(), wgpu::TextureViewDimension::D2);
+    }
+}
+

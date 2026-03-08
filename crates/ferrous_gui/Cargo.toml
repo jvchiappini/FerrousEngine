@@ -34,3 +34,8 @@ half = { version = "2.3", optional = true }
 default = ["text", "winit-backend"]
 text = ["dep:ferrous_assets", "ferrous_assets/gpu", "dep:ferrous_font"]
 winit-backend = ["dep:winit"]
+# enable support for image widgets and other code that depends on the
+# `ferrous_assets` crate without pulling in the `ferrous_font`/text
+# functionality. this is mainly used by the new `Image` widget and by
+# the renderer's texture slot logic.
+assets = ["dep:ferrous_assets", "ferrous_assets/gpu"]

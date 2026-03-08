@@ -163,8 +163,11 @@ impl TextInput {
         quad_batch.push(crate::renderer::GuiQuad {
             pos: [self.rect[0], self.rect[1]],
             size: [self.rect[2], self.rect[3]],
+            uv0: [0.0, 0.0],
+            uv1: [1.0, 1.0],
             color: self.bg_color,
             radii: [0.0; 4],
+            tex_index: 0,
             flags: 0,
         });
         if let Some(f) = font {
@@ -185,8 +188,11 @@ impl TextInput {
             quad_batch.push(crate::renderer::GuiQuad {
                 pos: [tx, cy],
                 size: [2.0, ch],
+                uv0: [0.0, 0.0],
+                uv1: [1.0, 1.0],
                 color: self.cursor_color,
                 radii: [0.0; 4],
+                tex_index: 0,
                 flags: 0,
             });
         }
@@ -201,8 +207,11 @@ impl TextInput {
         quad_batch.push(crate::renderer::GuiQuad {
             pos: [self.rect[0], self.rect[1]],
             size: [self.rect[2], self.rect[3]],
+            uv0: [0.0, 0.0],
+            uv1: [1.0, 1.0],
             color: self.bg_color,
             radii: [0.0; 4],
+            tex_index: 0,
             flags: 0,
         });
         if self.focused {
@@ -212,8 +221,11 @@ impl TextInput {
             quad_batch.push(crate::renderer::GuiQuad {
                 pos: [tx, cy],
                 size: [2.0, ch],
+                uv0: [0.0, 0.0],
+                uv1: [1.0, 1.0],
                 color: self.cursor_color,
                 radii: [0.0; 4],
+                tex_index: 0,
                 flags: 0,
             });
         }

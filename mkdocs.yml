@@ -51,6 +51,7 @@ nav:
       - TextInput: ferrous_gui/widgets/textinput.md
       - ColorPicker: ferrous_gui/widgets/color_picker.md
       - Container: ferrous_gui/widgets/container.md
+      - Image: ferrous_gui/widgets/image.md
   - ferrous_renderer — GPU Renderer:
     - Overview: ferrous_renderer/README.md
     - Architecture: ferrous_renderer/architecture.md

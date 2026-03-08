@@ -37,17 +37,20 @@ pub mod dropdown;
 pub mod label;
 pub mod layout;
 pub mod panel;
+pub mod panel_resize_handle;
 pub mod renderer;
 pub mod slider;
 pub mod textinput;
 pub mod ui;
 pub mod viewport_widget;
 pub mod widget;
+#[cfg(feature = "assets")]
+pub mod image;
 
-pub use layout::{Alignment, DisplayMode, Node, Rect, RenderCommand, Style, Units};
-pub use renderer::{GuiBatch, GuiQuad, GuiRenderer, TextBatch};
 pub use constraint::{Constraint, SizeExpr};
+pub use layout::{Alignment, DisplayMode, Node, Rect, RenderCommand, Style, Units};
 pub use panel::RowItem;
+pub use renderer::{GuiBatch, GuiQuad, GuiRenderer, TextBatch};
 // re-export widgets
 pub use crate::color_picker::{ColorPicker, PickerShape};
 pub use button::Button;
@@ -57,8 +60,11 @@ pub use container::Container;
 pub use dropdown::Dropdown;
 pub use label::Label;
 pub use panel::{Panel, PanelBuilder, PanelDirection};
+pub use panel_resize_handle::{PanelResizeHandle, ResizeAxis};
 pub use slider::Slider;
 pub use textinput::TextInput;
+#[cfg(feature = "assets")]
+pub use image::Image;
 
 // GuiKey is a lightweight enum used throughout the GUI crate instead of
 // depending directly on winit's key code type.

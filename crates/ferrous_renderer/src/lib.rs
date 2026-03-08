@@ -87,8 +87,8 @@ use graph::frame_packet::CameraPacket;
 use passes::{CelFrameData, FlatFrameData, OutlineFrameData};
 
 use passes::{
-    CelShadedPass, FlatShadedPass, OutlinePass, PostProcessPass, PrePass, SsaoBlurPass,
-    SsaoPass, WorldPass,
+    CelShadedPass, FlatShadedPass, OutlinePass, PostProcessPass, PrePass, SsaoBlurPass, SsaoPass,
+    WorldPass,
 };
 
 #[cfg(feature = "gpu-driven")]
@@ -104,6 +104,26 @@ use resources::SsaoResources;
 enum RenderDest<'a> {
     Target,
     View(&'a wgpu::TextureView),
+}
+
+// -- RendererMode -------------------------------------------------------------
+
+/// Controls which passes are executed each frame.
+///
+/// | Mode | World / Post-process | UI |
+/// |------|----------------------|----|
+/// | `Full3D` | ✓ | ✓ |
+/// | `Desktop2D` | ✗ (skipped) | ✓ (clears to `world_pass.clear_color`) |
+///
+/// Set via [`Renderer::set_mode`].  The default is [`RendererMode::Full3D`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RendererMode {
+    /// Full 3-D pipeline: prepass → SSAO → world → style → gizmos → post-process → UI.
+    #[default]
+    Full3D,
+    /// 2-D GUI-only pipeline: the UI pass clears the surface directly.
+    /// WorldPass, render-style passes, gizmos, and post-process are all skipped.
+    Desktop2D,
 }
 
 // -- Renderer -----------------------------------------------------------------
@@ -174,6 +194,11 @@ pub struct Renderer {
     pub viewport: Viewport,
     width: u32,
     height: u32,
+
+    // -- Renderer mode --------------------------------------------------------
+    /// Controls which passes execute each frame.  Defaults to `Full3D`.
+    /// Use `set_mode(RendererMode::Desktop2D)` for GUI-only applications.
+    pub mode: RendererMode,
 
     // -- Per-frame render statistics ------------------------------------------
     /// Statistics from the most recently completed frame (vertices, triangles,
@@ -444,6 +469,7 @@ impl Renderer {
             },
             width,
             height,
+            mode: RendererMode::Full3D,
             render_stats: RenderStats::default(),
             prepass,
             ssao_pass,
@@ -712,6 +738,29 @@ impl Renderer {
             .update_point_lights(&self.context.device, &self.context.queue, lights);
     }
 
+    /// Switch between the full 3-D pipeline and the lightweight 2-D/GUI-only
+    /// pipeline.
+    ///
+    /// In `Desktop2D` mode the world pass, render-style passes, gizmos, and
+    /// post-process pass are all skipped.  The UI pass clears the surface to
+    /// `world_pass.clear_color` instead of compositing on top of a rendered
+    /// scene, so the background colour is preserved.
+    pub fn set_mode(&mut self, mode: RendererMode) {
+        if self.mode == mode {
+            return;
+        }
+        self.mode = mode;
+        #[cfg(feature = "gui")]
+        {
+            let clear = if mode == RendererMode::Desktop2D {
+                Some(self.world_pass.clear_color)
+            } else {
+                None
+            };
+            self.ui_pass.set_clear_color(clear);
+        }
+    }
+
     #[cfg(feature = "gui")]
     pub fn render_to_target(
         &mut self,
@@ -784,11 +833,11 @@ impl Renderer {
     pub fn set_scene(&mut self, scene: &SceneData) {
         // 1. Apply camera if provided
         if let Some(cam) = &scene.camera {
-            self.camera_system.camera.eye    = cam.eye;
+            self.camera_system.camera.eye = cam.eye;
             self.camera_system.camera.target = cam.target;
-            self.camera_system.camera.fovy   = cam.fov_y;
-            self.camera_system.camera.znear  = cam.z_near;
-            self.camera_system.camera.zfar   = cam.z_far;
+            self.camera_system.camera.fovy = cam.fov_y;
+            self.camera_system.camera.znear = cam.z_near;
+            self.camera_system.camera.zfar = cam.z_far;
         }
 
         // 2. Apply directional light if provided
@@ -912,7 +961,8 @@ impl Renderer {
             if self.gpu_culling_enabled {
                 // Ensure the CullPass exists.
                 if self.cull_pass.is_none() {
-                    self.cull_pass = Some(CullPass::new(&self.context.device, &self.pipeline_layouts));
+                    self.cull_pass =
+                        Some(CullPass::new(&self.context.device, &self.pipeline_layouts));
                 }
 
                 // `build_world_commands` populated world_instanced and
@@ -921,7 +971,9 @@ impl Renderer {
                 let matrices = &self.frame_builder.world_instance_matrices;
 
                 if let Some(cp) = &mut self.cull_pass {
-                    use crate::resources::draw_indirect::{GpuDrawIndexedIndirect, InstanceCullData};
+                    use crate::resources::draw_indirect::{
+                        GpuDrawIndexedIndirect, InstanceCullData,
+                    };
 
                     let mut cull_data: Vec<InstanceCullData> = Vec::with_capacity(matrices.len());
                     let mut templates: Vec<GpuDrawIndexedIndirect> =
@@ -1217,6 +1269,42 @@ impl Renderer {
         }
         if let Some(b) = text_batch {
             packet.insert(b);
+        }
+
+        // ── Desktop2D fast path ───────────────────────────────────────────────
+        // In GUI-only mode skip the world pass, render-style passes, gizmos,
+        // and post-process entirely.  The UI pass already holds a clear_color
+        // set by `set_mode` so it will clear the surface before drawing.
+        if self.mode == RendererMode::Desktop2D {
+            let target_view = match dest {
+                RenderDest::Target => &self.render_target.color.view,
+                RenderDest::View(v) => v,
+            };
+            self.ui_pass
+                .prepare(&self.context.device, &self.context.queue, &packet);
+            self.ui_pass.execute(
+                &self.context.device,
+                &self.context.queue,
+                encoder,
+                target_view,
+                None,
+                None,
+                &packet,
+            );
+            for pass in &mut self.extra_passes {
+                pass.prepare(&self.context.device, &self.context.queue, &packet);
+                pass.execute(
+                    &self.context.device,
+                    &self.context.queue,
+                    encoder,
+                    target_view,
+                    None,
+                    None,
+                    &packet,
+                );
+            }
+            self.frame_builder.reclaim(packet);
+            return;
         }
 
         let dummy_view = self

@@ -53,11 +53,23 @@ impl GraphicsState {
             .unwrap();
 
         let caps = surface.get_capabilities(&context.adapter);
+        // Prefer a non-sRGB format so that GUI colours are linear-exact:
+        // writing [0.235, 0.235, 0.235] will produce #3C3C3C on screen.
+        // With an sRGB surface wgpu would apply an implicit gamma conversion,
+        // making every colour appear ~2× brighter than intended.
+        // Fall back to the first advertised format if nothing linear is found.
         let format = caps
             .formats
             .iter()
             .copied()
-            .find(|f| f.is_srgb())
+            .find(|f| {
+                !f.is_srgb()
+                    && matches!(
+                        f,
+                        wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm
+                    )
+            })
+            .or_else(|| caps.formats.iter().copied().find(|f| !f.is_srgb()))
             .unwrap_or(caps.formats[0]);
         // PresentMode::Fifo        = hard vsync (locked to monitor refresh)
         // PresentMode::AutoNoVsync = fully uncapped, no tearing guarantee — works on all backends

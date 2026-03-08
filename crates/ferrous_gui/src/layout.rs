@@ -1,5 +1,5 @@
 // renderer types are referenced later when converting commands; bring them here
-use crate::{GuiBatch, TextBatch};
+use crate::{renderer::TEXTURED_BIT, GuiBatch, TextBatch};
 
 /// Espacio rectilíneo con origen en (x,y) y dimensiones (w,h).
 #[derive(Debug, Clone, Default)]
@@ -427,6 +427,18 @@ pub enum RenderCommand {
         color: [f32; 4],
         font_size: f32,
     },
+    /// Draw a textured image.  The texture handle is stored in an `Arc` to
+    /// keep ownership simple; converting commands to batches will reserve a
+    /// slot for the texture and pass it along to the renderer.  The UV
+    /// coordinates are specified in normalized (0..1) space.
+    #[cfg(feature = "assets")]
+    Image {
+        rect: Rect,
+        texture: std::sync::Arc<ferrous_assets::Texture2d>,
+        uv0: [f32; 2],
+        uv1: [f32; 2],
+        color: [f32; 4],
+    },
     /// Begin a scissor/clip region.  Any draw commands that follow (until the
     /// matching `PopClip`) should be clipped to this rectangle.
     PushClip { rect: Rect },
@@ -454,9 +466,32 @@ impl RenderCommand {
                 quad_batch.push(crate::renderer::GuiQuad {
                     pos: [rect.x, rect.y],
                     size: [rect.width, rect.height],
+                    uv0: [0.0, 0.0],
+                    uv1: [1.0, 1.0],
                     color: *color,
                     radii: *radii,
+                    tex_index: 0,
                     flags: *flags,
+                });
+            }
+            #[cfg(feature = "assets")]
+            RenderCommand::Image {
+                rect,
+                texture,
+                uv0,
+                uv1,
+                color,
+            } => {
+                let idx = quad_batch.reserve_texture_slot(texture.clone());
+                quad_batch.push(crate::renderer::GuiQuad {
+                    pos: [rect.x, rect.y],
+                    size: [rect.width, rect.height],
+                    uv0: *uv0,
+                    uv1: *uv1,
+                    color: *color,
+                    radii: [0.0; 4],
+                    tex_index: idx,
+                    flags: TEXTURED_BIT,
                 });
             }
             RenderCommand::Text {
@@ -490,9 +525,32 @@ impl RenderCommand {
                 quad_batch.push(crate::renderer::GuiQuad {
                     pos: [rect.x, rect.y],
                     size: [rect.width, rect.height],
+                    uv0: [0.0, 0.0],
+                    uv1: [1.0, 1.0],
                     color: *color,
                     radii: *radii,
+                    tex_index: 0,
                     flags: *flags,
+                });
+            }
+            #[cfg(feature = "assets")]
+            RenderCommand::Image {
+                rect,
+                texture,
+                uv0,
+                uv1,
+                color,
+            } => {
+                let idx = quad_batch.reserve_texture_slot(texture.clone());
+                quad_batch.push(crate::renderer::GuiQuad {
+                    pos: [rect.x, rect.y],
+                    size: [rect.width, rect.height],
+                    uv0: *uv0,
+                    uv1: *uv1,
+                    color: *color,
+                    radii: [0.0; 4],
+                    tex_index: idx,
+                    flags: TEXTURED_BIT,
                 });
             }
             RenderCommand::Text { .. } => {
@@ -543,6 +601,37 @@ mod tests {
         cmd.to_batches(&mut qb, &mut tb);
         assert_eq!(qb.len(), 1);
         assert!(tb.is_empty());
+    }
+
+    #[cfg(feature = "assets")]
+    #[test]
+    fn render_command_image() {
+        use std::sync::Arc;
+        // create a dummy texture handle; the contents are never accessed by
+        // the batch logic so we may safely zero them.
+        let tex = Arc::new(unsafe { std::mem::zeroed::<ferrous_assets::Texture2d>() });
+        let cmd = RenderCommand::Image {
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 5.0,
+                height: 5.0,
+            },
+            texture: tex.clone(),
+            uv0: [0.0, 0.0],
+            uv1: [1.0, 1.0],
+            color: [1.0, 1.0, 1.0, 1.0],
+        };
+        let mut qb = GuiBatch::new();
+        let mut tb = TextBatch::new();
+        #[cfg(feature = "text")]
+        cmd.to_batches(&mut qb, &mut tb, None);
+        #[cfg(not(feature = "text"))]
+        cmd.to_batches(&mut qb, &mut tb);
+        assert_eq!(qb.len(), 1);
+        // reserve the same texture again and ensure the slot index does not grow
+        cmd.to_batches(&mut qb, &mut tb);
+        assert_eq!(qb.len(), 2);
     }
 
     #[test]

@@ -192,8 +192,11 @@ impl ColorPicker {
                 batch.push(crate::renderer::GuiQuad {
                     pos: [self.rect[0], self.rect[1]],
                     size: [self.rect[2], self.rect[3]],
+                    uv0: [0.0, 0.0],
+                    uv1: [1.0, 1.0],
                     color: self.colour,
                     radii: [self.rect[2].min(self.rect[3]) * 0.5; 4],
+                    tex_index: 0,
                     flags: 1,
                 });
                 // draw selection indicator at computed position
@@ -208,8 +211,11 @@ impl ColorPicker {
                 batch.push(crate::renderer::GuiQuad {
                     pos: [px - 4.0, py - 4.0],
                     size: [8.0, 8.0],
+                    uv0: [0.0, 0.0],
+                    uv1: [1.0, 1.0],
                     color: [1.0, 1.0, 1.0, 1.0],
                     radii: [4.0; 4],
+                    tex_index: 0,
                     flags: 0,
                 });
             }
@@ -220,8 +226,11 @@ impl ColorPicker {
                 batch.push(crate::renderer::GuiQuad {
                     pos: [self.rect[0], self.rect[1]],
                     size: [self.rect[2], self.rect[3]],
+                    uv0: [0.0, 0.0],
+                    uv1: [1.0, 1.0],
                     color: self.colour,
                     radii: [0.0; 4],
+                    tex_index: 0,
                     flags: 2,
                 });
                 let (px, py) = if let Some([nx, ny]) = self.pick_pos {
@@ -235,8 +244,11 @@ impl ColorPicker {
                 batch.push(crate::renderer::GuiQuad {
                     pos: [px - 4.0, py - 4.0],
                     size: [8.0, 8.0],
+                    uv0: [0.0, 0.0],
+                    uv1: [1.0, 1.0],
                     color: [1.0, 1.0, 1.0, 1.0],
                     radii: [4.0; 4],
+                    tex_index: 0,
                     flags: 0,
                 });
             }
@@ -245,8 +257,11 @@ impl ColorPicker {
                 batch.push(crate::renderer::GuiQuad {
                     pos: [self.rect[0], self.rect[1]],
                     size: [self.rect[2], self.rect[3]],
+                    uv0: [0.0, 0.0],
+                    uv1: [1.0, 1.0],
                     color: self.colour,
                     radii: [0.0; 4],
+                    tex_index: 0,
                     flags: 3,
                 });
                 let (px, py) = if let Some([nx, ny]) = self.pick_pos {
@@ -260,8 +275,11 @@ impl ColorPicker {
                 batch.push(crate::renderer::GuiQuad {
                     pos: [px - 4.0, py - 4.0],
                     size: [8.0, 8.0],
+                    uv0: [0.0, 0.0],
+                    uv1: [1.0, 1.0],
                     color: [1.0, 1.0, 1.0, 1.0],
                     radii: [4.0; 4],
+                    tex_index: 0,
                     flags: 0,
                 });
             }

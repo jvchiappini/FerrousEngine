@@ -11,11 +11,13 @@ image = "0.24"
 gltf = { version = "1.4", features = ["import", "utils"] }
 half = { version = "2.3", optional = true }
 ferrous_font = { path = "../ferrous_font", optional = true }
+resvg = { version = "0.33", optional = true }
 
 [features]
 default = []
 gpu = ["dep:wgpu", "dep:bytemuck", "dep:half"]
 text = ["dep:ferrous_font", "gpu"]
+svg = ["dep:resvg"]
 
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

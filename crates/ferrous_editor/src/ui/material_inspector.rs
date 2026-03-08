@@ -52,8 +52,11 @@ fn draw_checkbox(gui: &mut GuiBatch, x: f32, y: f32, size: f32, checked: bool) {
     gui.push(ferrous_gui::GuiQuad {
         pos: [x, y],
         size: [size, size],
+        uv0: [0.0, 0.0],
+        uv1: [1.0, 1.0],
         color: [0.35, 0.35, 0.35, 1.0],
         radii: [3.0; 4],
+        tex_index: 0,
         flags: 0,
     });
     // inner fill when checked
@@ -62,8 +65,11 @@ fn draw_checkbox(gui: &mut GuiBatch, x: f32, y: f32, size: f32, checked: bool) {
         gui.push(ferrous_gui::GuiQuad {
             pos: [x + inset, y + inset],
             size: [size - inset * 2.0, size - inset * 2.0],
+            uv0: [0.0, 0.0],
+            uv1: [1.0, 1.0],
             color: [0.3, 0.8, 0.5, 1.0],
             radii: [1.5; 4],
+            tex_index: 0,
             flags: 0,
         });
     }
@@ -75,8 +81,11 @@ fn draw_radio(gui: &mut GuiBatch, cx: f32, cy: f32, r: f32, selected: bool) {
     gui.push(ferrous_gui::GuiQuad {
         pos: [cx - r, cy - r],
         size: [r * 2.0, r * 2.0],
+        uv0: [0.0, 0.0],
+        uv1: [1.0, 1.0],
         color: [0.4, 0.4, 0.4, 1.0],
         radii: [r; 4],
+        tex_index: 0,
         flags: 0,
     });
     if selected {
@@ -84,8 +93,11 @@ fn draw_radio(gui: &mut GuiBatch, cx: f32, cy: f32, r: f32, selected: bool) {
         gui.push(ferrous_gui::GuiQuad {
             pos: [cx - ir, cy - ir],
             size: [ir * 2.0, ir * 2.0],
+            uv0: [0.0, 0.0],
+            uv1: [1.0, 1.0],
             color: [0.3, 0.75, 1.0, 1.0],
             radii: [ir; 4],
+            tex_index: 0,
             flags: 0,
         });
     }
@@ -202,8 +214,11 @@ impl MaterialInspector {
         gui.push(ferrous_gui::GuiQuad {
             pos: [panel_x, 0.0],
             size: [PANEL_W, win_h],
+            uv0: [0.0, 0.0],
+            uv1: [1.0, 1.0],
             color: [0.10, 0.10, 0.12, 0.88],
             radii: [0.0; 4],
+            tex_index: 0,
             flags: 0,
         });
 

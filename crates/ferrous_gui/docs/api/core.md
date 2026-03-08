@@ -168,6 +168,16 @@ pub enum RenderCommand {
         radii: [f32; 4],   // per-corner radii [TL, TR, BL, BR]
         flags: u32,        // bit 0 = colour-wheel gradient
     },
+    /// Draw a textured image.  This variant is only available when the
+    /// `assets` feature is enabled and is used by the `Image` widget.
+    #[cfg(feature = "assets")]
+    Image {
+        rect:    Rect,
+        texture: std::sync::Arc<ferrous_assets::Texture2d>,
+        uv0:     [f32; 2],
+        uv1:     [f32; 2],
+        color:   [f32; 4],
+    },
     Text {
         rect:      Rect,   // origin; width/height informational only
         text:      String,
@@ -178,6 +188,31 @@ pub enum RenderCommand {
     PushClip { rect: Rect },
     /// End the most recent scissor region.
     PopClip,
+
+    ## `GuiBatch`
+
+    `GuiBatch` is the low-level container that holds a sequence of `GuiQuad`
+    instances prepared by a `Widget` tree.  It is normally consumed by `UiPass`
+    and you rarely need to interact with it directly, but a few helpers are
+    available:
+
+    ```rust
+    impl GuiBatch {
+        pub fn new() -> Self;
+        pub fn clear(&mut self);
+        pub fn push(&mut self, quad: GuiQuad);
+        pub fn rect(&mut self, x,y,w,h, color);
+        pub fn rect_radii(&mut self, ...);
+        // when `assets` is enabled:
+        pub fn reserve_texture_slot(&mut self, Arc<Texture2d>) -> u32;
+        pub fn rect_textured(&mut self, ... , tex_index: u32);
+        pub fn image(&mut self, ..., texture: Arc<Texture2d>, uv0, uv1, color);
+    }
+    ```
+
+    Texture slots are deduplicated automatically; attempting to exceed
+    `MAX_TEXTURE_SLOTS` will panic.  The batch may also be queried for its
+    length with `.len()` and `.is_empty()`.
 }
 ```
 

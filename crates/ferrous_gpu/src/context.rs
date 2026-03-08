@@ -72,11 +72,21 @@ impl EngineContext {
             wgpu::Limits::default()
         };
 
+        // Request only the features the engine actually uses.  The texture
+        // binding array features are required by the GUI renderer when the
+        // `assets` feature is enabled (texture arrays in the GUI shader).
+        // Both are widely supported on Vulkan/DX12/Metal; the adapter check
+        // below lets us fall back gracefully on devices that lack them.
+        let adapter_features = adapter.features();
+        let desired_features = wgpu::Features::TEXTURE_BINDING_ARRAY
+            | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING;
+        let required_features = adapter_features & desired_features;
+
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("Engine Device"),
-                    required_features: wgpu::Features::empty(),
+                    required_features,
                     required_limits: limits,
                     ..Default::default()
                 },

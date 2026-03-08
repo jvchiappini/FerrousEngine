@@ -120,8 +120,11 @@ impl Slider {
         batch.push(crate::renderer::GuiQuad {
             pos: [self.rect[0], self.rect[1]],
             size: [self.rect[2], self.rect[3]],
+            uv0: [0.0, 0.0],
+            uv1: [1.0, 1.0],
             color: self.track_color,
             radii: [0.0; 4],
+            tex_index: 0,
             flags: 0,
         });
         // thumb
@@ -130,8 +133,11 @@ impl Slider {
         batch.push(crate::renderer::GuiQuad {
             pos: [tx, self.rect[1]],
             size: [thumb_w, self.rect[3]],
+            uv0: [0.0, 0.0],
+            uv1: [1.0, 1.0],
             color: self.thumb_color,
             radii: [0.0; 4],
+            tex_index: 0,
             flags: 0,
         });
     }

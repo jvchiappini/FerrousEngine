@@ -23,6 +23,7 @@ use crate::context::AppContext;
 use crate::graphics::GraphicsState;
 use crate::render_context::RenderContext;
 use crate::traits::FerrousApp;
+use crate::builder::AppMode;
 use ferrous_assets::Font;
 
 use super::types::Runner;
@@ -65,6 +66,12 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                 .set_clear_color(self.config.background_color.to_wgpu());
             gfx.renderer
                 .set_render_style(self.config.render_style.clone());
+            // Propagate the app mode to the renderer so that Desktop2D
+            // applications skip the world/post-process passes.
+            if self.config.mode == AppMode::Desktop2D {
+                gfx.renderer
+                    .set_mode(ferrous_renderer::RendererMode::Desktop2D);
+            }
 
             if let Some(bytes) = self.config.font_bytes {
                 let font = Font::load_bytes(
@@ -132,6 +139,7 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
             let font_bytes = self.config.font_bytes;
             let hdri_path = self.config.hdri_path.clone();
             let render_style = self.config.render_style.clone();
+            let app_mode = self.config.mode;
 
             let font_slot: Rc<RefCell<Option<Font>>> = Rc::new(RefCell::new(None));
             let font_slot_clone = font_slot.clone();
@@ -150,6 +158,10 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                 gfx.renderer.set_clear_color(bg);
                 gfx.renderer.set_viewport(vp);
                 gfx.renderer.set_render_style(render_style);
+                if app_mode == AppMode::Desktop2D {
+                    gfx.renderer
+                        .set_mode(ferrous_renderer::RendererMode::Desktop2D);
+                }
 
                 if let Some(bytes) = font_bytes {
                     let font = Font::load_bytes(
