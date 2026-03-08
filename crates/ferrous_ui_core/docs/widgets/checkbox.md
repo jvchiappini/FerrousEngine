@@ -1,37 +1,34 @@
 # Checkbox
 
-`Checkbox` es un widget interactivo de tipo toggle (booleano) con soporte de reactividad y callbacks, diseñado para integrarse con la arquitectura de modo retenido.
+`Checkbox` es un control binario (Toggle) para valores booleanos. Permite activar o desactivar opciones y puede estar vinculado a un `Observable<bool>`.
 
-## Fields
+## Características
+
+- **Interactividad:** Cambia de estado al hacer clic.
+- **Data Binding:** Soporta `Observable<bool>` para actualizaciones reactivas bidireccionales.
+- **Diseño Tematizado:** Su apariencia se adapta automáticamente al `Theme` activo.
+
+## Estructura
 
 ```rust
-pub struct Checkbox {
+pub struct Checkbox<App> {
     pub checked: bool,
-    pub label: String,
-    pub color_unchecked: [f32; 4],
-    pub color_checked: [f32; 4],
-    pub check_color: [f32; 4],
-    pub is_hovered: bool,
-    pub binding: Option<std::sync::Arc<Observable<bool>>>,
+    pub binding: Option<Arc<Observable<bool>>>,
+    // on_toggle callback...
 }
 ```
 
-## Construction
+## Ejemplo de Uso
 
 ```rust
-use ferrous_ui_core::Checkbox;
-
-let cb = Checkbox::new("Aceptar términos", false)
-    .on_change(|checked| println!("Términos: {}", checked));
+let cb = Checkbox::new(true)
+    .on_toggle(|ctx, is_checked| {
+        println!("VSync: {}", is_checked);
+    });
 ```
 
-## Reactivity
+## Estilo
 
-```rust
-use ferrous_ui_core::{Checkbox, Observable};
-use std::sync::Arc;
-
-let is_active = Arc::new(Observable::new(true));
-let cb = Checkbox::new("Activar VSync", true)
-    .with_binding(is_active.clone(), node_id);
-```
+- **Marco:** Utiliza `theme.on_surface_muted` para el borde en estado inactivo.
+- **Fondo Activo:** Utiliza `theme.primary` cuando está marcado.
+- **Marca (Check):** Utiliza `theme.on_primary`.

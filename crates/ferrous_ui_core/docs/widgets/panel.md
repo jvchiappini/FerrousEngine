@@ -1,50 +1,40 @@
 # Panel
 
-El `Panel` es el widget base para agrupar otros elementos visuales y proveer un fondo consistente (como un lienzo o tarjeta). Dentro del nuevo sistema retenido, todo `Node` en el `UiTree` actúa como un posible contenedor de layout de todos modos, pero el `Panel` otorga capacidades visuales (render de quad) de fondo.
+`Panel` es el contenedor visual fundamental de `ferrous_ui_core`. Proporciona un fondo sólido y opcionalmente bordes redondeados. Se utiliza como base para construir ventanas, barras de herramientas y grupos de widgets.
 
-## Construcción
+## Características
 
-```rust
-use ferrous_ui_core::Panel;
+- **Sin lógica de Layout:** El `Panel` no se encarga de posicionar a sus hijos; eso es responsabilidad del `UiTree` y el motor de layout (`ferrous_layout`) basado en el `Style` del nodo.
+- **Fondo Flexible:** Puede usar el color por defecto del tema (`surface`) o uno personalizado.
+- **Overflow:** Soporta recortes de contenido mediante la propiedad `overflow: Hidden` en su estilo.
 
-// Creamos un panel con color RGBA
-let _panel = Panel::new([0.1, 0.1, 0.15, 1.0])
-    .with_radius(8.0);
-```
-
-## Layout y Hijos
-
-El `Panel` no administra sus hijos o layout internamente; la propia estructura del `UiTree` y el crate `ferrous_layout` gestionan la agrupación jerárquica. Durante la fase de `Widget::build`, el usuario puede agregar hijos al panel a través del contexto:
+## Estructura
 
 ```rust
-use ferrous_ui_core::{Widget, BuildContext, Panel, Label, Button};
-
-struct MyDialog;
-impl Widget for MyDialog {
-    fn build(&mut self, ctx: &mut BuildContext) {
-        // Al agregar un hijo durante el build, éste quedará alojado 
-        // bajo este dialog en el UiTree de manera retenida.
-        ctx.add_child(Box::new(Panel::new([0.2, 0.2, 0.2, 1.0])));
-        ctx.add_child(Box::new(Label::new("Diálogo de Opciones")));
-        ctx.add_child(Box::new(Button::new("Cerrar")));
-    }
+pub struct Panel {
+    pub color: Option<Color>,
+    pub radius: Option<f32>,
 }
 ```
 
-## Estilizado con StyleBuilder
-
-Para controlar sus márgenes, padding, y comportamiento flexbox, utiliza el `StyleBuilder` de `ferrous_ui_core`:
+## Ejemplo de Uso
 
 ```rust
-use ferrous_ui_core::StyleBuilder;
+use ferrous_ui_core::{Panel, Color, StyleBuilder};
 
-let style = StyleBuilder::new()
-    .column()         // Hijos en vertical
-    .padding_all(12.0)
-    .gap(8.0)
-    .center_items()
-    .build();
+let panel = Panel::new()
+    .with_color(Color::hex("#2C2C2C"))
+    .with_radius(12.0);
 
-// Más adelante, asignable a un node_id en el UiTree
-tree.set_node_style(node_id, style);
+// El posicionamiento se define en el Style del nodo que contiene al Panel
+tree.set_node_style(panel_id, StyleBuilder::new()
+    .width_px(300.0)
+    .height_px(400.0)
+    .padding_all(10.0)
+    .column()
+    .build());
 ```
+
+## Integración con Temas
+
+Si no se especifica un color o radio, el `Panel` heredará automáticamente `theme.surface` y `theme.border_radius`.

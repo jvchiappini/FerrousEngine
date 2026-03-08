@@ -1,30 +1,48 @@
 # Slider
 
-`Slider` es un widget retenido interactivo utilizado para seleccionar un número de un rango contiguo establecido. Se construye bajo los principios del Modo Retenido con reactividad incorporada.
+`Slider` es un control deslizante para valores numéricos (`f32`). Soporta tanto el manejo manual mediante callbacks como la vinculación automática a través del sistema reactivo (`Observable<f32>`).
 
-## Construcción Básica
+## Características
 
-Se requiere un rango y un valor inicial para la construcción de `Slider`:
+- **Genérico sobre App:** Al igual que `Button`, permite acceder al estado de la aplicación en su callback `on_change`.
+- **Modo Reactivo:** Puede vincularse a un `Observable<f32>`, lo que permite que el Slider se actualice solo cuando el valor cambia externamente, y viceversa.
+- **Lag Cero:** Solo se redibuja cuando el valor cambia o hay interacción.
+
+## Estructura
 
 ```rust
-use ferrous_ui_core::Slider;
+pub struct Slider<App> {
+    pub value: f32,
+    pub min: f32,
+    pub max: f32,
+    pub is_dragging: bool,
+    pub binding: Option<Arc<Observable<f32>>>,
+}
+```
 
+## Uso con Callback
+
+```rust
 let slider = Slider::new(0.5, 0.0, 1.0)
-    .on_change(|v| println!("Nuevo volumen: {:.2}", v));
+    .on_change(|ctx, new_val| {
+        println!("Valor: {:.2}", new_val);
+        // ctx.app.volume = new_val;
+    });
 ```
 
-## Data Binding Reactivo
-
-El uso más poderoso del `Slider` en el sistema de UI actual es vincularlo (`binding`) a un `Observable<f32>`. Esta conexión automática asegura que la interfaz se actualice cuando los datos subyacentes cambien *sin* regenerar el frame.
+## Uso Reactivo (Data Binding)
 
 ```rust
-use ferrous_ui_core::{Slider, Observable};
-use std::sync::Arc;
+let volume_obs = Arc::new(Observable::new(0.5));
 
-let volume = Arc::new(Observable::new(50.0));
-
-let volume_slider = Slider::new(50.0, 0.0, 100.0)
-    .with_binding(volume.clone(), node_id); 
+// El slider se suscribe al observable automáticamente
+let slider = Slider::new(0.0, 0.0, 1.0)
+    .with_binding(volume_obs.clone(), node_id);
 ```
 
-*Nota:* `node_id` corresponde al `ID` del nodo asignado por el `UiTree`.
+## Estilo
+
+El Slider utiliza el `Theme` para su apariencia:
+- **Track (Fondo):** `on_surface_muted` con opacidad reducida.
+- **Fill (Progreso):** `primary`.
+- **Knob (Círculo):** `on_primary`.

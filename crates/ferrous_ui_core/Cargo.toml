@@ -8,6 +8,7 @@ slotmap = "1.0"
 glam = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }
 ferrous_assets = { path = "../ferrous_assets", optional = true }
+ferrous_ui_macros = { path = "../ferrous_ui_macros" }
 
 [features]
 assets = ["dep:ferrous_assets"]

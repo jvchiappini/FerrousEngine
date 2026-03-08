@@ -1,5 +1,7 @@
 pub mod panel;
 pub use panel::*;
+pub mod label;
+pub use label::*;
 pub mod button;
 pub use button::*;
 pub mod placeholder;
@@ -20,3 +22,5 @@ pub mod text_input;
 pub use text_input::*;
 pub mod scroll_view;
 pub use scroll_view::*;
+pub mod number_input;
+pub use number_input::*;

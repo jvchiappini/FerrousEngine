@@ -61,7 +61,7 @@ use ferrous_layout::LayoutEngine;
 use ferrous_ui_core::{UiTree, Style, Units, DisplayMode, Alignment};
 
 let mut layout = LayoutEngine::new();
-let mut tree = UiTree::new();
+let mut tree = UiTree::<()>::new();
 
 // Configurar el estilo de un nodo
 tree.set_node_style(root_id, Style {

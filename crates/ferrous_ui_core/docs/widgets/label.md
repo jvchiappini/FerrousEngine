@@ -1,36 +1,36 @@
 # Label
 
-El `Label` es el widget más básico para exhibir un String (ya sea texto estático o dinámico) en `ferrous_ui_core`. A diferencia de los motores de modo inmediato, aquí un Label es un nodo retenido del DOM en `UiTree`.
+`Label` es un widget simple para mostrar texto estático. Es ligero y eficiente, ideal para descripciones, títulos y etiquetas de otros controles.
 
-## Construcción y Configuración
+## Características
 
-El texto de base puede predeterminarse y el color aplicarse encadenando los builders.
+- **Tamaño Intrínseco:** El sistema de layout calcula automáticamente el ancho y alto basándose en la longitud del texto y el tamaño de la fuente.
+- **Tematizado:** Usa `theme.on_surface` y `theme.font_size_base` por defecto.
 
-```rust
-use ferrous_ui_core::Label;
-
-let titulo = Label::new("Ferrous Engine")
-    .with_size(18.0)
-    .with_color([0.8, 0.8, 0.9, 1.0]);
-```
-
-## Reactividad 
-
-`Label` se destaca por ser uno de los widgets que aprovecha a fondo el `Observable<String>`.
+## Estructura
 
 ```rust
-use ferrous_ui_core::{Label, Observable};
-use std::sync::Arc;
-
-// Estado de la app
-let user_name = Arc::new(Observable::new("Invitado".to_string()));
-
-// En la inicialización de UI:
-let label = Label::new("")
-    .with_binding(user_name.clone(), node_id);
-
-// En la lógica de red/juego:
-let dirty_nodes = user_name.set("Ana".to_string());
-tree.reactivity.notify_change(dirty_nodes);
-// El UiTree sólo repinta este label específico
+pub struct Label {
+    pub text: String,
+    pub color: Option<Color>,
+    pub font_size: Option<f32>,
+}
 ```
+
+## Ejemplo de Uso
+
+```rust
+use ferrous_ui_core::{Label, Color};
+
+// Uso básico (usa valores del tema)
+let l1 = Label::new("Usuario:");
+
+// Uso con personalización
+let l2 = Label::new("Alerta!")
+    .with_color(Color::hex("#FF0000"))
+    .with_size(18.0);
+```
+
+## Notas de Layout
+
+`Label` implementa `calculate_size`, lo que permite que contenedores como `Panel` con modo `Flex` lo posicionen correctamente sin necesidad de especificar dimensiones manuales.

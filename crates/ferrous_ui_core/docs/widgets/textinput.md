@@ -1,32 +1,39 @@
 # TextInput
 
-`TextInput` es un widget retenido complejo para la captura de texto en la interfaz gráfica. Soporta edición de una sola línea, posicionamiento del cursor mediante interacciones de teclado, placeholders e integración reactiva.
+`TextInput` es un campo de texto editable de una sola línea. Soporta el foco del teclado, movimiento del cursor y selección (Phase 4.0).
 
-## Construcción y Configuración
+## Características
+
+- **Cursor Dinámico:** Visualiza la posición de inserción.
+- **Data Binding:** Puede vincularse a un `Observable<String>` para actualizaciones bidireccionales automáticas.
+- **Scroll Interno:** Soporta texto más largo que el ancho del widget.
+
+## Estructura
 
 ```rust
-use ferrous_ui_core::TextInput;
+pub struct TextInput<App> {
+    pub text: String,
+    pub cursor_pos: usize,
+    pub placeholder: String,
+    pub is_password: bool,
+    // Callbacks y binding...
+}
+```
 
-let input = TextInput::new("Escribe aquí...")
-    .with_text("Ferrous")
-    .on_change(|nuevo_texto| {
-        println!("Texto actualizado: {}", nuevo_texto);
+## Ejemplo de Uso
+
+```rust
+let input = TextInput::new("Valor inicial")
+    .with_placeholder("Escribe aquí...")
+    .on_change(|ctx, new_text| {
+        println!("Editando: {}", new_text);
     });
 ```
 
-El widget gestiona su propio estado de foco, respondiendo a interacciones del teclado (`KeyDown`, `Backspace`, `flechas`, etc.) únicamente cuando el usuario le ha hecho clic previamente.
+## Estilo
 
-## Integración Reactiva (Lag Cero)
-
-El `TextInput` soporta el enlazamiento de datos bidireccional usando `Observable<String>`.
-
-```rust
-use ferrous_ui_core::{TextInput, Observable};
-use std::sync::Arc;
-
-let texto_estado = Arc::new(Observable::new(String::new()));
-let txt = TextInput::new("Placeholder")
-    .with_binding(texto_estado.clone(), node_id);
-```
-
-Cada cambio reflejado en la pantalla notifica al sistema a través de `tree.reactivity.notify_change(...)`.
+Utiliza los siguientes roles del `Theme`:
+- **Fondo:** `theme.background` (o una variante del `surface`).
+- **Texto:** `theme.on_surface`.
+- **Cursor:** `theme.primary`.
+- **Placeholder:** `theme.on_surface_muted`.

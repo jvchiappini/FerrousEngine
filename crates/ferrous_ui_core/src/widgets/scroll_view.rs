@@ -6,18 +6,20 @@ use crate::{Widget, RenderCommand, DrawContext, LayoutContext, EventContext, Eve
 ///
 /// Permite que un subárbol de widgets exceda las dimensiones del contenedor,
 /// proporcionando desplazamiento vertical y horizontal.
-pub struct ScrollView {
+pub struct ScrollView<App = ()> {
     pub scroll_offset: Vec2,
     pub wheel_speed: f32,
     pub is_hovered: bool,
+    _marker: std::marker::PhantomData<App>,
 }
 
-impl ScrollView {
+impl<App> ScrollView<App> {
     pub fn new() -> Self {
         Self {
             scroll_offset: Vec2::ZERO,
             wheel_speed: 20.0,
             is_hovered: false,
+            _marker: std::marker::PhantomData,
         }
     }
 
@@ -27,13 +29,13 @@ impl ScrollView {
     }
 }
 
-impl Default for ScrollView {
+impl<App> Default for ScrollView<App> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Widget for ScrollView {
+impl<App> Widget<App> for ScrollView<App> {
     fn draw(&self, _ctx: &mut DrawContext, _cmds: &mut Vec<RenderCommand>) {
         // ScrollView no pinta nada por sí mismo por defecto,
         // pero actúa como ancla para el recorte y desplazamiento de hijos.
@@ -47,7 +49,7 @@ impl Widget for ScrollView {
 
     fn on_event(
         &mut self,
-        _ctx: &mut EventContext,
+        _ctx: &mut EventContext<App>,
         event: &UiEvent,
     ) -> EventResponse {
         match event {
@@ -79,3 +81,4 @@ impl Widget for ScrollView {
         self.scroll_offset
     }
 }
+

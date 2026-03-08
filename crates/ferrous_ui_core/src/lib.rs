@@ -21,6 +21,7 @@ pub use widgets::*;
 pub use reactive::*;
 pub use style_builder::{StyleBuilder, StyleExt};
 pub use theme::{Theme, Color};
+pub use ferrous_ui_macros::ui;
 
 /// Espacio rectilíneo definido por su posición de origen (esquina superior izquierda) y sus dimensiones.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -349,6 +350,18 @@ impl<'a, App> BuildContext<'a, App> {
     pub fn node_id(&self) -> NodeId {
         self.node_id
     }
+
+    /// Añade un componente reutilizable a la jerarquía actual.
+    pub fn add_component<C: Component<App>>(&mut self, component: C) {
+        component.build(self);
+    }
+}
+
+/// Interfaz para componentes reutilizables que agrupan otros widgets.
+/// Inspirado en `@Composable` de Jetpack Compose o componentes de React.
+pub trait Component<App> {
+    /// Construye la jerarquía del componente usando el contexto proporcionado.
+    fn build(self, ctx: &mut BuildContext<App>);
 }
 
 /// Contexto proporcionado durante la fase de actualización de lógica.

@@ -72,16 +72,27 @@ tree.collect_commands(&mut cmds, viewport);
 ## Ejemplo: Creación de un Árbol
 
 ```rust
-use ferrous_ui_core::{UiTree, Widget, BuildContext, Panel, Label};
+use ferrous_ui_core::{UiTree, Widget, BuildContext, Panel, Label, Button};
 
+// 1. Declarar el estado de tu aplicación
+struct MyApp {
+    score: i32,
+}
+
+// 2. Definir un widget personalizado genérico sobre tu App
 struct MyPanel;
-impl Widget for MyPanel {
-    fn build(&mut self, ctx: &mut BuildContext) {
+impl Widget<MyApp> for MyPanel {
+    fn build(&mut self, ctx: &mut BuildContext<MyApp>) {
         ctx.add_child(Box::new(Label::new("Hola, Ferrous!")));
+        ctx.add_child(Box::new(Button::new("Click me").on_click(|ctx| {
+            ctx.app.score += 1;
+            println!("Score: {}", ctx.app.score);
+        })));
     }
 }
 
-let mut tree = UiTree::new();
+// 3. Instanciar el árbol con el tipo de tu aplicación
+let mut tree = UiTree::<MyApp>::new();
 tree.add_node(Box::new(MyPanel), None); // Nodo raíz
 tree.build(); // Ejecuta la fase de construcción recursiva
 ```

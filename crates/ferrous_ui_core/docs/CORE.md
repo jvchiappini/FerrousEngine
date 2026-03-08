@@ -54,16 +54,16 @@ La unidad de almacenamiento en el árbol. Contiene:
 - `cached_cmds`: Caché de comandos de dibujo.
 - `dirty`: Flags de estado (`layout`, `paint`, `hierarchy`, `subtree_dirty`).
 
-### Trait `Widget`
-Cualquier componente UI de Ferrous debe implementar este trait:
+### Trait `Widget<App>`
+Cualquier componente UI de Ferrous debe implementar este trait, siendo genérico sobre el estado de la aplicación `App`:
 
 | Método | Cuándo se llama | Para qué sirve |
 |--------|-----------------|----------------|
-| `build(&mut ctx)` | Una vez al insertar el nodo | Instanciar hijos |
-| `update(&mut ctx)` | Cada frame | Animaciones, timers |
-| `calculate_size(&ctx)` | Durante el layout | Devolver tamaño intrínseco deseado |
-| `draw(&ctx, &mut cmds)` | Solo si `paint` es sucio | Generar `RenderCommand`s |
-| `on_event(&mut ctx, event)` | Cuando hay input | Reaccionar a interacciones |
+| `build(&mut ctx: BuildContext<App>)` | Una vez al insertar el nodo | Instanciar hijos |
+| `update(&mut ctx: UpdateContext)` | Cada frame | Animaciones, timers |
+| `calculate_size(&ctx: LayoutContext)` | Durante el layout | Devolver tamaño intrínseco desea |
+| `draw(&ctx: DrawContext, &mut cmds)` | Solo si `paint` es sucio | Generar `RenderCommand`s |
+| `on_event(&mut ctx: EventContext<App>, event)` | Cuando hay input | Reaccionar a interacciones |
 
 ---
 
@@ -156,7 +156,7 @@ volume.subscribe(slider_node_id);
 let dirty = volume.set(0.8);
 tree.reactivity.notify_change(dirty);
 
-// El ReactivitySystem los aplica automáticamente en tree.update()
+// El ReactivitySystem los aplica automáticamente en tree.update() solo en nodos suscritos.
 ```
 
 ---
