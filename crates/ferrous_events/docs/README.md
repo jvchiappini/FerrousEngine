@@ -4,47 +4,106 @@
 
 ---
 
+## Module overview
+
+| Tipo | Descripción |
+|------|-------------|
+| `UiEvent` | Enum de todos los eventos posibles en la UI (mouse, teclado, foco). |
+| `EventResponse` | Respuesta que un widget devuelve al sistema de eventos. |
+| `EventManager` | Enrutador: decide qué nodo recibe cada evento en función del hit-test y el foco. |
+| `GuiKey` | Enumeración ligera de teclas de navegación estándar, independiente de `winit`. |
+
+---
+
+## Tipos de Eventos (`UiEvent`)
+
+| Variante | Datos | Descripción |
+|----------|-------|-------------|
+| `MouseDown` | `position: [f32; 2]`, `button` | Botón del ratón pulsado. |
+| `MouseUp` | `position: [f32; 2]`, `button` | Botón del ratón soltado. |
+| `MouseMove` | `position: [f32; 2]` | Movimiento del puntero. |
+| `MouseEnter` | — | El puntero entra en el área del nodo. |
+| `MouseLeave` | — | El puntero sale del área del nodo. |
+| `KeyDown` | `key: Option<GuiKey>`, `text: Option<String>` | Tecla pulsada con mapeo opcional de texto. |
+
+---
+
+## Respuestas de Evento (`EventResponse`)
+
+Un widget devuelve un `EventResponse` al procesar cada evento:
+
+| Variante | Significado |
+|----------|-------------|
+| `Ignored` | El widget no ha consumido el evento; el sistema lo propagará al padre. |
+| `Consumed` | El widget ha procesado el evento; la propagación se detiene. |
+| `Redraw` | El widget ha cambiado de aspecto visual; el sistema lo marca como `PaintDirty`. |
+
+---
+
 ## Flujo de Eventos
 
-1.  **Captura:** El motor (FerrousEngine) recibe eventos nativos del sistema operativo.
-2.  **Conversión:** Traducción de tipos nativos (ej: `winit::KeyEvent`) a tipos internos de `ferrous_events` (ej: `UiEvent::KeyDown`).
-3.  **Enrutamiento (Routing):** El `EventManager` determina qué widget debe recibir el evento basándose en el foco y la posición del ratón.
+```
+Sistema Operativo / winit
+         │
+         ▼
+   Traducción de tipos
+  (winit → UiEvent)
+         │
+         ▼
+   EventManager
+         │
+         ├─ Hit-Test → NodeId del nodo bajo el cursor
+         │
+         ▼
+   Dispatching (Bubbling)
+   Nodo objetivo → padre → abuelo → …
+         │
+         ▼
+   Widget::on_event(&mut ctx, &event) → EventResponse
+```
+
+### Hit-Testing Preciso
+
+El `EventManager` realiza un recorrido del árbol de UI de atrás hacia adelante (Z-order) usando los `Rect` resueltos por el motor de layout. Se encuentra el nodo más profundo y visible bajo el puntero del ratón.
+
+### Event Bubbling (Propagación)
+
+1. El evento se envía al nodo objetivo (resultado del hit-test).
+2. Si devuelve `Ignored`, el evento se propaga a su padre.
+3. Si devuelve `Consumed` o `Redraw`, la propagación se detiene.
+4. `Redraw` además lanza `mark_paint_dirty` sobre el nodo automáticamente.
 
 ---
 
-## Tipos de Eventos Principales
+## `GuiKey` — Teclas de Navegación
 
-| Evento | Descripción |
-|--------|-------------|
-| `MouseDown` / `MouseUp` | Interacciones de botones físicos del ratón. |
-| `MouseMove` | Actualización de la posición del puntero para efectos de *hover*. |
-| `KeyDown` | Entrada de teclado, incluyendo tanto el código físico (`GuiKey`) como el texto interpretado. |
+Enumeración independiente de `winit`, portable entre plataformas:
 
----
+```rust
+pub enum GuiKey {
+    Enter, Escape, Tab,
+    Backspace, Delete,
+    ArrowLeft, ArrowRight, ArrowUp, ArrowDown,
+    Home, End,
+}
+```
 
-## Gestión de Estado: `EventManager`
+La conversión desde `winit::KeyCode` está implementada vía `From`:
 
-El `EventManager` rastrea dos estados críticos para la interactividad:
-
-- **Hovered Node:** El ID del nodo que tiene el cursor encima. Se usa para estados de resaltado (highlight).
-- **Focused Node:** El ID del nodo que tiene el "foco". Recibe todos los eventos de teclado de forma exclusiva.
+```rust
+// Automático al recibir eventos de teclado de winit
+let key: Option<GuiKey> = winit_logical_key.into();
+```
 
 ---
 
 ## Integración con `winit`
 
-El crate incluye implementaciones de `From` para convertir automáticamente códigos de tecla de `winit` a `GuiKey`, garantizando que la lógica de la aplicación sea portable:
-
-```rust
-// Ejemplo de uso interno
-let key: GuiKey = winit_key_code.into(); 
-```
+El motor convierte los eventos de `winit` al sistema abstracto de `ferrous_events` antes de pasarlos al `EventManager`. El código de UI **nunca** depende de `winit` directamente.
 
 ---
 
-## Diseño de Referencia: `GuiKey`
+## Further reading
 
-Enumeración de teclas de navegación estándar:
-- `Enter`, `Escape`, `Tab`, `Backspace`, `Delete`.
-- `ArrowLeft`, `ArrowRight`, `ArrowUp`, `ArrowDown`.
-- `Home`, `End`.
+- [Referencia de eventos detallada](EVENTS.md)
+- [Árbol de UI — ferrous_ui_core](../../ferrous_ui_core/docs/README.md)

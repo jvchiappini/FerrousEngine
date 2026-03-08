@@ -36,19 +36,34 @@ pub struct GuiQuad {
     pub flags: u32,
 }
 
-/// Agrupación de `GuiQuad`s que comparten un estado de renderizado común.
-/// Permite enviar cientos de rectángulos a la GPU en una sola operación `draw`.
+/// Segmento de dibujo que define un rango de instancias y opcionalmente un área de recorte.
+#[derive(Clone, Debug)]
+pub struct DrawSegment {
+    pub quad_range: std::ops::Range<u32>,
+    pub text_range: std::ops::Range<u32>,
+    pub scissor: Option<ferrous_ui_core::Rect>,
+}
+
+/// Agrupación de primitivas de UI organizadas por segmentos de renderizado.
 #[derive(Clone)]
 pub struct GuiBatch {
-    quads: Vec<GuiQuad>,
+    pub quads: Vec<GuiQuad>,
+    pub text_quads: Vec<TextQuad>,
+    pub segments: Vec<DrawSegment>,
+    pub current_scissor: Option<ferrous_ui_core::Rect>,
+    pub scissor_stack: Vec<ferrous_ui_core::Rect>,
     #[cfg(feature = "assets")]
-    textures: Vec<std::sync::Arc<ferrous_assets::Texture2d>>,
+    pub textures: Vec<std::sync::Arc<ferrous_assets::Texture2d>>,
 }
 
 impl GuiBatch {
     pub fn new() -> Self {
         Self {
             quads: Vec::new(),
+            text_quads: Vec::new(),
+            segments: Vec::new(),
+            current_scissor: None,
+            scissor_stack: Vec::new(),
             #[cfg(feature = "assets")]
             textures: Vec::new(),
         }
@@ -56,14 +71,48 @@ impl GuiBatch {
 
     pub fn clear(&mut self) {
         self.quads.clear();
+        self.text_quads.clear();
+        self.segments.clear();
+        self.current_scissor = None;
+        self.scissor_stack.clear();
         #[cfg(feature = "assets")]
         {
             self.textures.clear();
         }
     }
 
-    pub fn push(&mut self, quad: GuiQuad) {
+    pub fn push_quad(&mut self, quad: GuiQuad) {
         self.quads.push(quad);
+    }
+
+    pub fn push_text(&mut self, quad: TextQuad) {
+        self.text_quads.push(quad);
+    }
+
+    /// Asegura que hay un segmento activo para el scissor actual.
+    pub fn ensure_segment(&mut self) {
+        let needs_new = match self.segments.last() {
+            Some(last) => last.scissor != self.current_scissor,
+            None => true,
+        };
+
+        if needs_new {
+            let q_start = self.quads.len() as u32;
+            let t_start = self.text_quads.len() as u32;
+            self.segments.push(DrawSegment {
+                quad_range: q_start..q_start,
+                text_range: t_start..t_start,
+                scissor: self.current_scissor,
+            });
+        }
+    }
+
+    fn update_last_segment(&mut self) {
+        self.ensure_segment();
+        if let Some(last) = self.segments.last_mut() {
+            last.quad_range.end = self.quads.len() as u32;
+            last.text_range.end = self.text_quads.len() as u32;
+        }
     }
 
     /// Registra una textura en el lote actual y devuelve su índice de ranura.
@@ -97,7 +146,7 @@ impl GuiBatch {
     }
 
     pub fn rect_radii(&mut self, x: f32, y: f32, w: f32, h: f32, color: [f32; 4], radii: [f32; 4]) {
-        self.push(GuiQuad {
+        self.push_quad(GuiQuad {
             pos: [x, y],
             size: [w, h],
             uv0: [0.0, 0.0],
@@ -107,6 +156,7 @@ impl GuiBatch {
             tex_index: 0,
             flags: 0,
         });
+        self.update_last_segment();
     }
 
     pub fn rect_textured(
@@ -120,7 +170,7 @@ impl GuiBatch {
         uv1: [f32; 2],
         tex_index: u32,
     ) {
-        self.push(GuiQuad {
+        self.push_quad(GuiQuad {
             pos: [x, y],
             size: [w, h],
             uv0,
@@ -130,6 +180,7 @@ impl GuiBatch {
             tex_index,
             flags: TEXTURED_BIT,
         });
+        self.update_last_segment();
     }
     
     #[cfg(feature = "assets")]
@@ -156,8 +207,12 @@ impl GuiBatch {
         self.quads.is_empty()
     }
 
-    pub fn as_bytes(&self) -> &[u8] {
+    pub fn as_quad_bytes(&self) -> &[u8] {
         bytemuck::cast_slice(&self.quads)
+    }
+
+    pub fn as_text_bytes(&self) -> &[u8] {
+        bytemuck::cast_slice(&self.text_quads)
     }
 }
 
@@ -170,71 +225,6 @@ pub struct TextQuad {
     pub uv0: [f32; 2],
     pub uv1: [f32; 2],
     pub color: [f32; 4],
-}
-
-/// Lote optimizado para el dibujado de texto masivo.
-#[derive(Clone)]
-pub struct TextBatch {
-    quads: Vec<TextQuad>,
-}
-
-impl TextBatch {
-    pub fn new() -> Self {
-        Self { quads: Vec::new() }
-    }
-
-    pub fn clear(&mut self) {
-        self.quads.clear();
-    }
-
-    pub fn push(&mut self, quad: TextQuad) {
-        self.quads.push(quad);
-    }
-
-    pub fn len(&self) -> usize {
-        self.quads.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.quads.is_empty()
-    }
-
-    pub fn as_bytes(&self) -> &[u8] {
-        bytemuck::cast_slice(&self.quads)
-    }
-
-    /// Convierte una cadena de texto en una serie de quads muestreando un atlas de fuentes.
-    #[cfg(feature = "text")]
-    pub fn draw_text(
-        &mut self,
-        font: &ferrous_assets::Font,
-        text: &str,
-        position: [f32; 2],
-        size: f32,
-        color: [f32; 4],
-    ) {
-        let atlas = &font.atlas;
-        let mut x = position[0];
-        let y = position[1];
-        let box_scale = 1.6;
-        let quad_size = size * box_scale;
-
-        for c in text.chars() {
-            if let Some(metric) = atlas.metrics.get(&c) {
-                let qx = x - (0.3 * size);
-                let qy = y - (0.3 * size);
-
-                self.push(TextQuad {
-                    pos: [qx, qy],
-                    size: [quad_size, quad_size],
-                    uv0: [metric.uv[0], metric.uv[1]],
-                    uv1: [metric.uv[2], metric.uv[3]],
-                    color,
-                });
-                x += metric.advance * size;
-            }
-        }
-    }
 }
 
 /// Motor principal de dibujado de UI en GPU.
@@ -581,7 +571,6 @@ impl GuiRenderer {
         resolve_target: Option<&wgpu::TextureView>,
         batch: &GuiBatch,
         queue: &wgpu::Queue,
-        text_batch: Option<&TextBatch>,
     ) {
         self.render_impl(
             encoder,
@@ -589,7 +578,6 @@ impl GuiRenderer {
             resolve_target,
             batch,
             queue,
-            text_batch,
             wgpu::LoadOp::Load,
         );
     }
@@ -602,7 +590,6 @@ impl GuiRenderer {
         resolve_target: Option<&wgpu::TextureView>,
         batch: &GuiBatch,
         queue: &wgpu::Queue,
-        text_batch: Option<&TextBatch>,
         clear_color: wgpu::Color,
     ) {
         self.render_impl(
@@ -611,7 +598,6 @@ impl GuiRenderer {
             resolve_target,
             batch,
             queue,
-            text_batch,
             wgpu::LoadOp::Clear(clear_color),
         );
     }
@@ -623,47 +609,42 @@ impl GuiRenderer {
         resolve_target: Option<&wgpu::TextureView>,
         batch: &GuiBatch,
         queue: &wgpu::Queue,
-        text_batch: Option<&TextBatch>,
         load_op: wgpu::LoadOp<wgpu::Color>,
     ) {
-        if batch.is_empty() && text_batch.map_or(true, |tb| tb.is_empty()) {
+        if batch.segments.is_empty() {
             return;
         }
 
-        if !batch.is_empty() {
-            let instance_bytes = batch.as_bytes();
-            let required_instances = batch.len() as u32;
-
-            if required_instances > self.max_instances {
-                let new_size = std::mem::size_of::<GuiQuad>() as u64 * required_instances as u64;
+        // Subir quads generales
+        if !batch.quads.is_empty() {
+            let bytes = batch.as_quad_bytes();
+            let count = batch.quads.len() as u32;
+            if count > self.max_instances {
                 self.instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("GUI Instance Buffer (resized)"),
-                    size: new_size,
+                    size: std::mem::size_of::<GuiQuad>() as u64 * count as u64,
                     usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
-                self.max_instances = required_instances;
+                self.max_instances = count;
             }
-            queue.write_buffer(&self.instance_buffer, 0, instance_bytes);
+            queue.write_buffer(&self.instance_buffer, 0, bytes);
         }
 
-        if let Some(tb) = text_batch {
-            if !tb.is_empty() {
-                let text_bytes = tb.as_bytes();
-                let required = tb.len() as u32;
-                if required > self.text_max_instances {
-                    let new_size = std::mem::size_of::<TextQuad>() as u64 * required as u64;
-                    self.text_instance_buffer =
-                        self.device.create_buffer(&wgpu::BufferDescriptor {
-                            label: Some("GUI Text Instance Buffer (resized)"),
-                            size: new_size,
-                            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                            mapped_at_creation: false,
-                        });
-                    self.text_max_instances = required;
-                }
-                queue.write_buffer(&self.text_instance_buffer, 0, text_bytes);
+        // Subir quads de texto
+        if !batch.text_quads.is_empty() {
+            let bytes = batch.as_text_bytes();
+            let count = batch.text_quads.len() as u32;
+            if count > self.text_max_instances {
+                self.text_instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("GUI Text Instance Buffer (resized)"),
+                    size: std::mem::size_of::<TextQuad>() as u64 * count as u64,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                self.text_max_instances = count;
             }
+            queue.write_buffer(&self.text_instance_buffer, 0, bytes);
         }
 
         let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -681,61 +662,79 @@ impl GuiRenderer {
             timestamp_writes: None,
         });
 
-        if !batch.is_empty() {
-            let required_instances = batch.len() as u32;
-            rpass.set_pipeline(&self.pipeline);
-            rpass.set_bind_group(0, &self.uniform_bind_group, &[]);
-            
-            #[cfg(feature = "assets")]
-            if !batch.textures.is_empty() {
-                let mut views = Vec::with_capacity(batch.textures.len());
-                let mut samplers = Vec::with_capacity(batch.textures.len());
-                for tex in &batch.textures {
-                    views.push(&tex.view);
-                    samplers.push(&tex.sampler);
-                }
-                while views.len() < MAX_TEXTURE_SLOTS as usize {
-                    views.push(views.last().unwrap());
-                    samplers.push(samplers.last().unwrap());
-                }
-                let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("GUI Image Bind Group"),
-                    layout: &self.image_bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureViewArray(&views),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::SamplerArray(&samplers),
-                        },
-                    ],
-                });
-                self.image_bind_group = Some(bg);
+        // Configurar lotes de texturas (si aplica)
+        #[cfg(feature = "assets")]
+        if !batch.textures.is_empty() {
+            let mut views = Vec::with_capacity(batch.textures.len());
+            let mut samplers = Vec::with_capacity(batch.textures.len());
+            for tex in &batch.textures {
+                views.push(&tex.view);
+                samplers.push(&tex.sampler);
             }
-            #[cfg(feature = "assets")]
-            if let Some(bg) = &self.image_bind_group {
-                rpass.set_bind_group(1, bg, &[]);
+            while views.len() < MAX_TEXTURE_SLOTS as usize {
+                views.push(views.last().unwrap());
+                samplers.push(samplers.last().unwrap());
             }
-            
-            rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            rpass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-            rpass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            rpass.draw_indexed(0..6, 0, 0..required_instances);
+            let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("GUI Image Bind Group"),
+                layout: &self.image_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureViewArray(&views),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::SamplerArray(&samplers),
+                    },
+                ],
+            });
+            self.image_bind_group = Some(bg);
         }
 
-        if let Some(tb) = text_batch {
-            if !tb.is_empty() {
+        for segment in &batch.segments {
+            // Aplicar Scissor si existe
+            if let Some(s) = segment.scissor {
+                // Pinzar las coordenadas para evitar errores de WGPU si el rect es negativo o mayor que la resolución.
+                let sx = (s.x.max(0.0) as u32).min(self.resolution[0] as u32);
+                let sy = (s.y.max(0.0) as u32).min(self.resolution[1] as u32);
+                let sw = (s.width.max(0.0) as u32).min(self.resolution[0] as u32 - sx);
+                let sh = (s.height.max(0.0) as u32).min(self.resolution[1] as u32 - sy);
+                
+                if sw > 0 && sh > 0 {
+                    rpass.set_scissor_rect(sx, sy, sw, sh);
+                } else {
+                    // Rectángulo de recorte vacío, saltamos el segmento
+                    continue;
+                }
+            } else {
+                rpass.set_scissor_rect(0, 0, self.resolution[0] as u32, self.resolution[1] as u32);
+            }
+
+            // 1. Dibujar Quads del segmento
+            if !segment.quad_range.is_empty() {
+                rpass.set_pipeline(&self.pipeline);
+                rpass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                #[cfg(feature = "assets")]
+                if let Some(bg) = &self.image_bind_group {
+                    rpass.set_bind_group(1, bg, &[]);
+                }
+                rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                rpass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+                rpass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                rpass.draw_indexed(0..6, 0, segment.quad_range.clone());
+            }
+
+            // 2. Dibujar Texto del segmento
+            if !segment.text_range.is_empty() {
                 if let Some(font_bg) = &self.font_bind_group {
-                    let required = tb.len() as u32;
                     rpass.set_pipeline(&self.text_pipeline);
                     rpass.set_bind_group(0, &self.uniform_bind_group, &[]);
                     rpass.set_bind_group(1, font_bg, &[]);
                     rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                     rpass.set_vertex_buffer(1, self.text_instance_buffer.slice(..));
                     rpass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-                    rpass.draw_indexed(0..6, 0, 0..required);
+                    rpass.draw_indexed(0..6, 0, segment.text_range.clone());
                 }
             }
         }
@@ -748,22 +747,72 @@ pub trait ToBatches {
     #[cfg(feature = "text")]
     fn to_batches(
         &self,
-        quad_batch: &mut GuiBatch,
-        text_batch: &mut TextBatch,
+        batch: &mut GuiBatch,
         font: Option<&ferrous_assets::Font>,
     );
 
     /// Versión ligera sin soporte de texto.
     #[cfg(not(feature = "text"))]
-    fn to_batches(&self, quad_batch: &mut GuiBatch, text_batch: &mut TextBatch);
+    fn to_batches(&self, quad_batch: &mut GuiBatch);
+}
+
+impl GuiBatch {
+    #[cfg(feature = "text")]
+    pub fn draw_text(
+        &mut self,
+        font: &ferrous_assets::Font,
+        text: &str,
+        position: [f32; 2],
+        size: f32,
+        color: [f32; 4],
+    ) {
+        let atlas = &font.atlas;
+        let mut x = position[0];
+        let y = position[1];
+        let box_scale = 1.6;
+        let quad_size = size * box_scale;
+
+        for c in text.chars() {
+            if let Some(metric) = atlas.metrics.get(&c) {
+                let qx = x - (0.3 * size);
+                let qy = y - (0.3 * size);
+
+                self.push_text(TextQuad {
+                    pos: [qx, qy],
+                    size: [quad_size, quad_size],
+                    uv0: [metric.uv[0], metric.uv[1]],
+                    uv1: [metric.uv[2], metric.uv[3]],
+                    color,
+                });
+                x += metric.advance * size;
+            }
+        }
+        self.update_last_segment();
+    }
+
+    pub fn push_clip(&mut self, rect: ferrous_ui_core::Rect) {
+        let new_rect = if let Some(current) = self.current_scissor {
+            current.intersect(&rect)
+        } else {
+            rect
+        };
+        self.scissor_stack.push(new_rect);
+        self.current_scissor = Some(new_rect);
+        self.ensure_segment();
+    }
+
+    pub fn pop_clip(&mut self) {
+        self.scissor_stack.pop();
+        self.current_scissor = self.scissor_stack.last().copied();
+        self.ensure_segment();
+    }
 }
 
 impl ToBatches for ferrous_ui_core::RenderCommand {
     #[cfg(feature = "text")]
     fn to_batches(
         &self,
-        quad_batch: &mut GuiBatch,
-        text_batch: &mut TextBatch,
+        batch: &mut GuiBatch,
         font: Option<&ferrous_assets::Font>,
     ) {
         use ferrous_ui_core::RenderCommand;
@@ -774,7 +823,7 @@ impl ToBatches for ferrous_ui_core::RenderCommand {
                 radii,
                 flags,
             } => {
-                quad_batch.push(GuiQuad {
+                batch.push_quad(GuiQuad {
                     pos: [rect.x, rect.y],
                     size: [rect.width, rect.height],
                     uv0: [0.0, 0.0],
@@ -784,6 +833,7 @@ impl ToBatches for ferrous_ui_core::RenderCommand {
                     tex_index: 0,
                     flags: *flags,
                 });
+                batch.update_last_segment();
             }
             #[cfg(feature = "assets")]
             RenderCommand::Image {
@@ -793,8 +843,8 @@ impl ToBatches for ferrous_ui_core::RenderCommand {
                 uv1,
                 color,
             } => {
-                let idx = quad_batch.reserve_texture_slot(texture.clone());
-                quad_batch.push(GuiQuad {
+                let idx = batch.reserve_texture_slot(texture.clone());
+                batch.push_quad(GuiQuad {
                     pos: [rect.x, rect.y],
                     size: [rect.width, rect.height],
                     uv0: *uv0,
@@ -804,10 +854,7 @@ impl ToBatches for ferrous_ui_core::RenderCommand {
                     tex_index: idx,
                     flags: TEXTURED_BIT,
                 });
-            }
-            #[cfg(not(feature = "assets"))]
-            RenderCommand::Image { .. } => {
-                // Sin soporte de assets, ignoramos imágenes
+                batch.update_last_segment();
             }
             RenderCommand::Text {
                 rect,
@@ -815,18 +862,23 @@ impl ToBatches for ferrous_ui_core::RenderCommand {
                 color,
                 font_size,
             } => {
-                if let Some(f) = font {
-                    text_batch.draw_text(f, text, [rect.x, rect.y], *font_size, *color);
+                if let Some(font) = font {
+                    batch.draw_text(font, text, [rect.x, rect.y], *font_size, *color);
                 }
             }
-            RenderCommand::PushClip { .. } | RenderCommand::PopClip => {
-                // Scissoring no implementado aún en esta fase
+            RenderCommand::PushClip { rect } => {
+                batch.push_clip(*rect);
             }
+            RenderCommand::PopClip => {
+                batch.pop_clip();
+            }
+            #[cfg(not(feature = "assets"))]
+            RenderCommand::Image { .. } => {}
         }
     }
 
     #[cfg(not(feature = "text"))]
-    fn to_batches(&self, quad_batch: &mut GuiBatch, _text_batch: &mut TextBatch) {
+    fn to_batches(&self, quad_batch: &mut GuiBatch) {
         use ferrous_ui_core::RenderCommand;
         match self {
             RenderCommand::Quad {

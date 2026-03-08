@@ -11,12 +11,20 @@ pub enum UiEvent {
     /// Movimiento del puntero dentro de la ventana.
     MouseMove { pos: Vec2 },
     /// Pulsación de tecla física o evento de entrada de texto.
+    /// Pulsación de tecla física.
     KeyDown { 
-        /// Representación textual si aplica (ej. "a", "€").
-        text: String, 
         /// Código de tecla abstracto para funciones lógicas (ej. `GuiKey::Enter`).
-        code: Option<GuiKey> 
+        key: GuiKey 
     },
+    /// Liberación de tecla física.
+    KeyUp { 
+        /// Código de tecla abstracto para funciones lógicas (ej. `GuiKey::Enter`).
+        key: GuiKey 
+    },
+    /// Entrada de texto (carácter Unicode).
+    Char { c: char },
+    /// Movimiento de la rueda del ratón. Escala nominalmente ±1.0 por "clic".
+    MouseWheel { delta_x: f32, delta_y: f32 },
     /// El ratón entró en el área del widget.
     MouseEnter,
     /// El ratón salió del área del widget.

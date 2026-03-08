@@ -11,18 +11,60 @@ use serde::{Deserialize, Serialize};
 
 pub mod events;
 pub mod widgets;
+pub mod reactive;
+pub mod style_builder;
+pub mod theme;
 
 // Re-export common types
 pub use events::*;
 pub use widgets::*;
+pub use reactive::*;
+pub use style_builder::{StyleBuilder, StyleExt};
+pub use theme::{Theme, Color};
 
 /// Espacio rectilíneo definido por su posición de origen (esquina superior izquierda) y sus dimensiones.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct Rect {
     pub x: f32,
     pub y: f32,
     pub width: f32,
     pub height: f32,
+}
+
+impl Rect {
+    pub fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
+        Self { x, y, width, height }
+    }
+
+    /// Calcula la intersección entre dos rectángulos.
+    pub fn intersect(&self, other: &Rect) -> Rect {
+        let x = self.x.max(other.x);
+        let y = self.y.max(other.y);
+        let x2 = (self.x + self.width).min(other.x + other.width);
+        let y2 = (self.y + self.height).min(other.y + other.height);
+        
+        Rect {
+            x,
+            y,
+            width: (x2 - x).max(0.0),
+            height: (y2 - y).max(0.0),
+        }
+    }
+
+    /// Verifica si este rectángulo se solapa con otro.
+    pub fn intersects(&self, other: &Rect) -> bool {
+        let x = self.x.max(other.x);
+        let y = self.y.max(other.y);
+        let x2 = (self.x + self.width).min(other.x + other.width);
+        let y2 = (self.y + self.height).min(other.y + other.height);
+        
+        x2 > x && y2 > y
+    }
+
+    /// Verifica si un punto está dentro del rectángulo.
+    pub fn contains(&self, p: [f32; 2]) -> bool {
+        p[0] >= self.x && p[0] <= self.x + self.width && p[1] >= self.y && p[1] <= self.y + self.height
+    }
 }
 
 /// Define desplazamientos (offsets) para los cuatro lados de un rectángulo.
@@ -51,6 +93,8 @@ pub enum Units {
     Percentage(f32),
     /// Unidad de flexibilidad para repartir el espacio sobrante en layouts Flexbox.
     Flex(f32),
+    /// El tamaño se ajusta automáticamente al contenido o al contenedor.
+    Auto,
 }
 
 impl Default for Units {
@@ -95,6 +139,38 @@ impl Default for DisplayMode {
     }
 }
 
+/// Define cómo se posiciona el nodo respecto a sus hermanos y padre.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Position {
+    /// Posicionamiento relativo al flujo normal del layout.
+    Relative,
+    /// Posicionamiento absoluto, ignorando a los hermanos y basándose en desplazamientos.
+    Absolute,
+}
+
+impl Default for Position {
+    fn default() -> Self {
+        Position::Relative
+    }
+}
+
+/// Define cómo se comporta el contenido de un nodo cuando excede sus dimensiones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Overflow {
+    /// El contenido sobresale del nodo (por defecto).
+    Visible,
+    /// El contenido se recorta.
+    Hidden,
+    /// El contenido se recorta y habilita el desplazamiento.
+    Scroll,
+}
+
+impl Default for Overflow {
+    fn default() -> Self {
+        Overflow::Visible
+    }
+}
+
 /// Contenedor de propiedades visuales y de posicionamiento que definen cómo se verá y ubicará un Widget.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Style {
@@ -108,6 +184,12 @@ pub struct Style {
     pub alignment: Alignment,
     /// Modo de visualización de los hijos.
     pub display: DisplayMode,
+    /// Tipo de posicionamiento.
+    pub position: Position,
+    /// Desplazamientos para posicionamiento absoluto.
+    pub offsets: RectOffset,
+    /// Comportamiento del contenido excedente.
+    pub overflow: Overflow,
 }
 
 /// Representación simplificada de una operación de dibujo de la UI.
@@ -175,6 +257,18 @@ pub struct DirtyFlags {
     /// Permite saltar ramas enteras del árbol durante el recorrido si es false.
     pub subtree_dirty: bool,
 }
+/// Cola de comandos diferidos para la UI.
+/// Permite que los widgets soliciten acciones que deben ocurrir fuera del ciclo de eventos
+/// (ej: abrir una ventana, cerrar la app).
+pub struct CmdQueue {
+    // TODO: Implementar variantes de comandos diferidos
+}
+
+impl CmdQueue {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
 
 impl DirtyFlags {
     /// Crea un conjunto de flags "limpias".
@@ -199,9 +293,9 @@ impl DirtyFlags {
 }
 
 /// Interfaz fundamental para cualquier componente de la interfaz de usuario.
-pub trait Widget {
+pub trait Widget<App>: Send + Sync {
     /// Se invoca cuando el widget se inserta en el árbol. Es el lugar para añadir hijos iniciales.
-    fn build(&mut self, _ctx: &mut BuildContext) {}
+    fn build(&mut self, _ctx: &mut BuildContext<App>) {}
     
     /// Se invoca en cada frame para actualizar el estado interno (animaciones, timers, etc.).
     fn update(&mut self, _ctx: &mut UpdateContext) {}
@@ -216,26 +310,38 @@ pub trait Widget {
     fn draw(&self, _ctx: &mut DrawContext, _cmds: &mut Vec<RenderCommand>) {}
 
     /// Se invoca cuando ocurre un evento que afecta a este widget.
-    fn on_event(&mut self, _ctx: &mut EventContext, _event: &UiEvent) -> EventResponse {
+    fn on_event(&mut self, _ctx: &mut EventContext<App>, _event: &UiEvent) -> EventResponse {
         EventResponse::Ignored
+    }
+
+    /// Devuelve el desplazamiento de scroll actual si el widget lo soporta.
+    fn scroll_offset(&self) -> Vec2 {
+        Vec2::ZERO
     }
 }
 
 /// Contexto proporcionado durante la fase de procesamiento de eventos.
-pub struct EventContext {
+/// Incluye acceso al árbol, al estado de la aplicación y a una cola de comandos.
+pub struct EventContext<'a, App> {
     pub node_id: NodeId,
     pub rect: Rect,
+    pub theme: Theme,
+    pub tree: &'a mut UiTree<App>,
+    pub app: &'a mut App,
+    pub commands: &'a mut CmdQueue,
 }
+
 
 /// Contexto proporcionado durante la fase de construcción de la jerarquía.
-pub struct BuildContext<'a> {
-    pub tree: &'a mut UiTree,
+pub struct BuildContext<'a, App> {
+    pub tree: &'a mut UiTree<App>,
     pub node_id: NodeId,
+    pub theme: Theme,
 }
 
-impl<'a> BuildContext<'a> {
+impl<'a, App> BuildContext<'a, App> {
     /// Añade un widget hijo al nodo actual.
-    pub fn add_child(&mut self, widget: Box<dyn Widget>) -> NodeId {
+    pub fn add_child(&mut self, widget: Box<dyn Widget<App>>) -> NodeId {
         self.tree.add_node(widget, Some(self.node_id))
     }
 
@@ -251,13 +357,17 @@ pub struct UpdateContext {
     pub node_id: NodeId,
     /// Rectángulo actual del nodo.
     pub rect: Rect,
+    pub theme: Theme,
 }
 
 /// Contexto proporcionado durante la fase de cálculo de layout.
 pub struct LayoutContext {
     /// Espacio máximo disponible otorgado por el padre.
     pub available_space: Vec2,
+    /// Dimensiones ya conocidas (si las hay).
+    pub known_dimensions: (Option<f32>, Option<f32>),
     pub node_id: NodeId,
+    pub theme: Theme,
 }
 
 /// Contexto proporcionado durante la fase de generación de primitivas visuales.
@@ -265,12 +375,13 @@ pub struct DrawContext {
     pub node_id: NodeId,
     /// Rectángulo resuelto por el motor de layout donde debe dibujarse el widget.
     pub rect: Rect,
+    pub theme: Theme,
 }
 
 /// Unidad mínima de almacenamiento en el sistema reactivo.
 /// Contiene un widget y todos los metadatos necesarios para su gestión y renderizado optimizado.
-pub struct Node {
-    pub widget: Box<dyn Widget>,
+pub struct Node<App> {
+    pub widget: Box<dyn Widget<App>>,
     pub parent: Option<NodeId>,
     pub children: Vec<NodeId>,
     pub style: Style,
@@ -283,17 +394,28 @@ pub struct Node {
 
 /// Gestor principal del árbol de widgets. 
 /// Mantiene la jerarquía usando un `SlotMap` para garantizar acceso O(1) y estabilidad de IDs.
-pub struct UiTree {
-    nodes: SlotMap<NodeId, Node>,
+pub struct UiTree<App> {
+    nodes: SlotMap<NodeId, Node<App>>,
     root: Option<NodeId>,
+    /// Mapeo de identificadores de texto a NodeIds para búsquedas rápidas.
+    id_map: std::collections::HashMap<String, NodeId>,
+    /// Sistema que gestiona las actualizaciones reactivas de los nodos.
+    pub reactivity: ReactivitySystem,
+    pub theme: Theme,
+    /// Cola de comandos diferidos.
+    pub commands: CmdQueue,
 }
 
-impl UiTree {
+impl<App> UiTree<App> {
     /// Crea un árbol de UI vacío.
     pub fn new() -> Self {
         Self {
             nodes: SlotMap::with_key(),
             root: None,
+            id_map: std::collections::HashMap::new(),
+            reactivity: ReactivitySystem::new(),
+            theme: Theme::default(),
+            commands: CmdQueue::new(),
         }
     }
 
@@ -313,13 +435,19 @@ impl UiTree {
             node.children.clear();
         }
 
+        // Extraemos temporalmente el widget para evitar doble préstamo del tree
+        // mientras llamamos a widget.build(&mut ctx).
+        // Usamos un placeholder temporal.
+        // NOTA: PlaceholderWidget debe ser compatible con <App>.
+        // Como es un marcador, su implementación de Widget<App> será genérica.
         let mut widget = if let Some(node) = self.nodes.get_mut(id) {
-            std::mem::replace(&mut node.widget, Box::new(PlaceholderWidget))
+            std::mem::replace(&mut node.widget, Box::new(crate::widgets::PlaceholderWidget))
         } else {
             return;
         };
 
-        let mut ctx = BuildContext { tree: self, node_id: id };
+        let theme = self.theme;
+        let mut ctx = BuildContext { tree: self, node_id: id, theme };
         widget.build(&mut ctx);
 
         let children = if let Some(node) = self.nodes.get_mut(id) {
@@ -336,10 +464,18 @@ impl UiTree {
 
     /// Actualiza la lógica de todos los widgets del árbol.
     pub fn update(&mut self, delta_time: f32) {
+        // Extraemos los nodos pendientes antes de mutar el árbol, evitando el
+        // borrow doble que ocurriría con `self.reactivity.apply(self)`.
+        let dirty_nodes = std::mem::take(&mut self.reactivity.pending_dirty_nodes);
+        for id in dirty_nodes {
+            self.mark_paint_dirty(id);
+        }
+
         if let Some(root_id) = self.root {
             self.update_node(root_id, delta_time);
         }
     }
+
 
     fn update_node(&mut self, id: NodeId, delta_time: f32) {
         let children = if let Some(node) = self.nodes.get(id) {
@@ -353,10 +489,12 @@ impl UiTree {
         }
 
         if let Some(node) = self.nodes.get_mut(id) {
+            let theme = self.theme;
             let mut ctx = UpdateContext { 
                 delta_time, 
                 node_id: id,
                 rect: node.rect,
+                theme,
             };
             node.widget.update(&mut ctx);
         }
@@ -364,25 +502,34 @@ impl UiTree {
 
     /// Recolecta los comandos de renderizado de todo el árbol.
     /// Si un nodo no está marcado como `paint_dirty`, se utilizan los comandos cacheados del frame anterior.
-    pub fn collect_commands(&mut self, cmds: &mut Vec<RenderCommand>) {
+    /// Solo se procesan los nodos que intersectan con el `viewport` proporcionado (Culling).
+    pub fn collect_commands(&mut self, cmds: &mut Vec<RenderCommand>, viewport: Rect) {
         if let Some(root_id) = self.root {
-            self.collect_node_commands(root_id, cmds);
+            self.collect_node_commands(root_id, cmds, viewport);
         }
     }
 
-    fn collect_node_commands(&mut self, id: NodeId, cmds: &mut Vec<RenderCommand>) {
-        let (is_dirty, is_subtree_dirty) = if let Some(node) = self.nodes.get(id) {
-            (node.dirty.is_dirty(), node.dirty.subtree_dirty)
+    fn collect_node_commands(&mut self, id: NodeId, cmds: &mut Vec<RenderCommand>, viewport: Rect) {
+        let (is_dirty, is_subtree_dirty, node_rect) = if let Some(node) = self.nodes.get(id) {
+            (node.dirty.is_dirty(), node.dirty.subtree_dirty, node.rect)
         } else {
             return;
         };
 
+        // Culling: Si el nodo está completamente fuera del viewport, lo ignoramos.
+        // Asumimos que los hijos están contenidos en el padre (modelo de UI estándar).
+        if !node_rect.intersects(&viewport) {
+            return;
+        }
+
         if is_dirty {
             if let Some(node) = self.nodes.get_mut(id) {
                 node.cached_cmds.clear();
+                let theme = self.theme;
                 let mut ctx = DrawContext { 
                     node_id: id,
                     rect: node.rect,
+                    theme,
                 };
                 node.widget.draw(&mut ctx, &mut node.cached_cmds);
                 node.dirty.paint = false;
@@ -393,16 +540,26 @@ impl UiTree {
 
         // Añadir los comandos (ya sean nuevos o cacheados) a la lista global.
         if let Some(node) = self.nodes.get(id) {
+            // Si el nodo tiene recorte (Hidden o Scroll), iniciamos un clipping
+            let overflow_clip = node.style.overflow != Overflow::Visible;
+            if overflow_clip {
+                cmds.push(RenderCommand::PushClip { rect: node.rect });
+            }
+
             cmds.extend(node.cached_cmds.iter().cloned());
             
             if is_subtree_dirty {
                 let children = node.children.clone();
                 for child_id in children {
-                    self.collect_node_commands(child_id, cmds);
+                    self.collect_node_commands(child_id, cmds, viewport);
                 }
                 if let Some(node) = self.nodes.get_mut(id) {
                     node.dirty.subtree_dirty = false;
                 }
+            }
+
+            if overflow_clip {
+                cmds.push(RenderCommand::PopClip);
             }
         }
     }
@@ -443,7 +600,12 @@ impl UiTree {
     }
 
     /// Inserta un nuevo nodo en el árbol.
-    pub fn add_node(&mut self, widget: Box<dyn Widget>, parent: Option<NodeId>) -> NodeId {
+    pub fn add_node(&mut self, widget: Box<dyn Widget<App>>, parent: Option<NodeId>) -> NodeId {
+        self.add_node_with_id(widget, parent, None)
+    }
+
+    /// Inserta un nuevo nodo en el árbol con un identificador opcional.
+    pub fn add_node_with_id(&mut self, widget: Box<dyn Widget<App>>, parent: Option<NodeId>, id_str: Option<String>) -> NodeId {
         let id = self.nodes.insert(Node {
             widget,
             parent,
@@ -453,6 +615,10 @@ impl UiTree {
             rect: Rect::default(),
             cached_cmds: Vec::new(),
         });
+
+        if let Some(s) = id_str {
+            self.id_map.insert(s, id);
+        }
 
         if let Some(parent_id) = parent {
             if let Some(parent_node) = self.nodes.get_mut(parent_id) {
@@ -503,7 +669,16 @@ impl UiTree {
             // No llamamos a mark_layout_dirty aquí porque esto suele ser el RESULTADO del layout.
         }
     }
-    pub fn get_node_mut(&mut self, id: NodeId) -> Option<&mut Node> {
+    pub fn get_node_mut(&mut self, id: NodeId) -> Option<&mut Node<App>> {
         self.nodes.get_mut(id)
+    }
+
+    pub fn get_node(&self, id: NodeId) -> Option<&Node<App>> {
+        self.nodes.get(id)
+    }
+
+    /// Busca un nodo por su identificador de texto.
+    pub fn get_node_by_id(&self, id_str: &str) -> Option<NodeId> {
+        self.id_map.get(id_str).copied()
     }
 }

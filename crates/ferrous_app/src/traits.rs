@@ -1,11 +1,11 @@
 use crate::context::AppContext;
 use ferrous_assets::Font;
-use ferrous_gui::{GuiBatch, TextBatch, Ui};
+use ferrous_gui::GuiBatch;
+use ferrous_ui_core::UiTree;
 
 /// Aggregates all mutable drawing resources passed to [`FerrousApp::draw_ui`].
 pub struct DrawContext<'a, 'b> {
     pub gui: &'a mut GuiBatch,
-    pub text: &'a mut TextBatch,
     pub font: &'a Font,
     pub ctx: &'a mut AppContext<'b>,
 }
@@ -60,12 +60,11 @@ pub trait FerrousApp {
     /// Register persistent GUI widgets (called once, during `resumed`).
     ///
     /// Use `ui.add(widget)` / `ui.register_viewport(widget)` here.
-    fn configure_ui(&mut self, ui: &mut Ui) {}
+    fn configure_ui(&mut self, ui: &mut UiTree) {}
 
     /// Emit 2-D draw commands for this frame.
     ///
-    /// Called after `update`. Use `dc.gui` for shapes/images and `dc.text`
-    /// for text rendering.
+    /// Called after `update`. Use `dc.gui` for shapes, images and text rendering.
     fn draw_ui(&mut self, dc: &mut DrawContext<'_, '_>) {}
 
     /// Emit 3-D draw commands for this frame.

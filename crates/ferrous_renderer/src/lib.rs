@@ -35,7 +35,7 @@ pub mod scene;
 // -- Public re-exports --------------------------------------------------------
 
 #[cfg(feature = "gui")]
-pub use ferrous_gui::{GuiBatch, GuiQuad};
+pub use ferrous_ui_render::{GuiBatch, GuiQuad};
 pub use glam;
 
 pub use camera::{Camera, Controller, GpuCamera};
@@ -76,8 +76,7 @@ pub use resources::texture_registry::{
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[cfg(feature = "gui")]
-use ferrous_gui::TextBatch;
+// TextBatch is no longer used separately
 
 use camera::controller::OrbitState;
 use graph::frame_packet::CameraPacket;
@@ -766,9 +765,8 @@ impl Renderer {
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         ui_batch: Option<GuiBatch>,
-        text_batch: Option<TextBatch>,
     ) {
-        self.do_render(encoder, RenderDest::Target, ui_batch, text_batch);
+        self.do_render(encoder, RenderDest::Target, ui_batch);
     }
 
     /// Renders directly into an external `TextureView` (e.g. swapchain frame).
@@ -778,9 +776,8 @@ impl Renderer {
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
         ui_batch: Option<GuiBatch>,
-        text_batch: Option<TextBatch>,
     ) {
-        self.do_render(encoder, RenderDest::View(view), ui_batch, text_batch);
+        self.do_render(encoder, RenderDest::View(view), ui_batch);
     }
 
     // -- Pass management -----------------------------------------------------
@@ -1251,7 +1248,6 @@ impl Renderer {
         encoder: &mut wgpu::CommandEncoder,
         dest: RenderDest<'_>,
         ui_batch: Option<GuiBatch>,
-        text_batch: Option<TextBatch>,
     ) {
         self.camera_system.sync_gpu(&self.context.queue);
 
@@ -1265,9 +1261,6 @@ impl Renderer {
         self.render_stats = stats;
 
         if let Some(b) = ui_batch {
-            packet.insert(b);
-        }
-        if let Some(b) = text_batch {
             packet.insert(b);
         }
 

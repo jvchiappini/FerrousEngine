@@ -4,7 +4,7 @@
 //! Primitives and the main renderer now live in that crate.
 
 pub use ferrous_ui_render::{
-    GuiBatch, GuiQuad, GuiRenderer, TextBatch, TextQuad, MAX_TEXTURE_SLOTS, TEXTURED_BIT,
+    GuiBatch, GuiQuad, GuiRenderer, TextQuad, MAX_TEXTURE_SLOTS, TEXTURED_BIT,
 };
 
 /// Dibuja solo el borde (stroke) de un rectángulo, con radio opcional.

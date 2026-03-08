@@ -1,6 +1,6 @@
 //! `ApplicationHandler` implementation for `Runner` — window lifecycle and events.
 
-use ferrous_core::glam::Vec3;
+use ferrous_core::glam::{self, Vec3};
 use std::sync::Arc;
 use winit::{
     application::ApplicationHandler,
@@ -66,8 +66,7 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                 .set_clear_color(self.config.background_color.to_wgpu());
             gfx.renderer
                 .set_render_style(self.config.render_style.clone());
-            // Propagate the app mode to the renderer so that Desktop2D
-            // applications skip the world/post-process passes.
+            // Propagate the app mode to the renderer
             if self.config.mode == AppMode::Desktop2D {
                 gfx.renderer
                     .set_mode(ferrous_renderer::RendererMode::Desktop2D);
@@ -84,72 +83,50 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                     .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
                 self.font = Some(font);
             } else if let Some(path) = &self.config.font_path {
-                use ferrous_assets::font_importer::FontData;
-                let handle = self.asset_server.load::<FontData>(path.as_str());
+                let handle = self.asset_server.load::<ferrous_assets::font_importer::FontData>(path.as_str());
                 self.font_asset_handle = Some(handle);
             }
 
             {
                 let time = self.clock.peek();
-                let backend = gfx.renderer.context.backend;
                 let mut ctx = AppContext {
                     input: &self.input,
                     time,
                     window_size: self.window_size,
                     window: &window,
                     viewport: self.viewport,
-                    render_stats: Default::default(),
-                    camera_eye: Vec3::ZERO,
-                    camera_target: Vec3::ZERO,
-                    gizmos: Vec::new(),
-                    world: &mut self.world,
-                    render: RenderContext::new(&mut gfx.renderer),
-                    exit_requested: false,
-                    _gpu_backend: backend,
-                    asset_server: &mut self.asset_server,
+                    backend: gfx.renderer.context.backend,
                 };
-                self.app.setup(&mut ctx);
-                self.viewport = ctx.viewport;
+                self.app.init(&mut ctx, &mut self.world, &mut self.resources);
             }
 
-            self.ui.set_viewport_rect(
-                self.viewport.x as f32,
-                self.viewport.y as f32,
-                self.viewport.width as f32,
-                self.viewport.height as f32,
-            );
-
-            self.window = Some(window.clone());
             self.graphics = Some(gfx);
+            self.window = Some(window);
         }
 
-        // ── wasm32: async GPU init via spawn_local ───────────────────────────
+        // ── Web (WASM): asynchronous init ───────────────────────────────────
         #[cfg(target_arch = "wasm32")]
         {
-            let slot: Rc<RefCell<Option<GraphicsState>>> = Rc::new(RefCell::new(None));
+            let slot = Rc::new(RefCell::new(None));
+            let font_slot = Rc::new(RefCell::new(None));
             let slot_clone = slot.clone();
-            self.gfx_pending = Some(slot);
-
-            let w = self.config.width;
-            let h = self.config.height;
-            let vsync = self.config.vsync;
-            let samples = self.config.sample_count;
+            let font_slot_clone = font_slot.clone();
+            let window_clone = window.clone();
+            let app_mode = self.config.mode;
             let bg = self.config.background_color.to_wgpu();
             let vp = self.viewport;
-            let font_bytes = self.config.font_bytes;
-            let hdri_path = self.config.hdri_path.clone();
             let render_style = self.config.render_style.clone();
-            let app_mode = self.config.mode;
+            let vsync = self.config.vsync;
+            let samples = self.config.sample_count;
+            let hdri_path = self.config.hdri_path.clone();
+            let font_bytes = self.config.font_bytes;
 
-            let font_slot: Rc<RefCell<Option<Font>>> = Rc::new(RefCell::new(None));
-            let font_slot_clone = font_slot.clone();
-            let window_for_closure = window.clone();
-
+            self.gfx_pending = Some(slot);
             wasm_bindgen_futures::spawn_local(async move {
                 let mut gfx = GraphicsState::new(
-                    &window_for_closure,
-                    w,
-                    h,
+                    &window_clone,
+                    vp.width,
+                    vp.height,
                     vsync,
                     samples,
                     hdri_path.clone(),
@@ -191,21 +168,39 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
             _ => self.last_action_time = Instant::now(),
         }
 
-        // translate the winit event into primitive calls on `Ui` so that the
-        // GUI crate itself remains backend‑agnostic.
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.input.set_mouse_position(position.x, position.y);
-                self.ui.mouse_move(position.x, position.y);
+                self.events.dispatch_event(&mut self.ui, &mut self.app, ferrous_ui_core::UiEvent::MouseMove { 
+                    pos: glam::Vec2::new(position.x as f32, position.y as f32) 
+                });
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let pressed = state == winit::event::ElementState::Pressed;
                 self.input.update_mouse_button(button.into(), pressed);
                 let (mx, my) = self.input.mouse_position();
-                self.ui.mouse_input(mx, my, pressed);
+                let pos = glam::Vec2::new(mx as f32, my as f32);
+                let button = ferrous_events::winit_to_mousebutton(button);
+                if pressed {
+                    self.events.dispatch_event(&mut self.ui, &mut self.app, ferrous_ui_core::UiEvent::MouseDown { 
+                        button, 
+                        pos 
+                    });
+                } else {
+                    self.events.dispatch_event(&mut self.ui, &mut self.app, ferrous_ui_core::UiEvent::MouseUp { 
+                        button, 
+                        pos 
+                    });
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let (dx, dy) = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(x, y) => (x, y),
+                    winit::event::MouseScrollDelta::PixelDelta(pos) => (pos.x as f32 / 20.0, pos.y as f32 / 20.0),
+                };
+                self.events.dispatch_event(&mut self.ui, &mut self.app, ferrous_ui_core::UiEvent::MouseWheel { delta_x: dx, delta_y: dy });
             }
             WindowEvent::KeyboardInput { ref event, .. } => {
-                // borrow `text` so we don't move it out of the event
                 let winit::event::KeyEvent {
                     physical_key,
                     state,
@@ -216,92 +211,36 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                     self.input
                         .update_key(code.into(), state == winit::event::ElementState::Pressed);
                 }
-                self.ui.keyboard_input(
-                    text.as_deref(),
-                    if let winit::keyboard::PhysicalKey::Code(k) = physical_key {
-                        Some((k).into())
+                if let Some(key) = if let winit::keyboard::PhysicalKey::Code(k) = physical_key {
+                    Some(ferrous_events::winit_to_guikey(k))
+                } else {
+                    None
+                } {
+                    if state == winit::event::ElementState::Pressed {
+                        self.events.dispatch_event(&mut self.ui, &mut self.app, ferrous_ui_core::UiEvent::KeyDown { key });
                     } else {
-                        None
-                    },
-                    state == winit::event::ElementState::Pressed,
-                );
-            }
-            _ => {}
-        }
-
-        if let Some(window) = self.window.clone() {
-            let time = self.clock.peek();
-            let backend = self
-                .graphics
-                .as_ref()
-                .map(|g| g.renderer.context.backend)
-                .unwrap_or(wgpu::Backend::Empty);
-            if let Some(gfx) = self.graphics.as_mut() {
-                let mut ctx = AppContext {
-                    input: &self.input,
-                    time,
-                    window_size: self.window_size,
-                    window: &window,
-                    viewport: self.viewport,
-                    render_stats: Default::default(),
-                    camera_eye: Vec3::ZERO,
-                    camera_target: Vec3::ZERO,
-                    gizmos: Vec::new(),
-                    world: &mut self.world,
-                    render: RenderContext::new(&mut gfx.renderer),
-                    exit_requested: false,
-                    _gpu_backend: backend,
-                    asset_server: &mut self.asset_server,
-                };
-                self.app.on_window_event(&event, &mut ctx);
-                if ctx.exit_requested {
-                    event_loop.exit();
-                    return;
+                        self.events.dispatch_event(&mut self.ui, &mut self.app, ferrous_ui_core::UiEvent::KeyUp { key });
+                    }
                 }
-            }
-        }
-
-        match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Resized(size) => {
-                let new_size = (size.width, size.height);
-                if let Some(gfx) = &mut self.graphics {
-                    gfx.resize(size.width, size.height);
-                    self.window_size = new_size;
-                }
-                if let Some(window) = self.window.clone() {
-                    if let Some(gfx) = self.graphics.as_mut() {
-                        let time = self.clock.peek();
-                        let backend = gfx.renderer.context.backend;
-                        let mut ctx = AppContext {
-                            input: &self.input,
-                            time,
-                            window_size: new_size,
-                            window: &window,
-                            viewport: self.viewport,
-                            render_stats: Default::default(),
-                            camera_eye: Vec3::ZERO,
-                            camera_target: Vec3::ZERO,
-                            gizmos: Vec::new(),
-                            world: &mut self.world,
-                            render: RenderContext::new(&mut gfx.renderer),
-                            exit_requested: false,
-                            _gpu_backend: backend,
-                            asset_server: &mut self.asset_server,
-                        };
-                        self.app.on_resize(new_size, &mut ctx);
-                        self.viewport = ctx.viewport;
+                
+                if let Some(txt) = text {
+                    if state == winit::event::ElementState::Pressed {
+                        for c in txt.chars() {
+                            self.events.dispatch_event(&mut self.ui, &mut self.app, ferrous_ui_core::UiEvent::Char { c });
+                        }
                     }
                 }
             }
-            WindowEvent::RedrawRequested => {
-                self.render_frame(event_loop);
+            WindowEvent::Resized(size) => {
+                if let Some(gfx) = &mut self.graphics {
+                    gfx.resize(size.width, size.height);
+                }
+                self.window_size = (size.width, size.height);
+            }
+            WindowEvent::CloseRequested => {
+                event_loop.exit();
             }
             _ => {}
         }
-    }
-
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        self.about_to_wait_impl(event_loop);
     }
 }

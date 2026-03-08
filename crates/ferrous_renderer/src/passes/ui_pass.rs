@@ -1,15 +1,15 @@
 /// UI overlay pass — composites GUI quads and text on top of the scene.
 ///
-/// Reads `ferrous_gui::GuiBatch` and `ferrous_gui::TextBatch` from the
-/// `FramePacket` extras map (inserted by the app layer).  If neither is
-/// present the pass is a no-op that frame.
+/// Reads `ferrous_ui_render::GuiBatch` from the
+/// `FramePacket` extras map (inserted by the app layer).  If it is
+/// not present the pass is a no-op that frame.
 ///
 /// The `on_resize` hook keeps the GUI projection matrix in sync without
 /// needing any downcast from the `Renderer`.
 #[cfg(feature = "gui")]
 use wgpu::{CommandEncoder, Device, Queue, TextureView};
 
-use ferrous_ui_render::{GuiBatch, GuiRenderer, TextBatch};
+use ferrous_ui_render::{GuiBatch, GuiRenderer};
 
 use crate::graph::{FramePacket, RenderPass};
 
@@ -65,11 +65,9 @@ impl RenderPass for UiPass {
         packet: &FramePacket,
     ) {
         let ui_batch = packet.get::<GuiBatch>();
-        let text_batch = packet.get::<TextBatch>();
 
-        let has_ui = ui_batch.map_or(false, |b| !b.is_empty());
-        let has_text = text_batch.map_or(false, |b| !b.is_empty());
-        if !has_ui && !has_text {
+        let has_ui = ui_batch.map_or(false, |b| !b.segments.is_empty());
+        if !has_ui {
             return;
         }
 
@@ -83,7 +81,6 @@ impl RenderPass for UiPass {
                 resolve_target,
                 batch,
                 queue,
-                text_batch,
                 clear,
             ),
             None => self.renderer.render(
@@ -92,7 +89,6 @@ impl RenderPass for UiPass {
                 resolve_target,
                 batch,
                 queue,
-                text_batch,
             ),
         }
     }

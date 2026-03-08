@@ -144,10 +144,12 @@ impl Node {
         // si el size está fijado en px reemplazamos
         match self.style.size.0 {
             Units::Px(val) if val > 0.0 => w = val,
+            Units::Auto => w = self.desired_size.0,
             _ => {}
         }
         match self.style.size.1 {
             Units::Px(val) if val > 0.0 => h = val,
+            Units::Auto => h = self.desired_size.1,
             _ => {}
         }
 
@@ -173,15 +175,15 @@ impl Node {
         match self.style.size.0 {
             Units::Px(v) if v > 0.0 => final_w = v,
             Units::Percentage(p) => final_w = inner_w * p / 100.0,
-            Units::Flex(_) => {
-                // se asigna por el padre; aquí no hacemos nada
+            Units::Flex(_) | Units::Auto => {
+                // se asigna por el padre o se queda con inner_w por defecto
             }
             _ => {}
         }
         match self.style.size.1 {
             Units::Px(v) if v > 0.0 => final_h = v,
             Units::Percentage(p) => final_h = inner_h * p / 100.0,
-            Units::Flex(_) => {}
+            Units::Flex(_) | Units::Auto => {}
             _ => {}
         }
 
@@ -200,12 +202,12 @@ impl Node {
                     let cw = match child.style.size.0 {
                         Units::Px(v) => v,
                         Units::Percentage(p) => final_w * p / 100.0,
-                        Units::Flex(_) => child.desired_size.0,
+                        Units::Flex(_) | Units::Auto => child.desired_size.0,
                     };
                     let ch = match child.style.size.1 {
                         Units::Px(v) => v,
                         Units::Percentage(p) => final_h * p / 100.0,
-                        Units::Flex(_) => child.desired_size.1,
+                        Units::Flex(_) | Units::Auto => child.desired_size.1,
                     };
                     child.layout(x + self.style.padding.left, cy, cw, ch);
                     cy += ch + child.style.margin.top + child.style.margin.bottom;
@@ -226,6 +228,9 @@ impl Node {
                                 + child.style.margin.left
                                 + child.style.margin.right
                         }
+                        Units::Auto => {
+                            total_fixed += child.desired_size.0 + child.style.margin.left + child.style.margin.right
+                        }
                     }
                 }
                 let mut cx = x + self.style.padding.left;
@@ -236,12 +241,12 @@ impl Node {
                         }
                         Units::Px(v) => v,
                         Units::Percentage(p) => final_w * p / 100.0,
-                        _ => child.desired_size.0,
+                        Units::Flex(_) | Units::Auto => child.desired_size.0,
                     };
                     let ch = match child.style.size.1 {
                         Units::Px(v) => v,
                         Units::Percentage(p) => final_h * p / 100.0,
-                        Units::Flex(_) => child.desired_size.1,
+                        Units::Flex(_) | Units::Auto => child.desired_size.1,
                     };
                     child.layout(cx, y + self.style.padding.top, cw, ch);
                     cx += cw + child.style.margin.left + child.style.margin.right;
@@ -261,6 +266,9 @@ impl Node {
                                 + child.style.margin.top
                                 + child.style.margin.bottom
                         }
+                        Units::Auto => {
+                            total_fixed += child.desired_size.1 + child.style.margin.top + child.style.margin.bottom
+                        }
                     }
                 }
                 let mut cy = y + self.style.padding.top;
@@ -271,12 +279,12 @@ impl Node {
                         }
                         Units::Px(v) => v,
                         Units::Percentage(p) => final_h * p / 100.0,
-                        _ => child.desired_size.1,
+                        Units::Flex(_) | Units::Auto => child.desired_size.1,
                     };
                     let cw = match child.style.size.0 {
                         Units::Px(v) => v,
                         Units::Percentage(p) => final_w * p / 100.0,
-                        Units::Flex(_) => child.desired_size.0,
+                        Units::Flex(_) | Units::Auto => child.desired_size.0,
                     };
                     child.layout(x + self.style.padding.left, cy, cw, ch);
                     cy += ch + child.style.margin.top + child.style.margin.bottom;
@@ -360,14 +368,12 @@ mod tests {
             flags: 0,
         };
         let mut qb = GuiBatch::new();
-        let mut tb = TextBatch::new();
         // no font needed for quad case
         #[cfg(feature = "text")]
-        cmd.to_batches(&mut qb, &mut tb, None);
+        cmd.to_batches(&mut qb, None);
         #[cfg(not(feature = "text"))]
-        cmd.to_batches(&mut qb, &mut tb);
+        cmd.to_batches(&mut qb);
         assert_eq!(qb.len(), 1);
-        assert!(tb.is_empty());
     }
 
     #[cfg(feature = "assets")]
@@ -390,14 +396,16 @@ mod tests {
             color: [1.0, 1.0, 1.0, 1.0],
         };
         let mut qb = GuiBatch::new();
-        let mut tb = TextBatch::new();
         #[cfg(feature = "text")]
-        cmd.to_batches(&mut qb, &mut tb, None);
+        cmd.to_batches(&mut qb, None);
         #[cfg(not(feature = "text"))]
-        cmd.to_batches(&mut qb, &mut tb);
+        cmd.to_batches(&mut qb);
         assert_eq!(qb.len(), 1);
         // reserve the same texture again and ensure the slot index does not grow
-        cmd.to_batches(&mut qb, &mut tb);
+        #[cfg(feature = "text")]
+        cmd.to_batches(&mut qb, None);
+        #[cfg(not(feature = "text"))]
+        cmd.to_batches(&mut qb);
         assert_eq!(qb.len(), 2);
     }
 
@@ -420,9 +428,11 @@ mod tests {
         let mut cmds = Vec::new();
         root.collect_render_commands(&mut cmds);
         let mut qb = GuiBatch::new();
-        let mut tb = TextBatch::new();
         for c in &cmds {
-            c.to_batches(&mut qb, &mut tb, None);
+            #[cfg(feature = "text")]
+            c.to_batches(&mut qb, None);
+            #[cfg(not(feature = "text"))]
+            c.to_batches(&mut qb);
         }
         // expect at least one quad and possibly text (text_batch will be empty because no font)
         assert!(qb.len() >= 1);

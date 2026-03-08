@@ -4,7 +4,7 @@
 //! Proporciona un lenguaje común para que los widgets reaccionen a clicks, movimientos,
 //! y pulsaciones de teclas sin conocer a `winit` o APIs similares.
 
-use ferrous_ui_core::{NodeId, UiTree, UiEvent, GuiKey, Rect};
+use ferrous_ui_core::{NodeId, UiTree, UiEvent, Rect, EventResponse, EventContext, GuiKey};
 use glam::Vec2;
 
 /// Gestor del estado de foco y hover del sistema de eventos.
@@ -26,7 +26,7 @@ impl EventManager {
     }
 
     /// Realiza un hit-test recursivo para encontrar el nodo más profundo que contiene el punto dado.
-    pub fn hit_test(&self, tree: &UiTree, pos: Vec2) -> Option<NodeId> {
+    pub fn hit_test<App>(&self, tree: &UiTree<App>, pos: Vec2) -> Option<NodeId> {
         if let Some(root_id) = tree.get_root() {
             self.hit_test_recursive(tree, root_id, pos)
         } else {
@@ -34,7 +34,7 @@ impl EventManager {
         }
     }
 
-    fn hit_test_recursive(&self, tree: &UiTree, id: NodeId, pos: Vec2) -> Option<NodeId> {
+    fn hit_test_recursive<App>(&self, tree: &UiTree<App>, id: NodeId, pos: Vec2) -> Option<NodeId> {
         let rect = tree.get_node_rect(id)?;
         
         // Si el punto no está en el nodo, abortamos esta rama
@@ -61,7 +61,7 @@ impl EventManager {
     }
 
     /// Despacha un evento al árbol de UI, manejando la propagación (bubbling) y el estado de foco/hover.
-    pub fn dispatch_event(&mut self, tree: &mut UiTree, event: UiEvent) {
+    pub fn dispatch_event<App>(&mut self, tree: &mut UiTree<App>, app: &mut App, event: UiEvent) {
         match event {
             UiEvent::MouseMove { pos } => {
                 let new_hover = self.hit_test(tree, pos);
@@ -69,77 +69,109 @@ impl EventManager {
                 if new_hover != self.hovered_node {
                     // Mouse Leave
                     if let Some(old_id) = self.hovered_node {
-                        self.send_to_node(tree, old_id, UiEvent::MouseLeave);
+                        self.send_to_node(tree, app, old_id, UiEvent::MouseLeave);
                     }
                     // Mouse Enter
                     if let Some(new_id) = new_hover {
-                        self.send_to_node(tree, new_id, UiEvent::MouseEnter);
+                        self.send_to_node(tree, app, new_id, UiEvent::MouseEnter);
                     }
                     self.hovered_node = new_hover;
                 }
 
                 // Propagar el movimiento al nodo hovered
                 if let Some(id) = self.hovered_node {
-                    self.bubble_event(tree, id, UiEvent::MouseMove { pos });
+                    self.bubble_event(tree, app, id, UiEvent::MouseMove { pos });
                 }
             }
             UiEvent::MouseDown { button, pos } => {
                 let target = self.hit_test(tree, pos);
                 if let Some(id) = target {
                     self.focused_node = Some(id);
-                    self.bubble_event(tree, id, UiEvent::MouseDown { button, pos });
+                    self.bubble_event(tree, app, id, UiEvent::MouseDown { button, pos });
                 } else {
                     self.focused_node = None;
                 }
             }
             UiEvent::MouseUp { button, pos } => {
                 if let Some(id) = self.hit_test(tree, pos) {
-                    self.bubble_event(tree, id, UiEvent::MouseUp { button, pos });
+                    self.bubble_event(tree, app, id, UiEvent::MouseUp { button, pos });
                 }
             }
-            UiEvent::KeyDown { text, code } => {
+            UiEvent::KeyDown { key } => {
                 if let Some(id) = self.focused_node {
-                    self.bubble_event(tree, id, UiEvent::KeyDown { text, code });
+                    self.bubble_event(tree, app, id, UiEvent::KeyDown { key });
+                }
+            }
+            UiEvent::KeyUp { key } => {
+                if let Some(id) = self.focused_node {
+                    self.bubble_event(tree, app, id, UiEvent::KeyUp { key });
+                }
+            }
+            UiEvent::Char { c } => {
+                if let Some(id) = self.focused_node {
+                    self.bubble_event(tree, app, id, UiEvent::Char { c });
+                }
+            }
+            UiEvent::MouseWheel { delta_x, delta_y } => {
+                if let Some(id) = self.hovered_node {
+                    self.bubble_event(tree, app, id, UiEvent::MouseWheel { delta_x, delta_y });
                 }
             }
             _ => {}
         }
     }
 
-    fn send_to_node(&mut self, tree: &mut UiTree, id: ferrous_ui_core::NodeId, event: UiEvent) -> ferrous_ui_core::EventResponse {
-        let rect = tree.get_node_rect(id).unwrap_or_default();
-        let mut ctx = ferrous_ui_core::EventContext { node_id: id, rect };
-        
-        let response = if let Some(node) = tree.get_node_mut(id) {
-            node.widget.on_event(&mut ctx, &event)
+    fn send_to_node<App>(&mut self, tree: &mut UiTree<App>, app: &mut App, id: NodeId, event: UiEvent) -> EventResponse {
+        let (rect, theme) = if let Some(node) = tree.get_node(id) {
+            (node.rect, tree.theme)
         } else {
-            ferrous_ui_core::EventResponse::Ignored
+            return EventResponse::Ignored;
         };
 
-        if let ferrous_ui_core::EventResponse::Redraw = response {
+        // Extraemos el widget temporalmente para evitar doble préstamo mutable del árbol
+        // durante la creación del EventContext que requiere &mut UiTree.
+        let mut widget = if let Some(n) = tree.get_node_mut(id) {
+            std::mem::replace(&mut n.widget, Box::new(ferrous_ui_core::widgets::PlaceholderWidget))
+        } else {
+            return EventResponse::Ignored;
+        };
+
+        let response = {
+            let mut ctx = EventContext {
+                node_id: id,
+                rect,
+                theme,
+                tree,
+                app,
+                commands: &mut tree.commands,
+            };
+            widget.on_event(&mut ctx, &event)
+        };
+
+        // Devolvemos el widget a su nodo
+        if let Some(n) = tree.get_node_mut(id) {
+            n.widget = widget;
+        }
+
+        if let EventResponse::Redraw = response {
             tree.mark_paint_dirty(id);
         }
 
         response
     }
 
-    fn bubble_event(&mut self, tree: &mut UiTree, id: ferrous_ui_core::NodeId, event: UiEvent) {
-        let response = self.send_to_node(tree, id, event.clone());
+    fn bubble_event<App>(&mut self, tree: &mut UiTree<App>, app: &mut App, id: NodeId, event: UiEvent) {
+        let response = self.send_to_node(tree, app, id, event.clone());
         
-        if let ferrous_ui_core::EventResponse::Ignored = response {
+        if let EventResponse::Ignored = response {
             // Propagar al padre
-            let parent = tree.get_node_parent(id);
-            if let Some(parent_id) = parent {
-                self.bubble_event(tree, parent_id, event);
+            if let Some(parent_id) = tree.get_node_parent(id) {
+                self.bubble_event(tree, app, parent_id, event);
             }
         }
     }
 }
 
-/// Conversión desde códigos de tecla de `winit` al lenguaje interno de Ferrous UI.
-/// Esto permite que el motor use `winit` como proveedor de eventos sin acoplar los crates de la UI.
-/// Conversión desde códigos de tecla de `winit` al lenguaje interno de Ferrous UI.
-/// Esto permite que el motor use `winit` como proveedor de eventos sin acoplar los crates de la UI.
 pub fn winit_to_guikey(k: winit::keyboard::KeyCode) -> GuiKey {
     match k {
         winit::keyboard::KeyCode::Backspace => GuiKey::Backspace,
@@ -153,6 +185,15 @@ pub fn winit_to_guikey(k: winit::keyboard::KeyCode) -> GuiKey {
         winit::keyboard::KeyCode::Enter | winit::keyboard::KeyCode::NumpadEnter => GuiKey::Enter,
         winit::keyboard::KeyCode::Escape => GuiKey::Escape,
         winit::keyboard::KeyCode::Tab => GuiKey::Tab,
-        _ => GuiKey::Backspace, // Desvío por defecto para teclas no manejadas
+        _ => GuiKey::Backspace, 
+    }
+}
+
+pub fn winit_to_mousebutton(b: winit::event::MouseButton) -> ferrous_ui_core::MouseButton {
+    match b {
+        winit::event::MouseButton::Left => ferrous_ui_core::MouseButton::Left,
+        winit::event::MouseButton::Right => ferrous_ui_core::MouseButton::Right,
+        winit::event::MouseButton::Middle => ferrous_ui_core::MouseButton::Middle,
+        _ => ferrous_ui_core::MouseButton::Left,
     }
 }

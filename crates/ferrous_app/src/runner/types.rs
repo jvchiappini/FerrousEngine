@@ -6,7 +6,7 @@ use ferrous_core::{
     TransformSystem, VelocitySystem, Viewport, World,
 };
 use ferrous_ecs::prelude::{ResourceMap, Stage, StagedScheduler};
-use ferrous_gui::Ui;
+use ferrous_ui_core::UiTree;
 use std::sync::Arc;
 use winit::window::Window;
 
@@ -33,7 +33,8 @@ pub(crate) struct Runner<A: FerrousApp> {
     pub(super) config: AppConfig,
     pub(super) window: Option<Arc<Window>>,
     pub(super) graphics: Option<GraphicsState>,
-    pub(super) ui: Ui,
+    pub(super) ui: UiTree<A>,
+    pub(super) events: ferrous_events::EventManager,
     pub(super) input: InputState,
     pub(super) window_size: (u32, u32),
     pub(super) viewport: Viewport,
@@ -68,7 +69,8 @@ impl<A: FerrousApp> Runner<A> {
             config,
             window: None,
             graphics: None,
-            ui: Ui::new(),
+            ui: UiTree::new(),
+            events: ferrous_events::EventManager::new(),
             input: InputState::new(),
             viewport: Viewport { x: 0, y: 0, width: 0, height: 0 },
             window_size: (0, 0),

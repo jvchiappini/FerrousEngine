@@ -4,7 +4,9 @@ use std::time::Duration;
 
 use ferrous_assets::AssetState;
 use ferrous_core::glam::Vec3;
-use ferrous_gui::{GuiBatch, TextBatch};
+use ferrous_ui_core::Rect;
+use ferrous_gui::GuiBatch;
+use ferrous_ui_render::ToBatches;
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -51,12 +53,7 @@ impl<A: FerrousApp> Runner<A> {
                             };
                             self.app.setup(&mut ctx);
                             self.viewport = ctx.viewport;
-                            self.ui.set_viewport_rect(
-                                self.viewport.x as f32,
-                                self.viewport.y as f32,
-                                self.viewport.width as f32,
-                                self.viewport.height as f32,
-                            );
+                            // self.ui.viewport = ctx.viewport;
                         }
                         if let Some(font_slot) = self.font_pending.take() {
                             if let Ok(mut borrow) = font_slot.try_borrow_mut() {
@@ -155,12 +152,7 @@ impl<A: FerrousApp> Runner<A> {
             if self.viewport != ctx.viewport {
                 self.viewport = ctx.viewport;
                 gfx.renderer.set_viewport(self.viewport);
-                self.ui.set_viewport_rect(
-                    self.viewport.x as f32,
-                    self.viewport.y as f32,
-                    self.viewport.width as f32,
-                    self.viewport.height as f32,
-                );
+                // self.ui.viewport = ctx.viewport; // No longer needed here, passed to collect_commands
             }
         }
 
@@ -216,18 +208,32 @@ impl<A: FerrousApp> Runner<A> {
             }
 
             let mut gui_batch = GuiBatch::new();
-            let mut text_batch = TextBatch::new();
             if let Some(font) = self.font.as_ref() {
                 let mut dc = DrawContext {
                     gui: &mut gui_batch,
-                    text: &mut text_batch,
                     font,
                     ctx: &mut ctx,
                 };
                 self.app.draw_ui(&mut dc);
             }
-            self.ui
-                .draw(&mut gui_batch, &mut text_batch, self.font.as_ref());
+            let viewport_rect = Rect {
+                x: 0.0, 
+                y: 0.0, 
+                width: self.window_size.0 as f32, 
+                height: self.window_size.1 as f32
+            };
+            
+            let mut cmds = Vec::new();
+            self.ui.collect_commands(&mut cmds, viewport_rect);
+
+            #[cfg(feature = "text")]
+            for cmd in cmds {
+                cmd.to_batches(&mut gui_batch, self.font.as_ref());
+            }
+            #[cfg(not(feature = "text"))]
+            for cmd in cmds {
+                cmd.to_batches(&mut gui_batch);
+            }
 
             // ── 3. RENDER FINAL ─────────────────────────────────────────────
             let frame = match gfx.surface.get_current_texture() {
@@ -242,7 +248,7 @@ impl<A: FerrousApp> Runner<A> {
                 .texture
                 .create_view(&wgpu::TextureViewDescriptor::default());
             gfx.renderer
-                .render_to_view(&mut encoder, &view, Some(gui_batch), Some(text_batch));
+                .render_to_view(&mut encoder, &view, Some(gui_batch));
             gfx.renderer.context.queue.submit(Some(encoder.finish()));
             frame.present();
         }
