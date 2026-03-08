@@ -9,6 +9,13 @@ use slotmap::{new_key_type, SlotMap};
 use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
+pub mod events;
+pub mod widgets;
+
+// Re-export common types
+pub use events::*;
+pub use widgets::*;
+
 /// Espacio rectilíneo definido por su posición de origen (esquina superior izquierda) y sus dimensiones.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct Rect {
@@ -207,6 +214,17 @@ pub trait Widget {
     /// Genera la lista de comandos de renderizado para representar visualmente el widget.
     /// Estos comandos se cachearán en el `Node` asociado.
     fn draw(&self, _ctx: &mut DrawContext, _cmds: &mut Vec<RenderCommand>) {}
+
+    /// Se invoca cuando ocurre un evento que afecta a este widget.
+    fn on_event(&mut self, _ctx: &mut EventContext, _event: &UiEvent) -> EventResponse {
+        EventResponse::Ignored
+    }
+}
+
+/// Contexto proporcionado durante la fase de procesamiento de eventos.
+pub struct EventContext {
+    pub node_id: NodeId,
+    pub rect: Rect,
 }
 
 /// Contexto proporcionado durante la fase de construcción de la jerarquía.
@@ -220,12 +238,19 @@ impl<'a> BuildContext<'a> {
     pub fn add_child(&mut self, widget: Box<dyn Widget>) -> NodeId {
         self.tree.add_node(widget, Some(self.node_id))
     }
+
+    /// Obtiene el ID del nodo actual.
+    pub fn node_id(&self) -> NodeId {
+        self.node_id
+    }
 }
 
 /// Contexto proporcionado durante la fase de actualización de lógica.
 pub struct UpdateContext {
     pub delta_time: f32,
     pub node_id: NodeId,
+    /// Rectángulo actual del nodo.
+    pub rect: Rect,
 }
 
 /// Contexto proporcionado durante la fase de cálculo de layout.
@@ -238,6 +263,8 @@ pub struct LayoutContext {
 /// Contexto proporcionado durante la fase de generación de primitivas visuales.
 pub struct DrawContext {
     pub node_id: NodeId,
+    /// Rectángulo resuelto por el motor de layout donde debe dibujarse el widget.
+    pub rect: Rect,
 }
 
 /// Unidad mínima de almacenamiento en el sistema reactivo.
@@ -326,7 +353,11 @@ impl UiTree {
         }
 
         if let Some(node) = self.nodes.get_mut(id) {
-            let mut ctx = UpdateContext { delta_time, node_id: id };
+            let mut ctx = UpdateContext { 
+                delta_time, 
+                node_id: id,
+                rect: node.rect,
+            };
             node.widget.update(&mut ctx);
         }
     }
@@ -349,7 +380,10 @@ impl UiTree {
         if is_dirty {
             if let Some(node) = self.nodes.get_mut(id) {
                 node.cached_cmds.clear();
-                let mut ctx = DrawContext { node_id: id };
+                let mut ctx = DrawContext { 
+                    node_id: id,
+                    rect: node.rect,
+                };
                 node.widget.draw(&mut ctx, &mut node.cached_cmds);
                 node.dirty.paint = false;
                 node.dirty.layout = false;
@@ -432,7 +466,44 @@ impl UiTree {
 
         id
     }
-}
 
-struct PlaceholderWidget;
-impl Widget for PlaceholderWidget {}
+    /// Obtiene los hijos de un nodo.
+    pub fn get_node_children(&self, id: NodeId) -> Option<&[NodeId]> {
+        self.nodes.get(id).map(|n| n.children.as_slice())
+    }
+
+    /// Obtiene el estilo de un nodo.
+    pub fn get_node_style(&self, id: NodeId) -> Option<&Style> {
+        self.nodes.get(id).map(|n| &n.style)
+    }
+
+    /// Establece el estilo de un nodo y lo marca como sucio para layout.
+    pub fn set_node_style(&mut self, id: NodeId, style: Style) {
+        if let Some(node) = self.nodes.get_mut(id) {
+            node.style = style;
+            self.mark_layout_dirty(id);
+        }
+    }
+
+    /// Obtiene el rectángulo resuelto de un nodo.
+    pub fn get_node_rect(&self, id: NodeId) -> Option<Rect> {
+        self.nodes.get(id).map(|n| n.rect)
+    }
+
+    /// Obtiene el padre de un nodo.
+    pub fn get_node_parent(&self, id: NodeId) -> Option<NodeId> {
+        self.nodes.get(id).and_then(|n| n.parent)
+    }
+
+    /// Establece el rectángulo de un nodo y lo marca como sucio para repintado.
+    pub fn set_node_rect(&mut self, id: NodeId, rect: Rect) {
+        if let Some(node) = self.nodes.get_mut(id) {
+            node.rect = rect;
+            node.dirty.paint = true;
+            // No llamamos a mark_layout_dirty aquí porque esto suele ser el RESULTADO del layout.
+        }
+    }
+    pub fn get_node_mut(&mut self, id: NodeId) -> Option<&mut Node> {
+        self.nodes.get_mut(id)
+    }
+}
