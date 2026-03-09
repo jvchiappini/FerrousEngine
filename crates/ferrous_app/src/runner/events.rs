@@ -1,4 +1,4 @@
-//! `ApplicationHandler` implementation for `Runner` — window lifecycle and events.
+﻿//! `ApplicationHandler` implementation for `Runner` â€” window lifecycle and events.
 
 use ferrous_core::glam::{self, Vec3};
 use std::sync::Arc;
@@ -50,7 +50,7 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
             height: self.config.height,
         };
 
-        // ── Desktop: synchronous blocking GPU init ───────────────────────────
+        // â”€â”€ Desktop: synchronous blocking GPU init â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         #[cfg(not(target_arch = "wasm32"))]
         {
             let mut gfx = pollster::block_on(GraphicsState::new(
@@ -113,7 +113,7 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
             self.window = Some(window);
         }
 
-        // ── Web (WASM): asynchronous init ───────────────────────────────────
+        // â”€â”€ Web (WASM): asynchronous init â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         #[cfg(target_arch = "wasm32")]
         {
             let slot = Rc::new(RefCell::new(None));
@@ -211,6 +211,7 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                     winit::event::MouseScrollDelta::PixelDelta(pos) => (pos.x as f32 / 20.0, pos.y as f32 / 20.0),
                 };
                 self.ui.dispatch_event(&mut self.app, ferrous_ui_core::UiEvent::MouseWheel { delta_x: dx, delta_y: dy });
+                self.input.add_scroll(dx, dy);
             }
             WindowEvent::KeyboardInput { ref event, .. } => {
                 let winit::event::KeyEvent {
