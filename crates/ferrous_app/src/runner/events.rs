@@ -89,15 +89,24 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
 
             {
                 let time = self.clock.peek();
+                let backend = gfx.renderer.context.backend;
                 let mut ctx = AppContext {
                     input: &self.input,
                     time,
                     window_size: self.window_size,
                     window: &window,
+                    render_stats: ferrous_core::RenderStats::default(),
+                    camera_eye: ferrous_core::glam::Vec3::ZERO,
+                    camera_target: ferrous_core::glam::Vec3::ZERO,
+                    world: &mut self.world,
                     viewport: self.viewport,
-                    backend: gfx.renderer.context.backend,
+                    gizmos: Vec::new(),
+                    render: RenderContext::new(&mut gfx.renderer),
+                    asset_server: &mut self.asset_server,
+                    exit_requested: false,
+                    _gpu_backend: backend,
                 };
-                self.app.init(&mut ctx, &mut self.world, &mut self.resources);
+                self.app.setup(&mut ctx);
             }
 
             self.graphics = Some(gfx);

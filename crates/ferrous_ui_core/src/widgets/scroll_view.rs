@@ -35,7 +35,7 @@ impl<App> Default for ScrollView<App> {
     }
 }
 
-impl<App> Widget<App> for ScrollView<App> {
+impl<App: Send + Sync> Widget<App> for ScrollView<App> {
     fn draw(&self, _ctx: &mut DrawContext, _cmds: &mut Vec<RenderCommand>) {
         // ScrollView no pinta nada por sí mismo por defecto,
         // pero actúa como ancla para el recorte y desplazamiento de hijos.

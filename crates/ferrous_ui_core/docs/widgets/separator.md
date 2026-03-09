@@ -1,20 +1,39 @@
 # Separator
 
-`Separator` es un widget estructural que dibuja una línea divisoria, ya sea horizontal o vertical, para organizar visualmente grupos de widgets.
+`Separator` es un widget visual minimalista que dibuja una línea sutil para dividir secciones en un layout.
 
-## Características
+> **Import** — `ferrous_ui_core::Separator`
 
-- **Espesor Configurable:** Permite definir qué tan gruesa será la línea.
-- **Orientación Automática:** Detecta su orientación basándose en las dimensiones otorgadas por el layout (si es más ancho que alto es horizontal, y viceversa).
+## Estructura
+
+```rust
+pub struct Separator {
+    pub color: Option<Color>,
+}
+```
+
+- `color`: El color de la línea. Si es `None`, se utiliza `theme.on_surface_muted` con un 10% de opacidad para una integración discreta.
 
 ## Ejemplo de Uso
 
 ```rust
-use ferrous_ui_core::Separator;
-
-let sep = Separator::new().with_thickness(2.0);
+ui! {
+    FlexColumn() {
+        Label("Sección superior")
+        Separator()
+        Label("Sección inferior")
+    }
+}
 ```
 
-## Estilo
+## Builder API
 
-- **Color:** Utiliza por defecto `theme.on_surface_muted` con opacidad baja para un efecto sutil.
+| Método | Descripción |
+|--------|-------------|
+| `new()` | Crea un separador con el color tenue por defecto. |
+| `with_color(color)` | Permite personalizar el color de la línea. |
+
+## Detalles de Dibujo
+
+- El separador siempre se dibuja como una línea horizontal de **1px** de grosor situada en el centro geométrico de su área asignada.
+- Su `calculate_size` sugiere una altura de 1px, lo que permite que en layouts de tipo `Column`, ocupe exactamente lo necesario, mientras que en `Row` puede expandirse verticalmente (aunque seguirá pintando solo el píxel central).

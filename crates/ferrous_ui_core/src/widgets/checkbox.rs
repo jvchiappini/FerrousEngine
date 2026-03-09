@@ -6,6 +6,7 @@ use crate::{Widget, RenderCommand, DrawContext, BuildContext, LayoutContext, Eve
 pub struct Checkbox<App> {
     pub checked: bool,
     pub label: String,
+    pub binding: Option<std::sync::Arc<crate::Observable<bool>>>,
     on_change_cb: Option<Box<dyn Fn(&mut EventContext<App>, bool) + Send + Sync>>,
 }
 
@@ -14,13 +15,34 @@ impl<App> Checkbox<App> {
         Self {
             label: label.into(),
             checked,
+            binding: None,
             on_change_cb: None,
         }
+    }
+
+    /// Vincula el checkbox a un `Observable<bool>`.
+    pub fn with_binding(mut self, observable: std::sync::Arc<crate::Observable<bool>>, node_id: crate::NodeId) -> Self {
+        observable.subscribe(node_id);
+        self.binding = Some(observable);
+        self
     }
 
     pub fn on_change(mut self, f: impl Fn(&mut EventContext<App>, bool) + Send + Sync + 'static) -> Self {
         self.on_change_cb = Some(Box::new(f));
         self
+    }
+
+    fn update_value(&mut self, ctx: &mut EventContext<App>, new_val: bool) {
+        if let Some(o) = &self.binding {
+            let dirty = o.set(new_val);
+            ctx.tree.reactivity.notify_change(dirty);
+        } else {
+            self.checked = new_val;
+        }
+
+        if let Some(cb) = &self.on_change_cb {
+            cb(ctx, new_val);
+        }
     }
 }
 
@@ -28,12 +50,13 @@ impl<App> Widget<App> for Checkbox<App> {
     fn draw(&self, ctx: &mut DrawContext, cmds: &mut Vec<RenderCommand>) {
         let theme = &ctx.theme;
         let r = &ctx.rect;
+        let checked = self.binding.as_ref().map(|o| o.get()).unwrap_or(self.checked);
         
         // Caja del checkbox
         let size = 18.0;
         let box_rect = Rect::new(r.x, r.y + (r.height - size) * 0.5, size, size);
         
-        let bg_color = if self.checked { theme.primary } else { theme.surface_variant };
+        let bg_color = if checked { theme.primary } else { theme.surface_elevated };
         
         cmds.push(RenderCommand::Quad {
             rect: box_rect,
@@ -42,8 +65,8 @@ impl<App> Widget<App> for Checkbox<App> {
             flags: 0,
         });
 
-        // Marca de verificación (simplificada como un cuadrado interno)
-        if self.checked {
+        // Marca de verificación
+        if checked {
             let inset = 4.0;
             cmds.push(RenderCommand::Quad {
                 rect: Rect::new(box_rect.x + inset, box_rect.y + inset, size - inset*2.0, size - inset*2.0),
@@ -74,10 +97,8 @@ impl<App> Widget<App> for Checkbox<App> {
     ) -> EventResponse {
         match event {
             UiEvent::MouseDown { .. } => {
-                self.checked = !self.checked;
-                if let Some(cb) = &self.on_change_cb {
-                    cb(ctx, self.checked);
-                }
+                let current = self.binding.as_ref().map(|o| o.get()).unwrap_or(self.checked);
+                self.update_value(ctx, !current);
                 EventResponse::Redraw
             }
             _ => EventResponse::Ignored,

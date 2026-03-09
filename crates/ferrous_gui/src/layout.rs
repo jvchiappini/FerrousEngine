@@ -1,4 +1,98 @@
-pub use ferrous_ui_core::{Rect, RectOffset, Units, Alignment, DisplayMode, Style, RenderCommand};
+// renderer types are referenced later when converting commands; bring them here
+use crate::{renderer::TEXTURED_BIT, GuiBatch, TextBatch};
+
+/// Espacio rectilíneo con origen en (x,y) y dimensiones (w,h).
+#[derive(Debug, Clone, Default)]
+pub struct Rect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+/// Margen o padding con valores por cada lado.
+#[derive(Debug, Clone, Copy)]
+pub struct RectOffset {
+    pub left: f32,
+    pub right: f32,
+    pub top: f32,
+    pub bottom: f32,
+}
+
+impl Default for RectOffset {
+    fn default() -> Self {
+        RectOffset {
+            left: 0.0,
+            right: 0.0,
+            top: 0.0,
+            bottom: 0.0,
+        }
+    }
+}
+
+impl RectOffset {
+    pub fn all(v: f32) -> Self {
+        RectOffset {
+            left: v,
+            right: v,
+            top: v,
+            bottom: v,
+        }
+    }
+}
+
+/// Unidad de medida para ancho/alto.
+#[derive(Debug, Clone, Copy)]
+pub enum Units {
+    Px(f32),
+    Percentage(f32),
+    Flex(f32),
+}
+
+impl Default for Units {
+    fn default() -> Self {
+        Units::Px(0.0)
+    }
+}
+
+/// Cómo alinear elementos hijos dentro de un contenedor.
+#[derive(Debug, Clone, Copy)]
+pub enum Alignment {
+    Start,
+    Center,
+    End,
+    Stretch,
+}
+
+impl Default for Alignment {
+    fn default() -> Self {
+        Alignment::Start
+    }
+}
+
+/// Tipo de flujo del contenedor.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DisplayMode {
+    Block,
+    FlexRow,
+    FlexColumn,
+}
+
+impl Default for DisplayMode {
+    fn default() -> Self {
+        DisplayMode::Block
+    }
+}
+
+/// Reglas de estilo de un nodo.
+#[derive(Debug, Clone, Default)]
+pub struct Style {
+    pub margin: RectOffset,
+    pub padding: RectOffset,
+    pub size: (Units, Units), // (width, height)
+    pub alignment: Alignment,
+    pub display: DisplayMode,
+}
 
 /// Nodo en el árbol de layout.
 #[derive(Debug, Clone, Default)]
@@ -144,12 +238,10 @@ impl Node {
         // si el size está fijado en px reemplazamos
         match self.style.size.0 {
             Units::Px(val) if val > 0.0 => w = val,
-            Units::Auto => w = self.desired_size.0,
             _ => {}
         }
         match self.style.size.1 {
             Units::Px(val) if val > 0.0 => h = val,
-            Units::Auto => h = self.desired_size.1,
             _ => {}
         }
 
@@ -175,15 +267,15 @@ impl Node {
         match self.style.size.0 {
             Units::Px(v) if v > 0.0 => final_w = v,
             Units::Percentage(p) => final_w = inner_w * p / 100.0,
-            Units::Flex(_) | Units::Auto => {
-                // se asigna por el padre o se queda con inner_w por defecto
+            Units::Flex(_) => {
+                // se asigna por el padre; aquí no hacemos nada
             }
             _ => {}
         }
         match self.style.size.1 {
             Units::Px(v) if v > 0.0 => final_h = v,
             Units::Percentage(p) => final_h = inner_h * p / 100.0,
-            Units::Flex(_) | Units::Auto => {}
+            Units::Flex(_) => {}
             _ => {}
         }
 
@@ -202,12 +294,12 @@ impl Node {
                     let cw = match child.style.size.0 {
                         Units::Px(v) => v,
                         Units::Percentage(p) => final_w * p / 100.0,
-                        Units::Flex(_) | Units::Auto => child.desired_size.0,
+                        Units::Flex(_) => child.desired_size.0,
                     };
                     let ch = match child.style.size.1 {
                         Units::Px(v) => v,
                         Units::Percentage(p) => final_h * p / 100.0,
-                        Units::Flex(_) | Units::Auto => child.desired_size.1,
+                        Units::Flex(_) => child.desired_size.1,
                     };
                     child.layout(x + self.style.padding.left, cy, cw, ch);
                     cy += ch + child.style.margin.top + child.style.margin.bottom;
@@ -228,9 +320,6 @@ impl Node {
                                 + child.style.margin.left
                                 + child.style.margin.right
                         }
-                        Units::Auto => {
-                            total_fixed += child.desired_size.0 + child.style.margin.left + child.style.margin.right
-                        }
                     }
                 }
                 let mut cx = x + self.style.padding.left;
@@ -241,12 +330,12 @@ impl Node {
                         }
                         Units::Px(v) => v,
                         Units::Percentage(p) => final_w * p / 100.0,
-                        Units::Flex(_) | Units::Auto => child.desired_size.0,
+                        _ => child.desired_size.0,
                     };
                     let ch = match child.style.size.1 {
                         Units::Px(v) => v,
                         Units::Percentage(p) => final_h * p / 100.0,
-                        Units::Flex(_) | Units::Auto => child.desired_size.1,
+                        Units::Flex(_) => child.desired_size.1,
                     };
                     child.layout(cx, y + self.style.padding.top, cw, ch);
                     cx += cw + child.style.margin.left + child.style.margin.right;
@@ -266,9 +355,6 @@ impl Node {
                                 + child.style.margin.top
                                 + child.style.margin.bottom
                         }
-                        Units::Auto => {
-                            total_fixed += child.desired_size.1 + child.style.margin.top + child.style.margin.bottom
-                        }
                     }
                 }
                 let mut cy = y + self.style.padding.top;
@@ -279,18 +365,19 @@ impl Node {
                         }
                         Units::Px(v) => v,
                         Units::Percentage(p) => final_h * p / 100.0,
-                        Units::Flex(_) | Units::Auto => child.desired_size.1,
+                        _ => child.desired_size.1,
                     };
                     let cw = match child.style.size.0 {
                         Units::Px(v) => v,
                         Units::Percentage(p) => final_w * p / 100.0,
-                        Units::Flex(_) | Units::Auto => child.desired_size.0,
+                        Units::Flex(_) => child.desired_size.0,
                     };
                     child.layout(x + self.style.padding.left, cy, cw, ch);
                     cy += ch + child.style.margin.top + child.style.margin.bottom;
                 }
             }
         }
+
         // posicionamiento de texto o cuadro de fondo no se hace aquí; solo
         // guardamos rect en self.rect
     }
@@ -320,21 +407,159 @@ impl Node {
     }
 }
 
-/// Puente para permitir que un `Node` (sistema antiguo) se use como un `Widget`
-/// en el nuevo `UiTree` de `ferrous_ui_core`.
-pub struct LegacyNodeWidget(pub Node);
-
-impl ferrous_ui_core::Widget for LegacyNodeWidget {
-    fn draw(&self, _ctx: &mut ferrous_ui_core::DrawContext, cmds: &mut Vec<RenderCommand>) {
-        self.0.collect_render_commands(cmds);
-    }
-
-    fn calculate_size(&self, _ctx: &mut ferrous_ui_core::LayoutContext) -> glam::Vec2 {
-        glam::Vec2::new(self.0.rect.width, self.0.rect.height)
-    }
+/// Representación simplificada de lo que el renderer consume; se puede
+/// traducir a GuiBatch / TextBatch con facilidad.
+#[derive(Debug, Clone)]
+pub enum RenderCommand {
+    Quad {
+        rect: Rect,
+        color: [f32; 4],
+        /// per-corner radii in pixels: [top-left, top-right, bottom-left, bottom-right]
+        radii: [f32; 4],
+        /// miscellaneous flags, currently only bit 0 indicates the
+        /// quad should be rendered as a colour wheel gradient instead of a
+        /// flat colour.  Other bits are reserved for future enhancements.
+        flags: u32,
+    },
+    Text {
+        rect: Rect,
+        text: String,
+        color: [f32; 4],
+        font_size: f32,
+    },
+    /// Draw a textured image.  The texture handle is stored in an `Arc` to
+    /// keep ownership simple; converting commands to batches will reserve a
+    /// slot for the texture and pass it along to the renderer.  The UV
+    /// coordinates are specified in normalized (0..1) space.
+    #[cfg(feature = "assets")]
+    Image {
+        rect: Rect,
+        texture: std::sync::Arc<ferrous_assets::Texture2d>,
+        uv0: [f32; 2],
+        uv1: [f32; 2],
+        color: [f32; 4],
+    },
+    /// Begin a scissor/clip region.  Any draw commands that follow (until the
+    /// matching `PopClip`) should be clipped to this rectangle.
+    PushClip { rect: Rect },
+    /// End the most recently pushed scissor/clip region.
+    PopClip,
 }
 
-pub use ferrous_ui_render::ToBatches;
+impl RenderCommand {
+    /// Convierte el comando a los lotes que entiende el renderer. Requiere
+    /// una fuente para la conversión de texto a quads.
+    #[cfg(feature = "text")]
+    pub fn to_batches(
+        &self,
+        quad_batch: &mut GuiBatch,
+        text_batch: &mut TextBatch,
+        font: Option<&ferrous_assets::Font>,
+    ) {
+        match self {
+            RenderCommand::Quad {
+                rect,
+                color,
+                radii,
+                flags,
+            } => {
+                quad_batch.push(crate::renderer::GuiQuad {
+                    pos: [rect.x, rect.y],
+                    size: [rect.width, rect.height],
+                    uv0: [0.0, 0.0],
+                    uv1: [1.0, 1.0],
+                    color: *color,
+                    radii: *radii,
+                    tex_index: 0,
+                    flags: *flags,
+                });
+            }
+            #[cfg(feature = "assets")]
+            RenderCommand::Image {
+                rect,
+                texture,
+                uv0,
+                uv1,
+                color,
+            } => {
+                let idx = quad_batch.reserve_texture_slot(texture.clone());
+                quad_batch.push(crate::renderer::GuiQuad {
+                    pos: [rect.x, rect.y],
+                    size: [rect.width, rect.height],
+                    uv0: *uv0,
+                    uv1: *uv1,
+                    color: *color,
+                    radii: [0.0; 4],
+                    tex_index: idx,
+                    flags: TEXTURED_BIT,
+                });
+            }
+            RenderCommand::Text {
+                rect,
+                text,
+                color,
+                font_size,
+            } => {
+                // We'll draw text at the rect origin using the supplied size
+                if let Some(f) = font {
+                    text_batch.draw_text(f, text, [rect.x, rect.y], *font_size, *color);
+                }
+            }
+            // Clip commands are hints for the renderer; the GuiBatch/TextBatch
+            // layer does not currently implement scissoring, so we silently
+            // ignore them here.  A full renderer integration would consume these
+            // to set a scissor rect on the GPU pass.
+            RenderCommand::PushClip { .. } | RenderCommand::PopClip => {}
+        }
+    }
+
+    #[cfg(not(feature = "text"))]
+    pub fn to_batches(&self, quad_batch: &mut GuiBatch, _text_batch: &mut TextBatch) {
+        match self {
+            RenderCommand::Quad {
+                rect,
+                color,
+                radii,
+                flags,
+            } => {
+                quad_batch.push(crate::renderer::GuiQuad {
+                    pos: [rect.x, rect.y],
+                    size: [rect.width, rect.height],
+                    uv0: [0.0, 0.0],
+                    uv1: [1.0, 1.0],
+                    color: *color,
+                    radii: *radii,
+                    tex_index: 0,
+                    flags: *flags,
+                });
+            }
+            #[cfg(feature = "assets")]
+            RenderCommand::Image {
+                rect,
+                texture,
+                uv0,
+                uv1,
+                color,
+            } => {
+                let idx = quad_batch.reserve_texture_slot(texture.clone());
+                quad_batch.push(crate::renderer::GuiQuad {
+                    pos: [rect.x, rect.y],
+                    size: [rect.width, rect.height],
+                    uv0: *uv0,
+                    uv1: *uv1,
+                    color: *color,
+                    radii: [0.0; 4],
+                    tex_index: idx,
+                    flags: TEXTURED_BIT,
+                });
+            }
+            RenderCommand::Text { .. } => {
+                // text commands are ignored when text feature is disabled
+            }
+            RenderCommand::PushClip { .. } | RenderCommand::PopClip => {}
+        }
+    }
+}
 
 // tests to validate basic layout
 #[cfg(test)]
@@ -368,12 +593,14 @@ mod tests {
             flags: 0,
         };
         let mut qb = GuiBatch::new();
+        let mut tb = TextBatch::new();
         // no font needed for quad case
         #[cfg(feature = "text")]
-        cmd.to_batches(&mut qb, None);
+        cmd.to_batches(&mut qb, &mut tb, None);
         #[cfg(not(feature = "text"))]
-        cmd.to_batches(&mut qb);
+        cmd.to_batches(&mut qb, &mut tb);
         assert_eq!(qb.len(), 1);
+        assert!(tb.is_empty());
     }
 
     #[cfg(feature = "assets")]
@@ -396,16 +623,14 @@ mod tests {
             color: [1.0, 1.0, 1.0, 1.0],
         };
         let mut qb = GuiBatch::new();
+        let mut tb = TextBatch::new();
         #[cfg(feature = "text")]
-        cmd.to_batches(&mut qb, None);
+        cmd.to_batches(&mut qb, &mut tb, None);
         #[cfg(not(feature = "text"))]
-        cmd.to_batches(&mut qb);
+        cmd.to_batches(&mut qb, &mut tb);
         assert_eq!(qb.len(), 1);
         // reserve the same texture again and ensure the slot index does not grow
-        #[cfg(feature = "text")]
-        cmd.to_batches(&mut qb, None);
-        #[cfg(not(feature = "text"))]
-        cmd.to_batches(&mut qb);
+        cmd.to_batches(&mut qb, &mut tb);
         assert_eq!(qb.len(), 2);
     }
 
@@ -428,11 +653,9 @@ mod tests {
         let mut cmds = Vec::new();
         root.collect_render_commands(&mut cmds);
         let mut qb = GuiBatch::new();
+        let mut tb = TextBatch::new();
         for c in &cmds {
-            #[cfg(feature = "text")]
-            c.to_batches(&mut qb, None);
-            #[cfg(not(feature = "text"))]
-            c.to_batches(&mut qb);
+            c.to_batches(&mut qb, &mut tb, None);
         }
         // expect at least one quad and possibly text (text_batch will be empty because no font)
         assert!(qb.len() >= 1);

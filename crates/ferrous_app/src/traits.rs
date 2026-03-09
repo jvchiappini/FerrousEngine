@@ -60,7 +60,7 @@ pub trait FerrousApp {
     /// Register persistent GUI widgets (called once, during `resumed`).
     ///
     /// Use `ui.add(widget)` / `ui.register_viewport(widget)` here.
-    fn configure_ui(&mut self, ui: &mut UiTree) {}
+    fn configure_ui(&mut self, ui: &mut UiTree<Self>) where Self: Sized {}
 
     /// Emit 2-D draw commands for this frame.
     ///

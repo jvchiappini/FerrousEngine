@@ -1,10 +1,13 @@
-use crate::{Widget, RenderCommand, DrawContext, BuildContext, LayoutContext, EventContext, EventResponse, UiEvent, Vec2};
+use crate::{Widget, RenderCommand, DrawContext, BuildContext, LayoutContext, EventContext, EventResponse, UiEvent, Vec2, FerrousWidget};
 
 // ─── Button ──────────────────────────────────────────────────────────────────
 
 /// Botón interactivo con callbacks enriquecidos que acceden al estado de la aplicación.
+#[derive(FerrousWidget)]
 pub struct Button<App> {
+    #[prop(label = "Texto", category = "Contenido")]
     pub label: String,
+    
     pub is_hovered: bool,
     on_click_cb: Option<Box<dyn Fn(&mut EventContext<App>) + Send + Sync>>,
     on_hover_cb: Option<Box<dyn Fn(&mut EventContext<App>) + Send + Sync>>,
@@ -95,5 +98,13 @@ impl<App> Widget<App> for Button<App> {
             }
             _ => EventResponse::Ignored,
         }
+    }
+
+    fn reflect(&self) -> Option<&dyn crate::FerrousWidgetReflect> {
+        Some(self)
+    }
+
+    fn reflect_mut(&mut self) -> Option<&mut dyn crate::FerrousWidgetReflect> {
+        Some(self)
     }
 }

@@ -2,4 +2,4 @@
 //!
 //! Re-exported from `ferrous_events`.
 
-pub use ferrous_events::GuiKey;
+pub use ferrous_ui_core::events::GuiKey;

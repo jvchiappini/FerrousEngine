@@ -1,12 +1,8 @@
 # Panel
 
-`Panel` es el contenedor visual fundamental de `ferrous_ui_core`. Proporciona un fondo sólido y opcionalmente bordes redondeados. Se utiliza como base para construir ventanas, barras de herramientas y grupos de widgets.
+`Panel` es el contenedor visual básico de la interfaz. Proporciona una superficie (fondo) con bordes configurables que sirve para agrupar otros widgets.
 
-## Características
-
-- **Sin lógica de Layout:** El `Panel` no se encarga de posicionar a sus hijos; eso es responsabilidad del `UiTree` y el motor de layout (`ferrous_layout`) basado en el `Style` del nodo.
-- **Fondo Flexible:** Puede usar el color por defecto del tema (`surface`) o uno personalizado.
-- **Overflow:** Soporta recortes de contenido mediante la propiedad `overflow: Hidden` en su estilo.
+> **Import** — `ferrous_ui_core::Panel`
 
 ## Estructura
 
@@ -17,24 +13,44 @@ pub struct Panel {
 }
 ```
 
+- `color`: El color de fondo. Si es `None`, se utiliza `theme.surface`.
+- `radius`: El radio de las esquinas. Si es `None`, se utiliza `theme.border_radius`.
+
 ## Ejemplo de Uso
 
+Los paneles suelen actuar como raíces de subárboles en la macro `ui!`:
+
 ```rust
-use ferrous_ui_core::{Panel, Color, StyleBuilder};
-
-let panel = Panel::new()
-    .with_color(Color::hex("#2C2C2C"))
-    .with_radius(12.0);
-
-// El posicionamiento se define en el Style del nodo que contiene al Panel
-tree.set_node_style(panel_id, StyleBuilder::new()
-    .width_px(300.0)
-    .height_px(400.0)
-    .padding_all(10.0)
-    .column()
-    .build());
+ui! {
+    Panel() {
+        Label("Interior del panel")
+        Button("Aceptar")
+    }
+}
 ```
 
-## Integración con Temas
+También pueden personalizarse individualmente:
 
-Si no se especifica un color o radio, el `Panel` heredará automáticamente `theme.surface` y `theme.border_radius`.
+```rust
+let custom_panel = Panel::new()
+    .with_color(Color::hex("#1A1A2E"))
+    .with_radius(12.0);
+```
+
+## Builder API
+
+| Método | Descripción |
+|--------|-------------|
+| `new()` | Crea un panel con valores por defecto del tema. |
+| `with_color(color)` | Sobrescribe el color de fondo. |
+| `with_radius(radius)` | Sobrescribe el radio de las esquinas. |
+
+## Layout y Comportamiento
+
+- **Tamaño**: Por defecto, un panel intentará llenar el espacio disponible definido por sus restricciones de layout (ej. `fill()`, `fill_width()`).
+- **Jerarquía**: Cualquier widget añadido como hijo de un `Panel` quedará confinado rígidamente dentro de su área (si se activa `Overflow::Hidden` en el estilo).
+- **Z-Order**: Los paneles se dibujan antes que sus hijos, actuando como plano de fondo.
+
+## Notas
+
+- El `Panel` en `ferrous_ui_core` es puramente visual y jerárquico. La lógica de cómo se disponen sus hijos (filas, columnas, etc.) se define mediante el `Style` del nodo (`DisplayMode::FlexRow`, `FlexColumn`) y no por el widget en sí.

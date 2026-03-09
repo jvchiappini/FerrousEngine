@@ -107,10 +107,10 @@ tree.build(); // Ejecuta la fase de construcción recursiva
 use ferrous_ui_core::Button;
 
 let btn = Button::new("Eliminar")
-    .on_click(|| {
+    .on_click(|ctx| {
         println!("Elemento eliminado");
     })
-    .on_hover(|| println!("hover activado"))
+    .on_hover(|ctx| println!("hover activado"))
     .with_radius(6.0);
 ```
 
@@ -118,7 +118,7 @@ let btn = Button::new("Eliminar")
 use ferrous_ui_core::Slider;
 
 let slider = Slider::new(0.5, 0.0, 1.0)
-    .on_change(|v| println!("Nuevo volumen: {:.2}", v));
+    .on_change(|ctx, v| println!("Nuevo volumen: {:.2}", v));
 ```
 
 ---
@@ -201,14 +201,26 @@ tree.reactivity.notify_change(dirty_nodes); // Solo el Label se repinta
 | [`Panel`](widgets/panel.md) | Contenedor visual con color de fondo y radios de esquina configurables. |
 | [`Label`](widgets/label.md) | Texto estático o reactivo vinculado a un `Observable<String>`. |
 | [`Button`](widgets/button.md) | Botón con estados hover/press, callbacks `on_click`/`on_hover` y builder fluent. |
-| [`TextInput`](widgets/textinput.md) | Campo editable de una sola línea con soporte de teclado, cursores y enlazamiento de texto. |
+| [`TextInput`](widgets/text_input.md) | Campo editable de una sola línea con soporte de teclado, cursores y enlazamiento de texto. |
+| [`NumberInput`](widgets/number_input.md) | Input especializado en números con validación y parseo automático. |
 | [`Slider`](widgets/slider.md) | Control de arrastre para `f32` con `on_change` y soporte de `Observable<f32>`. |
 | [`Checkbox`](widgets/checkbox.md) | Toggle interactivo booleano con soporte reactivo. |
-| `ToggleSwitch` | Switch alternativo a checkbox, ideal para interfaces mobile. |
-| `ProgressBar` | Indicador visual de progreso de un proceso (0.0 a 1.0). |
-| `Separator` | Línea divisoria configurable para layouts estables. |
-| `Spacer` | Widget elástico layout que no pinta información visual. |
-| `PlaceholderWidget` | Nodo vacío para uso estructural o provisional. |
+| [`ToggleSwitch`](widgets/toggle_switch.md) | Switch alternativo a checkbox, ideal para interfaces mobile. |
+| [`DropDown`](widgets/drop_down.md) | Selector desplegable con lista de opciones y callback de cambio. |
+| [`ColorPicker`](widgets/color_picker.md) | Picker HSV inline. Tres formas: `Circle`, `Rect`, `Triangle`. Soporte de `Observable<[f32;4]>`. |
+| [`ScrollView`](widgets/scroll_view.md) | Contenedor con scroll vertical/horizontal y recorte de hijos. |
+| [`Tabs`](widgets/tabs.md) | Navegación por pestañas con lazy rendering. Solo el contenido activo vive en el árbol. |
+| [`Accordion`](widgets/accordion.md) | Sección expandible/colapsable con icono animado y `Overflow::Hidden`. |
+| [`SplitPane`](widgets/split_pane.md) | División en dos paneles con divisor arrastrable. Orientación H/V, `ratio_range` configurable. |
+| [`Tooltip`](widgets/tooltip.md) | Popup de texto con delay configurable. Posicionamiento automático dentro del viewport. |
+| [`Modal`](widgets/modal.md) | Diálogo flotante bloqueante con backdrop. Cierre con `[x]`, backdrop click o `Escape`. |
+| [`Toast`](widgets/toast.md) | Notificaciones efímeras apilables. 4 niveles semánticos + barra de progreso. Slide+fade ease-out. |
+| [`AspectRatio`](widgets/aspect_ratio.md) | Obliga al hijo a mantener proporción fija `w/h`. Letterbox/pillarbox negro automático. |
+| [`DockLayout`](widgets/dock_layout.md) | Sistema de paneles anclables tipo IDE (Left/Right/Top/Bottom/Center). Divisores arrastrables. |
+| [`ProgressBar`](widgets/progress_bar.md) | Indicador visual de progreso de un proceso (0.0 a 1.0). |
+| [`Separator`](widgets/separator.md) | Línea divisoria configurable para layouts estables. |
+| [`Spacer`](widgets/spacer.md) | Widget elástico layout que no pinta información visual. |
+| [`PlaceholderWidget`](widgets/placeholder.md) | Nodo vacío para uso estructural o provisional. |
 
 ---
 

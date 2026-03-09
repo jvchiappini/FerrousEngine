@@ -14,6 +14,7 @@ pub mod widgets;
 pub mod reactive;
 pub mod style_builder;
 pub mod theme;
+pub mod reflect;
 
 // Re-export common types
 pub use events::*;
@@ -21,6 +22,7 @@ pub use widgets::*;
 pub use reactive::*;
 pub use style_builder::{StyleBuilder, StyleExt};
 pub use theme::{Theme, Color};
+pub use reflect::*;
 pub use ferrous_ui_macros::ui;
 
 /// Espacio rectilíneo definido por su posición de origen (esquina superior izquierda) y sus dimensiones.
@@ -319,6 +321,16 @@ pub trait Widget<App>: Send + Sync {
     fn scroll_offset(&self) -> Vec2 {
         Vec2::ZERO
     }
+
+    /// Devuelve la interfaz de reflexión para este widget (opcional).
+    fn reflect(&self) -> Option<&dyn FerrousWidgetReflect> {
+        None
+    }
+
+    /// Devuelve la interfaz de reflexión mutable para este widget (opcional).
+    fn reflect_mut(&mut self) -> Option<&mut dyn FerrousWidgetReflect> {
+        None
+    }
 }
 
 /// Contexto proporcionado durante la fase de procesamiento de eventos.
@@ -329,7 +341,6 @@ pub struct EventContext<'a, App> {
     pub theme: Theme,
     pub tree: &'a mut UiTree<App>,
     pub app: &'a mut App,
-    pub commands: &'a mut CmdQueue,
 }
 
 
@@ -434,6 +445,16 @@ impl<App> UiTree<App> {
 
     pub fn get_root(&self) -> Option<NodeId> {
         self.root
+    }
+
+    /// Obtiene una referencia mutable a un nodo del árbol.
+    pub fn get_node_mut(&mut self, id: NodeId) -> Option<&mut Node<App>> {
+        self.nodes.get_mut(id)
+    }
+
+    /// Obtiene una referencia inmutable a un nodo del árbol.
+    pub fn get_node(&self, id: NodeId) -> Option<&Node<App>> {
+        self.nodes.get(id)
     }
 
     /// Ejecuta la fase de construcción recursiva desde la raíz.

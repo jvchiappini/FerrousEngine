@@ -143,7 +143,6 @@ impl EventManager {
                 theme,
                 tree,
                 app,
-                commands: &mut tree.commands,
             };
             widget.on_event(&mut ctx, &event)
         };

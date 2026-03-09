@@ -175,8 +175,17 @@ El sistema utiliza una propagación de flags `subtree_dirty`. Si un nodo en la p
 
 | Widget | Callbacks / Features | Descripción |
 |--------|---------------------|-------------|
-| `Panel` | — | Contenedor visual con color de fondo y radio de esquina. |
-| `Label` | `Observable<String>` binding | Texto con soporte reactivo automático. |
-| `Button` | `on_click`, `on_hover`, `on_hover_end` | Botón con estados hover/press y callbacks fluent. |
-| `Slider` | `on_change`, `Observable<f32>` binding | Control de arrastre con reactividad bidireccional. |
-| `PlaceholderWidget` | — | Nodo vacío para uso estructural o provisional. |
+| [`Panel`](widgets/panel.md) | — | Contenedor visual con color de fondo y radio de esquina. |
+| [`Label`](widgets/label.md) | `Observable<String>` binding | Texto con soporte reactivo automático. |
+| [`Button`](widgets/button.md) | `on_click`, `on_hover`, `on_hover_end` | Botón con estados hover/press y callbacks fluent. |
+| [`TextInput`](widgets/text_input.md) | `on_submit`, `Observable<String>` binding | Campo de texto editable con cursor y reactividad. |
+| [`NumberInput`](widgets/number_input.md) | `on_change` (f32) | Input especializado en números con validación. |
+| [`Slider`](widgets/slider.md) | `on_change`, `Observable<f32>` binding | Control de arrastre con reactividad bidireccional. |
+| [`Checkbox`](widgets/checkbox.md) | `on_change`, `Observable<bool>` binding | Toggle booleano interactivo. |
+| [`ToggleSwitch`](widgets/toggle_switch.md) | `on_change`, `Observable<bool>` binding | Switch alternativo estilo móvil. |
+| [`ScrollView`](widgets/scroll_view.md) | `ScrollWheel`, `Scissor Clipping` | Contenedor con soporte de desplazamiento. |
+| [`DropDown`](widgets/drop_down.md) | `on_change`, `Observable<usize>` binding | Selector desplegable con lista de opciones. |
+| [`ProgressBar`](widgets/progress_bar.md) | `Observable<f32>` binding | Indicador visual de progreso (0.0 a 1.0). |
+| [`Separator`](widgets/separator.md) | — | Línea divisoria minimalista para layouts. |
+| [`Spacer`](widgets/spacer.md) | — | Widget elástico para empujar elementos en layouts flex. |
+| [`PlaceholderWidget`](widgets/placeholder.md) | — | Nodo vacío para uso estructural o debugging. |

@@ -43,6 +43,7 @@ impl LayoutEngine {
                 |known, available, _taffy_id, node_context, _style| {
                     if let Some(ferrous_id) = node_context {
                         let ferrous_id = *ferrous_id;
+                        let theme = tree.theme; // Copiamos el Theme (es Copy)
                         if let Some(node) = tree.get_node_mut(ferrous_id) {
                             let mut ctx = ferrous_ui_core::LayoutContext {
                                 available_space: glam::vec2(
@@ -57,7 +58,7 @@ impl LayoutEngine {
                                 ),
                                 known_dimensions: (known.width, known.height),
                                 node_id: ferrous_id,
-                                theme: tree.theme,
+                                theme,
                             };
                             let size = node.widget.calculate_size(&mut ctx);
                             return taffy::geometry::Size {
@@ -197,11 +198,12 @@ impl LayoutEngine {
             }
         }
 
-        t_style.overflow = match style.overflow {
+        let overflow_val = match style.overflow {
             ferrous_ui_core::Overflow::Visible => taffy::Overflow::Visible,
             ferrous_ui_core::Overflow::Hidden => taffy::Overflow::Hidden,
             ferrous_ui_core::Overflow::Scroll => taffy::Overflow::Scroll,
         };
+        t_style.overflow = taffy::Point { x: overflow_val, y: overflow_val };
 
         t_style
     }

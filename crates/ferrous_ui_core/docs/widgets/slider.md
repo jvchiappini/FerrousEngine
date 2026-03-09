@@ -1,14 +1,10 @@
 # Slider
 
-`Slider` es un control deslizante para valores numéricos (`f32`). Soporta tanto el manejo manual mediante callbacks como la vinculación automática a través del sistema reactivo (`Observable<f32>`).
+`Slider` es un widget de entrada que permite al usuario seleccionar un valor dentro de un rango determinado arrastrando un control deslizante.
 
-## Características
+> **Import** — `ferrous_ui_core::Slider`
 
-- **Genérico sobre App:** Al igual que `Button`, permite acceder al estado de la aplicación en su callback `on_change`.
-- **Modo Reactivo:** Puede vincularse a un `Observable<f32>`, lo que permite que el Slider se actualice solo cuando el valor cambia externamente, y viceversa.
-- **Lag Cero:** Solo se redibuja cuando el valor cambia o hay interacción.
-
-## Estructura
+## Campos y Configuración
 
 ```rust
 pub struct Slider<App> {
@@ -20,29 +16,47 @@ pub struct Slider<App> {
 }
 ```
 
-## Uso con Callback
+- `value`: El valor actual del slider (si no hay binding).
+- `min` / `max`: Límites del rango.
+- `binding`: Vinculación reactiva opcional para control sincronizado.
+
+## Ejemplo de Uso
 
 ```rust
-let slider = Slider::new(0.5, 0.0, 1.0)
-    .on_change(|ctx, new_val| {
-        println!("Valor: {:.2}", new_val);
-        // ctx.app.volume = new_val;
+use ferrous_ui_core::Slider;
+
+// Slider básico con callback
+let s1 = Slider::new(0.5, 0.0, 1.0)
+    .on_change(|ctx, val| {
+        println!("Volumen: {:.2}", val);
     });
+
+// Slider con Binding Reactivo
+let vol_obs = Arc::new(Observable::new(0.7));
+let s2 = Slider::new(0.0, 0.0, 1.0)
+    .with_binding(vol_obs.clone(), node_id);
 ```
 
-## Uso Reactivo (Data Binding)
+## Builder API
 
-```rust
-let volume_obs = Arc::new(Observable::new(0.5));
+| Método | Descripción |
+|--------|-------------|
+| `new(val, min, max)` | Crea un slider con valor inicial y rango. |
+| `on_change(closure)` | Callback que se dispara cada vez que cambia el valor. |
+| `with_binding(obs, id)`| Vincula el valor a un `Observable<f32>`. |
 
-// El slider se suscribe al observable automáticamente
-let slider = Slider::new(0.0, 0.0, 1.0)
-    .with_binding(volume_obs.clone(), node_id);
-```
+## Anatomía Visual
 
-## Estilo
+El slider se dibuja usando tres capas:
+1. **Track (Pista):** Fondo horizontal sutil (`theme.on_surface_muted`).
+2. **Fill (Llenado):** Barra de progreso que indica el valor actual (`theme.primary`).
+3. **Knob (Pomo):** Círculo arrastrable que marca la posición (`theme.on_primary`).
 
-El Slider utiliza el `Theme` para su apariencia:
-- **Track (Fondo):** `on_surface_muted` con opacidad reducida.
-- **Fill (Progreso):** `primary`.
-- **Knob (Círculo):** `on_primary`.
+## Interacción
+
+- **Click e Inicio de Arrastre:** En `MouseDown`, se calcula la nueva posición y se activa el flag `is_dragging`.
+- **Arrastre:** Mientras `is_dragging` es true, cualquier `MouseMove` actualiza el valor proporcionalmente.
+- **Fin de Arrastre:** `MouseUp` desactiva el arrastre.
+
+> [!TIP]
+> El sistema de "Lag Cero" asegura que el movimiento del pomo sea suave incluso en escenas con miles de nodos, ya que solo el slider y sus comandos directos se invalidan durante el arrastre.

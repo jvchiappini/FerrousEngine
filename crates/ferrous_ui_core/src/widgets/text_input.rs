@@ -8,6 +8,7 @@ pub struct TextInput<App> {
     pub placeholder: String,
     pub cursor_pos: usize,
     pub is_focused: bool,
+    pub binding: Option<std::sync::Arc<crate::Observable<String>>>,
     on_submit_cb: Option<Box<dyn Fn(&mut EventContext<App>, &str) + Send + Sync>>,
 }
 
@@ -18,13 +19,30 @@ impl<App> TextInput<App> {
             placeholder: placeholder.into(),
             cursor_pos: 0,
             is_focused: false,
+            binding: None,
             on_submit_cb: None,
         }
+    }
+
+    /// Vincula el input a un `Observable<String>`.
+    pub fn with_binding(mut self, observable: std::sync::Arc<crate::Observable<String>>, node_id: crate::NodeId) -> Self {
+        observable.subscribe(node_id);
+        self.binding = Some(observable);
+        self
     }
 
     pub fn on_submit(mut self, f: impl Fn(&mut EventContext<App>, &str) + Send + Sync + 'static) -> Self {
         self.on_submit_cb = Some(Box::new(f));
         self
+    }
+
+    fn update_text(&mut self, ctx: &mut EventContext<App>, new_text: String) {
+        if let Some(o) = &self.binding {
+            let dirty = o.set(new_text);
+            ctx.tree.reactivity.notify_change(dirty);
+        } else {
+            self.text = new_text;
+        }
     }
 }
 
@@ -32,9 +50,10 @@ impl<App> Widget<App> for TextInput<App> {
     fn draw(&self, ctx: &mut DrawContext, cmds: &mut Vec<RenderCommand>) {
         let theme = &ctx.theme;
         let r = &ctx.rect;
+        let text = self.binding.as_ref().map(|o| o.get()).unwrap_or_else(|| self.text.clone());
         
         // Fondo
-        let bg_color = if self.is_focused { theme.surface_variant } else { theme.surface };
+        let bg_color = if self.is_focused { theme.surface_elevated } else { theme.surface };
         cmds.push(RenderCommand::Quad {
             rect: *r,
             color: bg_color.to_array(),
@@ -42,10 +61,8 @@ impl<App> Widget<App> for TextInput<App> {
             flags: 0,
         });
 
-        // Borde
+        // Borde inferior (foco indicador)
         let border_color = if self.is_focused { theme.primary } else { theme.on_surface_muted.with_alpha(0.3) };
-        // Dibujamos el borde como un quad ligeramente más grande o 4 líneas
-        // Simplificado: un quad hueco no existe, usamos el truco de 1px
         cmds.push(RenderCommand::Quad {
             rect: Rect::new(r.x, r.y + r.height - 1.0, r.width, 1.0),
             color: border_color.to_array(),
@@ -54,8 +71,8 @@ impl<App> Widget<App> for TextInput<App> {
         });
 
         // Texto o Placeholder
-        let display_text = if self.text.is_empty() { &self.placeholder } else { &self.text };
-        let text_color = if self.text.is_empty() { theme.on_surface_muted } else { theme.on_surface };
+        let display_text = if text.is_empty() { &self.placeholder } else { &text };
+        let text_color = if text.is_empty() { theme.on_surface_muted } else { theme.on_surface };
         
         cmds.push(RenderCommand::Text {
             rect: Rect::new(r.x + 8.0, r.y, r.width - 16.0, r.height),
@@ -86,6 +103,8 @@ impl<App> Widget<App> for TextInput<App> {
         ctx: &mut EventContext<App>,
         event: &UiEvent,
     ) -> EventResponse {
+        let mut text = self.binding.as_ref().map(|o| o.get()).unwrap_or_else(|| self.text.clone());
+
         match event {
             UiEvent::MouseDown { .. } => {
                 self.is_focused = true;
@@ -93,8 +112,9 @@ impl<App> Widget<App> for TextInput<App> {
             }
             UiEvent::Char { c } if self.is_focused => {
                 if !c.is_control() {
-                    self.text.insert(self.cursor_pos, *c);
+                    text.insert(self.cursor_pos, *c);
                     self.cursor_pos += 1;
+                    self.update_text(ctx, text);
                     EventResponse::Redraw
                 } else {
                     EventResponse::Ignored
@@ -105,7 +125,8 @@ impl<App> Widget<App> for TextInput<App> {
                     GuiKey::Backspace => {
                         if self.cursor_pos > 0 {
                             self.cursor_pos -= 1;
-                            self.text.remove(self.cursor_pos);
+                            text.remove(self.cursor_pos);
+                            self.update_text(ctx, text);
                             EventResponse::Redraw
                         } else {
                             EventResponse::Ignored
@@ -120,7 +141,7 @@ impl<App> Widget<App> for TextInput<App> {
                         }
                     }
                     GuiKey::ArrowRight => {
-                        if self.cursor_pos < self.text.len() {
+                        if self.cursor_pos < text.len() {
                             self.cursor_pos += 1;
                             EventResponse::Redraw
                         } else {
@@ -129,7 +150,7 @@ impl<App> Widget<App> for TextInput<App> {
                     }
                     GuiKey::Enter => {
                         if let Some(cb) = &self.on_submit_cb {
-                            cb(ctx, &self.text);
+                            cb(ctx, &text);
                         }
                         self.is_focused = false;
                         EventResponse::Redraw

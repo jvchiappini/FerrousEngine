@@ -1,25 +1,37 @@
 # Spacer
 
-`Spacer` es un widget estructural invisible que se expande para llenar el espacio restante en un contenedor Flex. Es análogo al `Spacer()` de SwiftUI.
+`Spacer` es un widget invisible de utilidad técnica que se utiliza para crear huecos dinámicos entre otros widgets dentro de layouts flexibles (`FlexRow`, `FlexColumn`).
 
-## Características
+> **Import** — `ferrous_ui_core::Spacer`
 
-- **Sin Dibujo:** No genera ningún `RenderCommand`.
-- **Efecto de Layout:** Se utiliza para separar widgets (ej: empujar un botón al final de una fila).
+## Propósito
+
+A diferencia de un `Margin` o `Padding` que son estáticos, el `Spacer` está diseñado para expandirse y llenar el espacio disponible cuando se combina con estilos de crecimiento (`flex-grow: 1.0`).
 
 ## Ejemplo de Uso
 
+Un caso de uso común es empujar elementos a los extremos de una barra de herramientas:
+
 ```rust
-// Fila con un botón al principio y otro al final
 ui! {
-    HStack {
-        Button("Inicio")
-        Spacer()
-        Button("Fin")
+    FlexRow() {
+        Button("Archivo")
+        Button("Edición")
+        Spacer() // Empuja el siguiente botón a la derecha
+        Button("Cerrar")
     }
 }
 ```
 
-## Mecanismo
+## Estructura
 
-`Spacer` devuelve un factor de `flex(1.0)` por defecto en su estilo, lo que le permite absorber el espacio sobrante en el eje principal del contenedor Flex.
+Es un struct vacío (`Zero Sized Type`) ya que no posee estado ni genera comandos de renderizado:
+
+```rust
+pub struct Spacer;
+```
+
+## Detalles Técnicos
+
+- **Dibujo**: No genera ninguna instrucción para la GPU (`draw` es un NOP). 
+- **Layout**: Reporta un tamaño intrínseco de `0x0`. Su comportamiento de expansión depende enteramente de las propiedades de Flexbox aplicadas al nodo que lo contiene.
