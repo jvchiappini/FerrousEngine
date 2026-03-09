@@ -3,25 +3,24 @@
 use ferrous_app::DrawContext;
 use ferrous_core::scene::{Axis, GizmoMode};
 
-use super::types::{BenchmarkState, EditorApp, BENCHMARK_BATCH, BENCHMARK_MIN_FPS, slider_to_size};
+use super::types::{BenchmarkState, EditorApp, BENCHMARK_BATCH, BENCHMARK_MIN_FPS};
 
 impl EditorApp {
     pub(super) fn run_draw_ui(&mut self, dc: &mut DrawContext<'_, '_>) {
         let font = dc.font;
-        let text = &mut *dc.text;
         let gui = &mut *dc.gui;
         let ctx = &mut *dc.ctx;
 
-        text.draw_text(font, "Add Cube", [15.0, 16.0], 16.0, [1.0, 1.0, 1.0, 1.0]);
+        gui.draw_text(font, "Add Cube", [15.0, 16.0], 16.0, [1.0, 1.0, 1.0, 1.0]);
 
         let bench_label = match self.bench_state {
             BenchmarkState::Idle | BenchmarkState::Finished => "Benchmark",
             BenchmarkState::Running => "Stop Bench",
         };
-        text.draw_text(font, bench_label, [15.0, 57.0], 16.0, [1.0, 1.0, 1.0, 1.0]);
+        gui.draw_text(font, bench_label, [15.0, 57.0], 16.0, [1.0, 1.0, 1.0, 1.0]);
 
         let fps_str = format!("FPS: {:.0}  avg: {:.0}", ctx.time.fps, self.fps_avg);
-        text.draw_text(font, &fps_str, [15.0, 92.0], 14.0, [0.8, 0.8, 0.8, 1.0]);
+        gui.draw_text(font, &fps_str, [15.0, 92.0], 14.0, [0.8, 0.8, 0.8, 1.0]);
 
         if !self.gpu_backend.is_empty() {
             let backend_color = if self.gpu_backend == "WebGL2" {
@@ -29,7 +28,7 @@ impl EditorApp {
             } else {
                 [0.4, 1.0, 0.5, 1.0]
             };
-            text.draw_text(
+            gui.draw_text(
                 font,
                 &format!("GPU: {}", self.gpu_backend),
                 [15.0, 108.0],
@@ -56,9 +55,9 @@ impl EditorApp {
         } else {
             format!("Tris: {}", tris)
         };
-        text.draw_text(font, &verts_str, [15.0, 126.0], 13.0, [0.5, 0.9, 1.0, 1.0]);
-        text.draw_text(font, &tris_str, [15.0, 142.0], 13.0, [0.5, 0.9, 1.0, 1.0]);
-        text.draw_text(font, &format!("Draw calls: {}", dcs), [15.0, 158.0], 13.0, [0.5, 0.9, 1.0, 1.0]);
+        gui.draw_text(font, &verts_str, [15.0, 126.0], 13.0, [0.5, 0.9, 1.0, 1.0]);
+        gui.draw_text(font, &tris_str, [15.0, 142.0], 13.0, [0.5, 0.9, 1.0, 1.0]);
+        gui.draw_text(font, &format!("Draw calls: {}", dcs), [15.0, 158.0], 13.0, [0.5, 0.9, 1.0, 1.0]);
 
         if self.selected.is_some() {
             let mode_label = match self.gizmo.mode {
@@ -71,8 +70,8 @@ impl EditorApp {
                 GizmoMode::Rotate    => [0.9, 0.5, 1.0, 1.0],
                 GizmoMode::Scale     => [1.0, 0.8, 0.2, 1.0],
             };
-            text.draw_text(font, "[ Gizmo active ]", [15.0, 178.0], 13.0, [1.0, 0.85, 0.2, 1.0]);
-            text.draw_text(font, mode_label, [15.0, 194.0], 12.0, mode_color);
+            gui.draw_text(font, "[ Gizmo active ]", [15.0, 178.0], 13.0, [1.0, 0.85, 0.2, 1.0]);
+            gui.draw_text(font, mode_label, [15.0, 194.0], 12.0, mode_color);
 
             let axis_str = match (self.gizmo.mode, self.gizmo.highlighted_axis) {
                 (GizmoMode::Translate, Some(Axis::X)) => "Axis: X  (dragging)",
@@ -91,7 +90,7 @@ impl EditorApp {
                 Some(Axis::Z) => [0.3, 0.5, 1.0, 1.0],
                 None          => [0.7, 0.7, 0.7, 1.0],
             };
-            text.draw_text(font, axis_str, [15.0, 208.0], 11.0, axis_color);
+            gui.draw_text(font, axis_str, [15.0, 208.0], 11.0, axis_color);
 
             if self.gizmo.mode == GizmoMode::Rotate {
                 let off = self.gizmo.pivot_offset;
@@ -105,35 +104,35 @@ impl EditorApp {
                 } else {
                     [0.6, 0.6, 0.6, 1.0]
                 };
-                text.draw_text(font, &piv_str, [15.0, 221.0], 10.0, piv_color);
+                gui.draw_text(font, &piv_str, [15.0, 221.0], 10.0, piv_color);
             }
         } else {
-            text.draw_text(font, "Click cube to select", [15.0, 178.0], 12.0, [0.6, 0.6, 0.6, 1.0]);
+            gui.draw_text(font, "Click cube to select", [15.0, 178.0], 12.0, [0.6, 0.6, 0.6, 1.0]);
         }
 
         match self.bench_state {
             BenchmarkState::Idle => {}
             BenchmarkState::Running => {
                 let live = format!("Cubes: {}  (+{}·frame)", self.bench_cube_count, BENCHMARK_BATCH);
-                text.draw_text(font, &live, [15.0, 178.0], 14.0, [0.4, 1.0, 0.4, 1.0]);
+                gui.draw_text(font, &live, [15.0, 178.0], 14.0, [0.4, 1.0, 0.4, 1.0]);
                 let threshold = format!("Stops at avg < {:.0} FPS", BENCHMARK_MIN_FPS);
-                text.draw_text(font, &threshold, [15.0, 196.0], 12.0, [0.6, 0.6, 0.6, 1.0]);
+                gui.draw_text(font, &threshold, [15.0, 196.0], 12.0, [0.6, 0.6, 0.6, 1.0]);
             }
             BenchmarkState::Finished => {
                 let result = format!("Peak cubes: {}", self.bench_peak_cubes);
-                text.draw_text(font, &result, [15.0, 178.0], 14.0, [1.0, 0.8, 0.2, 1.0]);
+                gui.draw_text(font, &result, [15.0, 178.0], 14.0, [1.0, 0.8, 0.2, 1.0]);
                 let fps_drop = format!("Avg FPS at stop: {:.1}", self.bench_stopped_fps);
-                text.draw_text(font, &fps_drop, [15.0, 196.0], 12.0, [1.0, 0.5, 0.3, 1.0]);
+                gui.draw_text(font, &fps_drop, [15.0, 196.0], 12.0, [1.0, 0.5, 0.3, 1.0]);
             }
         }
 
         if self.last_cube.map(|h| ctx.world.contains(h)).unwrap_or(false) {
-            let w = slider_to_size(self.slider_w.borrow().value);
-            let h = slider_to_size(self.slider_h.borrow().value);
-            let d = slider_to_size(self.slider_d.borrow().value);
-            text.draw_text(font, &format!("W: {:.2}", w), [15.0, 224.0], 13.0, [0.9, 0.9, 0.5, 1.0]);
-            text.draw_text(font, &format!("H: {:.2}", h), [15.0, 252.0], 13.0, [0.9, 0.9, 0.5, 1.0]);
-            text.draw_text(font, &format!("D: {:.2}", d), [15.0, 280.0], 13.0, [0.9, 0.9, 0.5, 1.0]);
+            let w = self.cube_size.x;
+            let h = self.cube_size.y;
+            let d = self.cube_size.z;
+            gui.draw_text(font, &format!("W: {:.2}", w), [15.0, 224.0], 13.0, [0.9, 0.9, 0.5, 1.0]);
+            gui.draw_text(font, &format!("H: {:.2}", h), [15.0, 252.0], 13.0, [0.9, 0.9, 0.5, 1.0]);
+            gui.draw_text(font, &format!("D: {:.2}", d), [15.0, 280.0], 13.0, [0.9, 0.9, 0.5, 1.0]);
         }
 
         // Material inspector (right panel)
@@ -145,10 +144,10 @@ impl EditorApp {
             }
             self.prev_selected = self.selected;
         }
-        self.inspector.draw(self.selected, gui, text, Some(font), ctx);
+        self.inspector.draw(self.selected, gui, Some(font), ctx);
 
         // Global light panel
         let win_h = ctx.window_size.1 as f32;
-        self.light_panel.draw(gui, text, Some(font), ctx, win_h - 140.0);
+        self.light_panel.draw(gui, Some(font), ctx, win_h - 140.0);
     }
 }

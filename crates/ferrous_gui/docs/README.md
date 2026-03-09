@@ -1,209 +1,176 @@
-# ferrous_gui
+# Ferrous GUI Documentación y Guía de Arquitectura
 
-`ferrous_gui` is the 2D widget toolkit for FerrousEngine. It provides interactive
-widgets, automatic column/row layout via `PanelBuilder`, shared widget handles
-(`Rc<RefCell<…>>`), and helpers for integrating with the engine frame loop and
-input state.
+`ferrous_gui` es el orquestador y la fachada principal ("facade") del sistema de interfaces de usuario (UI) 2D avanzado para FerrousEngine. 
 
----
+A diferencia de versiones anteriores, el sistema ahora sigue una arquitectura modular y fuertemente tipada basada en genéricos (`<App>`), separando las responsabilidades de estado, eventos, diseño (layout) y renderizado en diferentes crates que `ferrous_gui` unifica para consumo público.
 
-## Module overview
-
-| Module | Key exports | Description |
-|--------|-------------|-------------|
-| `ui` | `Ui` | Top-level container; add widgets, route events, and resolve constraints |
-| `canvas` | `Canvas` | Focus-aware widget collection |
-| `widget` | `Widget` | Trait every widget implements (`collect`, `hit`, `tooltip`, `apply_constraint`, …) |
-| `constraint` | `SizeExpr`, `Constraint` | Reactive layout expressions — position/size relative to the window |
-| `button` | `Button` | Clickable rectangle with optional centred label, tooltip, `on_click` |
-| `slider` | `Slider` | Horizontal drag control with configurable `min`/`max` range and `on_change` |
-| `textinput` | `TextInput` | Single-line text field with visual cursor and `on_change` |
-| `label` | `Label` | First-class static text label registrable in `Ui` |
-| `checkbox` | `Checkbox` | Tick-box with label and `on_change` |
-| `dropdown` | `Dropdown` | Drop-down / combo-box with `on_change` |
-| `panel` | `PanelBuilder`, `Panel`, `RowItem` | Automatic column/row layout; reactive constraints; sub-row items |
-| `color_picker` | `ColorPicker`, `PickerShape` | HSV colour picker wheel |
-| `container` | `Container` | Grouping panel with optional background and scissor clip |
-| `layout` | `Node`, `Style`, `Row`, `Column`, `UiButton`, `Text`, `RenderCommand` | Declarative layout + render commands |
-| `key` | `GuiKey` | Lightweight key enum (Backspace, Delete, Arrows, Home, End, Enter, …) |
-| `viewport_widget` | `ViewportWidget` | Embedded 3D viewport region |
-| `renderer` | `GuiBatch`, `TextBatch`, `GuiRenderer` | Low-level draw batches |
+Esta guía está diseñada para que cualquier programador pueda utilizar este sistema para construir herramientas complejas, como un **Ferrous Builder**, **Scene Builder** o editores especializados en otros workspaces.
 
 ---
 
-## Recommended workflow — shared handles via `PanelBuilder`
+## 1. Topología del Sistema y el Rol de Orchestrador
 
-The cleanest way to build a panel of controls is `PanelBuilder`. It positions
-widgets automatically and returns `Rc<RefCell<…>>` handles so your struct and
-the `Ui` share a **single copy** of each widget — no manual clone/sync needed.
+El ecosistema de UI está compuesto por múltiples crates. `ferrous_gui` actúa como el punto de entrada principal, reexportando y coordinando las piezas:
+
+*   **`ferrous_gui` (El Orquestador)**: Proveedor central que reexporta tipos. Es el único crate que una aplicación final necesita importar para construir interfaces. Coordina el árbol de UI (`UiTree`) y el ciclo de vida de los widgets.
+*   **`ferrous_ui_core`**: Contiene la definición base del trait `Widget<App>`, los contextos (`EventContext`, `DrawContext`, `LayoutContext`) y todos los componentes estándar (`Button`, `Slider`, `ColorPicker`, `Panel`, etc.).
+*   **`ferrous_layout`**: Motor de posicionamiento. Basado en flexbox, procesa el árbol de nodos de la UI para calcular posiciones absolutas y dimensiones (`Rect`) de cada `NodeId`.
+*   **`ferrous_events` / `ferrous_input`**: Manejo de eventos del teclado, ratón, toques, propagación, foco y hit-testing ("¿se hizo clic en este rectángulo?").
+*   **`ferrous_ui_render`**: El backend de renderizado. Define el trait `ToBatches` para traducir abstracciones (`RenderCommand`) en quads y vértices (`GuiBatch`) que FerrousEngine renderiza usando `wgpu`.
+
+---
+
+## 2. Creando un Editor o Builder (Ejemplo: `FerrousBuilder`)
+
+Para crear una herramienta gráfica compleja (como el editor principal o un visor de escena separado), necesitas definir una estructura de estado y conectarla al ecosistema de `FerrousApp`.
+
+### Paso 1: Definir el Estado de la Aplicación
+
+Tu aplicación dictará el tipo genérico con el que se instancian los widgets (por ejemplo, `Button<FerrousBuilder>`).
 
 ```rust
-use ferrous_gui::{PanelBuilder, Panel, Ui};
+use ferrous_app::{App, AppContext, FerrousApp, DrawContext};
+use ferrous_gui::{UiTree, Button, Style, Units, NodeId};
 
-struct MyApp {
-    panel: Panel,
+// Este es tu estado principal
+pub struct FerrousBuilder {
+    pub show_grid: bool,
+    pub camera_speed: f32,
+    
+    // Guardamos los ID de los nodos para usarlos o referenciarlos después
+    grid_btn_id: Option<NodeId>,
 }
 
-impl Default for MyApp {
+impl Default for FerrousBuilder {
     fn default() -> Self {
-        let panel = PanelBuilder::column(20.0, 20.0, 200.0)
-            .padding(8.0)
-            .gap(6.0)
-            .with_background([0.1, 0.1, 0.1, 0.9])
-            .add_button("Save")
-            .add_button("Load")
-            .add_slider(0.0, 100.0, 50.0)
-            .add_label("Name:")
-            .add_text_input("Enter name…")
-            .add_checkbox("Enable VSync", true)
-            .add_dropdown(vec!["Low", "Medium", "High"], 1)
-            .build();
-
-        Self { panel }
-    }
-}
-
-impl FerrousApp for MyApp {
-    fn configure_ui(&mut self, ui: &mut Ui) {
-        // Panel implements Widget — add it directly.
-        // The Rc handles inside panel.buttons etc. are shared with Ui.
-        ui.add(self.panel.clone());
-    }
-
-    fn update(&mut self, _ctx: &mut AppContext) {
-        // Read from the shared handles — always in sync with Ui input routing.
-        if self.panel.buttons[0].borrow().pressed {
-            println!("Save clicked!");
+        Self {
+            show_grid: true,
+            camera_speed: 1.0,
+            grid_btn_id: None,
         }
-        let volume = self.panel.sliders[0].borrow().value;
-        let name   = self.panel.text_inputs[0].borrow().text.clone();
-        let vsync  = self.panel.checkboxes[0].borrow().checked;
-        let preset = self.panel.dropdowns[0].borrow().selected;
     }
+}
+```
 
-    fn draw_ui(&mut self, dc: &mut DrawContext<'_, '_>) {
-        // The panel (and all its children) are already in the Ui widget tree;
-        // Ui::draw() handles everything — no manual draw calls needed.
+### Paso 2: Configurar el Árbol de UI (`configure_ui`)
+
+La construcción de la UI se realiza una sola vez de forma declarativa y se delega el control de estado a cierres (closures) reactivos usando `EventContext`. 
+
+El layout ya **no** se define de forma absoluta en la creación del widget (`Button::new(x, y, w, h)` es obsoleto). Ahora confías en el sistema de Layout.
+
+```rust
+impl FerrousApp for FerrousBuilder {
+    fn configure_ui(&mut self, ui: &mut UiTree<Self>) {
+        // Crear un botón genérico tipado con nuestra aplicación
+        let btn_grid = Button::new("Toggle Grid")
+            .on_click(|ctx| {
+                // ctx es &mut EventContext<'_, FerrousBuilder>
+                // Mutar el estado directamente
+                ctx.app.show_grid = !ctx.app.show_grid;
+            });
+            
+        // Registrar en el árbol de UI y guardar el NodeId resultante
+        let btn_id = ui.add_node(Box::new(btn_grid), None);
+        
+        // Estilizar usando ferrous_layout
+        ui.set_node_style(btn_id, Style {
+            size: (Units::Px(120.0), Units::Px(35.0)),
+            margin: ferrous_gui::RectOffset { left: 10.0, top: 10.0, bottom: 0.0, right: 0.0 },
+            ..Default::default()
+        });
+        
+        self.grid_btn_id = Some(btn_id);
+    }
+    
+    fn update(&mut self, ctx: &mut AppContext) {
+        // Lógica de juego, movimiento de cámara, actualización de escenas...
     }
 }
 ```
 
 ---
 
-## Reactive layout — `Constraint` + `SizeExpr`
+## 3. Manejo de Eventos y Callbacks Reactivos
 
-Every widget accepts a `.with_constraint(c)` builder call. The constraint
-describes position/size *relative to the window* and is resolved automatically
-each frame by `Ui::resolve_constraints` — called by the engine runner before
-your `draw_ui` callback.
+A diferencia de implementaciones legacy (donde los valores se chequeaban leyendo `RefCell` en cada frame), el nuevo `ferrous_gui` es impulsado por eventos directos. 
 
+Cuando el layout hace hit de un clic o interacción sobre un widget, este gatilla el callback configurado y le pasa el `EventContext`. El `EventContext` contiene un puntero mutable hacia tu `App`.
+
+### Sliders y Controles de Valor Constante
 ```rust
-use ferrous_gui::{Constraint, SizeExpr};
+use ferrous_gui::Slider;
 
-// Button pinned 20 px from the right edge, 12 px from the top
-Button::new(0.0, 0.0, 120.0, 36.0)
-    .with_label("Settings")
-    .with_constraint(
-        Constraint::new()
-            .x(SizeExpr::from_right(20.0))
-            .y(SizeExpr::px(12.0))
-    );
-
-// Panel that always fills 100 % of the window width minus 16 px margins
-PanelBuilder::column(0.0, 0.0, 0.0)
-    .with_constraint(
-        Constraint::new()
-            .x(SizeExpr::px(8.0))
-            .y(SizeExpr::px(44.0))
-            .width(SizeExpr::pct(1.0).add(SizeExpr::px(-16.0)))
-    )
-    .add_button("Save")
-    .build();
-
-// Slider centred horizontally
-Slider::new(0.0, 200.0, 300.0, 24.0, 0.5)
-    .with_constraint(Constraint::new().x(SizeExpr::center()));
+let speed_slider = Slider::new(1.0, 0.1, 10.0)
+    .on_change(|ctx, new_value| {
+        ctx.app.camera_speed = new_value;
+    });
 ```
 
-Widgets **without** a constraint keep their original pixel coordinates — fully
-backwards-compatible. See [constraint.md](constraint.md) for the full reference.
+El estado es el único dueño de la verdad (Single Source of Truth), y los widgets informan sus cambios directamente hacia él.
 
 ---
 
-## `add_row` — horizontal sub-rows inside a column panel
+## 4. Dibujado de la UI: Automático vs Manual
 
-`PanelBuilder::add_row` places a set of [`RowItem`](constraint.md)s
-side-by-side within one row slot:
+### Dibujado Automático (Recomendado)
+El motor recorre el `UiTree`, computa las dimensiones mediante yoga/flexbox para cada `NodeId`, y emite comandos de renderizado (`RenderCommand`). El trait `ToBatches` los convierte en `GuiBatch` quads implícitamente.
 
-```rust
-use ferrous_gui::RowItem;
-
-PanelBuilder::column(20.0, 20.0, 200.0)
-    .add_row(vec![
-        RowItem::Button { label: "−", radius: 4.0 },
-        RowItem::Spacer  { flex: 1.0 },
-        RowItem::Button { label: "+", radius: 4.0 },
-    ])
-    .build();
-```
-
-`Spacer { flex }` absorbs remaining horizontal space proportional to its flex
-value; `Button` and `Label` items share the remaining width equally.
-
-For simpler cases or when you prefer callbacks over polling:
+### Dibujado Manual (Paneles Especializados)
+En ocasiones, como en un Inspector de Materiales (`MaterialInspector`), puede ser necesario realizar el dibujo controlando exactamente el contexto:
 
 ```rust
-let save_btn = Button::new(20.0, 20.0, 120.0, 36.0)
-    .with_label("Save")
-    .with_radius(6.0)
-    .with_tooltip("Save the current file")
-    .on_click(|| println!("Saved!"));
+use ferrous_gui::{DrawContext, ToBatches, Rect};
 
-let volume = Slider::new(20.0, 70.0, 200.0, 20.0, 80.0)
-    .range(0.0, 100.0)
-    .on_change(|v| println!("Volume: {v:.0}"));
+// En tu método draw_ui:
+fn draw_ui(&mut self, dc: &mut ferrous_app::DrawContext<'_, '_>) {
+    let font = dc.font;
+    let gui = &mut *dc.gui;
+    
+    // 1. Dibujado primitivo de fondos o lineas
+    gui.push_quad( /* ... GuiQuad manual ... */ );
+    gui.draw_text(font, "Inspector", [20.0, 30.0], 14.0, [1.0, 1.0, 1.0, 1.0]);
 
-ui.add(save_btn);
-ui.add(volume);
+    // 2. Extraer parámetros calculados por el layout
+    let btn_id = self.grid_btn_id.unwrap();
+    // Suponiendo que conoces dónde lo quieres dibujar
+    let rect = Rect::new(20.0, 50.0, 120.0, 30.0);
+    
+    // 3. Crear Contexto de dibujo
+    let mut widget_dc = DrawContext {
+        node_id: btn_id,
+        rect,
+        theme: ferrous_gui::theme::Theme::default(),
+    };
+    
+    // 4. Acumular y compilar comandos a batches GPU
+    let mut cmds = Vec::new();
+    // NOTA: Para dibujado manual debes retener de alguna forma la instancia del widget
+    // self.mi_widget.draw(&mut widget_dc, &mut cmds);
+    
+    for cmd in cmds {
+        cmd.to_batches(gui, Some(font));
+    }
+}
 ```
 
 ---
 
-## `GuiBatch` shape helpers
+## 5. Migración de Código Antiguo (Legacy)
 
-`GuiBatch` exposes convenience methods so you rarely need to construct `GuiQuad`
-manually:
+Al actualizar de versiones previas de `ferrous_gui` o construir código nuevo en este workspace con la memoria muscular antigua, ten en cuenta las siguientes **obsolescencias absolutas**:
 
-```rust
-// Filled rectangle (sharp corners)
-dc.gui.rect(x, y, w, h, color);
-
-// Rounded rectangle — uniform radius
-dc.gui.rect_r(x, y, w, h, radius, color);
-
-// Rounded rectangle — per-corner radii [tl, tr, bl, br]
-dc.gui.rect_radii(x, y, w, h, [4.0, 4.0, 0.0, 0.0], color);
-
-// Line segment
-dc.gui.line(x0, y0, x1, y1, thickness, color);
-```
+1. **NO uses `RefCell` ni `Rc`** para guardar referencias de widgets vivos con la esperanza de leer si `.pressed` o `.value` cambió. Usa el API reactivo (`on_click()`, `on_change()`).
+2. **NO pases dimensiones al constructor `new()`**. `Button::new(x, y, w, h)` ya no existe. El tamaño y posición son gobernados por `ferrous_layout::Style`.
+3. **NO uses `PanelBuilder`**. Fue erradicado. La composición jerárquica ahora debe hacerse registrando sub-nodos y definiendo la relación de flexbox (`display: Display::Flex`, `flex_direction`).
+4. **NO uses `gui.quads.push()` ni `TextBatch` separado**. `ferrous_ui_render::GuiBatch` ha sido unificado. Usa `gui.push_quad()` y `gui.draw_text()`. El layout MSDF ya compensa el padding.
 
 ---
 
-## Widget reference
+## 6. Resumen de Flujo de Trabajo Moderno
 
-- [Button](widgets/button.md)
-- [Slider](widgets/slider.md)
-- [TextInput](widgets/textinput.md)
-- [Label](widgets/label.md)
-- [Checkbox](widgets/checkbox.md)
-- [Dropdown](widgets/dropdown.md)
-- [Panel / PanelBuilder](widgets/panel.md)
-- [ColorPicker](widgets/color_picker.md)
-- [Container](widgets/container.md)
-
-## Further reading
-
-- [Reactive constraints — SizeExpr, Constraint, resolve_constraints](constraint.md)
-- [Layout system — Row, Column, Node, Style](layout.md)
-- [Core API — Ui, Canvas, Widget trait, GuiKey](api/core.md)
+1. Incluye `use ferrous_gui::*;` (Actúa como orquestador único).
+2. Modela tu aplicación en base a estados transparentes (`struct MyBuilder`).
+3. En `configure_ui`, inicializa componentes (vía `::new(...).on_event(|ctx| { ... })`).
+4. Añade los componentes al `UiTree` con `add_node()`. Recibes un `NodeId`.
+5. Delega la responsibilidad de posición a `set_node_style` usando variables de flexibilidad o pixeles en el árbol.
+6. Corre el programa. Los callbacks escucharán el evento cuando se requiera. Las propiedades visuales fluirán del árbol general al frame render.

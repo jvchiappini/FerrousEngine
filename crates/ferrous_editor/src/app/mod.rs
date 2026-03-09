@@ -9,22 +9,111 @@
 mod draw_3d;
 mod draw_ui;
 mod setup;
-mod types;
+pub mod types;
+
 mod update;
 
 pub use types::EditorApp;
 
 use ferrous_app::{App, AppContext, Color, DrawContext, FerrousApp};
-use ferrous_gui::Ui;
+use ferrous_gui::{Button, RectOffset, Slider, Style, Units, ViewportWidget};
 
 impl FerrousApp for EditorApp {
-    fn configure_ui(&mut self, ui: &mut Ui) {
-        ui.add(self.add_button.clone());
-        ui.add(self.bench_button.clone());
-        ui.register_viewport(self.ui_viewport.clone());
-        ui.add(self.slider_w.clone());
-        ui.add(self.slider_h.clone());
-        ui.add(self.slider_d.clone());
+    fn configure_ui(&mut self, ui: &mut ferrous_gui::UiTree<Self>) {
+        use ferrous_gui::{Button, Slider, Style, Units, ViewportWidget};
+
+        // Botón "Add Cube"
+        let add_btn = Button::new("Add Cube").on_click(
+            |ctx: &mut ferrous_gui::EventContext<'_, EditorApp>| {
+                ctx.app.add_cube = true;
+                ctx.app.button_was_pressed = true;
+            },
+        );
+        let add_id = ui.add_node(Box::new(add_btn), None);
+        ui.set_node_style(
+            add_id,
+            Style {
+                margin: RectOffset {
+                    left: 10.0,
+                    right: 10.0,
+                    top: 10.0,
+                    bottom: 10.0,
+                },
+                size: (Units::Px(120.0), Units::Px(32.0)),
+                ..Default::default()
+            },
+        );
+        self.add_button = Some(add_id);
+
+        // Botón "Benchmark"
+        let bench_btn = Button::new("Run Benchmark").on_click(
+            |ctx: &mut ferrous_gui::EventContext<'_, EditorApp>| {
+                use crate::app::types::BenchmarkState;
+                match ctx.app.bench_state {
+                    BenchmarkState::Idle | BenchmarkState::Finished => {
+                        ctx.app.bench_state = BenchmarkState::Running;
+                        ctx.app.bench_cube_count = 0;
+                        ctx.app.bench_peak_cubes = 0;
+                        ctx.app.bench_stopped_fps = 0.0;
+                    }
+                    BenchmarkState::Running => {
+                        ctx.app.bench_state = BenchmarkState::Finished;
+                    }
+                }
+            },
+        );
+        let bench_id = ui.add_node(Box::new(bench_btn), None);
+        ui.set_node_style(
+            bench_id,
+            Style {
+                margin: RectOffset {
+                    left: 10.0,
+                    right: 10.0,
+                    top: 50.0,
+                    bottom: 10.0,
+                },
+                size: (Units::Px(150.0), Units::Px(32.0)),
+                ..Default::default()
+            },
+        );
+        self.bench_button = Some(bench_id);
+
+        // Viewport 3D
+        let viewport = ViewportWidget::new();
+        let viewport_id = ui.add_node(Box::new(viewport), None);
+        ui.set_node_style(
+            viewport_id,
+            Style {
+                size: (Units::Percentage(100.0), Units::Percentage(100.0)),
+                position: ferrous_gui::Position::Absolute,
+                ..Default::default()
+            },
+        );
+        self.ui_viewport = Some(viewport_id);
+
+        // Sliders de dimensiones
+        let slider_w = Slider::new(1.0, 0.1, 5.0).on_change(
+            |ctx: &mut ferrous_gui::EventContext<'_, EditorApp>, val| {
+                ctx.app.cube_size.x = val;
+            },
+        );
+        self.slider_w = Some(ui.add_node(Box::new(slider_w), None));
+
+        let slider_h = Slider::new(1.0, 0.1, 5.0).on_change(
+            |ctx: &mut ferrous_gui::EventContext<'_, EditorApp>, val| {
+                ctx.app.cube_size.y = val;
+            },
+        );
+        self.slider_h = Some(ui.add_node(Box::new(slider_h), None));
+
+        let slider_d = Slider::new(1.0, 0.1, 5.0).on_change(
+            |ctx: &mut ferrous_gui::EventContext<'_, EditorApp>, val| {
+                ctx.app.cube_size.z = val;
+            },
+        );
+        self.slider_d = Some(ui.add_node(Box::new(slider_d), None));
+
+        // ... etc (simplificado para el ejemplo)
         self.inspector.configure_ui(ui);
         self.light_panel.configure_ui(ui);
     }

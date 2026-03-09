@@ -4,7 +4,7 @@ use ferrous_app::{AppContext, Color, Vec3, Viewport};
 use ferrous_core::scene::{GizmoMode, MaterialDescriptor};
 use rand::Rng;
 
-use super::types::{EditorApp, slider_to_size};
+use super::types::EditorApp;
 
 impl EditorApp {
     pub(super) fn run_draw_3d(&mut self, ctx: &mut AppContext) {
@@ -13,10 +13,7 @@ impl EditorApp {
         // Resize last cube using slider values
         if let Some(handle) = self.last_cube {
             if ctx.world.contains(handle) {
-                let w = slider_to_size(self.slider_w.borrow().value);
-                let h = slider_to_size(self.slider_h.borrow().value);
-                let d = slider_to_size(self.slider_d.borrow().value);
-                ctx.world.set_cube_size(handle, Vec3::new(w, h, d));
+                ctx.world.set_cube_size(handle, self.cube_size);
             }
         }
 

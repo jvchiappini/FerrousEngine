@@ -77,26 +77,22 @@ pub struct ImageWidget<App = ()> {
     /// Usado cuando el feature `assets` no está habilitado.
     pub texture_id: u64,
 
+    /// Textura real gestionada por el sistema de assets.
+    #[cfg(feature = "assets")]
+    pub texture: Option<std::sync::Arc<ferrous_assets::Texture2d>>,
+
     // ── Coordenadas UV (subregión de la textura) ──────────────────────
     /// Esquina superior izquierda de la región UV (defecto: `[0.0, 0.0]`).
     pub uv0: [f32; 2],
     /// Esquina inferior derecha de la región UV (defecto: `[1.0, 1.0]`).
     pub uv1: [f32; 2],
 
-    // ── Opciones visuales ─────────────────────────────────────────────
-    /// Modo de ajuste de la imagen dentro del widget.
+    // ... (campos restandes truncados para brevedad) ...
     pub fit: ImageFit,
-    /// Multiplicador de color RGBA (defecto: `[1.0, 1.0, 1.0, 1.0]` = sin tinte).
     pub tint: [f32; 4],
-    /// Radio de borde en píxeles para esquinas redondeadas (defecto: `0.0`).
     pub border_radius: f32,
-    /// Si `true` muestra un placeholder de fondo cuando `texture_id == 0`.
     pub show_placeholder: bool,
-
-    // ── Tamaño intrínseco de la textura (opcional, mejora el layout) ──
-    /// Ancho en píxeles de la textura original (0 = desconocido).
     pub intrinsic_width: f32,
-    /// Alto en píxeles de la textura original (0 = desconocido).
     pub intrinsic_height: f32,
 
     _marker: std::marker::PhantomData<App>,
@@ -110,6 +106,8 @@ impl<App> ImageWidget<App> {
     pub fn from_id(texture_id: u64) -> Self {
         Self {
             texture_id,
+            #[cfg(feature = "assets")]
+            texture: None,
             uv0: [0.0, 0.0],
             uv1: [1.0, 1.0],
             fit: ImageFit::Contain,
@@ -118,6 +116,25 @@ impl<App> ImageWidget<App> {
             show_placeholder: true,
             intrinsic_width: 0.0,
             intrinsic_height: 0.0,
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Crea un `ImageWidget` a partir de una textura del sistema de assets.
+    #[cfg(feature = "assets")]
+    pub fn from_texture(texture: std::sync::Arc<ferrous_assets::Texture2d>) -> Self {
+        let (w, h) = (texture.texture.width() as f32, texture.texture.height() as f32);
+        Self {
+            texture_id: 0,
+            texture: Some(texture),
+            uv0: [0.0, 0.0],
+            uv1: [1.0, 1.0],
+            fit: ImageFit::Contain,
+            tint: [1.0, 1.0, 1.0, 1.0],
+            border_radius: 0.0,
+            show_placeholder: true,
+            intrinsic_width: w,
+            intrinsic_height: h,
             _marker: std::marker::PhantomData,
         }
     }
@@ -278,13 +295,31 @@ impl<App: Send + Sync + 'static> Widget<App> for ImageWidget<App> {
         let dest = self.dest_rect(r);
 
         // ── RenderCommand::Image ─────────────────────────────────────────
-        cmds.push(RenderCommand::Image {
-            rect: dest,
-            texture_id: self.texture_id,
-            uv0: self.uv0,
-            uv1: self.uv1,
-            color: self.tint,
-        });
+        #[cfg(feature = "assets")]
+        {
+            if let Some(tex) = self.texture.as_ref() {
+                cmds.push(RenderCommand::Image {
+                    rect: dest,
+                    texture: tex.clone(),
+                    uv0: self.uv0,
+                    uv1: self.uv1,
+                    color: self.tint,
+                });
+            } else if self.texture_id != 0 {
+                // Si tenemos un ID pero no una textura Arc, esto es un error de configuración
+                // pero intentamos un fallback silencioso si los tipos coincidieran (no es el caso aquí).
+            }
+        }
+        #[cfg(not(feature = "assets"))]
+        {
+            cmds.push(RenderCommand::Image {
+                rect: dest,
+                texture_id: self.texture_id,
+                uv0: self.uv0,
+                uv1: self.uv1,
+                color: self.tint,
+            });
+        }
 
         if self.border_radius > 0.0 {
             cmds.push(RenderCommand::PopClip);

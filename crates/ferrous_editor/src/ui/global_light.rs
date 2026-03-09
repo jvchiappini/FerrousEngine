@@ -15,7 +15,8 @@ use std::rc::Rc;
 
 use ferrous_app::AppContext;
 use ferrous_assets::Font;
-use ferrous_gui::{GuiBatch, Slider, TextBatch, Ui};
+use ferrous_gui::{GuiBatch, Slider, UiTree, Widget, ToBatches};
+use crate::app::types::EditorApp;
 
 use crate::ui::material_inspector::PANEL_W;
 
@@ -25,9 +26,13 @@ const MAX_INTENSITY: f32 = 50.0;
 
 /// Panel that controls the single global directional light.
 pub struct GlobalLightPanel {
-    pub slider_azimuth: Rc<RefCell<Slider>>,
-    pub slider_elevation: Rc<RefCell<Slider>>,
-    pub slider_intensity: Rc<RefCell<Slider>>,
+    pub slider_azimuth: Rc<RefCell<Slider<EditorApp>>>,
+    pub slider_elevation: Rc<RefCell<Slider<EditorApp>>>,
+    pub slider_intensity: Rc<RefCell<Slider<EditorApp>>>,
+    // NodeIds for updating layout manually
+    pub azimuth_id: Option<ferrous_gui::NodeId>,
+    pub elevation_id: Option<ferrous_gui::NodeId>,
+    pub intensity_id: Option<ferrous_gui::NodeId>,
 }
 
 impl GlobalLightPanel {
@@ -37,24 +42,26 @@ impl GlobalLightPanel {
         // elevation 0.75 → 45° above horizon  (good for PBR highlights)
         // intensity 0.875 of [0, 4] → 3.5 (bright enough to see specular)
         Self {
-            slider_azimuth: Rc::new(RefCell::new(Slider::new(0.0, 0.0, 160.0, SLIDER_H, 0.125))),
-            slider_elevation: Rc::new(RefCell::new(Slider::new(0.0, 0.0, 160.0, SLIDER_H, 0.75))),
-            slider_intensity: Rc::new(RefCell::new(Slider::new(0.0, 0.0, 160.0, SLIDER_H, 0.875))),
+            slider_azimuth: Rc::new(RefCell::new(Slider::new(0.0, 0.0, 1.0))),
+            slider_elevation: Rc::new(RefCell::new(Slider::new(0.0, 0.0, 1.0))),
+            slider_intensity: Rc::new(RefCell::new(Slider::new(0.0, 0.0, 1.0))),
+            azimuth_id: None,
+            elevation_id: None,
+            intensity_id: None,
         }
     }
 
     /// Register widgets with the [`Ui`] so they receive mouse events.
-    pub fn configure_ui(&mut self, ui: &mut Ui) {
-        ui.add(self.slider_azimuth.clone());
-        ui.add(self.slider_elevation.clone());
-        ui.add(self.slider_intensity.clone());
+    pub fn configure_ui(&mut self, ui: &mut UiTree<EditorApp>) {
+        self.azimuth_id = Some(ui.add_node(Box::new(self.slider_azimuth.clone()), None));
+        self.elevation_id = Some(ui.add_node(Box::new(self.slider_elevation.clone()), None));
+        self.intensity_id = Some(ui.add_node(Box::new(self.slider_intensity.clone()), None));
     }
 
     /// Draw the panel and push any light changes to the renderer.
     pub fn draw(
         &mut self,
         gui: &mut GuiBatch,
-        text: &mut TextBatch,
         font: Option<&Font>,
         ctx: &mut AppContext,
         panel_top: f32, // y offset where the panel starts
@@ -65,7 +72,7 @@ impl GlobalLightPanel {
         let slider_w = (win_w - slider_x - MARGIN).max(40.0);
 
         // Panel background strip.
-        gui.push(ferrous_gui::GuiQuad {
+        gui.push_quad(ferrous_gui::GuiQuad {
             pos: [panel_x, panel_top],
             size: [PANEL_W, 130.0],
             uv0: [0.0, 0.0],
@@ -80,7 +87,7 @@ impl GlobalLightPanel {
             return;
         };
 
-        text.draw_text(
+        gui.draw_text(
             font,
             "── Global Light ──",
             [panel_x + MARGIN, panel_top + 8.0],
@@ -88,16 +95,28 @@ impl GlobalLightPanel {
             [1.0, 0.85, 0.4, 1.0],
         );
 
-        // Reposition sliders.
-        let set_slider = |sl: &Rc<RefCell<Slider>>, y: f32| {
-            let mut s = sl.borrow_mut();
-            s.rect[0] = slider_x;
-            s.rect[1] = y;
-            s.rect[2] = slider_w;
+        // Reposition sliders and draw them.
+        let mut draw_sl = |sl: &Rc<RefCell<Slider<EditorApp>>>, node_id_opt: Option<ferrous_gui::NodeId>, y: f32, label: &str| {
+            let rect = ferrous_gui::Rect::new(slider_x, y, slider_w, SLIDER_H);
+            
+            // Manual draw
+            let mut cmds: Vec<ferrous_gui::RenderCommand> = Vec::new();
+            let mut dc = ferrous_gui::DrawContext {
+                node_id: node_id_opt.unwrap_or_default(),
+                rect,
+                theme: ferrous_gui::theme::Theme::default(),
+            };
+            sl.borrow().draw(&mut dc, &mut cmds);
+            for cmd in cmds {
+                cmd.to_batches(gui, Some(font));
+            }
+            
+            gui.draw_text(font, label, [slider_x, y - 10.0], 10.0, [0.7, 0.7, 0.7, 1.0]);
         };
-        set_slider(&self.slider_azimuth, panel_top + 28.0);
-        set_slider(&self.slider_elevation, panel_top + 62.0);
-        set_slider(&self.slider_intensity, panel_top + 96.0);
+
+        draw_sl(&self.slider_azimuth, self.azimuth_id, panel_top + 28.0, "Azimuth");
+        draw_sl(&self.slider_elevation, self.elevation_id, panel_top + 62.0, "Elevation");
+        draw_sl(&self.slider_intensity, self.intensity_id, panel_top + 96.0, "Intensity");
 
         let az_v = self.slider_azimuth.borrow().value;
         let el_v = self.slider_elevation.borrow().value;
@@ -117,16 +136,22 @@ impl GlobalLightPanel {
             .set_directional_light(dir, [1.0, 0.98, 0.95], intensity);
 
         // Draw rows.
-        text.draw_text(
+        gui.draw_text(
             font,
             "Azimuth",
             [slider_x, panel_top + 26.0],
             10.0,
             [0.75, 0.75, 0.75, 1.0],
         );
-        self.slider_azimuth.borrow().draw(gui);
-        let val_x = slider_x + self.slider_azimuth.borrow().rect[2] + 4.0;
-        text.draw_text(
+        let mut cmds: Vec<ferrous_gui::RenderCommand> = Vec::new();
+        self.slider_azimuth.borrow().draw(&mut ferrous_gui::DrawContext {
+            node_id: self.azimuth_id.unwrap_or_default(),
+            rect: ferrous_gui::Rect::new(slider_x, panel_top + 28.0, slider_w, SLIDER_H),
+            theme: ferrous_gui::theme::Theme::default(),
+        }, &mut cmds);
+        for cmd in cmds { cmd.to_batches(gui, Some(font)); }
+        let val_x = slider_x + slider_w + 4.0;
+        gui.draw_text(
             font,
             &format!("{:.0}°", az_v * 360.0),
             [val_x, panel_top + 28.0],
@@ -134,16 +159,22 @@ impl GlobalLightPanel {
             [1.0, 0.85, 0.4, 1.0],
         );
 
-        text.draw_text(
+        gui.draw_text(
             font,
             "Elevation",
             [slider_x, panel_top + 60.0],
             10.0,
             [0.75, 0.75, 0.75, 1.0],
         );
-        self.slider_elevation.borrow().draw(gui);
+        let mut cmds_el: Vec<ferrous_gui::RenderCommand> = Vec::new();
+        self.slider_elevation.borrow().draw(&mut ferrous_gui::DrawContext {
+            node_id: self.elevation_id.unwrap_or_default(),
+            rect: ferrous_gui::Rect::new(slider_x, panel_top + 62.0, slider_w, SLIDER_H),
+            theme: ferrous_gui::theme::Theme::default(),
+        }, &mut cmds_el);
+        for cmd in cmds_el { cmd.to_batches(gui, Some(font)); }
         let el_deg = (el_v * 2.0 - 1.0) * 90.0;
-        text.draw_text(
+        gui.draw_text(
             font,
             &format!("{:.0}°", el_deg),
             [val_x, panel_top + 62.0],
@@ -151,15 +182,21 @@ impl GlobalLightPanel {
             [1.0, 0.85, 0.4, 1.0],
         );
 
-        text.draw_text(
+        gui.draw_text(
             font,
             "Intensity",
             [slider_x, panel_top + 94.0],
             10.0,
             [0.75, 0.75, 0.75, 1.0],
         );
-        self.slider_intensity.borrow().draw(gui);
-        text.draw_text(
+        let mut cmds_in: Vec<ferrous_gui::RenderCommand> = Vec::new();
+        self.slider_intensity.borrow().draw(&mut ferrous_gui::DrawContext {
+            node_id: self.intensity_id.unwrap_or_default(),
+            rect: ferrous_gui::Rect::new(slider_x, panel_top + 96.0, slider_w, SLIDER_H),
+            theme: ferrous_gui::theme::Theme::default(),
+        }, &mut cmds_in);
+        for cmd in cmds_in { cmd.to_batches(gui, Some(font)); }
+        gui.draw_text(
             font,
             &format!("{:.2}", intensity),
             [val_x, panel_top + 96.0],

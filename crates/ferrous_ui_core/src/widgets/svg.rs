@@ -93,11 +93,20 @@ pub enum SvgPrimitive {
 
 enum SvgSource {
     /// Textura pre-rasterizada por el backend.
-    Texture { texture_id: u64 },
+    Texture {
+        texture_id: u64,
+        #[cfg(feature = "assets")]
+        texture: Option<std::sync::Arc<ferrous_assets::Texture2d>>,
+    },
     /// Primitivas vectoriales dibujadas en `draw()`.
     Primitives { primitives: Vec<SvgPrimitive> },
     /// SVG source en texto; el backend lo rasterizará de forma diferida.
-    Source { content: String, texture_id: u64 },
+    Source {
+        content: String,
+        texture_id: u64,
+        #[cfg(feature = "assets")]
+        texture: Option<std::sync::Arc<ferrous_assets::Texture2d>>,
+    },
 }
 
 // ─── SvgWidget ────────────────────────────────────────────────────────────────
@@ -138,7 +147,20 @@ impl<App> SvgWidget<App> {
     /// El backend de renderizado debe haber rasterizado el SVG previamente y
     /// registrado la textura resultante, devolviendo un `texture_id`.
     pub fn from_texture(texture_id: u64) -> Self {
-        Self::new_inner(SvgSource::Texture { texture_id })
+        Self::new_inner(SvgSource::Texture {
+            texture_id,
+            #[cfg(feature = "assets")]
+            texture: None,
+        })
+    }
+
+    /// Crea un `SvgWidget` a partir de una textura del sistema de assets.
+    #[cfg(feature = "assets")]
+    pub fn from_asset_texture(texture: std::sync::Arc<ferrous_assets::Texture2d>) -> Self {
+        Self::new_inner(SvgSource::Texture {
+            texture_id: 0,
+            texture: Some(texture),
+        })
     }
 
     /// Crea un `SvgWidget` a partir de contenido SVG en texto.
@@ -149,6 +171,8 @@ impl<App> SvgWidget<App> {
         Self::new_inner(SvgSource::Source {
             content: svg_content.into(),
             texture_id: 0,
+            #[cfg(feature = "assets")]
+            texture: None,
         })
     }
 
@@ -211,7 +235,7 @@ impl<App> SvgWidget<App> {
     pub fn set_texture_id(&mut self, id: u64) {
         match &mut self.source {
             SvgSource::Source { texture_id, .. } => *texture_id = id,
-            SvgSource::Texture { texture_id }    => *texture_id = id,
+            SvgSource::Texture { texture_id, .. }    => *texture_id = id,
             _ => {}
         }
     }
@@ -219,7 +243,7 @@ impl<App> SvgWidget<App> {
     /// Devuelve el `texture_id` actual (0 si aún no rasterizado).
     pub fn texture_id(&self) -> u64 {
         match &self.source {
-            SvgSource::Texture { texture_id } => *texture_id,
+            SvgSource::Texture { texture_id, .. } => *texture_id,
             SvgSource::Source { texture_id, .. } => *texture_id,
             SvgSource::Primitives { .. } => 0,
         }
@@ -424,21 +448,55 @@ impl<App: Send + Sync + 'static> Widget<App> for SvgWidget<App> {
 
         match &self.source {
             // ── Modo textura ─────────────────────────────────────────────────
-            SvgSource::Texture { texture_id } | SvgSource::Source { texture_id, .. }
-                if *texture_id != 0 =>
+            SvgSource::Texture { texture_id, .. } | SvgSource::Source { texture_id, .. }
+                if *texture_id != 0 || {
+                    #[cfg(feature = "assets")]
+                    {
+                        match &self.source {
+                            SvgSource::Texture { texture, .. } | SvgSource::Source { texture, .. } => texture.is_some(),
+                            _ => false,
+                        }
+                    }
+                    #[cfg(not(feature = "assets"))]
+                    false
+                }
+            =>
             {
                 let dest = self.texture_dest_rect(r);
-                cmds.push(RenderCommand::Image {
-                    rect: dest,
-                    texture_id: *texture_id,
-                    uv0: [0.0, 0.0],
-                    uv1: [1.0, 1.0],
-                    color: self.color,
-                });
+                
+                #[cfg(feature = "assets")]
+                {
+                    let tex = match &self.source {
+                        SvgSource::Texture { texture, .. } | SvgSource::Source { texture, .. } => texture.clone(),
+                        _ => None,
+                    };
+
+                    if let Some(t) = tex {
+                        cmds.push(RenderCommand::Image {
+                            rect: dest,
+                            texture: t,
+                            uv0: [0.0, 0.0],
+                            uv1: [1.0, 1.0],
+                            color: self.color,
+                        });
+                    } else {
+                        // Fallback a ID si el backend lo soporta (no en asset mode)
+                    }
+                }
+                #[cfg(not(feature = "assets"))]
+                {
+                    cmds.push(RenderCommand::Image {
+                        rect: dest,
+                        texture_id: *texture_id,
+                        uv0: [0.0, 0.0],
+                        uv1: [1.0, 1.0],
+                        color: self.color,
+                    });
+                }
             }
 
             // ── Modo textura sin ID (placeholder de carga) ───────────────────
-            SvgSource::Texture { texture_id: 0 } | SvgSource::Source { texture_id: 0, .. } => {
+            SvgSource::Texture { texture_id: 0, .. } | SvgSource::Source { texture_id: 0, .. } => {
                 // Placeholder: spinning indicator / rect muted
                 cmds.push(RenderCommand::Quad {
                     rect: r,

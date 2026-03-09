@@ -46,6 +46,8 @@ pub mod dock_layout;
 pub use dock_layout::*;
 pub mod tree_view;
 pub use tree_view::*;
+pub mod viewport;
+pub use viewport::*;
 pub mod virtual_list;
 pub use virtual_list::*;
 pub mod virtual_grid;

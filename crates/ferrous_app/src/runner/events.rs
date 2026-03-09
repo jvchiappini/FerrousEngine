@@ -30,7 +30,7 @@ use super::types::Runner;
 
 impl<A: FerrousApp> ApplicationHandler for Runner<A> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        self.app.configure_ui(&mut self.ui);
+        self.app.configure_ui(&mut self.ui.tree);
 
         let attributes = Window::default_attributes()
             .with_title(&self.config.title)
@@ -173,14 +173,17 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::RedrawRequested => {}
+            WindowEvent::RedrawRequested => {
+                self.render_frame(event_loop);
+                return;
+            }
             _ => self.last_action_time = Instant::now(),
         }
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.input.set_mouse_position(position.x, position.y);
-                self.events.dispatch_event(&mut self.ui, &mut self.app, ferrous_ui_core::UiEvent::MouseMove { 
+                self.ui.dispatch_event(&mut self.app, ferrous_ui_core::UiEvent::MouseMove { 
                     pos: glam::Vec2::new(position.x as f32, position.y as f32) 
                 });
             }
@@ -191,12 +194,12 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                 let pos = glam::Vec2::new(mx as f32, my as f32);
                 let button = ferrous_events::winit_to_mousebutton(button);
                 if pressed {
-                    self.events.dispatch_event(&mut self.ui, &mut self.app, ferrous_ui_core::UiEvent::MouseDown { 
+                    self.ui.dispatch_event(&mut self.app, ferrous_ui_core::UiEvent::MouseDown { 
                         button, 
                         pos 
                     });
                 } else {
-                    self.events.dispatch_event(&mut self.ui, &mut self.app, ferrous_ui_core::UiEvent::MouseUp { 
+                    self.ui.dispatch_event(&mut self.app, ferrous_ui_core::UiEvent::MouseUp { 
                         button, 
                         pos 
                     });
@@ -207,7 +210,7 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                     winit::event::MouseScrollDelta::LineDelta(x, y) => (x, y),
                     winit::event::MouseScrollDelta::PixelDelta(pos) => (pos.x as f32 / 20.0, pos.y as f32 / 20.0),
                 };
-                self.events.dispatch_event(&mut self.ui, &mut self.app, ferrous_ui_core::UiEvent::MouseWheel { delta_x: dx, delta_y: dy });
+                self.ui.dispatch_event(&mut self.app, ferrous_ui_core::UiEvent::MouseWheel { delta_x: dx, delta_y: dy });
             }
             WindowEvent::KeyboardInput { ref event, .. } => {
                 let winit::event::KeyEvent {
@@ -226,16 +229,16 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                     None
                 } {
                     if state == winit::event::ElementState::Pressed {
-                        self.events.dispatch_event(&mut self.ui, &mut self.app, ferrous_ui_core::UiEvent::KeyDown { key });
+                        self.ui.dispatch_event(&mut self.app, ferrous_ui_core::UiEvent::KeyDown { key });
                     } else {
-                        self.events.dispatch_event(&mut self.ui, &mut self.app, ferrous_ui_core::UiEvent::KeyUp { key });
+                        self.ui.dispatch_event(&mut self.app, ferrous_ui_core::UiEvent::KeyUp { key });
                     }
                 }
                 
                 if let Some(txt) = text {
                     if state == winit::event::ElementState::Pressed {
                         for c in txt.chars() {
-                            self.events.dispatch_event(&mut self.ui, &mut self.app, ferrous_ui_core::UiEvent::Char { c });
+                            self.ui.dispatch_event(&mut self.app, ferrous_ui_core::UiEvent::Char { c });
                         }
                     }
                 }
@@ -251,5 +254,9 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
             }
             _ => {}
         }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.about_to_wait_impl(event_loop);
     }
 }

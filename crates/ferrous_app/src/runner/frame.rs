@@ -154,6 +154,7 @@ impl<A: FerrousApp> Runner<A> {
                 gfx.renderer.set_viewport(self.viewport);
                 // self.ui.viewport = ctx.viewport; // No longer needed here, passed to collect_commands
             }
+            self.ui.update(time.delta, self.window_size.0 as f32, self.window_size.1 as f32);
         }
 
         // ECS → renderer sync and 3-D camera input are only needed in Game3D.
@@ -216,6 +217,7 @@ impl<A: FerrousApp> Runner<A> {
                 };
                 self.app.draw_ui(&mut dc);
             }
+
             let viewport_rect = Rect {
                 x: 0.0, 
                 y: 0.0, 
@@ -223,17 +225,9 @@ impl<A: FerrousApp> Runner<A> {
                 height: self.window_size.1 as f32
             };
             
-            let mut cmds = Vec::new();
-            self.ui.collect_commands(&mut cmds, viewport_rect);
-
-            #[cfg(feature = "text")]
-            for cmd in cmds {
-                cmd.to_batches(&mut gui_batch, self.font.as_ref());
-            }
-            #[cfg(not(feature = "text"))]
-            for cmd in cmds {
-                cmd.to_batches(&mut gui_batch);
-            }
+            let ui_render_batch = self.ui.render(viewport_rect, self.font.as_ref());
+            // Fusionar los comandos de la UI con los comandos inmediatos (si los hay)
+            gui_batch.extend(ui_render_batch);
 
             // ── 3. RENDER FINAL ─────────────────────────────────────────────
             let frame = match gfx.surface.get_current_texture() {

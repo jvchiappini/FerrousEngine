@@ -12,6 +12,7 @@ bytemuck = { version = "1.14", features = ["derive"] } # habilita macros derive 
 glam = "0.29"
 ferrous_ui_render = { path = "../ferrous_ui_render" }
 ferrous_ui_core = { path = "../ferrous_ui_core", features = ["assets"] }
+ferrous_layout = { path = "../ferrous_layout" }
 ferrous_events = { path = "../ferrous_events" }
 
 # font atlas generator lives in the assets crate

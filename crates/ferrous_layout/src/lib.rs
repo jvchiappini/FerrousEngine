@@ -5,7 +5,7 @@
 //! asignar coordenadas físicas (`Rect`) a cada elemento.
 
 use taffy::prelude::*;
-use ferrous_ui_core::{UiTree, NodeId, Rect, Units, DisplayMode, Alignment};
+pub use ferrous_ui_core::{UiTree, NodeId, Rect, Units, DisplayMode, Alignment};
 use std::collections::HashMap;
 
 /// Motor de layout que sincroniza el `UiTree` con un grafo de Taffy de alto rendimiento.

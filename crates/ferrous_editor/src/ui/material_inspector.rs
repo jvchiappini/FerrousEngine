@@ -27,11 +27,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::app::types::EditorApp;
 use ferrous_app::AppContext;
 use ferrous_assets::Font;
 use ferrous_core::scene::{AlphaMode, MaterialDescriptor};
 use ferrous_core::Handle;
-use ferrous_gui::{ColorPicker, GuiBatch, PickerShape, Slider, TextBatch, Ui};
+use ferrous_gui::{ColorPicker, GuiBatch, PickerShape, Slider, ToBatches, UiTree, Widget};
 
 // ─── Layout constants ───────────────────────────────────────────────────────
 
@@ -49,7 +50,7 @@ const PICKER_SIZE: f32 = 44.0;
 /// `handle_checkbox_click`.
 fn draw_checkbox(gui: &mut GuiBatch, x: f32, y: f32, size: f32, checked: bool) {
     // outer border
-    gui.push(ferrous_gui::GuiQuad {
+    gui.push_quad(ferrous_gui::GuiQuad {
         pos: [x, y],
         size: [size, size],
         uv0: [0.0, 0.0],
@@ -62,7 +63,7 @@ fn draw_checkbox(gui: &mut GuiBatch, x: f32, y: f32, size: f32, checked: bool) {
     // inner fill when checked
     if checked {
         let inset = 3.0;
-        gui.push(ferrous_gui::GuiQuad {
+        gui.push_quad(ferrous_gui::GuiQuad {
             pos: [x + inset, y + inset],
             size: [size - inset * 2.0, size - inset * 2.0],
             uv0: [0.0, 0.0],
@@ -78,7 +79,7 @@ fn draw_checkbox(gui: &mut GuiBatch, x: f32, y: f32, size: f32, checked: bool) {
 /// Radio button circle.
 fn draw_radio(gui: &mut GuiBatch, cx: f32, cy: f32, r: f32, selected: bool) {
     // outer ring
-    gui.push(ferrous_gui::GuiQuad {
+    gui.push_quad(ferrous_gui::GuiQuad {
         pos: [cx - r, cy - r],
         size: [r * 2.0, r * 2.0],
         uv0: [0.0, 0.0],
@@ -90,7 +91,7 @@ fn draw_radio(gui: &mut GuiBatch, cx: f32, cy: f32, r: f32, selected: bool) {
     });
     if selected {
         let ir = r * 0.55;
-        gui.push(ferrous_gui::GuiQuad {
+        gui.push_quad(ferrous_gui::GuiQuad {
             pos: [cx - ir, cy - ir],
             size: [ir * 2.0, ir * 2.0],
             uv0: [0.0, 0.0],
@@ -108,42 +109,52 @@ fn draw_radio(gui: &mut GuiBatch, cx: f32, cy: f32, r: f32, selected: bool) {
 /// Inspector panel for the selected entity's PBR material.
 pub struct MaterialInspector {
     // ── Widgets (registered with Ui so they receive mouse events) ──────────
-    pub slider_metallic: Rc<RefCell<Slider>>,
-    pub slider_roughness: Rc<RefCell<Slider>>,
-    pub slider_ao: Rc<RefCell<Slider>>,
-    pub slider_emissive: Rc<RefCell<Slider>>,
-    pub color_picker: Rc<RefCell<ColorPicker>>,
+    pub slider_metallic: Rc<RefCell<Slider<EditorApp>>>,
+    pub slider_roughness: Rc<RefCell<Slider<EditorApp>>>,
+    pub slider_ao: Rc<RefCell<Slider<EditorApp>>>,
+    pub slider_emissive: Rc<RefCell<Slider<EditorApp>>>,
+    pub color_picker: Rc<RefCell<ColorPicker<EditorApp>>>,
 
     // ── Internal state ─────────────────────────────────────────────────────
     /// Cached descriptor so we know when something changed.
     last_desc: MaterialDescriptor,
     /// Whether we already registered widgets with the Ui.
     registered: bool,
+    // NodeIds for updating layout manually
+    pub metallic_id: Option<ferrous_gui::NodeId>,
+    pub roughness_id: Option<ferrous_gui::NodeId>,
+    pub ao_id: Option<ferrous_gui::NodeId>,
+    pub emissive_id: Option<ferrous_gui::NodeId>,
+    pub color_id: Option<ferrous_gui::NodeId>,
 }
 
 impl MaterialInspector {
     pub fn new() -> Self {
-        let picker =
-            ColorPicker::new(0.0, 0.0, PICKER_SIZE, PICKER_SIZE).with_shape(PickerShape::Rect);
+        let picker = ColorPicker::new().with_shape(PickerShape::Rect);
         Self {
-            slider_metallic: Rc::new(RefCell::new(Slider::new(0.0, 0.0, 160.0, SLIDER_H, 0.0))),
-            slider_roughness: Rc::new(RefCell::new(Slider::new(0.0, 0.0, 160.0, SLIDER_H, 0.5))),
-            slider_ao: Rc::new(RefCell::new(Slider::new(0.0, 0.0, 160.0, SLIDER_H, 1.0))),
-            slider_emissive: Rc::new(RefCell::new(Slider::new(0.0, 0.0, 160.0, SLIDER_H, 0.0))),
+            slider_metallic: Rc::new(RefCell::new(Slider::new(0.0, 0.0, 1.0))),
+            slider_roughness: Rc::new(RefCell::new(Slider::new(0.0, 0.0, 1.0))),
+            slider_ao: Rc::new(RefCell::new(Slider::new(0.0, 0.0, 1.0))),
+            slider_emissive: Rc::new(RefCell::new(Slider::new(0.0, 0.0, 1.0))),
             color_picker: Rc::new(RefCell::new(picker)),
             last_desc: MaterialDescriptor::default(),
             registered: false,
+            metallic_id: None,
+            roughness_id: None,
+            ao_id: None,
+            emissive_id: None,
+            color_id: None,
         }
     }
 
     /// Register widgets with the [`Ui`] so that they receive hit-test /
     /// drag events.  Must be called once from `EditorApp::configure_ui`.
-    pub fn configure_ui(&mut self, ui: &mut Ui) {
-        ui.add(self.slider_metallic.clone());
-        ui.add(self.slider_roughness.clone());
-        ui.add(self.slider_ao.clone());
-        ui.add(self.slider_emissive.clone());
-        ui.add(self.color_picker.clone());
+    pub fn configure_ui(&mut self, ui: &mut UiTree<EditorApp>) {
+        self.metallic_id = Some(ui.add_node(Box::new(self.slider_metallic.clone()), None));
+        self.roughness_id = Some(ui.add_node(Box::new(self.slider_roughness.clone()), None));
+        self.ao_id = Some(ui.add_node(Box::new(self.slider_ao.clone()), None));
+        self.emissive_id = Some(ui.add_node(Box::new(self.slider_emissive.clone()), None));
+        self.color_id = Some(ui.add_node(Box::new(self.color_picker.clone()), None));
         self.registered = true;
     }
 
@@ -169,25 +180,6 @@ impl MaterialInspector {
 
         // metallic  — just below header + colour picker row
         let base_y = 70.0; // header + picker row height
-
-        let set_slider = |sl: &Rc<RefCell<Slider>>, y: f32| {
-            let mut s = sl.borrow_mut();
-            s.rect[0] = slider_x;
-            s.rect[1] = y;
-            s.rect[2] = slider_w;
-        };
-
-        set_slider(&self.slider_metallic, base_y);
-        set_slider(&self.slider_roughness, base_y + 34.0);
-        set_slider(&self.slider_ao, base_y + 68.0);
-        set_slider(&self.slider_emissive, base_y + 102.0);
-
-        // colour picker sits in the header area
-        let mut cp = self.color_picker.borrow_mut();
-        cp.rect[0] = panel_x + MARGIN;
-        cp.rect[1] = 28.0;
-        cp.rect[2] = PICKER_SIZE;
-        cp.rect[3] = PICKER_SIZE;
     }
 
     // ─── Main draw method ────────────────────────────────────────────────
@@ -200,7 +192,6 @@ impl MaterialInspector {
         &mut self,
         selected: Option<Handle>,
         gui: &mut GuiBatch,
-        text: &mut TextBatch,
         font: Option<&Font>,
         ctx: &mut AppContext,
     ) -> bool {
@@ -211,7 +202,7 @@ impl MaterialInspector {
         self.reposition_widgets(panel_x, win_w);
 
         // ── Panel background ────────────────────────────────────────────────
-        gui.push(ferrous_gui::GuiQuad {
+        gui.push_quad(ferrous_gui::GuiQuad {
             pos: [panel_x, 0.0],
             size: [PANEL_W, win_h],
             uv0: [0.0, 0.0],
@@ -227,7 +218,7 @@ impl MaterialInspector {
         };
 
         // ── Title ────────────────────────────────────────────────────────────
-        text.draw_text(
+        gui.draw_text(
             font,
             "── Material Inspector ──",
             [panel_x + MARGIN, 10.0],
@@ -237,7 +228,7 @@ impl MaterialInspector {
 
         // ── "No selection" guard ─────────────────────────────────────────────
         let Some(handle) = selected else {
-            text.draw_text(
+            gui.draw_text(
                 font,
                 "Select an object",
                 [panel_x + MARGIN, 36.0],
@@ -258,7 +249,7 @@ impl MaterialInspector {
         let mut changed = false;
 
         // ── Colour picker ────────────────────────────────────────────────────
-        text.draw_text(
+        gui.draw_text(
             font,
             "Base Color",
             [panel_x + MARGIN + PICKER_SIZE + 6.0, 30.0],
@@ -290,7 +281,17 @@ impl MaterialInspector {
         // Draw the colour picker widget.
         {
             let cp = self.color_picker.borrow();
-            cp.draw(gui);
+            let rect = ferrous_gui::Rect::new(panel_x + MARGIN, 26.0, PICKER_SIZE, PICKER_SIZE);
+            let mut cmds: Vec<ferrous_gui::RenderCommand> = Vec::new();
+            let mut dc = ferrous_gui::DrawContext {
+                node_id: self.color_id.unwrap_or_default(),
+                rect,
+                theme: ferrous_gui::theme::Theme::default(),
+            };
+            cp.draw(&mut dc, &mut cmds);
+            for cmd in cmds {
+                cmd.to_batches(gui, Some(font));
+            }
         }
 
         // ── Sliders ──────────────────────────────────────────────────────────
@@ -298,23 +299,43 @@ impl MaterialInspector {
         let base_y = 74.0;
 
         // Helper: label + slider row
-        let mut draw_slider_row = |label: &str, sl: &Rc<RefCell<Slider>>, y: f32| {
-            text.draw_text(
+        let mut draw_slider_row = |label: &str,
+                                   sl: &Rc<RefCell<Slider<EditorApp>>>,
+                                   node_id_opt: Option<ferrous_gui::NodeId>,
+                                   y: f32| {
+            gui.draw_text(
                 font,
                 label,
                 [slider_x, y - LABEL_H],
                 11.0,
                 [0.75, 0.75, 0.75, 1.0],
             );
-            sl.borrow().draw(gui);
+            let slider_w = (win_w - slider_x - MARGIN).max(40.0);
+            let rect = ferrous_gui::Rect::new(slider_x, y, slider_w, SLIDER_H);
+            let mut cmds: Vec<ferrous_gui::RenderCommand> = Vec::new();
+            let mut dc = ferrous_gui::DrawContext {
+                node_id: node_id_opt.unwrap_or_default(),
+                rect,
+                theme: ferrous_gui::theme::Theme::default(),
+            };
+            sl.borrow().draw(&mut dc, &mut cmds);
+            for cmd in cmds {
+                cmd.to_batches(gui, Some(font));
+            }
         };
 
-        draw_slider_row("Metallic", &self.slider_metallic, base_y);
-        draw_slider_row("Roughness", &self.slider_roughness, base_y + 34.0);
-        draw_slider_row("AO Strength", &self.slider_ao, base_y + 68.0);
+        draw_slider_row("Metallic", &self.slider_metallic, self.metallic_id, base_y);
+        draw_slider_row(
+            "Roughness",
+            &self.slider_roughness,
+            self.roughness_id,
+            base_y + 34.0,
+        );
+        draw_slider_row("AO Strength", &self.slider_ao, self.ao_id, base_y + 68.0);
         draw_slider_row(
             "Emissive Strength (×5)",
             &self.slider_emissive,
+            self.emissive_id,
             base_y + 102.0,
         );
 
@@ -343,29 +364,30 @@ impl MaterialInspector {
         }
 
         // Draw numeric values next to sliders.
-        let val_x = slider_x + self.slider_metallic.borrow().rect[2] + 4.0;
-        text.draw_text(
+        let slider_w = (win_w - slider_x - MARGIN).max(40.0);
+        let val_x = slider_x + slider_w + 4.0;
+        gui.draw_text(
             font,
             &format!("{:.2}", desc.metallic),
             [val_x, base_y],
             10.0,
             [0.6, 0.9, 0.6, 1.0],
         );
-        text.draw_text(
+        gui.draw_text(
             font,
             &format!("{:.2}", desc.roughness),
             [val_x, base_y + 34.0],
             10.0,
             [0.6, 0.9, 0.6, 1.0],
         );
-        text.draw_text(
+        gui.draw_text(
             font,
             &format!("{:.2}", desc.ao_strength),
             [val_x, base_y + 68.0],
             10.0,
             [0.6, 0.9, 0.6, 1.0],
         );
-        text.draw_text(
+        gui.draw_text(
             font,
             &format!("{:.2}", desc.emissive_strength),
             [val_x, base_y + 102.0],
@@ -377,7 +399,7 @@ impl MaterialInspector {
         let cb_y = base_y + 128.0;
         let cb_size = 14.0;
         draw_checkbox(gui, slider_x, cb_y, cb_size, desc.double_sided);
-        text.draw_text(
+        gui.draw_text(
             font,
             "Double-sided",
             [slider_x + cb_size + 6.0, cb_y + 2.0],
@@ -402,7 +424,7 @@ impl MaterialInspector {
 
         // ── Alpha Mode radio buttons ─────────────────────────────────────────
         let alpha_y = cb_y + 28.0;
-        text.draw_text(
+        gui.draw_text(
             font,
             "Alpha Mode",
             [slider_x, alpha_y],
@@ -423,7 +445,7 @@ impl MaterialInspector {
             let selected_mode =
                 std::mem::discriminant(&desc.alpha_mode) == std::mem::discriminant(mode);
             draw_radio(gui, rx, ry, r, selected_mode);
-            text.draw_text(
+            gui.draw_text(
                 font,
                 label,
                 [rx + r + 3.0, ry - r + 2.0],

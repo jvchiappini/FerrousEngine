@@ -4,7 +4,7 @@
 //! Proporciona un lenguaje común para que los widgets reaccionen a clicks, movimientos,
 //! y pulsaciones de teclas sin conocer a `winit` o APIs similares.
 
-use ferrous_ui_core::{NodeId, UiTree, UiEvent, Rect, EventResponse, EventContext, GuiKey};
+pub use ferrous_ui_core::{NodeId, UiTree, UiEvent, Rect, EventResponse, EventContext, GuiKey, MouseButton};
 use glam::Vec2;
 
 /// Gestor del estado de foco y hover del sistema de eventos.

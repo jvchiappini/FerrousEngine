@@ -14,30 +14,8 @@ impl EditorApp {
         let (win_w, win_h) = ctx.window_size;
         ctx.viewport = Viewport { x: 0, y: 0, width: win_w, height: win_h };
 
-        // Add-cube button
-        let pressed = self.add_button.borrow().pressed;
-        if !pressed && self.button_was_pressed {
-            self.add_cube = true;
-        }
-        self.button_was_pressed = pressed;
-
-        // Benchmark button
-        let bench_pressed = self.bench_button.borrow().pressed;
-        if !bench_pressed && self.bench_button_was_pressed {
-            match self.bench_state {
-                BenchmarkState::Idle | BenchmarkState::Finished => {
-                    self.bench_state = BenchmarkState::Running;
-                    self.bench_cube_count = 0;
-                    self.bench_peak_cubes = 0;
-                    self.bench_stopped_fps = 0.0;
-                }
-                BenchmarkState::Running => {
-                    self.bench_state = BenchmarkState::Finished;
-                    self.bench_stopped_fps = ctx.time.fps;
-                }
-            }
-        }
-        self.bench_button_was_pressed = bench_pressed;
+        // La lógica de los botones Add y Benchmark ahora se maneja vía callbacks 
+        // registrados en configure_ui().
 
         if self.bench_state == BenchmarkState::Running {
             if self.fps_avg >= BENCHMARK_MIN_FPS {

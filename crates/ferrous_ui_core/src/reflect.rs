@@ -151,13 +151,13 @@ impl FuiNode {
     }
 
     /// Carga un subárbol desde una cadena RON.
-    pub fn from_ron(ron_str: &str) -> ron::Result<Self> {
-        ron::from_str(ron_str)
+    pub fn from_ron(ron_str: &str) -> Result<Self, ron::Error> {
+        ron::from_str(ron_str).map_err(|e| e.code)
     }
 }
 
 /// Registra todos los widgets estándar del motor en la factoría proporcionada.
 pub fn register_core_widgets<App: 'static + Send + Sync>(factory: &mut WidgetFactory<App>) {
-    factory.register("Button", || Box::new(crate::widgets::Button::<App>::new("Button")));
+    factory.register::<crate::widgets::Button<App>, _>("Button", || Box::new(crate::widgets::Button::<App>::new("Button")));
     // TODO: Registrar el resto de widgets (Label, TextInput, etc.)
 }

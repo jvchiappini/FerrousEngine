@@ -1,10 +1,5 @@
-//! `EditorApp` struct definition, helper constants and `Default` impl.
-
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use ferrous_app::{Handle, RenderStats};
-use ferrous_gui::{InteractiveButton, Slider, ViewportWidget};
+use ferrous_gui::NodeId;
 
 use crate::ui::{GlobalLightPanel, MaterialInspector};
 
@@ -40,9 +35,9 @@ pub(super) enum BenchmarkState {
 // ─── EditorApp ───────────────────────────────────────────────────────────────
 
 pub struct EditorApp {
-    pub(super) add_button: Rc<RefCell<InteractiveButton>>,
-    pub(super) bench_button: Rc<RefCell<InteractiveButton>>,
-    pub(super) ui_viewport: Rc<RefCell<ViewportWidget>>,
+    pub(super) add_button: Option<NodeId>,
+    pub(super) bench_button: Option<NodeId>,
+    pub(super) ui_viewport: Option<NodeId>,
     pub(super) button_was_pressed: bool,
     pub(super) bench_button_was_pressed: bool,
     pub(super) add_cube: bool,
@@ -56,9 +51,10 @@ pub struct EditorApp {
     pub(super) fps_history_idx: usize,
     pub(super) fps_avg: f32,
     pub(super) cached_render_stats: RenderStats,
-    pub(super) slider_w: Rc<RefCell<Slider>>,
-    pub(super) slider_h: Rc<RefCell<Slider>>,
-    pub(super) slider_d: Rc<RefCell<Slider>>,
+    pub(super) slider_w: Option<NodeId>,
+    pub(super) slider_h: Option<NodeId>,
+    pub(super) slider_d: Option<NodeId>,
+    pub(super) cube_size: ferrous_app::Vec3,
     /// Active GPU backend name, detected in `setup`.
     pub(super) gpu_backend: String,
     pub(super) selected: Option<Handle>,
@@ -76,9 +72,9 @@ pub struct EditorApp {
 impl Default for EditorApp {
     fn default() -> Self {
         Self {
-            add_button: Rc::new(RefCell::new(InteractiveButton::new(10.0, 10.0, 120.0, 32.0))),
-            bench_button: Rc::new(RefCell::new(InteractiveButton::new(10.0, 50.0, 150.0, 32.0))),
-            ui_viewport: Rc::new(RefCell::new(ViewportWidget::new(0.0, 0.0, 0.0, 0.0))),
+            add_button: None,
+            bench_button: None,
+            ui_viewport: None,
             button_was_pressed: false,
             bench_button_was_pressed: false,
             add_cube: false,
@@ -110,10 +106,11 @@ impl Default for EditorApp {
             fps_history_idx: 0,
             fps_avg: 0.0,
             cached_render_stats: RenderStats::default(),
-            slider_w: Rc::new(RefCell::new(Slider::new(10.0, 234.0, 160.0, 16.0, slider_norm(1.0)))),
-            slider_h: Rc::new(RefCell::new(Slider::new(10.0, 262.0, 160.0, 16.0, slider_norm(1.0)))),
-            slider_d: Rc::new(RefCell::new(Slider::new(10.0, 290.0, 160.0, 16.0, slider_norm(1.0)))),
+            slider_w: None,
+            slider_h: None,
+            slider_d: None,
             gpu_backend: String::new(),
+            cube_size: ferrous_app::Vec3::ONE,
         }
     }
 }

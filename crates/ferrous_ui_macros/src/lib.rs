@@ -84,7 +84,7 @@ pub fn derive_ferrous_widget(input: TokenStream) -> TokenStream {
     let mut inspect_chunks = Vec::new();
     let mut apply_chunks = Vec::new();
 
-    for field in &fields {
+    for field in fields {
         let field_name = field.ident.as_ref().expect("Campos deben tener nombre");
         let field_key = field_name.to_string();
         
@@ -168,8 +168,10 @@ pub fn derive_ferrous_widget(input: TokenStream) -> TokenStream {
         }
     }
 
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+
     let expanded = quote! {
-        impl crate::FerrousWidgetReflect for #name {
+        impl #impl_generics crate::FerrousWidgetReflect for #name #ty_generics #where_clause {
             fn widget_type_name(&self) -> &'static str {
                 #name_str
             }

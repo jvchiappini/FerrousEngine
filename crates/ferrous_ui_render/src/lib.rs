@@ -89,6 +89,18 @@ impl GuiBatch {
         self.text_quads.push(quad);
     }
 
+    pub fn extend(&mut self, other: GuiBatch) {
+        self.quads.extend(other.quads);
+        self.text_quads.extend(other.text_quads);
+        self.segments.extend(other.segments);
+        #[cfg(feature = "assets")]
+        {
+            // Nota: Al igual que en la versión anterior, esto es una simplificación.
+            // Una implementación robusta debería mapear tex_index para evitar colisiones.
+            self.textures.extend(other.textures);
+        }
+    }
+
     /// Asegura que hay un segmento activo para el scissor actual.
     pub fn ensure_segment(&mut self) {
         let needs_new = match self.segments.last() {
@@ -244,10 +256,8 @@ pub struct GuiRenderer {
     text_max_instances: u32,
     font_bind_group_layout: wgpu::BindGroupLayout,
     font_bind_group: Option<wgpu::BindGroup>,
-    #[cfg(feature = "assets")]
     image_bind_group_layout: wgpu::BindGroupLayout,
-    #[cfg(feature = "assets")]
-    image_bind_group: Option<wgpu::BindGroup>,
+    image_bind_group: wgpu::BindGroup,
 }
 
 impl GuiRenderer {
@@ -355,7 +365,6 @@ impl GuiRenderer {
                 ],
             });
 
-        #[cfg(feature = "assets")]
         let image_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("GUI Image Bind Group Layout"),
@@ -378,6 +387,48 @@ impl GuiRenderer {
                     },
                 ],
             });
+
+        // Create a 1×1 dummy texture + sampler repeated MAX_TEXTURE_SLOTS times so
+        // that group 1 is always valid even when no images are drawn.
+        let dummy_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("GUI Dummy Texture"),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let dummy_view = dummy_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let dummy_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("GUI Dummy Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let dummy_views: Vec<&wgpu::TextureView> =
+            std::iter::repeat(&dummy_view).take(MAX_TEXTURE_SLOTS as usize).collect();
+        let dummy_samplers: Vec<&wgpu::Sampler> =
+            std::iter::repeat(&dummy_sampler).take(MAX_TEXTURE_SLOTS as usize).collect();
+        let image_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("GUI Image Bind Group (dummy)"),
+            layout: &image_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureViewArray(&dummy_views),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::SamplerArray(&dummy_samplers),
+                },
+            ],
+        });
 
         let text_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("GUI Text Shader"),
@@ -450,7 +501,6 @@ impl GuiRenderer {
             label: Some("GUI Pipeline Layout"),
             bind_group_layouts: &[
                 &uniform_bind_group_layout,
-                #[cfg(feature = "assets")]
                 &image_bind_group_layout,
             ],
             push_constant_ranges: &[],
@@ -525,10 +575,8 @@ impl GuiRenderer {
             text_max_instances: max_instances,
             font_bind_group_layout,
             font_bind_group: None,
-            #[cfg(feature = "assets")]
             image_bind_group_layout,
-            #[cfg(feature = "assets")]
-            image_bind_group: None,
+            image_bind_group,
         }
     }
 
@@ -689,7 +737,7 @@ impl GuiRenderer {
                     },
                 ],
             });
-            self.image_bind_group = Some(bg);
+            self.image_bind_group = bg;
         }
 
         for segment in &batch.segments {
@@ -715,10 +763,7 @@ impl GuiRenderer {
             if !segment.quad_range.is_empty() {
                 rpass.set_pipeline(&self.pipeline);
                 rpass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                #[cfg(feature = "assets")]
-                if let Some(bg) = &self.image_bind_group {
-                    rpass.set_bind_group(1, bg, &[]);
-                }
+                rpass.set_bind_group(1, &self.image_bind_group, &[]);
                 rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 rpass.set_vertex_buffer(1, self.instance_buffer.slice(..));
                 rpass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);

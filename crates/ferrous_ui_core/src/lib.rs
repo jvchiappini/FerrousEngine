@@ -23,7 +23,7 @@ pub use reactive::*;
 pub use style_builder::{StyleBuilder, StyleExt};
 pub use theme::{Theme, Color};
 pub use reflect::*;
-pub use ferrous_ui_macros::ui;
+pub use ferrous_ui_macros::{ui, FerrousWidget};
 
 /// Espacio rectilíneo definido por su posición de origen (esquina superior izquierda) y sus dimensiones.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -295,8 +295,7 @@ impl DirtyFlags {
     }
 }
 
-/// Interfaz fundamental para cualquier componente de la interfaz de usuario.
-pub trait Widget<App>: Send + Sync {
+pub trait Widget<App> {
     /// Se invoca cuando el widget se inserta en el árbol. Es el lugar para añadir hijos iniciales.
     fn build(&mut self, _ctx: &mut BuildContext<App>) {}
     
@@ -330,6 +329,31 @@ pub trait Widget<App>: Send + Sync {
     /// Devuelve la interfaz de reflexión mutable para este widget (opcional).
     fn reflect_mut(&mut self) -> Option<&mut dyn FerrousWidgetReflect> {
         None
+    }
+}
+
+use std::rc::Rc;
+use std::cell::RefCell;
+
+impl<App, W: Widget<App>> Widget<App> for Rc<RefCell<W>> {
+    fn build(&mut self, ctx: &mut BuildContext<App>) {
+        self.borrow_mut().build(ctx)
+    }
+    
+    fn update(&mut self, ctx: &mut UpdateContext) {
+        self.borrow_mut().update(ctx)
+    }
+    
+    fn calculate_size(&self, ctx: &mut LayoutContext) -> Vec2 {
+        self.borrow().calculate_size(ctx)
+    }
+
+    fn draw(&self, ctx: &mut DrawContext, cmds: &mut Vec<RenderCommand>) {
+        self.borrow().draw(ctx, cmds)
+    }
+
+    fn on_event(&mut self, ctx: &mut EventContext<App>, event: &UiEvent) -> EventResponse {
+        self.borrow_mut().on_event(ctx, event)
     }
 }
 
@@ -702,13 +726,6 @@ impl<App> UiTree<App> {
             node.dirty.paint = true;
             // No llamamos a mark_layout_dirty aquí porque esto suele ser el RESULTADO del layout.
         }
-    }
-    pub fn get_node_mut(&mut self, id: NodeId) -> Option<&mut Node<App>> {
-        self.nodes.get_mut(id)
-    }
-
-    pub fn get_node(&self, id: NodeId) -> Option<&Node<App>> {
-        self.nodes.get(id)
     }
 
     /// Busca un nodo por su identificador de texto.
