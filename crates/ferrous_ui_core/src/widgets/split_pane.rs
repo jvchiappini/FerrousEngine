@@ -78,6 +78,8 @@ pub struct SplitPane<App> {
     first_id: Option<NodeId>,
     second_id: Option<NodeId>,
     divider_id: Option<NodeId>,
+
+    on_ratio_change_cb: Option<Box<dyn Fn(&mut EventContext<App>, f32) + Send + Sync + 'static>>,
 }
 
 impl<App> SplitPane<App> {
@@ -96,6 +98,7 @@ impl<App> SplitPane<App> {
             first_id: None,
             second_id: None,
             divider_id: None,
+            on_ratio_change_cb: None,
         }
     }
 
@@ -130,6 +133,14 @@ impl<App> SplitPane<App> {
     /// Rango admisible para el ratio. Útil para evitar que un panel quede invisible.
     pub fn ratio_range(mut self, min: f32, max: f32) -> Self {
         self.ratio_range = (min.clamp(0.0, 1.0), max.clamp(0.0, 1.0));
+        self
+    }
+
+    /// Registra una función que se invoca mientras el usuario arrastra el divisor.
+    ///
+    /// El parámetro es el nuevo ratio del primer panel (0.0–1.0).
+    pub fn on_ratio_change(mut self, f: impl Fn(&mut EventContext<App>, f32) + Send + Sync + 'static) -> Self {
+        self.on_ratio_change_cb = Some(Box::new(f));
         self
     }
 }
@@ -294,6 +305,10 @@ impl<App: 'static + Send + Sync> Widget<App> for SplitPane<App> {
                         self.ratio = new_ratio;
                         // Actualizar estilos de los dos paneles
                         self.apply_ratio(ctx.tree);
+                        // Notificar al usuario del nuevo ratio
+                        if let Some(cb) = &self.on_ratio_change_cb {
+                            cb(ctx, new_ratio);
+                        }
                         return EventResponse::Redraw;
                     }
                 }

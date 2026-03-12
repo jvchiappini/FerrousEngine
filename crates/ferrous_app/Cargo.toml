@@ -14,6 +14,7 @@ ferrous_renderer = { path = "../ferrous_renderer", features = ["assets"] }
 ferrous_core = { path = "../ferrous_core", features = ["input"] }
 ferrous_ecs = { path = "../ferrous_ecs" }
 ferrous_gpu = { path = "../ferrous_gpu" }
+ferrous_font = { path = "../ferrous_font" }
 winit = "0.30"
 ferrous_events = { path = "../ferrous_events" }
 ferrous_gui = { path = "../ferrous_gui" }

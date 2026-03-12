@@ -82,6 +82,7 @@ impl<App> Widget<App> for Checkbox<App> {
             text: self.label.clone(),
             color: theme.on_surface.to_array(),
             font_size: theme.font_size_base,
+            align: crate::TextAlign::TOP_LEFT,
         });
     }
 

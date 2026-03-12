@@ -87,6 +87,7 @@ impl<App> Widget<App> for TabButton {
             text: self.title.clone(),
             color: text_color.to_array(),
             font_size: theme.font_size_base,
+            align: crate::TextAlign::TOP_LEFT,
         });
     }
 
@@ -112,6 +113,8 @@ pub struct Tabs<App> {
     header_id: Option<NodeId>,
     content_area_id: Option<NodeId>,
     tab_btn_ids: Vec<NodeId>,
+
+    on_change_cb: Option<Box<dyn Fn(&mut EventContext<App>, usize) + Send + Sync + 'static>>,
 }
 
 impl<App> Tabs<App> {
@@ -123,6 +126,7 @@ impl<App> Tabs<App> {
             header_id: None,
             content_area_id: None,
             tab_btn_ids: Vec::new(),
+            on_change_cb: None,
         }
     }
 
@@ -138,6 +142,14 @@ impl<App> Tabs<App> {
     /// Establece el índice inicial de la pestaña activa (por defecto `0`).
     pub fn with_active(mut self, index: usize) -> Self {
         self.active_index = index;
+        self
+    }
+
+    /// Registra una función que se invoca cuando el usuario cambia de pestaña.
+    ///
+    /// El parámetro es el índice de la nueva pestaña activa.
+    pub fn on_change(mut self, f: impl Fn(&mut EventContext<App>, usize) + Send + Sync + 'static) -> Self {
+        self.on_change_cb = Some(Box::new(f));
         self
     }
 }
@@ -216,6 +228,11 @@ impl<App: 'static + Send + Sync> Widget<App> for Tabs<App> {
                     // ── Cambiar a pestaña i ──────────────────────────────
                     let old_active = self.active_index;
                     self.active_index = i;
+
+                    // Notificar al usuario del cambio de pestaña
+                    if let Some(cb) = &self.on_change_cb {
+                        cb(ctx, i);
+                    }
 
                     // Actualizar estado visual de los botones (sin downcast)
                     self.update_button_state(ctx.tree, old_active, i);

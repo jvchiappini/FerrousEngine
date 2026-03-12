@@ -1,8 +1,205 @@
 # ferrous_ui_core
 
-`ferrous_ui_core` es el motor de datos y lógica fundamental para el sistema de UI de FerrousEngine. Implementa una arquitectura de **Modo Retenido** (Retained Mode) diseñada para ofrecer el máximo rendimiento ("Lag Cero") mediante la persistencia de widgets y el cacheo agresivo de comandos de renderizado.
+Núcleo de datos y lógica del sistema de UI de Ferrous Engine.
+
+Implementa una arquitectura de **Modo Retenido** (Retained Mode): los widgets
+persisten en un árbol de memoria (`UiTree`) entre frames. El sistema recalcula
+sólo lo que ha cambiado, lo que permite cachear comandos de dibujo y omitir
+ramas intactas del árbol en cada ciclo (estrategia "Lag Cero").
 
 ---
+
+## Módulos
+
+### `lib.rs` — Tipos primitivos y árbol principal
+
+#### Tipos de datos fundamentales
+
+| Tipo | Descripción |
+|---|---|
+| `Rect` | Rectángulo `{x, y, width, height}` con helpers `contains`, `intersect`, `intersects` |
+| `RectOffset` | Offsets para los cuatro lados (margin, padding) |
+| `Units` | `Px(f32)` · `Percentage(f32)` · `Flex(f32)` · `Auto` |
+| `Style` | Propiedades de layout: `size`, `margin`, `padding`, `display`, `position`, `offsets`, `overflow`, `alignment` |
+| `DisplayMode` | `Block` · `FlexRow` · `FlexColumn` |
+| `Position` | `Relative` · `Absolute` |
+| `Overflow` | `Visible` · `Hidden` · `Scroll` |
+| `Alignment` | `Start` · `Center` · `End` · `Stretch` |
+| `RenderCommand` | Primitiva de dibujo: `Quad`, `Text`, `Image`, `PushClip`, `PopClip` |
+| `DirtyFlags` | Bits `layout`, `paint`, `hierarchy`, `subtree_dirty` para el sistema de invalidación |
+| `NodeId` | Clave de `SlotMap` — identificador estable de un nodo |
+| `CmdQueue` | Cola de comandos diferidos (acciones post-frame) |
+
+#### `Node<App>`
+
+Unidad mínima del árbol. Contiene:
+- `widget: Box<dyn Widget<App>>` — el widget en sí
+- `parent / children` — jerarquía
+- `style: Style` — propiedades de layout
+- `dirty: DirtyFlags` — qué aspectos necesitan recalcularse
+- `rect: Rect` — rectángulo resuelto por el motor de layout
+- `cached_cmds: Vec<RenderCommand>` — caché de comandos del último frame
+
+#### `UiTree<App>`
+
+Gestor del árbol usando un `SlotMap<NodeId, Node>` para acceso O(1) y
+estabilidad de IDs incluso tras inserciones/eliminaciones.
+
+Métodos principales:
+
+| Método | Descripción |
+|---|---|
+| `add_node(widget, parent)` | Inserta un nodo y lo enlaza a su padre |
+| `add_node_with_id(widget, parent, id_str)` | Ídem con ID de texto para búsqueda |
+| `set_node_style(id, style)` | Aplica un `Style` e invalida el layout |
+| `set_node_rect(id, rect)` | Escribe el rect resuelto (resultado del layout engine) |
+| `mark_layout_dirty(id)` | Invalida layout y propaga hacia arriba |
+| `mark_paint_dirty(id)` | Invalida repintado del nodo |
+| `collect_commands(cmds, viewport)` | Recorre el árbol y recolecta `RenderCommand`s, usando caché si el nodo está limpio y aplicando culling por viewport |
+| `get_node_by_id(id_str)` | Busca un nodo por su ID de texto |
+| `build()` | Fase de construcción recursiva desde la raíz |
+| `update(dt)` | Aplica reactividad pendiente y actualiza la lógica de cada widget |
+
+#### `Widget<App>` trait
+
+El contrato que todo widget debe cumplir:
+
+| Método | Cuándo se llama | Descripción |
+|---|---|---|
+| `build(&mut BuildContext)` | Al insertar el widget | Para añadir hijos iniciales |
+| `update(&mut UpdateContext)` | Cada frame | Animaciones, timers, lógica |
+| `calculate_size(&mut LayoutContext) -> Vec2` | Durante el layout | Tamaño preferido |
+| `draw(&mut DrawContext, &mut Vec<RenderCommand>)` | Cuando el nodo está sucio | Genera primitivas visuales |
+| `on_event(&mut EventContext, &UiEvent) -> EventResponse` | Ante un evento | Lógica de interacción |
+| `reflect() / reflect_mut()` | Editor (GUIMaker) | Acceso al sistema de reflexión |
+
+Todos los métodos tienen implementación por defecto — solo se sobrescriben los necesarios.
+
+#### Contextos de fase
+
+| Contexto | Acceso |
+|---|---|
+| `BuildContext<App>` | `&mut UiTree`, `NodeId`, `Theme` |
+| `UpdateContext` | `delta_time`, `NodeId`, `Rect`, `Theme` |
+| `LayoutContext` | `available_space`, `known_dimensions`, `NodeId`, `Theme` |
+| `DrawContext` | `NodeId`, `Rect` resuelto, `Theme` |
+| `EventContext<App>` | `NodeId`, `Rect`, `Theme`, `&mut UiTree`, `&mut App` |
+
+#### `Component<App>` trait
+
+Permite crear componentes reutilizables (grupos de widgets) similares a
+funciones `@Composable` de Compose o componentes funcionales de React.
+
+---
+
+### `theme.rs` — Sistema de temas
+
+`Color` RGBA normalizado con constructores `hex("#RRGGBB")`, `from_rgba8`, `lerp`, `with_alpha`.
+Constantes predefinidas: `BLACK`, `WHITE`, `TRANSPARENT`, `FERROUS_ACCENT`.
+
+`Theme` define roles semánticos accesibles desde todos los widgets via `DrawContext`:
+
+| Rol | Descripción |
+|---|---|
+| `primary / primary_variant` | Color de acento (botones, activos) |
+| `on_primary` | Texto sobre el color primario |
+| `background / surface / surface_elevated` | Fondos de app, paneles y popups |
+| `on_surface / on_surface_muted` | Texto principal y secundario |
+| `error / success / warning` | Colores de feedback |
+| `border_radius` | Radio global de esquinas |
+| `font_size_base / small / heading` | Escala tipográfica |
+
+Temas incluidos: `Theme::dark()` (Catppuccin Mocha) · `Theme::light()`.
+Builder fluent: `.with_primary(c)`, `.with_surface(c)`, `.with_border_radius(r)`, etc.
+
+---
+
+### `reactive.rs` — Sistema reactivo
+
+`Observable<T>` — valor observable thread-safe (`Arc<Mutex<T>>`):
+
+| Método | Descripción |
+|---|---|
+| `new(value)` | Crea el observable |
+| `get()` | Lee el valor actual |
+| `set(new_val)` | Actualiza y devuelve la lista de `NodeId` suscritos para invalidar |
+| `subscribe(node_id)` | Registra un nodo para recibir notificaciones |
+
+`ReactivitySystem` — cola de nodos pendientes de invalidación. El `UiTree`
+lo llama en `update()` para trasladar las notificaciones a `mark_paint_dirty`.
+
+---
+
+### `reflect.rs` — Sistema de reflexión para el Editor
+
+Permite que los widgets sean inspeccionables y editables desde GUIMaker / Ferrous Builder.
+
+| Tipo | Descripción |
+|---|---|
+| `PropValue` | Enum serializable: `String`, `Float`, `Bool`, `Color`, `Rect`, `Int` |
+| `InspectorProp` | Metadatos de una propiedad: `key`, `label`, `category`, `value`, `range`, `tooltip` |
+| `FerrousWidgetReflect` | Trait: `widget_type_name()`, `inspect_props()`, `apply_prop(key, val)` |
+| `WidgetFactory<App>` | Registro de constructores de widgets por nombre string |
+| `FuiNode` | Nodo serializado en formato `.fui` (RON) con `to_ron()` / `from_ron()` |
+
+`WidgetFactory::instantiate_tree()` carga un árbol completo desde un `FuiNode`,
+aplicando las propiedades serializadas vía `apply_prop`.
+
+---
+
+### `style_builder.rs` — `StyleBuilder`
+
+API fluent para construir `Style` sin rellenar los campos manualmente:
+
+```rust
+let style = StyleBuilder::new()
+    .fill_width()
+    .height_px(48.0)
+    .padding_all(8.0)
+    .row()
+    .center_items()
+    .build();
+```
+
+---
+
+### `widgets/` — Catálogo de widgets integrados
+
+| Categoría | Widgets |
+|---|---|
+| **Basic** | `Button`, `Label`, `Panel`, `Separator`, `Spacer`, `PlaceholderWidget` |
+| **Input** | `TextInput`, `Checkbox`, `Slider`, `NumberInput`, `ToggleSwitch`, `DropDown`, `ColorPicker` |
+| **Layout** | `ScrollView`, `SplitPane`, `DockLayout`, `AspectRatio` |
+| **Display** | `Image`, `Svg`, `ProgressBar` |
+| **Navigation** | `Tabs`, `Accordion`, `TreeView`, `Modal`, `Tooltip` |
+| **Data** | `DataTable`, `VirtualList`, `VirtualGrid` |
+| **Feedback** | `Toast` |
+| **Special** | `ViewportWidget` |
+
+Todos los widgets implementan `Widget<App>`. `Button<App>` además implementa
+`FerrousWidget` (derive macro) para habilitar reflexión automática.
+
+---
+
+## Feature flags
+
+| Flag | Efecto |
+|---|---|
+| `assets` | Habilita la variante `RenderCommand::Image` que usa `Arc<ferrous_assets::Texture2d>` |
+| *(sin flag)* | `Image` usa un `texture_id: u64` como fallback |
+
+---
+
+## Dependencias
+
+| Crate | Uso |
+|---|---|
+| `slotmap` | `SlotMap` para el `UiTree` |
+| `glam` | `Vec2` para tamaños y posiciones |
+| `serde` + `ron` | Serialización del sistema de reflexión y `.fui` |
+| `ferrous_ui_macros` | `#[derive(FerrousWidget)]` y la macro `ui!` |
+| `ferrous_assets` *(opcional)* | Texturas para `RenderCommand::Image` |
+
 
 ## Module overview
 

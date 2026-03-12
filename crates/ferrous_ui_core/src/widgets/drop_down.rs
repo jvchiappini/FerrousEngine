@@ -75,6 +75,7 @@ impl<App> Widget<App> for DropDown<App> {
             text: format!("{} ▼", text),
             color: ctx.theme.on_surface.to_array(),
             font_size: ctx.theme.font_size_base,
+            align: crate::TextAlign::TOP_LEFT,
         });
 
         // Si está abierto, dibujar la lista de opciones
@@ -125,6 +126,7 @@ impl<App> Widget<App> for DropDown<App> {
                     text: opt.clone(),
                     color: ctx.theme.on_surface.to_array(),
                     font_size: ctx.theme.font_size_base,
+                    align: crate::TextAlign::TOP_LEFT,
                 });
             }
         }

@@ -357,6 +357,7 @@ impl<App: 'static + Send + Sync> Widget<App> for TreeView<App> {
                     text: toggle_char.to_string(),
                     color: theme.on_surface_muted.to_array(),
                     font_size: theme.font_size_small,
+                    align: crate::TextAlign::TOP_LEFT,
                 });
             }
 
@@ -373,6 +374,7 @@ impl<App: 'static + Send + Sync> Widget<App> for TreeView<App> {
                     text: icon.to_string(),
                     color: [1.0, 1.0, 1.0, 0.85],
                     font_size: theme.font_size_base,
+                    align: crate::TextAlign::TOP_LEFT,
                 });
             }
 
@@ -399,6 +401,7 @@ impl<App: 'static + Send + Sync> Widget<App> for TreeView<App> {
                 text: flat_row.label.clone(),
                 color: text_color_arr,
                 font_size: theme.font_size_base,
+                align: crate::TextAlign::TOP_LEFT,
             });
         }
 

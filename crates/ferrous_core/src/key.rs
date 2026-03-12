@@ -26,6 +26,16 @@ pub enum KeyCode {
     ArrowDown,
     ArrowLeft,
     ArrowRight,
+    Home,
+    End,
+    /// Left or right Control key (used for keyboard shortcuts).
+    ControlLeft,
+    ControlRight,
+    /// Left or right Shift key.
+    ShiftLeft,
+    ShiftRight,
+    /// Delete key (forward delete).
+    Delete,
 
     // letter keys (used heavily in examples)
     KeyA,
@@ -94,6 +104,14 @@ impl From<winit::keyboard::KeyCode> for KeyCode {
             winit::keyboard::KeyCode::ArrowDown => KeyCode::ArrowDown,
             winit::keyboard::KeyCode::ArrowLeft => KeyCode::ArrowLeft,
             winit::keyboard::KeyCode::ArrowRight => KeyCode::ArrowRight,
+            winit::keyboard::KeyCode::Home => KeyCode::Home,
+            winit::keyboard::KeyCode::End => KeyCode::End,
+
+            winit::keyboard::KeyCode::ControlLeft => KeyCode::ControlLeft,
+            winit::keyboard::KeyCode::ControlRight => KeyCode::ControlRight,
+            winit::keyboard::KeyCode::ShiftLeft => KeyCode::ShiftLeft,
+            winit::keyboard::KeyCode::ShiftRight => KeyCode::ShiftRight,
+            winit::keyboard::KeyCode::Delete => KeyCode::Delete,
 
             winit::keyboard::KeyCode::KeyA => KeyCode::KeyA,
             winit::keyboard::KeyCode::KeyB => KeyCode::KeyB,

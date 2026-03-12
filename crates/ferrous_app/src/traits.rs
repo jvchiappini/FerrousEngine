@@ -10,6 +10,83 @@ pub struct DrawContext<'a, 'b> {
     pub ctx: &'a mut AppContext<'b>,
 }
 
+// ---------------------------------------------------------------------------
+// Convenience drawing helpers attached to `DrawContext`.
+// ---------------------------------------------------------------------------
+
+impl<'a, 'b> DrawContext<'a, 'b> {
+    /// Draws a labelled text-input row similar to the property panel in
+    /// GUIMaker.  This is just a thin wrapper around `GuiBatch::draw_text_field`
+    /// that handles drawing the label and computing the correct textbox size.
+    ///
+    /// The caller is responsible for updating the cursor/selection state
+    /// (for example by using `TextFieldState` from `ferrous_ui_core`).
+    pub fn draw_text_input_row(
+        &mut self,
+        x: f32,
+        y: f32,
+        right_w: f32,
+        row_pad_x: f32,
+        label_w: f32,
+        row_h: f32,
+        label: &str,
+        value: &str,
+        focused: bool,
+        cursor_visible: bool,
+        cursor_pos: usize,
+        selection: Option<(usize, usize)>,
+        all_selected: bool,
+        text_color: [f32; 4],
+        bg_color: [f32; 4],
+        border_color: Option<[f32; 4]>,
+        sel_color: [f32; 4],
+    ) {
+        use crate::Color as AppColor;
+
+        // draw label text
+        self.gui.draw_text(
+            self.font,
+            label,
+            [x + row_pad_x, y + (row_h - 10.0) * 0.5],
+            10.0,
+            AppColor::hex("#CCCCCC").to_linear_f32(),
+        );
+
+        let val_x = x + row_pad_x + label_w;
+        let val_w = right_w - row_pad_x * 2.0 - label_w;
+        let effective_sel = if all_selected && !value.is_empty() {
+            Some((0, value.len()))
+        } else {
+            selection
+        };
+
+        // use colors provided by caller rather than hardcoding
+        let bg = bg_color;
+        let text_col = text_color;
+        let border = border_color;
+        let sel_col = sel_color;
+
+        self.gui.draw_text_field(
+            self.font,
+            val_x,
+            y + 3.0,
+            val_w,
+            row_h - 6.0,
+            value,
+            10.0,
+            focused,
+            cursor_visible,
+            cursor_pos,
+            effective_sel,
+            text_col,
+            bg,
+            border,
+            [0.0f32, 0.47, 0.83, 0.35],
+            4.0,
+        );
+    }
+}
+
 /// The core trait that every FerrousApp application or game implements.
 ///
 /// All methods have empty default implementations so you only override what

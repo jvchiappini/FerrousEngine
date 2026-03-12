@@ -1,8 +1,186 @@
-# Ferrous GUI Documentación y Guía de Arquitectura
+# ferrous_gui
 
-`ferrous_gui` es el orquestador y la fachada principal ("facade") del sistema de interfaces de usuario (UI) 2D avanzado para FerrousEngine. 
+Orquestador principal ("facade") del sistema de UI de Ferrous Engine.
 
-A diferencia de versiones anteriores, el sistema ahora sigue una arquitectura modular y fuertemente tipada basada en genéricos (`<App>`), separando las responsabilidades de estado, eventos, diseño (layout) y renderizado en diferentes crates que `ferrous_gui` unifica para consumo público.
+Coordina en un único punto de entrada los cuatro sub-sistemas independientes:
+árbol de widgets (`ferrous_ui_core`), motor de layout (`ferrous_layout`),
+gestor de eventos (`ferrous_events`) y backend de renderizado (`ferrous_ui_render`).
+
+---
+
+## Arquitectura
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                       ferrous_gui                        │
+│                                                          │
+│   UiSystem<App>                                          │
+│   ├── UiTree<App>         ← ferrous_ui_core              │
+│   ├── LayoutEngine        ← ferrous_layout               │
+│   ├── EventManager        ← ferrous_events               │
+│   └── render() ──────────► GuiBatch → ferrous_ui_render  │
+│                                                          │
+│   builder.rs  (API fluent)                               │
+│   ButtonBuilder / LabelBuilder / PanelBuilder /          │
+│   WidgetBuilder                                          │
+└──────────────────────────────────────────────────────────┘
+```
+
+El tipo central es `UiSystem<App>`, genérico sobre el estado de la aplicación
+(`App`). Todos los callbacks de eventos reciben `&mut EventContext<App>`, lo
+que les permite mutar el estado de la aplicación directamente.
+
+---
+
+## Módulos
+
+### `system` — `UiSystem<App>`
+
+El orquestador. Expone el ciclo de vida completo de la UI:
+
+| Método | Descripción |
+|---|---|
+| `new()` | Crea el sistema con árbol, layout y eventos vacíos |
+| `add(widget)` | Añade un widget genérico a la raíz del árbol |
+| `update(dt, w, h)` | Actualiza widgets y recalcula el layout (Taffy/Flexbox) |
+| `dispatch_event(app, event)` | Hit-test + bubbling a través de `EventManager` |
+| `render(viewport)` | Recolecta `RenderCommand`s y genera un `GuiBatch` para WGPU |
+
+**API fluent** (métodos de conveniencia — ver sección siguiente):
+
+| Método | Devuelve |
+|---|---|
+| `ui.button("texto")` | `ButtonBuilder<App>` |
+| `ui.label("texto")` | `LabelBuilder<App>` |
+| `ui.panel()` | `PanelBuilder<App>` |
+| `ui.widget(w)` | `WidgetBuilder<App>` |
+
+### `builder` — Builders fluent
+
+Permite crear, posicionar y asignar eventos a widgets en una sola cadena sin
+tocar `UiTree`, `Style` ni `StyleBuilder` directamente.
+
+Todos los builders comparten los mismos modificadores:
+
+| Modificador | Efecto |
+|---|---|
+| `.at(x, y)` | Posición absoluta en el canvas (`Position::Absolute`) |
+| `.size(w, h)` | Tamaño fijo en píxeles |
+| `.width(w)` / `.height(h)` | Solo una dimensión |
+| `.child_of(parent_id)` | Hace al widget hijo del nodo indicado |
+| `.id("nombre")` | ID de texto para búsqueda posterior con `get_node_by_id` |
+| `.spawn(&mut ui)` | **Instancia** el widget → devuelve `NodeId` |
+| `.spawn_with(&mut ui, \|ui, id\| …)` | Instancia y permite añadir hijos inline |
+
+`ButtonBuilder` añade además:
+
+| Modificador | Efecto |
+|---|---|
+| `.on_click(\|ctx\| …)` | Callback al hacer clic |
+| `.on_hover(\|ctx\| …)` | Callback cuando el cursor entra |
+| `.on_hover_end(\|ctx\| …)` | Callback cuando el cursor sale |
+
+---
+
+## Ejemplos de uso
+
+### Botón en posición absoluta con evento
+
+```rust
+use ferrous_gui::prelude::*;
+
+ui.button("Guardar")
+    .at(100.0, 200.0)
+    .size(120.0, 36.0)
+    .on_click(|_ctx| println!("¡Guardado!"))
+    .spawn(&mut ui);
+```
+
+### Label con estilo
+
+```rust
+ui.label("Versión 1.0")
+    .at(10.0, 10.0)
+    .font_size(12.0)
+    .color(Color::rgb(0.6, 0.6, 0.6))
+    .spawn(&mut ui);
+```
+
+### Panel con hijos inline
+
+```rust
+ui.panel()
+    .at(50.0, 100.0)
+    .size(300.0, 150.0)
+    .spawn_with(&mut ui, |ui, panel| {
+        ui.button("Cancelar")
+            .child_of(panel).at(8.0, 8.0).size(90.0, 32.0)
+            .on_click(|_| println!("cancelado"))
+            .spawn(ui);
+        ui.button("Aceptar")
+            .child_of(panel).at(106.0, 8.0).size(90.0, 32.0)
+            .on_click(|_| println!("aceptado"))
+            .spawn(ui);
+    });
+```
+
+### Cualquier widget custom
+
+```rust
+ui.widget(Slider::new(0.0, 100.0))
+    .at(20.0, 80.0)
+    .size(200.0, 28.0)
+    .spawn(&mut ui);
+```
+
+### Loop principal típico
+
+```rust
+// 1. Actualizar lógica y layout
+ui.update(dt, viewport_w, viewport_h);
+
+// 2. Enviar eventos del OS
+ui.dispatch_event(&mut app_state, UiEvent::MouseDown { button, pos });
+
+// 3. Renderizar
+let batch: GuiBatch = ui.render(viewport_rect);
+gui_renderer.draw(&batch, &queue, &device);
+```
+
+---
+
+## `prelude`
+
+Importa todo lo necesario para la API fluent en una sola línea:
+
+```rust
+use ferrous_gui::prelude::*;
+// Disponible: UiSystem, ButtonBuilder, LabelBuilder, PanelBuilder,
+//             WidgetBuilder, NodeId, Color, Rect, Style, Units,
+//             Position, Widget, EventContext, UiEvent, ...
+```
+
+---
+
+## Dependencias directas
+
+| Crate | Rol |
+|---|---|
+| `ferrous_ui_core` | Árbol de widgets, tipos de estilo, trait `Widget`, eventos abstractos |
+| `ferrous_layout` | Motor Taffy (Flexbox) para cálculo de posiciones |
+| `ferrous_events` | Hit-testing, bubbling, conversores de winit |
+| `ferrous_ui_render` | Generación de `GuiBatch` / quads para WGPU |
+| `ferrous_assets` *(opcional)* | Soporte de fuentes para renderizado de texto |
+
+---
+
+## Feature flags
+
+| Flag | Efecto |
+|---|---|
+| `text` | Habilita la variante de `render()` que acepta una fuente y genera `TextQuad`s |
+| *(sin flag)* | `render()` solo produce `GuiQuad`s geométricos |
+
 
 Esta guía está diseñada para que cualquier programador pueda utilizar este sistema para construir herramientas complejas, como un **Ferrous Builder**, **Scene Builder** o editores especializados en otros workspaces.
 

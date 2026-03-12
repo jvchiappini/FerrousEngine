@@ -226,6 +226,7 @@ impl<App: 'static + Send + Sync> Widget<App> for Tooltip<App> {
             text: self.text.clone(),
             color: fg.to_array(),
             font_size: FONT_SIZE,
+            align: crate::TextAlign::TOP_LEFT,
         });
     }
 

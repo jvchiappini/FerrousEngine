@@ -49,6 +49,8 @@ pub struct Accordion<App> {
     header_id: Option<NodeId>,
     content_area_id: Option<NodeId>,
     content_child_id: Option<NodeId>,
+
+    on_toggle_cb: Option<Box<dyn Fn(&mut EventContext<App>, bool) + Send + Sync + 'static>>,
 }
 
 impl<App> Accordion<App> {
@@ -63,6 +65,7 @@ impl<App> Accordion<App> {
             header_id: None,
             content_area_id: None,
             content_child_id: None,
+            on_toggle_cb: None,
         }
     }
 
@@ -82,6 +85,14 @@ impl<App> Accordion<App> {
     /// Color personalizado para la cabecera.
     pub fn with_header_color(mut self, color: Color) -> Self {
         self.header_color = Some(color);
+        self
+    }
+
+    /// Registra una función que se invoca cuando el usuario expande o colapsa la sección.
+    ///
+    /// El parámetro es el nuevo estado: `true` = expandido, `false` = colapsado.
+    pub fn on_toggle(mut self, f: impl Fn(&mut EventContext<App>, bool) + Send + Sync + 'static) -> Self {
+        self.on_toggle_cb = Some(Box::new(f));
         self
     }
 }
@@ -146,6 +157,12 @@ impl<App: 'static + Send + Sync> Widget<App> for Accordion<App> {
                 if let Some(rect) = ctx.tree.get_node_rect(hid) {
                     if rect.contains([pos.x, pos.y]) {
                         self.is_expanded = !self.is_expanded;
+
+                        // Notificar al usuario del cambio de estado
+                        if let Some(cb) = &self.on_toggle_cb {
+                            cb(ctx, self.is_expanded);
+                        }
+
                         // Marcar el área de contenido dirty para que se relayoute
                         if let Some(area_id) = self.content_area_id {
                             let target_h = if self.is_expanded { Units::Auto } else { Units::Px(0.0) };
@@ -208,6 +225,7 @@ impl<App> Widget<App> for AccordionHeader {
             text: arrow.to_string(),
             color: theme.on_surface_muted.to_array(),
             font_size: 11.0,
+            align: crate::TextAlign::TOP_LEFT,
         });
 
         // Título
@@ -216,6 +234,7 @@ impl<App> Widget<App> for AccordionHeader {
             text: self.title.clone(),
             color: theme.on_surface.to_array(),
             font_size: theme.font_size_base,
+            align: crate::TextAlign::TOP_LEFT,
         });
     }
 

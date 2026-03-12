@@ -276,6 +276,7 @@ impl<App: 'static + Send + Sync> Widget<App> for VirtualGrid<App> {
                         theme.on_surface_muted.to_array()
                     },
                     font_size: theme.font_size_small,
+                    align: crate::TextAlign::TOP_LEFT,
                 });
             }
         }

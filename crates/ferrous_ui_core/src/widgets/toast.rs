@@ -328,6 +328,7 @@ impl<App: Send + Sync + 'static> Widget<App> for ToastManager<App> {
                 text: toast.level.icon().to_string(),
                 color: [accent_col[0], accent_col[1], accent_col[2], accent_col[3] * alpha],
                 font_size: 14.0,
+                align: crate::TextAlign::TOP_LEFT,
             });
 
             // ── Mensaje ───────────────────────────────────────────────────
@@ -341,6 +342,7 @@ impl<App: Send + Sync + 'static> Widget<App> for ToastManager<App> {
                 text: toast.message.clone(),
                 color: theme.on_surface.with_alpha(alpha).to_array(),
                 font_size: theme.font_size_base,
+                align: crate::TextAlign::TOP_LEFT,
             });
 
             // ── Barra de progreso de tiempo restante ─────────────────────

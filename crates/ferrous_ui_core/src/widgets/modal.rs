@@ -78,6 +78,8 @@ pub struct Modal<App> {
     content: Option<Box<dyn Widget<App>>>,
     content_id: Option<NodeId>,
     close_btn_id: Option<NodeId>,
+
+    on_close_cb: Option<Box<dyn Fn(&mut EventContext<App>) + Send + Sync + 'static>>,
 }
 
 impl<App> Modal<App> {
@@ -93,6 +95,7 @@ impl<App> Modal<App> {
             content: None,
             content_id: None,
             close_btn_id: None,
+            on_close_cb: None,
         }
     }
 
@@ -145,6 +148,13 @@ impl<App> Modal<App> {
     /// Alterna el estado abierto/cerrado.
     pub fn toggle(&mut self) {
         self.is_open = !self.is_open;
+    }
+
+    /// Registra una función que se invoca cuando el usuario cierra el modal
+    /// (clic en backdrop, botón [×] o tecla Escape).
+    pub fn on_close(mut self, f: impl Fn(&mut EventContext<App>) + Send + Sync + 'static) -> Self {
+        self.on_close_cb = Some(Box::new(f));
+        self
     }
 
     /// Calcula el rectángulo centrado del panel de diálogo dado un viewport.
@@ -238,6 +248,7 @@ impl<App: 'static + Send + Sync> Widget<App> for Modal<App> {
                 text: self.title.clone(),
                 color: theme.on_surface.to_array(),
                 font_size: theme.font_size_base + 2.0,
+                align: crate::TextAlign::TOP_LEFT,
             });
         }
 
@@ -255,6 +266,7 @@ impl<App: 'static + Send + Sync> Widget<App> for Modal<App> {
             text: "×".to_string(),
             color: theme.on_surface_muted.to_array(),
             font_size: 18.0,
+            align: crate::TextAlign::TOP_LEFT,
         });
 
         // ── Área de contenido ─────────────────────────────────────────────
@@ -266,6 +278,7 @@ impl<App: 'static + Send + Sync> Widget<App> for Modal<App> {
                 text: "(sin contenido)".to_string(),
                 color: theme.on_surface_muted.to_array(),
                 font_size: theme.font_size_base,
+                align: crate::TextAlign::TOP_LEFT,
             });
         }
     }
@@ -293,6 +306,7 @@ impl<App: 'static + Send + Sync> Widget<App> for Modal<App> {
                 let close_rect = Rect::new(close_x, close_y, 28.0, 28.0);
                 if close_rect.contains([pos.x, pos.y]) {
                     self.is_open = false;
+                    if let Some(cb) = &self.on_close_cb { cb(ctx); }
                     ctx.tree.mark_paint_dirty(ctx.node_id);
                     return EventResponse::Consumed;
                 }
@@ -305,6 +319,7 @@ impl<App: 'static + Send + Sync> Widget<App> for Modal<App> {
                 // ¿Clic en el backdrop?
                 if self.close_on_backdrop {
                     self.is_open = false;
+                    if let Some(cb) = &self.on_close_cb { cb(ctx); }
                     ctx.tree.mark_paint_dirty(ctx.node_id);
                     return EventResponse::Consumed;
                 }
@@ -320,6 +335,7 @@ impl<App: 'static + Send + Sync> Widget<App> for Modal<App> {
 
             UiEvent::KeyDown { key, .. } if *key == crate::GuiKey::Escape => {
                 self.is_open = false;
+                if let Some(cb) = &self.on_close_cb { cb(ctx); }
                 ctx.tree.mark_paint_dirty(ctx.node_id);
                 EventResponse::Consumed
             }

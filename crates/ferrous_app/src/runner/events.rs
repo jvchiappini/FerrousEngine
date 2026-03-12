@@ -19,11 +19,11 @@ use std::cell::RefCell;
 #[cfg(target_arch = "wasm32")]
 use std::rc::Rc;
 
+use crate::builder::AppMode;
 use crate::context::AppContext;
 use crate::graphics::GraphicsState;
 use crate::render_context::RenderContext;
 use crate::traits::FerrousApp;
-use crate::builder::AppMode;
 use ferrous_assets::Font;
 
 use super::types::Runner;
@@ -83,7 +83,9 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                     .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
                 self.font = Some(font);
             } else if let Some(path) = &self.config.font_path {
-                let handle = self.asset_server.load::<ferrous_assets::font_importer::FontData>(path.as_str());
+                let handle = self
+                    .asset_server
+                    .load::<ferrous_assets::font_importer::FontData>(path.as_str());
                 self.font_asset_handle = Some(handle);
             }
 
@@ -183,9 +185,12 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.input.set_mouse_position(position.x, position.y);
-                self.ui.dispatch_event(&mut self.app, ferrous_ui_core::UiEvent::MouseMove { 
-                    pos: glam::Vec2::new(position.x as f32, position.y as f32) 
-                });
+                self.ui.dispatch_event(
+                    &mut self.app,
+                    ferrous_ui_core::UiEvent::MouseMove {
+                        pos: glam::Vec2::new(position.x as f32, position.y as f32),
+                    },
+                );
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let pressed = state == winit::event::ElementState::Pressed;
@@ -194,24 +199,36 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                 let pos = glam::Vec2::new(mx as f32, my as f32);
                 let button = ferrous_events::winit_to_mousebutton(button);
                 if pressed {
-                    self.ui.dispatch_event(&mut self.app, ferrous_ui_core::UiEvent::MouseDown { 
-                        button, 
-                        pos 
-                    });
+                    self.ui.dispatch_event(
+                        &mut self.app,
+                        ferrous_ui_core::UiEvent::MouseDown { button, pos },
+                    );
                 } else {
-                    self.ui.dispatch_event(&mut self.app, ferrous_ui_core::UiEvent::MouseUp { 
-                        button, 
-                        pos 
-                    });
+                    self.ui.dispatch_event(
+                        &mut self.app,
+                        ferrous_ui_core::UiEvent::MouseUp { button, pos },
+                    );
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let (dx, dy) = match delta {
                     winit::event::MouseScrollDelta::LineDelta(x, y) => (x, y),
-                    winit::event::MouseScrollDelta::PixelDelta(pos) => (pos.x as f32 / 20.0, pos.y as f32 / 20.0),
+                    winit::event::MouseScrollDelta::PixelDelta(pos) => {
+                        (pos.x as f32 / 20.0, pos.y as f32 / 20.0)
+                    }
                 };
-                self.ui.dispatch_event(&mut self.app, ferrous_ui_core::UiEvent::MouseWheel { delta_x: dx, delta_y: dy });
+                self.ui.dispatch_event(
+                    &mut self.app,
+                    ferrous_ui_core::UiEvent::MouseWheel {
+                        delta_x: dx,
+                        delta_y: dy,
+                    },
+                );
                 self.input.add_scroll(dx, dy);
+            }
+            WindowEvent::ModifiersChanged(mods) => {
+                self.ctrl_held = mods.state().control_key();
+                self.shift_held = mods.state().shift_key();
             }
             WindowEvent::KeyboardInput { ref event, .. } => {
                 let winit::event::KeyEvent {
@@ -224,22 +241,90 @@ impl<A: FerrousApp> ApplicationHandler for Runner<A> {
                     self.input
                         .update_key(code.into(), state == winit::event::ElementState::Pressed);
                 }
+
+                // Ctrl+combos y Shift+combos: despachar variantes especiales y retornar
+                if state == winit::event::ElementState::Pressed && (self.ctrl_held || self.shift_held) {
+                    let combo_key = match physical_key {
+                        // Ctrl+Shift+flechas
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::ArrowLeft)
+                            if self.ctrl_held && self.shift_held =>
+                            Some(ferrous_ui_core::GuiKey::CtrlShiftArrowLeft),
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::ArrowRight)
+                            if self.ctrl_held && self.shift_held =>
+                            Some(ferrous_ui_core::GuiKey::CtrlShiftArrowRight),
+                        // Ctrl+combos
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyA)
+                            if self.ctrl_held =>
+                            Some(ferrous_ui_core::GuiKey::CtrlA),
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyC)
+                            if self.ctrl_held =>
+                            Some(ferrous_ui_core::GuiKey::CtrlC),
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyX)
+                            if self.ctrl_held =>
+                            Some(ferrous_ui_core::GuiKey::CtrlX),
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyV)
+                            if self.ctrl_held =>
+                            Some(ferrous_ui_core::GuiKey::CtrlV),
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyZ)
+                            if self.ctrl_held =>
+                            Some(ferrous_ui_core::GuiKey::CtrlZ),
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyY)
+                            if self.ctrl_held =>
+                            Some(ferrous_ui_core::GuiKey::CtrlY),
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::ArrowLeft)
+                            if self.ctrl_held =>
+                            Some(ferrous_ui_core::GuiKey::CtrlArrowLeft),
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::ArrowRight)
+                            if self.ctrl_held =>
+                            Some(ferrous_ui_core::GuiKey::CtrlArrowRight),
+                        // Shift+flechas y Shift+Home/End
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::ArrowLeft)
+                            if self.shift_held =>
+                            Some(ferrous_ui_core::GuiKey::ShiftArrowLeft),
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::ArrowRight)
+                            if self.shift_held =>
+                            Some(ferrous_ui_core::GuiKey::ShiftArrowRight),
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::Home)
+                            if self.shift_held =>
+                            Some(ferrous_ui_core::GuiKey::ShiftHome),
+                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::End)
+                            if self.shift_held =>
+                            Some(ferrous_ui_core::GuiKey::ShiftEnd),
+                        _ => None,
+                    };
+                    if let Some(key) = combo_key {
+                        self.ui.dispatch_event(
+                            &mut self.app,
+                            ferrous_ui_core::UiEvent::KeyDown { key },
+                        );
+                        return;
+                    }
+                }
+
                 if let Some(key) = if let winit::keyboard::PhysicalKey::Code(k) = physical_key {
                     Some(ferrous_events::winit_to_guikey(k))
                 } else {
                     None
                 } {
                     if state == winit::event::ElementState::Pressed {
-                        self.ui.dispatch_event(&mut self.app, ferrous_ui_core::UiEvent::KeyDown { key });
+                        self.ui.dispatch_event(
+                            &mut self.app,
+                            ferrous_ui_core::UiEvent::KeyDown { key },
+                        );
                     } else {
-                        self.ui.dispatch_event(&mut self.app, ferrous_ui_core::UiEvent::KeyUp { key });
+                        self.ui
+                            .dispatch_event(&mut self.app, ferrous_ui_core::UiEvent::KeyUp { key });
                     }
                 }
-                
+
                 if let Some(txt) = text {
-                    if state == winit::event::ElementState::Pressed {
+                    if state == winit::event::ElementState::Pressed && !self.ctrl_held {
                         for c in txt.chars() {
-                            self.ui.dispatch_event(&mut self.app, ferrous_ui_core::UiEvent::Char { c });
+                            self.input.push_char(c);
+                            self.ui.dispatch_event(
+                                &mut self.app,
+                                ferrous_ui_core::UiEvent::Char { c },
+                            );
                         }
                     }
                 }

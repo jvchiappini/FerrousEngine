@@ -56,6 +56,11 @@ pub struct InputState {
     mouse_delta: (f32, f32),
     /// Accumulated scroll this frame (lines, positive = up / zoom-in).
     scroll_delta: (f32, f32),
+
+    // ── Text input ────────────────────────────────────────────────────────
+    /// Printable characters typed this frame (from `WindowEvent::KeyboardInput`
+    /// logical text), in order.  Consumed by calling [`drain_chars`].
+    typed_chars: Vec<char>,
 }
 
 impl InputState {
@@ -112,6 +117,12 @@ impl InputState {
         self.scroll_delta.1 += dy;
     }
 
+    /// Record a printable character typed this frame.
+    /// Called by the runner for each character in `WindowEvent::KeyboardInput` text.
+    pub fn push_char(&mut self, c: char) {
+        self.typed_chars.push(c);
+    }
+
     /// Must be called **once per frame, after all events have been processed**.
     /// Clears the per-frame "just pressed / released" sets and resets deltas.
     pub fn end_frame(&mut self) {
@@ -121,6 +132,7 @@ impl InputState {
         self.buttons_released.clear();
         self.mouse_delta = (0.0, 0.0);
         self.scroll_delta = (0.0, 0.0);
+        self.typed_chars.clear();
     }
 
     // ─── Queries ───────────────────────────────────────────────────────────
@@ -216,5 +228,12 @@ impl InputState {
     #[inline]
     pub fn scroll_y(&self) -> f32 {
         self.scroll_delta.1
+    }
+
+    /// Characters typed this frame (printable, in order).
+    /// Cleared automatically at `end_frame`.
+    #[inline]
+    pub fn typed_chars(&self) -> &[char] {
+        &self.typed_chars
     }
 }

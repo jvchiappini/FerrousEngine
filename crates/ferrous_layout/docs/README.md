@@ -1,8 +1,134 @@
 # ferrous_layout
 
-`ferrous_layout` es el cerebro geométrico detrás de la UI de FerrousEngine. Transforma las reglas de diseño abstractas (`Style`) en coordenadas físicas exactas (`Rect`) para cada elemento de la pantalla.
+Motor de cálculo de posiciones y dimensiones para la UI de Ferrous Engine.
+
+Toma el `UiTree` de `ferrous_ui_core`, sincroniza su estructura con el motor
+**Taffy** (implementación de Flexbox en Rust) y escribe el `Rect` resuelto
+de vuelta en cada nodo del árbol. El resto del sistema (render, eventos)
+sólo lee esos rects —nunca los calcula— por lo que este crate es el único
+punto de verdad sobre las coordenadas físicas de cada widget.
 
 ---
+
+## Flujo de ejecución
+
+```
+UiTree<App>  (Style de cada nodo)
+      │
+      ▼  LayoutEngine::compute_layout()
+      │
+      ├─1. sync_node()          → construye/actualiza el TaffyTree interno
+      │                           (recursivo, DFS desde la raíz)
+      │
+      ├─2. taffy.compute_layout_with_measure()
+      │       │  para cada nodo llama Widget::calculate_size()
+      │       │  si Taffy necesita el tamaño intrínseco del widget
+      │       └─► resuelve el árbol Flexbox
+      │
+      └─3. apply_layout()       → escribe Rect { x, y, width, height }
+                                  en cada NodeId del UiTree,
+                                  respetando scroll_offset() de los padres
+```
+
+---
+
+## `LayoutEngine`
+
+Único tipo público del crate.
+
+### Constructor
+
+```rust
+let mut layout_engine = LayoutEngine::new();
+```
+
+Internamente mantiene:
+- `taffy: TaffyTree<NodeId>` — árbol Taffy anotado con el `NodeId` de Ferrous
+- `node_map: HashMap<NodeId, taffy::NodeId>` — mapeo bidireccional de IDs
+
+### Método principal
+
+```rust
+layout_engine.compute_layout(&mut ui_tree, available_width, available_height);
+```
+
+| Parámetro | Descripción |
+|---|---|
+| `tree` | El `UiTree<App>` cuyo estilo y rect de cada nodo se va a procesar |
+| `available_width` | Ancho disponible en píxeles (normalmente el ancho de la ventana) |
+| `available_height` | Alto disponible en píxeles |
+
+Después de la llamada, cada nodo del árbol tiene su `Rect` actualizado con
+coordenadas absolutas respecto a la esquina superior izquierda de la ventana.
+
+---
+
+## Conversión de `Style` a Taffy
+
+`LayoutEngine::convert_style()` traduce cada campo de `ferrous_ui_core::Style`
+al equivalente de Taffy:
+
+| `Style` Ferrous | Taffy equivalente |
+|---|---|
+| `DisplayMode::Block` | `Display::Block` |
+| `DisplayMode::FlexRow` | `Display::Flex` + `FlexDirection::Row` |
+| `DisplayMode::FlexColumn` | `Display::Flex` + `FlexDirection::Column` |
+| `Position::Relative / Absolute` | `Position::Relative / Absolute` |
+| `size.0 / size.1` | `size.width / height` con `Dimension` |
+| `Units::Px(v)` | `Dimension::Length(v)` |
+| `Units::Percentage(v)` | `Dimension::Percent(v / 100.0)` |
+| `Units::Flex(v)` | `flex_grow = v` (tamaño → `Auto`) |
+| `Units::Auto` | `Dimension::Auto` |
+| `margin` / `padding` | `taffy::Rect<LengthPercentage(Auto)>` |
+| `offsets` (inset) | `taffy::Rect<LengthPercentageAuto>` |
+| `Alignment::Start/Center/End` | `align_items` + `justify_content` |
+| `Alignment::Stretch` | `align_items = Stretch` |
+| `Overflow::Visible/Hidden/Scroll` | `taffy::Overflow` en ejes X e Y |
+
+---
+
+## Medidas personalizadas (measure function)
+
+Cuando Taffy necesita saber el tamaño intrínseco de un nodo (p. ej., un
+`Label` cuyo ancho depende del texto), llama a la función de medida pasada a
+`compute_layout_with_measure`. El motor delega en `Widget::calculate_size()`:
+
+```rust
+// Dentro del closure de medida:
+let size = node.widget.calculate_size(&mut LayoutContext {
+    available_space: vec2(available_w, available_h),
+    known_dimensions: (known.width, known.height),
+    node_id,
+    theme,
+});
+// size.x / size.y se devuelven a Taffy
+```
+
+---
+
+## Scroll
+
+`apply_layout()` consulta `Widget::scroll_offset()` de cada nodo padre antes
+de aplicar las coordenadas a sus hijos:
+
+```
+hijo.x = parent_x + taffy_layout.location.x - scroll_offset.x
+hijo.y = parent_y + taffy_layout.location.y - scroll_offset.y
+```
+
+Esto permite que los widgets `ScrollView` desplacen su contenido sin
+necesitar un re-cálculo completo del layout.
+
+---
+
+## Dependencias
+
+| Crate | Uso |
+|---|---|
+| `taffy = "0.7"` | Motor Flexbox — `TaffyTree`, `compute_layout_with_measure` |
+| `ferrous_ui_core` | `UiTree`, `NodeId`, `Rect`, `Style`, `Units`, `DisplayMode`, `Alignment`, `LayoutContext` |
+| `glam` | `Vec2` para `LayoutContext::available_space` |
+
 
 ## Motor Subyacente: Taffy
 

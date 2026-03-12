@@ -12,14 +12,14 @@ pub enum UiEvent {
     MouseMove { pos: Vec2 },
     /// Pulsación de tecla física o evento de entrada de texto.
     /// Pulsación de tecla física.
-    KeyDown { 
+    KeyDown {
         /// Código de tecla abstracto para funciones lógicas (ej. `GuiKey::Enter`).
-        key: GuiKey 
+        key: GuiKey,
     },
     /// Liberación de tecla física.
-    KeyUp { 
+    KeyUp {
         /// Código de tecla abstracto para funciones lógicas (ej. `GuiKey::Enter`).
-        key: GuiKey 
+        key: GuiKey,
     },
     /// Entrada de texto (carácter Unicode).
     Char { c: char },
@@ -45,6 +45,34 @@ pub enum GuiKey {
     Enter,
     Escape,
     Tab,
+    /// Ctrl+A — seleccionar todo el texto del widget enfocado.
+    CtrlA,
+    /// Ctrl+← — saltar al inicio de la palabra anterior.
+    CtrlArrowLeft,
+    /// Ctrl+→ — saltar al final de la siguiente palabra.
+    CtrlArrowRight,
+    /// Shift+← — extender la selección un carácter a la izquierda.
+    ShiftArrowLeft,
+    /// Shift+→ — extender la selección un carácter a la derecha.
+    ShiftArrowRight,
+    /// Shift+Home — extender la selección hasta el inicio.
+    ShiftHome,
+    /// Shift+End — extender la selección hasta el final.
+    ShiftEnd,
+    /// Ctrl+Shift+← — extender la selección al inicio de la palabra anterior.
+    CtrlShiftArrowLeft,
+    /// Ctrl+Shift+→ — extender la selección al final de la siguiente palabra.
+    CtrlShiftArrowRight,
+    /// Ctrl+C — copiar la selección al portapapeles.
+    CtrlC,
+    /// Ctrl+X — cortar la selección al portapapeles.
+    CtrlX,
+    /// Ctrl+V — pegar desde el portapapeles.
+    CtrlV,
+    /// Ctrl+Z — deshacer el último cambio.
+    CtrlZ,
+    /// Ctrl+Y — rehacer el último cambio deshecho.
+    CtrlY,
 }
 
 /// Botones del ratón soportados por el sistema de enrutamiento de UI.

@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use ferrous_assets::AssetState;
 use ferrous_core::glam::Vec3;
-use ferrous_ui_core::Rect;
 use ferrous_gui::GuiBatch;
+use ferrous_ui_core::Rect;
 use ferrous_ui_render::ToBatches;
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 
@@ -104,7 +104,7 @@ impl<A: FerrousApp> Runner<A> {
                     let font = font_data.into_font(
                         &gfx.renderer.context.device,
                         &gfx.renderer.context.queue,
-                        ' '..'~',
+                        ferrous_font::latin_western(),
                     );
                     gfx.renderer
                         .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
@@ -154,7 +154,11 @@ impl<A: FerrousApp> Runner<A> {
                 gfx.renderer.set_viewport(self.viewport);
                 // self.ui.viewport = ctx.viewport; // No longer needed here, passed to collect_commands
             }
-            self.ui.update(time.delta, self.window_size.0 as f32, self.window_size.1 as f32);
+            self.ui.update(
+                time.delta,
+                self.window_size.0 as f32,
+                self.window_size.1 as f32,
+            );
         }
 
         // ECS → renderer sync and 3-D camera input are only needed in Game3D.
@@ -219,12 +223,12 @@ impl<A: FerrousApp> Runner<A> {
             }
 
             let viewport_rect = Rect {
-                x: 0.0, 
-                y: 0.0, 
-                width: self.window_size.0 as f32, 
-                height: self.window_size.1 as f32
+                x: 0.0,
+                y: 0.0,
+                width: self.window_size.0 as f32,
+                height: self.window_size.1 as f32,
             };
-            
+
             let ui_render_batch = self.ui.render(viewport_rect, self.font.as_ref());
             // Fusionar los comandos de la UI con los comandos inmediatos (si los hay)
             gui_batch.extend(ui_render_batch);

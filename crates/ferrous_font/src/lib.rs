@@ -7,12 +7,15 @@
 
 pub mod atlas;
 pub mod binary_reader;
+/// Pre-built Unicode character sets for atlas generation.
+pub mod charset;
+pub mod msdf_gen;
 pub mod parser;
 pub mod path;
 pub mod tables;
-pub mod msdf_gen;
 
 pub use atlas::{FontAtlas, GlyphMetrics};
+pub use charset::{ascii, cyrillic, from_str as charset_from_str, latin_extended, latin_western};
 
 /// High‑level font object holding an atlas; previously in `ferrous_assets`.
 pub struct Font {
@@ -72,7 +75,13 @@ impl Font {
     ) -> Self {
         let parser = parser::FontParser::new(bytes).expect("Failed to parse font data");
 
-        let final_chars = if char_list.is_empty() { vec!['A'] } else { char_list };
+        // Fall back to the Latin Western set (ASCII + Latin-1 Supplement) so
+        // that Spanish, French, German, and common symbols render out of the box.
+        let final_chars = if char_list.is_empty() {
+            charset::latin_western()
+        } else {
+            char_list
+        };
 
         let atlas = FontAtlas::new(device, queue, &parser, final_chars)
             .expect("Failed to build font atlas");

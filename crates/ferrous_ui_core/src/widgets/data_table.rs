@@ -350,6 +350,7 @@ impl<App: 'static + Send + Sync> Widget<App> for DataTable<App> {
                 text: header_text,
                 color: text_color,
                 font_size: theme.font_size_base,
+                align: crate::TextAlign::TOP_LEFT,
             });
 
             // Handle de resize (línea vertical de 1px)
@@ -424,6 +425,7 @@ impl<App: 'static + Send + Sync> Widget<App> for DataTable<App> {
                         theme.on_surface_muted.to_array()
                     },
                     font_size: theme.font_size_base,
+                    align: crate::TextAlign::TOP_LEFT,
                 });
 
                 cell_x += col.width;

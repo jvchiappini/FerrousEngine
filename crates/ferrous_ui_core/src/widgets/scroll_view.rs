@@ -1,6 +1,6 @@
 use crate::{Widget, RenderCommand, DrawContext, LayoutContext, EventContext, EventResponse, UiEvent, Rect, NodeId, Observable, Vec2};
 
-// ─── ScrollView ───────────────────────────────────────────────────────────────
+// ─── ScrollView ─────────────────────────────────────────────────────
 
 /// Contenedor con soporte para desplazamiento (scroll).
 ///
@@ -11,6 +11,8 @@ pub struct ScrollView<App = ()> {
     pub wheel_speed: f32,
     pub is_hovered: bool,
     _marker: std::marker::PhantomData<App>,
+
+    on_scroll_cb: Option<Box<dyn Fn(&mut EventContext<App>, Vec2) + Send + Sync + 'static>>,
 }
 
 impl<App> ScrollView<App> {
@@ -20,11 +22,20 @@ impl<App> ScrollView<App> {
             wheel_speed: 20.0,
             is_hovered: false,
             _marker: std::marker::PhantomData,
+            on_scroll_cb: None,
         }
     }
 
     pub fn with_wheel_speed(mut self, speed: f32) -> Self {
         self.wheel_speed = speed;
+        self
+    }
+
+    /// Registra una función que se invoca cuando el usuario hace scroll.
+    ///
+    /// El parámetro es el nuevo `scroll_offset` (Vec2).
+    pub fn on_scroll(mut self, f: impl Fn(&mut EventContext<App>, Vec2) + Send + Sync + 'static) -> Self {
+        self.on_scroll_cb = Some(Box::new(f));
         self
     }
 }
@@ -49,7 +60,7 @@ impl<App: Send + Sync> Widget<App> for ScrollView<App> {
 
     fn on_event(
         &mut self,
-        _ctx: &mut EventContext<App>,
+        ctx: &mut EventContext<App>,
         event: &UiEvent,
     ) -> EventResponse {
         match event {
@@ -70,7 +81,12 @@ impl<App: Send + Sync> Widget<App> for ScrollView<App> {
                 // que aún no conocemos fácilmente aquí sin consultar el tree).
                 self.scroll_offset.x = self.scroll_offset.x.max(0.0);
                 self.scroll_offset.y = self.scroll_offset.y.max(0.0);
-                
+
+                // Notificar al usuario del nuevo offset
+                if let Some(cb) = &self.on_scroll_cb {
+                    cb(ctx, self.scroll_offset);
+                }
+
                 EventResponse::Redraw
             }
             _ => EventResponse::Ignored,

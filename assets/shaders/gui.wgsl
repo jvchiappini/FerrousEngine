@@ -14,6 +14,8 @@ struct VsOut {
     @location(6) @interpolate(flat) tex_index: u32,
     // WebGPU requires @interpolate(flat) on integer vertex outputs
     @location(7) @interpolate(flat) flags: u32,
+    // raw vertex UV in [0,1]x[0,1] — always correct for SDF pixel coords
+    @location(8) raw_uv: vec2<f32>,
 };
 
 struct Uniforms {
@@ -70,6 +72,7 @@ fn vs_main(
     out.size = i_size;
     out.tex_index = i_tex_index;
     out.flags = i_flags;
+    out.raw_uv = uv;
     return out;
 }
 
@@ -77,8 +80,8 @@ fn vs_main(
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // wheel mode: render hue/saturation gradient
     if (in.flags == 1u) {
-        let px = in.uv.x * in.size.x;
-        let py = in.uv.y * in.size.y;
+        let px = in.raw_uv.x * in.size.x;
+        let py = in.raw_uv.y * in.size.y;
         let cx = in.size.x * 0.5;
         let cy = in.size.y * 0.5;
 
@@ -119,57 +122,78 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         diag_alpha = 1.0 - smoothstep(0.0, aa_diag, ddiag);
     }
 
-    // rounded rectangle mode
-    let px = in.uv.x * in.size.x;
-    let py = in.uv.y * in.size.y;
+    // rounded rectangle mode — use raw_uv (always 0..1) for pixel coords
+    let px = in.raw_uv.x * in.size.x;
+    let py = in.raw_uv.y * in.size.y;
+
+    // GRADIENT_BIT (0x4): single full-rect quad.
+    //   uv0 = color1.rg, uv1 = color1.ba  — blend left→right by raw_uv.x.
+    let gradient_bit: u32 = 4u;
+    let is_gradient = (in.flags & gradient_bit) != 0u;
+    var gradient_alpha: f32 = in.color.a;
+    if is_gradient {
+        let color1 = vec4<f32>(in.uv0.x, in.uv0.y, in.uv1.x, in.uv1.y);
+        base_rgb = mix(in.color.rgb, color1.rgb, in.raw_uv.x);
+        gradient_alpha = mix(in.color.a, color1.a, in.raw_uv.x);
+    }
+
+    // GRADIENT_STRIP_BIT (0x8): thin strip of a larger rect (radial/conic).
+    //   uv0.x = normalised left-edge X of this strip, uv1 = (full_w, full_h).
+    let gradient_strip_bit: u32 = 8u;
+    let is_strip = (in.flags & gradient_strip_bit) != 0u;
+    let full_w  = select(in.size.x, in.uv1.x, is_strip);
+    let full_h  = select(in.size.y, in.uv1.y, is_strip);
+    let px_full = select(px, in.uv0.x * full_w + px, is_strip);
+    let py_full = py;
+
     let r_tl = in.radii.x;
     let r_tr = in.radii.y;
     let r_bl = in.radii.z;
     let r_br = in.radii.w;
 
     // hard-clip corners (alpha may already be 0 from triangle logic)
-    if (r_tl > 0.0 && px < r_tl && py < r_tl) {
-        let dx = r_tl - px;
-        let dy = r_tl - py;
+    if (r_tl > 0.0 && px_full < r_tl && py_full < r_tl) {
+        let dx = r_tl - px_full;
+        let dy = r_tl - py_full;
         if (dx * dx + dy * dy > r_tl * r_tl) {
-            return vec4<f32>(in.color.rgb, 0.0);
+            return vec4<f32>(base_rgb, 0.0);
         }
     }
-    if (r_tr > 0.0 && px > (in.size.x - r_tr) && py < r_tr) {
-        let dx = px - (in.size.x - r_tr);
-        let dy = r_tr - py;
+    if (r_tr > 0.0 && px_full > (full_w - r_tr) && py_full < r_tr) {
+        let dx = px_full - (full_w - r_tr);
+        let dy = r_tr - py_full;
         if (dx * dx + dy * dy > r_tr * r_tr) {
-            return vec4<f32>(in.color.rgb, 0.0);
+            return vec4<f32>(base_rgb, 0.0);
         }
     }
-    if (r_bl > 0.0 && px < r_bl && py > (in.size.y - r_bl)) {
-        let dx = r_bl - px;
-        let dy = py - (in.size.y - r_bl);
+    if (r_bl > 0.0 && px_full < r_bl && py_full > (full_h - r_bl)) {
+        let dx = r_bl - px_full;
+        let dy = py_full - (full_h - r_bl);
         if (dx * dx + dy * dy > r_bl * r_bl) {
-            return vec4<f32>(in.color.rgb, 0.0);
+            return vec4<f32>(base_rgb, 0.0);
         }
     }
-    if (r_br > 0.0 && px > (in.size.x - r_br) && py > (in.size.y - r_br)) {
-        let dx = px - (in.size.x - r_br);
-        let dy = py - (in.size.y - r_br);
+    if (r_br > 0.0 && px_full > (full_w - r_br) && py_full > (full_h - r_br)) {
+        let dx = px_full - (full_w - r_br);
+        let dy = py_full - (full_h - r_br);
         if (dx * dx + dy * dy > r_br * r_br) {
-            return vec4<f32>(in.color.rgb, 0.0);
+            return vec4<f32>(base_rgb, 0.0);
         }
     }
 
     // smooth corners
     var dist: f32 = 0.0;
-    if (px < r_tl && py < r_tl) {
-        dist = length(vec2<f32>(px - r_tl, py - r_tl)) - r_tl;
-    } else if (px > in.size.x - r_tr && py < r_tr) {
-        dist = length(vec2<f32>(px - (in.size.x - r_tr), py - r_tr)) - r_tr;
-    } else if (px < r_bl && py > in.size.y - r_bl) {
-        dist = length(vec2<f32>(px - r_bl, py - (in.size.y - r_bl))) - r_bl;
-    } else if (px > in.size.x - r_br && py > in.size.y - r_br) {
-        dist = length(vec2<f32>(px - (in.size.x - r_br), py - (in.size.y - r_br))) - r_br;
+    if (px_full < r_tl && py_full < r_tl) {
+        dist = length(vec2<f32>(px_full - r_tl, py_full - r_tl)) - r_tl;
+    } else if (px_full > full_w - r_tr && py_full < r_tr) {
+        dist = length(vec2<f32>(px_full - (full_w - r_tr), py_full - r_tr)) - r_tr;
+    } else if (px_full < r_bl && py_full > full_h - r_bl) {
+        dist = length(vec2<f32>(px_full - r_bl, py_full - (full_h - r_bl))) - r_bl;
+    } else if (px_full > full_w - r_br && py_full > full_h - r_br) {
+        dist = length(vec2<f32>(px_full - (full_w - r_br), py_full - (full_h - r_br))) - r_br;
     }
     let aa_corner: f32 = 1.0;
-    var alpha = in.color.a * (1.0 - smoothstep(0.0, aa_corner, dist));
+    var alpha = gradient_alpha * (1.0 - smoothstep(0.0, aa_corner, dist));
     if (in.flags == 3u) {
         alpha = alpha * diag_alpha;
     }

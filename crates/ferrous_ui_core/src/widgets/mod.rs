@@ -58,3 +58,5 @@ pub mod image;
 pub use image::*;
 pub mod svg;
 pub use svg::*;
+pub mod widget_meta;
+pub use widget_meta::*;

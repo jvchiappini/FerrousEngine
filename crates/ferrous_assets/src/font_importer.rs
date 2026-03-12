@@ -13,14 +13,17 @@
 //! ## Usage
 //!
 //! ```rust,ignore
-//! use ferrous_assets::{AssetServer, AssetState, FontData};
+//! use ferrous_assets::{AssetServer, AssetState, FontData, charset};
 //!
 //! // Start loading (runs on a rayon thread — no GPU needed).
 //! let handle = asset_server.load::<FontData>("assets/fonts/inter.ttf");
 //!
 //! // Later, each frame:
 //! if let AssetState::Ready(data) = asset_server.get(handle) {
-//!     let font = data.into_font(&device, &queue, ' '..'~');
+//!     // latin_western() covers ASCII + Latin-1 (ñ, á, é, ü …) + common symbols.
+//!     // Use latin_extended() for Eastern European languages, or
+//!     // charset::from_str("your text") for a minimal custom set.
+//!     let font = data.into_font(&device, &queue, charset::latin_western());
 //!     renderer.set_font_atlas(&font.atlas.view, &font.atlas.sampler);
 //! }
 //! ```

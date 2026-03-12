@@ -2,8 +2,8 @@
 
 use ferrous_assets::{AssetHandle, AssetServer, Font};
 use ferrous_core::{
-    AnimationSystem, BehaviorSystem, InputState, TimeClock, TimeSystem,
-    TransformSystem, VelocitySystem, Viewport, World,
+    AnimationSystem, BehaviorSystem, InputState, TimeClock, TimeSystem, TransformSystem,
+    VelocitySystem, Viewport, World,
 };
 use ferrous_ecs::prelude::{ResourceMap, Stage, StagedScheduler};
 use ferrous_ui_core::UiTree;
@@ -52,6 +52,10 @@ pub(crate) struct Runner<A: FerrousApp> {
     pub(super) systems: StagedScheduler,
     pub(super) resources: ResourceMap,
     pub(super) asset_server: AssetServer,
+    /// Whether a Ctrl modifier key is currently held (used for keyboard shortcuts like Ctrl+A).
+    pub(super) ctrl_held: bool,
+    /// Whether a Shift modifier key is currently held (used for selection shortcuts).
+    pub(super) shift_held: bool,
 }
 
 impl<A: FerrousApp> Runner<A> {
@@ -70,7 +74,12 @@ impl<A: FerrousApp> Runner<A> {
             graphics: None,
             ui: ferrous_gui::UiSystem::new(),
             input: InputState::new(),
-            viewport: Viewport { x: 0, y: 0, width: 0, height: 0 },
+            viewport: Viewport {
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 0,
+            },
             window_size: (0, 0),
             clock: TimeClock::new(),
             world: World::new(),
@@ -87,6 +96,8 @@ impl<A: FerrousApp> Runner<A> {
             systems,
             resources: ResourceMap::new(),
             asset_server: AssetServer::new(),
+            ctrl_held: false,
+            shift_held: false,
         }
     }
 }
