@@ -1,0 +1,35 @@
+name: ferrous-web-export-sync
+
+on:
+  pull_request:
+    paths:
+      - "crates/ferrous_web/src/lib.rs"
+      - "crates/ferrous_web/pkg/ferrous_web.js"
+      - "crates/ferrous_web/pkg/ferrous_web.d.ts"
+      - "scripts/check_ferrous_web_exports.py"
+      - "scripts/build_ferrous_web.sh"
+  push:
+    branches:
+      - main
+    paths:
+      - "crates/ferrous_web/src/lib.rs"
+      - "crates/ferrous_web/pkg/ferrous_web.js"
+      - "crates/ferrous_web/pkg/ferrous_web.d.ts"
+      - "scripts/check_ferrous_web_exports.py"
+      - "scripts/build_ferrous_web.sh"
+  workflow_dispatch:
+
+jobs:
+  check-exports:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Validate ferrous_web export sync
+        run: python3 scripts/check_ferrous_web_exports.py
