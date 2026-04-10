@@ -185,7 +185,7 @@ fn fs_main(frag_in: VsOut) -> @location(0) vec4<f32> {
     var albedo    = material.base_color.xyz * frag_in.color;
     var out_alpha = material.base_color.w;
     if ((material.flags & 1u) != 0u) {
-        let s  = textureSample(tex_albedo, mat_sampler, frag_in.uv);
+        let s  = textureSampleLevel(tex_albedo, mat_sampler, frag_in.uv, 0.0);
         albedo    *= s.xyz;
         out_alpha *= s.a;
     }
@@ -193,13 +193,13 @@ fn fs_main(frag_in: VsOut) -> @location(0) vec4<f32> {
     // AO
     var ao_factor = material.metallic_roughness.z;  // ao_strength
     if ((material.flags & 16u) != 0u) {
-        ao_factor = textureSample(tex_ao, mat_sampler, frag_in.uv).x * ao_factor;
+        ao_factor = textureSampleLevel(tex_ao, mat_sampler, frag_in.uv, 0.0).x * ao_factor;
     }
 
     // normal
     var N = normalize(frag_in.world_normal);
     if ((material.flags & 2u) != 0u) {
-        var ns = textureSample(tex_normal, mat_sampler, frag_in.uv).xyz * 2.0 - 1.0;
+        var ns = textureSampleLevel(tex_normal, mat_sampler, frag_in.uv, 0.0).xyz * 2.0 - 1.0;
         ns.x *= material.normal_ao.x;
         ns.y *= material.normal_ao.x;
         let T   = normalize(frag_in.world_tan);
@@ -212,7 +212,7 @@ fn fs_main(frag_in: VsOut) -> @location(0) vec4<f32> {
     var metallic  = material.metallic_roughness.x;
     var roughness = material.metallic_roughness.y;
     if ((material.flags & 4u) != 0u) {
-        let mr  = textureSample(tex_met_rough, mat_sampler, frag_in.uv).xyz;
+        let mr  = textureSampleLevel(tex_met_rough, mat_sampler, frag_in.uv, 0.0).xyz;
         roughness *= mr.y;
         metallic  *= mr.z;
     }
@@ -244,9 +244,12 @@ fn fs_main(frag_in: VsOut) -> @location(0) vec4<f32> {
     // NDC: X and Y in [-1,1] with Y+ = up; UV: X in [0,1] with V+ = down.
     // Negate Y so that the shadow map is sampled right-side-up.
     let uv   = vec2<f32>(proj.x * 0.5 + 0.5, -proj.y * 0.5 + 0.5);
-    if (uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0 && proj.z >= 0.0 && proj.z <= 1.0) {
-        shadow = textureSampleCompare(shadow_map, shadow_sampler, uv, proj.z);
-    }
+
+    // WGSL: textureSampleCompare must be in uniform control flow. 
+    // We sample unconditionally but use the frustum check to mask the result.
+    let simple_shadow = textureSampleCompare(shadow_map, shadow_sampler, uv, proj.z);
+    let in_frustum = (uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0 && proj.z >= 0.0 && proj.z <= 1.0);
+    shadow = select(1.0, simple_shadow, in_frustum);
     var Lo      = (kD * albedo / PI + spec) * radiance * NdotL * shadow;
 
     // ── Point lights ─────────────────────────────────────────────────────────
@@ -303,7 +306,7 @@ fn fs_main(frag_in: VsOut) -> @location(0) vec4<f32> {
     // emissive
     if ((material.flags & 8u) != 0u) {
         let emiss = material.emissive.xyz * material.emissive.w;
-        let es    = textureSample(tex_emissive, mat_sampler, frag_in.uv);
+        let es    = textureSampleLevel(tex_emissive, mat_sampler, frag_in.uv, 0.0);
         color += emiss * es.xyz;
     }
 

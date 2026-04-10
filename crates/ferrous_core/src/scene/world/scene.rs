@@ -283,4 +283,12 @@ impl World {
     pub fn set_cube_size(&mut self, handle: Handle, size: Vec3) {
         self.set_cube_half_extents(handle, size * 0.5);
     }
+
+    /// Remove all entities and clear the ECS world.
+    pub fn clear(&mut self) {
+        self.entities.clear();
+        self.ecs.clear();
+        self.ecs_mapping.clear();
+        self.count = 0;
+    }
 }

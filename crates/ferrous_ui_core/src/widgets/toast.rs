@@ -253,19 +253,19 @@ impl<App: Send + Sync + 'static> Widget<App> for ToastManager<App> {
 
     fn update(&mut self, ctx: &mut crate::UpdateContext) {
         let dt = ctx.delta_time;
-        let mut needs_redraw = false;
+        ctx.needs_redraw = false;
 
         // Avanzar todos los toasts
         for toast in &mut self.queue {
             toast.elapsed += dt;
-            needs_redraw = true;
+            ctx.needs_redraw = true;
         }
 
         // Eliminar los expirados
         let before = self.queue.len();
         self.queue.retain(|t| !t.is_expired());
         if self.queue.len() != before {
-            needs_redraw = true;
+            ctx.needs_redraw = true;
         }
     }
 

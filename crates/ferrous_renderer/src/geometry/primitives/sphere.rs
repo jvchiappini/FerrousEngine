@@ -84,5 +84,6 @@ pub fn sphere(
         index_count: indices.len() as u32,
         vertex_count: vertices_mut.len() as u32,
         index_format: wgpu::IndexFormat::Uint16,
+        aabb: crate::scene::culling::Aabb::new(glam::Vec3::splat(-radius), glam::Vec3::splat(radius)),
     }
 }

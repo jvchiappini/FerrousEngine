@@ -34,5 +34,6 @@ pub fn quad(device: &wgpu::Device) -> Mesh {
         index_count: indices.len() as u32,
         vertex_count: vertices.len() as u32,
         index_format: wgpu::IndexFormat::Uint16,
+        aabb: crate::scene::culling::Aabb::new(glam::Vec3::new(-1.0, -1.0, 0.0), glam::Vec3::new(1.0, 1.0, 0.0)),
     }
 }

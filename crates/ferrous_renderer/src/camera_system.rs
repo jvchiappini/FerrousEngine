@@ -41,7 +41,7 @@ impl CameraSystem {
             fovy: 45.0f32.to_radians(),
             aspect: width as f32 / height as f32,
             znear: 0.1,
-            zfar: 2000.0,
+            zfar: 10000.0,
             controller: Controller::with_default_wasd(),
         };
         let gpu = GpuCamera::new(device, &camera, &layouts.camera);

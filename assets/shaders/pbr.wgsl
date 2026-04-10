@@ -223,20 +223,20 @@ fn fs_main(frag_in: FragmentInput) -> FragmentOutput {
     // track alpha separately; start with material base alpha
     var out_alpha = material.base_color.w;
     if ((material.flags & 1u) != 0u) {
-        let sample = textureSample(tex_albedo, mat_sampler, frag_in.uv);
+        let sample = textureSampleLevel(tex_albedo, mat_sampler, frag_in.uv, 0.0);
         albedo *= sample.xyz;
         // modulate alpha by texture's alpha channel as well
         out_alpha *= sample.a;
     }
     var ao_factor = material.metallic_roughness.z;  // ao_strength
     if ((material.flags & 16u) != 0u) {
-        ao_factor = textureSample(tex_ao, mat_sampler, frag_in.uv).x * ao_factor;
+        ao_factor = textureSampleLevel(tex_ao, mat_sampler, frag_in.uv, 0.0).x * ao_factor;
     }
 
     // normal mapping
     var N = normalize(frag_in.world_normal);
     if ((material.flags & 2u) != 0u) {
-        var normal_sample = textureSample(tex_normal, mat_sampler, frag_in.uv).xyz * 2.0 - vec3<f32>(1.0);
+        var normal_sample = textureSampleLevel(tex_normal, mat_sampler, frag_in.uv, 0.0).xyz * 2.0 - vec3<f32>(1.0);
         // WGSL forbids writing to swizzles; expand manually.
         normal_sample.x = normal_sample.x * material.normal_ao.x;
         normal_sample.y = normal_sample.y * material.normal_ao.x;
@@ -250,7 +250,7 @@ fn fs_main(frag_in: FragmentInput) -> FragmentOutput {
     var metallic = material.metallic_roughness.x;
     var roughness = material.metallic_roughness.y;
     if ((material.flags & 4u) != 0u) {
-        let mr = textureSample(tex_met_rough, mat_sampler, frag_in.uv).xyz;
+        let mr = textureSampleLevel(tex_met_rough, mat_sampler, frag_in.uv, 0.0).xyz;
         roughness *= mr.y;
         metallic *= mr.z;
     }
@@ -291,23 +291,26 @@ fn fs_main(frag_in: FragmentInput) -> FragmentOutput {
     // NDC: X and Y in [-1,1] with Y+ = up; UV: X in [0,1] with V+ = down.
     // Negate Y so that the shadow map is sampled right-side-up.
     let uv = vec2<f32>(proj.x * 0.5 + 0.5, -proj.y * 0.5 + 0.5);
-    // only sample when inside the shadow map bounds; outside means the
-    // fragment is outside the light frustum and we conservatively treat it
-    // as lit.
-    if (uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0 && proj.z >= 0.0 && proj.z <= 1.0) {
-        // PCF 3×3: sample a 3×3 grid of shadow map texels and average the
-        // comparison results.  This softens the hard aliased shadow edges
-        // at the cost of 9 texture fetches instead of 1.
-        let texel = 1.0 / 2048.0;
-        var pcf: f32 = 0.0;
-        for (var sy: i32 = -1; sy <= 1; sy = sy + 1) {
-            for (var sx: i32 = -1; sx <= 1; sx = sx + 1) {
-                let offset = vec2<f32>(f32(sx), f32(sy)) * texel;
-                pcf += textureSampleCompare(shadow_map, shadow_sampler, uv + offset, proj.z - 0.005);
-            }
+
+    // WGSL: textureSampleCompare must be in uniform control flow. 
+    // We sample unconditionally but use the frustum check to mask the result.
+    let in_frustum = (uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0 && proj.z >= 0.0 && proj.z <= 1.0);
+    
+    // PCF 3×3: sample a 3×3 grid of shadow map texels and average the
+    // comparison results.  This softens the hard aliased shadow edges
+    // at the cost of 9 texture fetches instead of 1.
+    let texel = 1.0 / 2048.0;
+    var pcf_sum: f32 = 0.0;
+    for (var sy: i32 = -1; sy <= 1; sy = sy + 1) {
+        for (var sx: i32 = -1; sx <= 1; sx = sx + 1) {
+            let offset = vec2<f32>(f32(sx), f32(sy)) * texel;
+            pcf_sum += textureSampleCompare(shadow_map, shadow_sampler, uv + offset, proj.z - 0.005);
         }
-        shadow = pcf / 9.0;
     }
+    let pcf_shadow = pcf_sum / 9.0;
+    
+    // If outside frustum, treat as fully lit (1.0).
+    shadow = select(1.0, pcf_shadow, in_frustum);
     var Lo = (kD * albedo / PI + specular) * radiance * NdotL * shadow;
 
     // ── Point lights ─────────────────────────────────────────────────────────
@@ -351,7 +354,7 @@ fn fs_main(frag_in: FragmentInput) -> FragmentOutput {
     
     // Sample IBL textures rather than fake hemisphere colors.
     // irradiance map stores diffuse lighting.
-    let irr = textureSample(tex_irradiance, mat_sampler, N).xyz;
+    let irr = textureSampleLevel(tex_irradiance, mat_sampler, N, 0.0).xyz;
     let diffuse_ambient = kD_ambient * albedo * irr;
 
     // specular prefiltered environment map: choose mip based on roughness
@@ -363,7 +366,7 @@ fn fs_main(frag_in: FragmentInput) -> FragmentOutput {
     let maxMip = textureNumLevels(tex_prefilter);
     let mip = roughness * f32(maxMip - 1);
     let prefiltered = textureSampleLevel(tex_prefilter, mat_sampler, R, mip).xyz;
-    let brdf = textureSample(tex_brdf, mat_sampler, vec2<f32>(max(dot(N, Vdir),0.0), roughness)).xy;
+    let brdf = textureSampleLevel(tex_brdf, mat_sampler, vec2<f32>(max(dot(N, Vdir),0.0), roughness), 0.0).xy;
     let specular_ambient = prefiltered * (F_ambient * brdf.x + brdf.y);
 
     // Sample the blurred SSAO texture using the fragment's NDC position.
@@ -376,7 +379,7 @@ fn fs_main(frag_in: FragmentInput) -> FragmentOutput {
     let clip_ssao = camera.view_proj * vec4<f32>(frag_in.world_pos, 1.0);
     let ndc_ssao  = clip_ssao.xyz / clip_ssao.w;
     let ssao_uv   = vec2<f32>(ndc_ssao.x * 0.5 + 0.5, -ndc_ssao.y * 0.5 + 0.5);
-    let ssao_factor = textureSample(ssao_tex, ssao_sampler, ssao_uv).r;
+    let ssao_factor = textureSampleLevel(ssao_tex, ssao_sampler, ssao_uv, 0.0).r;
 
     let ambient = (diffuse_ambient + specular_ambient) * ao_factor * ssao_factor * 0.8;
 
@@ -385,9 +388,20 @@ fn fs_main(frag_in: FragmentInput) -> FragmentOutput {
     // emissive
     if ((material.flags & 8u) != 0u) {
         let emiss = material.emissive.xyz * material.emissive.w;
-        let sample = textureSample(tex_emissive, mat_sampler, frag_in.uv);
+        let sample = textureSampleLevel(tex_emissive, mat_sampler, frag_in.uv, 0.0);
         color += emiss * sample.xyz;
     }
+
+    // ── Professional Distance Fog ──────────────────────────────────────────
+    // Simulates aerial perspective by blending distant pixels into the horizon haze.
+    // This is what makes a localized terrain feel "infinite".
+    let fog_color = vec3<f32>(0.75, 0.8, 0.85); // Matches p_horizon in procedural_sky.wgsl
+    let fog_density = 0.02; // Adjust for "Inifinite" look feel
+    let dist = length(camera.eye_pos.xyz - frag_in.world_pos);
+    let fog_factor = 1.0 - exp(-dist * fog_density);
+    
+    // Final color with fog
+    color = mix(color, fog_color, clamp(fog_factor, 0.0, 1.0));
 
     // ── No tone mapping or gamma correction here ──────────────────────────
     // This pass writes to a Rgba16Float HDR texture.  Values may exceed 1.0

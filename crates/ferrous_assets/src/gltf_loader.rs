@@ -67,6 +67,20 @@ pub struct AssetModel {
 pub fn load_gltf(path: &Path) -> Result<AssetModel> {
     let (document, buffers, images) = gltf::import(path)
         .with_context(|| format!("failed to import glTF '{}'", path.display()))?;
+    parse_gltf_data(document, buffers, images)
+}
+
+pub fn load_gltf_from_slice(bytes: &[u8]) -> Result<AssetModel> {
+    let (document, buffers, images) = gltf::import_slice(bytes)
+        .with_context(|| "failed to import glTF from bytes")?;
+    parse_gltf_data(document, buffers, images)
+}
+
+pub fn parse_gltf_data(
+    document: gltf::Document,
+    buffers: Vec<gltf::buffer::Data>,
+    images: Vec<gltf::image::Data>,
+) -> Result<AssetModel> {
 
     // --- images -------------------------------------------------------------
     let mut out_images = Vec::with_capacity(images.len());

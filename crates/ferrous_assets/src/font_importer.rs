@@ -98,6 +98,13 @@ impl Asset for FontData {
 
         Ok(Self { bytes })
     }
+
+    fn import_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
+        if bytes.len() < 4 {
+            anyhow::bail!("FontData::import_bytes — bytes length too small for a font");
+        }
+        Ok(Self { bytes: bytes.to_vec() })
+    }
 }
 
 // ---------------------------------------------------------------------------

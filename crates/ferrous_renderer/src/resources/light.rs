@@ -20,13 +20,19 @@ pub struct DirectionalLightUniform {
     pub color: [f32; 3],
     pub intensity: f32,
     /// 4x4 view-projection matrix from the light's point of view.
-    ///
-    /// This is used during the shadow-map rendering pass.  The matrix is
-    /// computed on the CPU when the light is updated (see
-    /// [`WorldPass::update_light`]) and packed alongside the other light
-    /// parameters so the same uniform buffer can be bound for both the
-    /// shadow and PBR passes.
     pub light_view_proj: [[f32; 4]; 4],
+}
+
+impl DirectionalLightUniform {
+    pub fn new(direction: [f32; 3], color: [f32; 3], intensity: f32) -> Self {
+        Self {
+            direction,
+            _pad0: 0.0,
+            color,
+            intensity,
+            light_view_proj: glam::Mat4::IDENTITY.to_cols_array_2d(),
+        }
+    }
 }
 
 impl Default for DirectionalLightUniform {

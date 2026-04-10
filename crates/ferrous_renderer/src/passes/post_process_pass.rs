@@ -290,16 +290,19 @@ impl PostProcessPass {
     /// Assumes that `bloom_textures` has already been initialised (see
     /// `on_resize`).  Returns a reference to the level‑0 view which contains
     /// the final upsampled bloom contribution.
-    pub fn run_bloom(
-        &self,
+    pub fn run_bloom<'a>(
+        &'a self,
         device: &Device,
         encoder: &mut CommandEncoder,
-        hdr: &HdrTexture,
-    ) -> &wgpu::TextureView {
-        let bloom = self
-            .bloom_textures
-            .as_ref()
-            .expect("bloom textures not initialised");
+        hdr: &'a HdrTexture,
+    ) -> &'a wgpu::TextureView {
+        let bloom = if let Some(bt) = &self.bloom_textures {
+            bt
+        } else {
+            // Silently return HDR view as a fallback to avoid panicking during
+            // the very first resize/frame on Web.
+            return &hdr.view;
+        };
         let sampler = &bloom.sampler;
         let bgl = self
             .bloom_bind_group_layout
@@ -430,10 +433,16 @@ impl PostProcessPass {
             .expect("PostProcessPass not initialised");
         // bloom textures should have been created during resize/attach before
         // the first render call.
-        let bloom = self
-            .bloom_textures
-            .as_ref()
-            .expect("bloom textures not initialised");
+        let bloom_view = if let Some(bt) = &self.bloom_textures {
+            &bt.acc_view
+        } else {
+            &hdr.view
+        };
+        let bloom_sampler = if let Some(bt) = &self.bloom_textures {
+            &bt.sampler
+        } else {
+            &hdr.sampler
+        };
 
         device.create_bind_group(&BindGroupDescriptor {
             label: Some("PostProcess BindGroup"),
@@ -449,11 +458,11 @@ impl PostProcessPass {
                 },
                 BindGroupEntry {
                     binding: 2,
-                    resource: BindingResource::TextureView(&bloom.acc_view),
+                    resource: BindingResource::TextureView(bloom_view),
                 },
                 BindGroupEntry {
                     binding: 3,
-                    resource: BindingResource::Sampler(&bloom.sampler),
+                    resource: BindingResource::Sampler(bloom_sampler),
                 },
             ],
         })

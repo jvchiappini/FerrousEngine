@@ -18,6 +18,8 @@ pub(super) struct BuilderBase {
     pub absolute: bool,
     /// Si true, usa `Units::Flex(1.0)` en ambos ejes en lugar de tamaño fijo.
     pub flex: bool,
+    pub percent_w: Option<f32>,
+    pub percent_h: Option<f32>,
 }
 
 impl BuilderBase {
@@ -29,8 +31,14 @@ impl BuilderBase {
             (Units::Flex(1.0), Units::Flex(1.0))
         } else {
             (
-                self.width.map_or(Units::Auto, Units::Px),
-                self.height.map_or(Units::Auto, Units::Px),
+                self.percent_w.map_or(
+                    self.width.map_or(Units::Auto, Units::Px),
+                    Units::Percentage
+                ),
+                self.percent_h.map_or(
+                    self.height.map_or(Units::Auto, Units::Px),
+                    Units::Percentage
+                ),
             )
         };
 
@@ -58,6 +66,16 @@ macro_rules! impl_builder_base {
                 self.base.x = x;
                 self.base.y = y;
                 self.base.absolute = true;
+                self
+            }
+
+            pub fn percent_w(mut self, pct: f32) -> Self {
+                self.base.percent_w = Some(pct);
+                self
+            }
+
+            pub fn percent_h(mut self, pct: f32) -> Self {
+                self.base.percent_h = Some(pct);
                 self
             }
 

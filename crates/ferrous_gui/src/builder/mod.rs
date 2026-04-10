@@ -26,7 +26,10 @@ mod label;
 mod panel;
 mod widget;
 
+mod icon;
 pub use button::ButtonBuilder;
 pub use label::LabelBuilder;
 pub use panel::PanelBuilder;
 pub use widget::WidgetBuilder;
+pub use icon::IconBuilder;
+

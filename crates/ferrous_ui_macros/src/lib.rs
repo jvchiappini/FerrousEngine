@@ -1,7 +1,7 @@
 extern crate proc_macro;
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse::{Parse, ParseStream}, parse_macro_input, Token, Ident, LitStr, braced, parenthesized, DeriveInput, Data, Fields, Meta, NestedMeta, Lit};
+use syn::{parse::{Parse, ParseStream}, parse_macro_input, Token, Ident, DeriveInput, Data, Meta, NestedMeta, Lit};
 
 struct UiElement {
     name: Ident,
@@ -194,3 +194,15 @@ pub fn derive_ferrous_widget(input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
+
+mod controller;
+
+#[proc_macro_derive(FerrousController, attributes(fui_view, fui_id))]
+pub fn derive_ferrous_controller(input: TokenStream) -> TokenStream {
+    controller::derive_ferrous_controller(input)
+}
+
+#[proc_macro_attribute]
+pub fn fui_action(attr: TokenStream, item: TokenStream) -> TokenStream {
+    controller::fui_action_attr(attr, item)
+}

@@ -8,7 +8,7 @@
 // ── Category ─────────────────────────────────────────────────────────────────
 
 /// Top-level category a widget belongs to (used by editors / design tools).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum WidgetCategory {
     Basic,
     Input,
@@ -51,7 +51,7 @@ impl WidgetCategory {
 
 /// Every widget kind available in the engine.
 /// This is the authoritative list — editors must not define their own.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, serde::Serialize, serde::Deserialize)]
 pub enum WidgetKind {
     // Basic
     Label,
@@ -89,6 +89,12 @@ pub enum WidgetKind {
     VirtualGrid,
     // Feedback
     Toast,
+}
+
+impl std::fmt::Display for WidgetKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
 }
 
 impl WidgetKind {

@@ -51,7 +51,7 @@
 
 use crate::{
     Widget, RenderCommand, DrawContext, BuildContext, LayoutContext, EventContext,
-    EventResponse, UiEvent, Rect, Vec2, StyleBuilder, StyleExt,
+    EventResponse, UiEvent, Rect, Vec2, StyleBuilder,
 };
 
 // ─── SortDirection ────────────────────────────────────────────────────────────
@@ -258,16 +258,6 @@ impl<App> DataTable<App> {
         self.columns.iter().map(|c| c.width).sum()
     }
 
-    /// Devuelve el X de inicio de la columna `col_idx` relativo al lado izquierdo
-    /// del área de datos (sin incluir el scroll).
-    fn col_x(&self, col_idx: usize) -> f32 {
-        self.columns.iter().take(col_idx).map(|c| c.width).sum()
-    }
-
-    /// Handle de resize: ±3px alrededor de la arista derecha de la columna.
-    fn resize_handle_x(&self, col_idx: usize) -> f32 {
-        self.col_x(col_idx) + self.columns[col_idx].width
-    }
 
     /// Fila de datos bajo la coordenada Y relativa al área del body.
     fn row_at_y(&self, body_local_y: f32) -> Option<usize> {
@@ -327,7 +317,7 @@ impl<App: 'static + Send + Sync> Widget<App> for DataTable<App> {
 
         let mut col_x = r.x - self.scroll_offset_x;
         for (col_idx, col) in self.columns.iter().enumerate() {
-            let col_rect = Rect::new(col_x, r.y, col.width, self.header_height);
+            let _col_rect = Rect::new(col_x, r.y, col.width, self.header_height);
 
             // Título de columna
             let is_sorted = self.sort_column == Some(col_idx);

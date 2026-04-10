@@ -182,6 +182,10 @@ pub struct PrePass {
     // Shared buffers from WorldPass (set by the renderer after construction)
     instance_bind_group: Option<Arc<wgpu::BindGroup>>,
     instanced_pipeline: Arc<RenderPipeline>,
+
+    // Material registry for filtering transparents (Phase 12)
+    material_bind_groups: Vec<Arc<wgpu::BindGroup>>,
+    material_registry: Option<crate::materials::MaterialRegistry>,
 }
 
 impl PrePass {
@@ -210,6 +214,8 @@ impl PrePass {
             depth_view,
             instance_bind_group: None,
             instanced_pipeline: Arc::new(instanced_pipeline),
+            material_bind_groups: Vec::new(),
+            material_registry: None,
         }
     }
 
@@ -217,6 +223,16 @@ impl PrePass {
 
     pub fn set_instance_buffer(&mut self, bind_group: Arc<wgpu::BindGroup>) {
         self.instance_bind_group = Some(bind_group);
+    }
+
+    pub fn set_material_table(
+        &mut self,
+        table: &[Arc<wgpu::BindGroup>],
+        registry: &crate::materials::MaterialRegistry,
+    ) {
+        self.material_bind_groups.clear();
+        self.material_bind_groups.extend_from_slice(table);
+        self.material_registry = Some(registry.clone());
     }
 
     /// Sync the prepass camera from the main camera matrices.
@@ -333,9 +349,11 @@ impl RenderPass for PrePass {
         encoder: &mut CommandEncoder,
         _color_view: &TextureView,
         _resolve_target: Option<&TextureView>,
-        _depth_view: Option<&TextureView>,
+        depth_view: Option<&TextureView>,
         packet: &FramePacket,
     ) {
+        let actual_depth_view = depth_view.unwrap_or(&self.depth_view);
+        
         let mut rpass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("Prepass"),
             color_attachments: &[Some(RenderPassColorAttachment {
@@ -352,7 +370,7 @@ impl RenderPass for PrePass {
                 },
             })],
             depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
-                view: &self.depth_view,
+                view: actual_depth_view,
                 depth_ops: Some(Operations {
                     load: LoadOp::Clear(1.0),
                     store: StoreOp::Store,
@@ -363,6 +381,18 @@ impl RenderPass for PrePass {
             timestamp_writes: None,
         });
 
+        if let Some(vp) = &packet.viewport {
+            rpass.set_viewport(
+                vp.x as f32,
+                vp.y as f32,
+                vp.width as f32,
+                vp.height as f32,
+                0.0,
+                1.0,
+            );
+            rpass.set_scissor_rect(vp.x, vp.y, vp.width, vp.height);
+        }
+
         // ── Instanced path ─────────────────────────────────────────────────
         if let (Some(inst_bg), true) = (
             &self.instance_bind_group,
@@ -371,7 +401,17 @@ impl RenderPass for PrePass {
             rpass.set_pipeline(&self.instanced_pipeline);
             rpass.set_bind_group(0, self.prepass_camera.bind_group.as_ref(), &[]);
             rpass.set_bind_group(1, inst_bg.as_ref(), &[]);
+            
             for cmd in &packet.instanced_objects {
+                // If we have the registry, skip transparent meshes in the prepass.
+                // Standard professional practice for Depth/Normal prepasses.
+                if let Some(registry) = &self.material_registry {
+                    let (alpha, _) = registry.get_render_flags(ferrous_core::scene::MaterialHandle(cmd.material_slot as u32));
+                    if matches!(alpha, ferrous_core::scene::AlphaMode::Blend) {
+                        continue;
+                    }
+                }
+
                 rpass.set_vertex_buffer(0, cmd.vertex_buffer.slice(..));
                 rpass.set_index_buffer(cmd.index_buffer.slice(..), cmd.index_format);
                 rpass.draw_indexed(
@@ -381,6 +421,5 @@ impl RenderPass for PrePass {
                 );
             }
         }
-
     }
 }

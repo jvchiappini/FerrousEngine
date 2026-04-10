@@ -128,9 +128,9 @@ impl System for OrbitCameraSystem {
     fn name(&self) -> &'static str { "OrbitCameraSystem" }
 
     fn run(&mut self, world: &mut ferrous_ecs::world::World, _resources: &mut ResourceMap) {
-        let updates: Vec<(ferrous_ecs::entity::Entity, glam::Vec3)> = world
-            .query2::<OrbitCamera, Camera3D>()
-            .map(|(e, orbit, _cam)| {
+        let updates: Vec<(ferrous_ecs::entity::Entity, glam::Vec3)> = Query::<(&OrbitCamera, &Camera3D)>::new(world)
+            .iter()
+            .map(|(e, (orbit, _cam))| {
                 let cy = orbit.pitch.cos();
                 let sy = orbit.pitch.sin();
                 let offset = glam::Vec3::new(

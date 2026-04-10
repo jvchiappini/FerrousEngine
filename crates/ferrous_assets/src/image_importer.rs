@@ -101,6 +101,20 @@ impl Asset for ImageData {
             pixels: rgba.into_raw(),
         })
     }
+
+    fn import_bytes(bytes: &[u8]) -> Result<Self> {
+        let img = image::load_from_memory(bytes).context("failed to decode image from memory")?;
+        let rgba = img.to_rgba8();
+        let (w, h) = rgba.dimensions();
+        if w == 0 || h == 0 {
+            bail!("image byte stream has zero-size dimensions");
+        }
+        Ok(ImageData {
+            width: w,
+            height: h,
+            pixels: rgba.into_raw(),
+        })
+    }
 }
 
 // `ImageData` is just `Vec<u8>` + two `u32`s — always Send + Sync.

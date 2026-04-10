@@ -155,6 +155,7 @@ pub fn spawn_gltf(
                 tangent: *mesh.tangents.get(j).unwrap_or(&[1.0, 0.0, 0.0, 1.0]),
                 color: *mesh.colors.get(j).unwrap_or(&[1.0, 1.0, 1.0]),
                 uv: *mesh.uvs.get(j).unwrap_or(&[0.0, 0.0]),
+                _pad: 0.0,
             });
         }
 
@@ -162,21 +163,7 @@ pub fn spawn_gltf(
         // u32 so no conversion is required.
         let index_format = wgpu::IndexFormat::Uint32;
 
-        let gpu_mesh = ferrous_renderer::geometry::Mesh {
-            vertex_buffer: ferrous_renderer::resources::buffer::create_vertex(
-                &renderer.context.device,
-                "gltf vertices",
-                &verts,
-            ),
-            index_buffer: ferrous_renderer::resources::buffer::create_index(
-                &renderer.context.device,
-                "gltf indices",
-                &mesh.indices,
-            ),
-            index_count: mesh.indices.len() as u32,
-            vertex_count: verts.len() as u32,
-            index_format,
-        };
+        let gpu_mesh = renderer.create_mesh("gltf_submesh", verts, mesh.indices.clone());
 
         // register mesh with renderer so world_sync can find it later
         renderer.register_mesh(&key, gpu_mesh.clone());
@@ -373,19 +360,10 @@ fn spawn_gltf_from_model(
                 tangent: *mesh.tangents.get(j).unwrap_or(&[1.0, 0.0, 0.0, 1.0]),
                 color: *mesh.colors.get(j).unwrap_or(&[1.0, 1.0, 1.0]),
                 uv: *mesh.uvs.get(j).unwrap_or(&[0.0, 0.0]),
+                _pad: 0.0,
             });
         }
-        let gpu_mesh = ferrous_renderer::geometry::Mesh {
-            vertex_buffer: ferrous_renderer::resources::buffer::create_vertex(
-                &renderer.context.device, "gltf vertices", &verts,
-            ),
-            index_buffer: ferrous_renderer::resources::buffer::create_index(
-                &renderer.context.device, "gltf indices", &mesh.indices,
-            ),
-            index_count: mesh.indices.len() as u32,
-            vertex_count: verts.len() as u32,
-            index_format: wgpu::IndexFormat::Uint32,
-        };
+        let gpu_mesh = renderer.create_mesh("gltf_submesh", verts, mesh.indices.clone());
         renderer.register_mesh(&key, gpu_mesh.clone());
 
         let handle = world.spawn_mesh(key.clone(), key.clone(), Vec3::ZERO);

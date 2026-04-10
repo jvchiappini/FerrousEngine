@@ -39,6 +39,8 @@ fn vs_main(
     @location(3) i_uv0: vec2<f32>,
     @location(4) i_uv1: vec2<f32>,
     @location(5) i_color: vec4<f32>,
+    @location(6) i_z_order: f32,
+    @location(7) i_node_id: u32,
 ) -> VsOut {
     // Transform pixel coordinates to NDC.
     var pixel = i_pos + uv * i_size;
@@ -46,7 +48,7 @@ fn vs_main(
     ndc.y = -ndc.y;
 
     var out: VsOut;
-    out.clip_pos = vec4<f32>(ndc, 0.0, 1.0);
+    out.clip_pos = vec4<f32>(ndc, i_z_order, 1.0);
     // Interpolate UVs across the glyph quad.
     out.uv = mix(i_uv0, i_uv1, uv);
     out.color = i_color;

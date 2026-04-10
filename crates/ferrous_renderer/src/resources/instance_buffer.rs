@@ -25,7 +25,7 @@ use wgpu::util::DeviceExt;
 const MAT4_BYTES: u64 = 64;
 
 /// Minimum number of slots to allocate.
-const MIN_CAPACITY: usize = 64;
+const MIN_CAPACITY: usize = 1024;
 
 pub struct InstanceBuffer {
     /// Raw GPU buffer (`STORAGE | COPY_DST`).

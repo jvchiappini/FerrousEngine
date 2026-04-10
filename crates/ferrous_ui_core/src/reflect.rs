@@ -6,7 +6,6 @@
 //! al formato de archivo `.fui`.
 
 use serde::{Serialize, Deserialize};
-use crate::Rect;
 
 // ─── PropValue ────────────────────────────────────────────────────────────────
 

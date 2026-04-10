@@ -197,7 +197,7 @@ impl Texture2d {
         use resvg::{usvg, tiny_skia};
 
         // parse SVG data
-        let mut opt = usvg::Options::default();
+        let opt = usvg::Options::default();
         // note: font database is managed separately by the caller if text is
         // required; for simple icons we can ignore fonts.
         use resvg::usvg::TreeParsing;

@@ -48,7 +48,7 @@
 
 use crate::{
     Widget, RenderCommand, DrawContext, BuildContext, LayoutContext, EventContext,
-    EventResponse, UiEvent, Rect, Vec2, StyleBuilder, StyleExt,
+    EventResponse, UiEvent, Rect, Vec2, StyleBuilder,
 };
 
 // ─── Callbacks ────────────────────────────────────────────────────────────────

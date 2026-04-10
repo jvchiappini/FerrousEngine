@@ -78,9 +78,12 @@ impl GlobalLightPanel {
             uv0: [0.0, 0.0],
             uv1: [1.0, 1.0],
             color: [0.08, 0.10, 0.14, 0.90],
+            color_b: [0.0; 4],
             radii: [0.0; 4],
             tex_index: 0,
             flags: 0,
+            z_order: 0.0,
+            node_id: 0,
         });
 
         let Some(font) = font else {
@@ -108,7 +111,7 @@ impl GlobalLightPanel {
             };
             sl.borrow().draw(&mut dc, &mut cmds);
             for cmd in cmds {
-                cmd.to_batches(gui, Some(font));
+                cmd.to_batches(gui, Some(font), 0.0, 0);
             }
             
             gui.draw_text(font, label, [slider_x, y - 10.0], 10.0, [0.7, 0.7, 0.7, 1.0]);
@@ -149,7 +152,7 @@ impl GlobalLightPanel {
             rect: ferrous_gui::Rect::new(slider_x, panel_top + 28.0, slider_w, SLIDER_H),
             theme: ferrous_gui::theme::Theme::default(),
         }, &mut cmds);
-        for cmd in cmds { cmd.to_batches(gui, Some(font)); }
+        for cmd in cmds { cmd.to_batches(gui, Some(font), 0.0, 0); }
         let val_x = slider_x + slider_w + 4.0;
         gui.draw_text(
             font,
@@ -172,7 +175,7 @@ impl GlobalLightPanel {
             rect: ferrous_gui::Rect::new(slider_x, panel_top + 62.0, slider_w, SLIDER_H),
             theme: ferrous_gui::theme::Theme::default(),
         }, &mut cmds_el);
-        for cmd in cmds_el { cmd.to_batches(gui, Some(font)); }
+        for cmd in cmds_el { cmd.to_batches(gui, Some(font), 0.0, 0); }
         let el_deg = (el_v * 2.0 - 1.0) * 90.0;
         gui.draw_text(
             font,
@@ -195,7 +198,7 @@ impl GlobalLightPanel {
             rect: ferrous_gui::Rect::new(slider_x, panel_top + 96.0, slider_w, SLIDER_H),
             theme: ferrous_gui::theme::Theme::default(),
         }, &mut cmds_in);
-        for cmd in cmds_in { cmd.to_batches(gui, Some(font)); }
+        for cmd in cmds_in { cmd.to_batches(gui, Some(font), 0.0, 0); }
         gui.draw_text(
             font,
             &format!("{:.2}", intensity),

@@ -24,7 +24,7 @@
 
 use crate::{
     Widget, RenderCommand, DrawContext, BuildContext, LayoutContext, EventContext,
-    EventResponse, UiEvent, Rect, Vec2, NodeId, Color, StyleBuilder, StyleExt,
+    EventResponse, UiEvent, Rect, Vec2, NodeId, Color, StyleBuilder,
     Units,
 };
 
@@ -106,8 +106,7 @@ impl<App: 'static + Send + Sync> Widget<App> for Accordion<App> {
         ctx.tree.set_node_style(my_id, root_style);
 
         // ── Cabecera ──────────────────────────────────────────────────────
-        let header_bg = self.header_color.unwrap_or_else(|| ctx.theme.surface_elevated);
-        let header_panel = Box::new(crate::widgets::Panel::new().with_color(header_bg));
+        let header_panel = Box::new(AccordionHeader::new(&self.title, self.is_expanded, self.header_color));
         let header_style = StyleBuilder::new().fill_width().height_px(40.0).build();
         let header_id = ctx.tree.add_node(header_panel, Some(my_id));
         ctx.tree.set_node_style(header_id, header_style);
@@ -116,7 +115,7 @@ impl<App: 'static + Send + Sync> Widget<App> for Accordion<App> {
         // ── Área de contenido ─────────────────────────────────────────────
         // Siempre creamos el nodo de área; la altura se anima vía `update`.
         let area_h = if self.is_expanded { Units::Auto } else { Units::Px(0.0) };
-        let area_style = StyleBuilder::new()
+        let _area_style = StyleBuilder::new()
             .fill_width()
             .clip()
             .build();
@@ -139,7 +138,7 @@ impl<App: 'static + Send + Sync> Widget<App> for Accordion<App> {
         }
     }
 
-    fn draw(&self, ctx: &mut DrawContext, cmds: &mut Vec<RenderCommand>) {
+    fn draw(&self, _ctx: &mut DrawContext, _cmds: &mut Vec<RenderCommand>) {
         // La barra de cabecera es un Panel, así que solo dibujamos la flecha y el título.
         // Esto se hace aquí porque la cabecera es un nodo aparte; sin embargo,
         // la etiqueta de texto se puede poner directamente en los cmds del nodo raíz.

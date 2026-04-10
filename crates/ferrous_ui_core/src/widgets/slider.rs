@@ -1,4 +1,4 @@
-use crate::{Widget, RenderCommand, DrawContext, BuildContext, LayoutContext, EventContext, EventResponse, UiEvent, Rect, Vec2};
+use crate::{Widget, RenderCommand, DrawContext, LayoutContext, EventContext, EventResponse, UiEvent, Rect, Vec2};
 
 // ─── Slider ──────────────────────────────────────────────────────────────────
 

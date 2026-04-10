@@ -45,7 +45,7 @@
 
 use crate::{
     Widget, RenderCommand, DrawContext, BuildContext, LayoutContext, EventContext,
-    EventResponse, UiEvent, Rect, Vec2, StyleBuilder, StyleExt,
+    EventResponse, UiEvent, Rect, Vec2,
     ImageFit,
 };
 
@@ -100,6 +100,8 @@ enum SvgSource {
     },
     /// Primitivas vectoriales dibujadas en `draw()`.
     Primitives { primitives: Vec<SvgPrimitive> },
+    /// Tessellated SVG mesh ready for the GPU.
+    Tessellated { mesh: std::sync::Arc<ferrous_svg::SvgMesh> },
     /// SVG source en texto; el backend lo rasterizará de forma diferida.
     Source {
         content: String,
@@ -183,6 +185,12 @@ impl<App> SvgWidget<App> {
         Self::new_inner(SvgSource::Primitives { primitives })
     }
 
+    /// Crea un `SvgWidget` que tesela una cadena SVG en tiempo real.
+    pub fn from_svg_string(svg: &str) -> Self {
+        let mesh = ferrous_svg::SvgMesh::from_str(svg).unwrap_or_default();
+        Self::new_inner(SvgSource::Tessellated { mesh: std::sync::Arc::new(mesh) })
+    }
+
     fn new_inner(source: SvgSource) -> Self {
         Self {
             source,
@@ -246,6 +254,7 @@ impl<App> SvgWidget<App> {
             SvgSource::Texture { texture_id, .. } => *texture_id,
             SvgSource::Source { texture_id, .. } => *texture_id,
             SvgSource::Primitives { .. } => 0,
+            SvgSource::Tessellated { .. } => 0,
         }
     }
 
@@ -539,6 +548,15 @@ impl<App: Send + Sync + 'static> Widget<App> for SvgWidget<App> {
                     Rect::new(x, y, w, h)
                 };
                 self.draw_primitives(primitives, dest_rect, cmds);
+            }
+
+            // ── Modo Teselado ────────────────────────────────────────────────
+            SvgSource::Tessellated { mesh } => {
+                cmds.push(RenderCommand::Svg {
+                    rect: r,
+                    color: self.color,
+                    mesh: (**mesh).clone(),
+                });
             }
 
             _ => {}

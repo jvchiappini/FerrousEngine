@@ -14,8 +14,8 @@ pub struct ShadowResources {
 impl ShadowResources {
     pub fn new(device: &wgpu::Device) -> Self {
         let size = wgpu::Extent3d {
-            width: 2048,
-            height: 2048,
+            width: 1024,
+            height: 1024,
             depth_or_array_layers: 1,
         };
 

@@ -1,0 +1,42 @@
+[package]
+name = "ferrous_web"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ferrous_app = { path = "../ferrous_app" }
+ferrous_core = { path = "../ferrous_core" }
+ferrous_gui = { path = "../ferrous_gui" }
+ferrous_assets = { path = "../ferrous_assets" }
+ferrous_renderer = { path = "../ferrous_renderer" }
+
+wasm-bindgen = "0.2"
+console_error_panic_hook = "0.1"
+log = "0.4"
+fern = "0.6"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Listamos solo lo básico para que compile sin errores de feature missing
+web-sys = { version = "0.3.94", features = [
+    "HtmlCanvasElement", 
+    "Window", 
+    "Document",
+    "Element",
+    "Node",
+    "Gpu",
+    "GpuAdapter",
+    "GpuAddressMode",
+    "GpuCanvasAlphaMode",
+    "GpuCanvasConfiguration",
+    "GpuCanvasContext",
+    "GpuDevice",
+    "GpuPrimitiveTopology",
+    "GpuQueue",
+    "GpuTextureFormat",
+    "Navigator",
+] }
+wasm-bindgen-futures = "0.4"
+getrandom = { version = "0.2", features = ["js"] }

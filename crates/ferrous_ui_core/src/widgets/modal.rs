@@ -50,7 +50,7 @@
 
 use crate::{
     Widget, RenderCommand, DrawContext, BuildContext, LayoutContext, EventContext,
-    EventResponse, UiEvent, Rect, Vec2, Color, NodeId, StyleBuilder, StyleExt,
+    EventResponse, UiEvent, Rect, Vec2, Color, NodeId, StyleBuilder,
 };
 
 // ─── Modal ────────────────────────────────────────────────────────────────────
@@ -77,7 +77,6 @@ pub struct Modal<App> {
 
     content: Option<Box<dyn Widget<App>>>,
     content_id: Option<NodeId>,
-    close_btn_id: Option<NodeId>,
 
     on_close_cb: Option<Box<dyn Fn(&mut EventContext<App>) + Send + Sync + 'static>>,
 }
@@ -94,7 +93,6 @@ impl<App> Modal<App> {
             backdrop_color: Color::from_rgba8(0, 0, 0, 140),
             content: None,
             content_id: None,
-            close_btn_id: None,
             on_close_cb: None,
         }
     }

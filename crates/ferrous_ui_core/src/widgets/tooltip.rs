@@ -236,7 +236,7 @@ impl<App: 'static + Send + Sync> Widget<App> for Tooltip<App> {
 
     fn on_event(
         &mut self,
-        ctx: &mut EventContext<App>,
+        _ctx: &mut EventContext<App>,
         event: &UiEvent,
     ) -> EventResponse {
         match event {

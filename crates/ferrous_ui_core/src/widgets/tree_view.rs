@@ -43,7 +43,7 @@
 
 use crate::{
     Widget, RenderCommand, DrawContext, BuildContext, LayoutContext, EventContext,
-    EventResponse, UiEvent, Rect, Vec2, Color, StyleBuilder, StyleExt,
+    EventResponse, UiEvent, Rect, Vec2, StyleBuilder,
 };
 
 // ─── TreeNode ────────────────────────────────────────────────────────────────
@@ -115,7 +115,7 @@ struct FlatRow {
     icon: Option<char>,
     has_children: bool,
     expanded: bool,
-    user_data: u64,
+    _user_data: u64,
 }
 
 // ─── TreeView ─────────────────────────────────────────────────────────────────
@@ -240,7 +240,7 @@ impl<App> TreeView<App> {
             icon: node.icon,
             has_children: !node.children.is_empty(),
             expanded: node.expanded,
-            user_data: node.user_data,
+            _user_data: node.user_data,
         });
 
         if node.expanded {

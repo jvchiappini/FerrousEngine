@@ -15,11 +15,14 @@ members = [
     "crates/ferrous_layout",
     "crates/ferrous_events", "crates/ferrous_ui_render",
     "crates/ferrous_ui_macros",
+    "crates/ferrous_voxels",
+    "crates/ferrous_svg", "crates/ferrous_state", "crates/ferrous_reflection",
+    "crates/ferrous_web",
 ]
 resolver = "2"
 
 [workspace.dependencies]
-wgpu = "23.0" # O la versión más estable actual
+wgpu = { version = "23.0", features = ["webgpu", "webgl", "fragile-send-sync-non-atomic-wasm"] }
 glam = { version = "0.29", features = ["bytemuck"] }
 # el motor tendrá su propio sistema de UI; ya no dependemos de egui
 winit = "0.30"

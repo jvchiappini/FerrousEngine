@@ -39,6 +39,13 @@ impl World {
         }
     }
 
+    /// Clear the entire world, removing all entities and archetypes.
+    pub fn clear(&mut self) {
+        self.entities = EntityAllocator::new();
+        self.archetypes = ArchetypeStore::new();
+        self.change_tick += 1;
+    }
+
     // -----------------------------------------------------------------------
     // Spawn / despawn
 

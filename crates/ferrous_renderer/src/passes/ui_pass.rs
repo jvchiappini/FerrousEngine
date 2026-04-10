@@ -52,7 +52,11 @@ impl RenderPass for UiPass {
         self.renderer.resize(queue, width, height);
     }
 
-    fn prepare(&mut self, _device: &Device, _queue: &Queue, _packet: &FramePacket) {}
+    fn prepare(&mut self, _device: &Device, queue: &Queue, packet: &FramePacket) {
+        if let Some(batch) = packet.get::<GuiBatch>() {
+            self.renderer.prepare(queue, batch);
+        }
+    }
 
     fn execute(
         &mut self,
@@ -65,31 +69,29 @@ impl RenderPass for UiPass {
         packet: &FramePacket,
     ) {
         let ui_batch = packet.get::<GuiBatch>();
-
-        let has_ui = ui_batch.map_or(false, |b| !b.segments.is_empty());
-        if !has_ui {
-            return;
-        }
-
         let empty = GuiBatch::new();
         let batch = ui_batch.unwrap_or(&empty);
 
-        match self.clear_color {
-            Some(clear) => self.renderer.render_clearing(
+        if let Some(clear) = self.clear_color {
+            // Even if there's no UI, we must clear the screen if a clear color is set.
+            self.renderer.render(
                 encoder,
                 color_view,
                 resolve_target,
                 batch,
-                queue,
-                clear,
-            ),
-            None => self.renderer.render(
-                encoder,
-                color_view,
-                resolve_target,
-                batch,
-                queue,
-            ),
+                wgpu::LoadOp::Clear(clear),
+            );
+        } else {
+            // Only render if we have a batch and no clear is required (compositing).
+            if !batch.is_empty() {
+                self.renderer.render(
+                    encoder,
+                    color_view,
+                    resolve_target,
+                    batch,
+                    wgpu::LoadOp::Load,
+                );
+            }
         }
     }
 }

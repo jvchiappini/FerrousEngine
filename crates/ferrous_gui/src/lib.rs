@@ -2,45 +2,73 @@
 //!
 //! Este crate actúa como la fachada principal (Facade), coordinando los sub-sistemas
 //! de widgets, layout, eventos y renderizado para proporcionar una experiencia de
-//! desarrollo fluida y de alto rendimiento ("Lag Cero").
+//! desarrollo fluida y de alto rendimiento.
 //!
-//! # API rápida (recomendada para GUIMaker)
+//! # API rápida
 //!
 //! ```rust,ignore
 //! use ferrous_gui::prelude::*;
 //!
-//! ui.button("OK")
-//!     .at(100.0, 200.0)
+//! // El hit-testing y los eventos son automáticos: solo defines el callback.
+//! ui.button("Guardar")
 //!     .size(120.0, 36.0)
-//!     .on_click(|_ctx| println!("click!"))
+//!     .border_radius(8.0)
+//!     .on_click(|ctx| ctx.app.save())
+//!     .spawn(&mut ui);
+//!
+//! ui.label("Hola mundo")
+//!     .at(20.0, 60.0)
+//!     .font_size(18.0)
 //!     .spawn(&mut ui);
 //! ```
 
 pub mod builder;
 pub mod system;
+pub mod toaster;
+
 
 pub use ferrous_ui_render::{
-    GuiBatch, GuiQuad, GuiRenderer, TextQuad, ToBatches, MAX_TEXTURE_SLOTS, TEXTURED_BIT,
-    GRADIENT_BIT, GRADIENT_STRIP_BIT,
+    GuiBatch, GuiQuad, GuiRenderer, TextQuad, ToBatches,
+    MAX_TEXTURE_SLOTS, TEXTURED_BIT, GRADIENT_BIT, GRADIENT_V_BIT, GRADIENT_RADIAL_BIT,
+    GRADIENT_STRIP_BIT, BORDER_BIT, SHADOW_BIT,
 };
 pub use system::UiSystem;
 
-// Re-exportaciones útiles de otros crates para centralizar la API
+// Re-exportaciones de ferrous_ui_core
 pub use ferrous_ui_core::{
-    theme, Alignment, BuildContext, Button, Color, ColorPicker, DirtyFlags, DisplayMode,
-    DrawContext, EventContext, EventResponse, GuiKey, LayoutContext, MouseButton, NodeId, Overflow,
-    PaletteCategory, PickerShape, Position, Rect, RectOffset, RenderCommand, Slider, Style,
-    UiEvent, UiTree, Units, UpdateContext, ViewportWidget, Widget, WidgetCategory, WidgetKind,
-    WIDGET_REGISTRY,
+    theme,
+    // Tipos de layout y estilo
+    Alignment, DisplayMode, Overflow, Position, Rect, RectOffset, Style, Units,
+    // Tipos de texto y alineación
+    TextAlign, HAlign, VAlign,
+    // Tipos de color y fondo
+    Color, Background, GradientStop, GradientAngle,
+    // Contextos del ciclo de vida
+    BuildContext, DrawContext, EventContext, LayoutContext, UpdateContext,
+    // Sistema de eventos
+    EventResponse, GuiKey, MouseButton, UiEvent,
+    // Árbol de UI
+    DirtyFlags, NodeId, UiTree,
+    // Trait y comando de render
+    RenderCommand, Widget,
+    // Widgets concretos
+    Button, Slider, ColorPicker,
+    // Tipos de picker
+    PaletteCategory, PickerShape,
+    // Sistema reactivo
+    ViewportWidget, WidgetCategory, WidgetKind, WIDGET_REGISTRY,
+    // Animaciones (NUEVO)
+    Animated, Spring, Tween, Easing, Lerp,
 };
-// Re-exportamos los sistemas ya integrados
+
+// Motores
 pub use ferrous_events::EventManager;
 pub use ferrous_layout::LayoutEngine;
 
 // Builders
 pub use builder::{ButtonBuilder, LabelBuilder, PanelBuilder, WidgetBuilder};
 
-// Incluimos macros si están disponibles
+// Macros
 pub use ferrous_ui_core::ui;
 
 /// Módulo prelude: importa todo lo necesario para crear UIs con la API fluent.
@@ -50,35 +78,44 @@ pub use ferrous_ui_core::ui;
 /// ```
 pub mod prelude {
     pub use crate::{
+        // Builders
         builder::{ButtonBuilder, LabelBuilder, PanelBuilder, WidgetBuilder},
-        Alignment,
-        // Widgets concretos
-        Button,
-        Color,
-        ColorPicker,
-        // Layout
-        DisplayMode,
-        EventContext,
-        EventManager,
-        EventResponse,
-        GuiKey,
-        // Motores
-        LayoutEngine,
-        MouseButton,
         // Tipos de layout y estilo
-        NodeId,
+        Alignment,
+        Background,
+        Color,
+        DisplayMode,
         Overflow,
         Position,
         Rect,
         RectOffset,
-        Slider,
         Style,
+        Units,
+        // Contextos de eventos
+        EventContext,
+        EventManager,
+        EventResponse,
+        GuiKey,
+        MouseButton,
+        // Sistema de animaciones (NUEVO)
+        Animated,
+        Easing,
+        Lerp,
+        Spring,
+        Tween,
+        // Motores
+        LayoutEngine,
+        // Árbol
+        NodeId,
+        RenderCommand,
+        Slider,
         UiEvent,
         UiSystem,
-        Units,
-        // Trait y contextos
         Widget,
+        // Shader flags (para widgets custom)
+        BORDER_BIT,
+        GRADIENT_BIT,
+        SHADOW_BIT,
     };
-    // Re-exportamos Label y Panel directamente desde su crate origen
-    pub use ferrous_ui_core::{Checkbox, Label, Panel, TextInput};
+    pub use ferrous_ui_core::{Button, Checkbox, Label, Panel, TextInput};
 }

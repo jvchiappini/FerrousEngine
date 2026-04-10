@@ -29,6 +29,11 @@ impl World {
         }
     }
 
+    /// Read the material descriptor stored on an entity.
+    pub fn get_material_descriptor(&self, handle: Handle) -> Option<&MaterialDescriptor> {
+        self.get(handle).map(|e| &e.material.descriptor)
+    }
+
     /// Set the material handle for an entity.
     pub fn set_material_handle(&mut self, handle: Handle, mat: MaterialHandle) {
         if let Some(Some(e)) = self.entities.get_mut(handle.0 as usize) {
@@ -139,6 +144,13 @@ impl World {
     /// Returns the capacity of the underlying storage.
     pub fn capacity(&self) -> usize {
         self.entities.len()
+    }
+
+    /// Find an entity handle by its name. Returns the first match.
+    pub fn find_entity_by_name(&self, name: &str) -> Option<Handle> {
+        self.iter_with_handles()
+            .find(|(_, e)| e.name == name)
+            .map(|(rh, _)| rh)
     }
 
     // ── Renderer bridge ─────────────────────────────────────────────────────

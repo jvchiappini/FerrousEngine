@@ -29,7 +29,16 @@ pub enum UiEvent {
     MouseEnter,
     /// El ratón salió del área del widget.
     MouseLeave,
+    /// Se inicia una operación de arrastre.
+    DragStart { pos: Vec2, data: String },
+    /// El ratón arrastra algo sobre el widget.
+    DragOver { pos: Vec2, data: String },
+    /// El raton sale de un area de arrastre.
+    DragLeave,
+    /// Se suelta el objeto arrastrado sobre el widget.
+    Drop { pos: Vec2, data: String },
 }
+
 
 /// Enumeración de teclas especiales y de navegación comunes en aplicaciones de escritorio.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -91,4 +100,7 @@ pub enum EventResponse {
     Consumed,
     /// El evento fue consumido y el widget ha cambiado visualmente (necesita repintado).
     Redraw,
+    /// El widget solicita iniciar una operación de Drag & Drop con los datos proporcionados.
+    StartDrag { data: String },
 }
+

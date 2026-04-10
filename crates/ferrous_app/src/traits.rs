@@ -81,7 +81,7 @@ impl<'a, 'b> DrawContext<'a, 'b> {
             text_col,
             bg,
             border,
-            [0.0f32, 0.47, 0.83, 0.35],
+            sel_col,
             4.0,
         );
     }
@@ -136,8 +136,8 @@ pub trait FerrousApp {
 
     /// Register persistent GUI widgets (called once, during `resumed`).
     ///
-    /// Use `ui.add(widget)` / `ui.register_viewport(widget)` here.
-    fn configure_ui(&mut self, ui: &mut UiTree<Self>) where Self: Sized {}
+    /// Use `ui.add(widget)` / `ui.button(...)` here.
+    fn configure_ui(&mut self, ui: &mut ferrous_gui::UiSystem<Self>) where Self: Sized {}
 
     /// Emit 2-D draw commands for this frame.
     ///

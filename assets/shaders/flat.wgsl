@@ -98,7 +98,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let face_normal = normalize(cross(dx, dy));
 
     // sample base colour
-    let albedo_tex = textureSample(tex_albedo, mat_sampler, in.uv);
+    let albedo_tex = textureSampleLevel(tex_albedo, mat_sampler, in.uv, 0.0);
     let base = material.base_color * albedo_tex;
 
     // alpha discard (FLAG_ALPHA_MASK = 1)

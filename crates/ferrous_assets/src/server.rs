@@ -382,14 +382,39 @@ impl AssetServer {
 
         #[cfg(target_arch = "wasm32")]
         {
-            // On wasm32 we import synchronously and write directly into the slot.
-            let result = T::import(&path)
-                .map(|v| Arc::new(v) as Arc<dyn Any + Send + Sync>)
-                .map_err(|e| e.to_string());
-            let _ = self.inbox_tx.send(InboxItem {
-                slot_id,
-                generation,
-                result,
+            let tx = self.inbox_tx.clone();
+            let url = path.as_os_str().to_string_lossy().into_owned();
+            
+            wasm_bindgen_futures::spawn_local(async move {
+                use wasm_bindgen::JsCast;
+                let window = web_sys::window().unwrap();
+                
+                let result = async {
+                    let resp_value = wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(&url)).await
+                        .map_err(|e| format!("Fetch failed: {:?}", e))?;
+                    
+                    let resp: web_sys::Response = resp_value.dyn_into()
+                        .map_err(|_| "Failed to cast to Response")?;
+                        
+                    if !resp.ok() {
+                        return Err(format!("HTTP request failed with status: {}", resp.status()));
+                    }
+                        
+                    let buf_value = wasm_bindgen_futures::JsFuture::from(resp.array_buffer().unwrap()).await
+                        .map_err(|e| format!("Failed to read array buffer: {:?}", e))?;
+                        
+                    let array = js_sys::Uint8Array::new(&buf_value);
+                    let bytes = array.to_vec();
+                    
+                    let asset = T::import_bytes(&bytes).map_err(|e| e.to_string())?;
+                    Ok(Arc::new(asset) as Arc<dyn Any + Send + Sync>)
+                }.await;
+                
+                let _ = tx.send(InboxItem {
+                    slot_id,
+                    generation,
+                    result,
+                });
             });
         }
     }

@@ -182,22 +182,42 @@ impl<'r> RenderContext<'r> {
         self.inner.camera_mut().eye = eye;
     }
 
+    // ── Mesh Registration ──────────────────────────────────────────────────
+
+    /// Register a procedural mesh under a string key.
+    ///
+    /// Once registered, any entity with `ElementKind::Mesh { asset_key: "key" }`
+    /// will render using this geometry.
+    pub fn register_mesh(&mut self, key: &str, mesh: ferrous_renderer::Mesh) {
+        ferrous_renderer::register_mesh(self.inner.frame_builder_mut(), key, mesh);
+    }
+
+    /// Helper: Create a GPU mesh from a list of vertices and indices.
+    ///
+    /// This is a convenience wrapper around buffer allocation and tangent
+    /// generation. The resulting `Mesh` can then be registered via
+    /// [`register_mesh`](Self::register_mesh).
+    pub fn create_mesh(
+        &self,
+        label: &str,
+        vertices: Vec<ferrous_renderer::Vertex>,
+        indices: Vec<u32>,
+    ) -> ferrous_renderer::Mesh {
+        self.inner.create_mesh(label, vertices, indices)
+    }
+
     // ── Internal ─────────────────────────────────────────────────────────────
 
     /// Raw renderer reference — for engine-internal use only.
     ///
     /// Prefer the typed methods on `RenderContext` wherever possible.
-    /// This accessor exists for the rare cases where engine-internal helpers
-    /// (e.g. `spawn_gltf`) need the underlying renderer directly.
-    #[inline]
-    pub fn renderer_mut(&mut self) -> &mut ferrous_renderer::Renderer {
+    /// Devuelve acceso de solo lectura al Renderer subyacente.
+    pub fn renderer(&self) -> &ferrous_renderer::Renderer {
         self.inner
     }
 
-    /// Immutable raw renderer reference — for engine-internal use only.
-    #[allow(dead_code)]
-    #[inline]
-    pub(crate) fn renderer(&self) -> &ferrous_renderer::Renderer {
+    /// Devuelve acceso mutable al Renderer subyacente.
+    pub fn renderer_mut(&mut self) -> &mut ferrous_renderer::Renderer {
         self.inner
     }
 }

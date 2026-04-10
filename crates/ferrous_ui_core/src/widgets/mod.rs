@@ -58,5 +58,10 @@ pub mod image;
 pub use image::*;
 pub mod svg;
 pub use svg::*;
+pub mod icon;
+pub use icon::*;
 pub mod widget_meta;
 pub use widget_meta::*;
+
+pub mod infinite_canvas;
+pub use infinite_canvas::*;

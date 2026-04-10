@@ -19,12 +19,17 @@ use wgpu::{
     RenderPassDepthStencilAttachment, RenderPassDescriptor, StoreOp, TextureView,
 };
 
-use crate::graph::{FramePacket, RenderPass};
+use crate::graph::{FramePacket, RenderPass, InstancedDrawCommand};
 use crate::pipeline::{InstancingPipeline, PbrPipeline, PipelineLayouts, ShadowPipeline};
 use crate::render_target::HdrTexture;
 use crate::resources::{DirectionalLightUniform, Environment, PointLightUniform, ShadowResources};
-use crate::InstancedDrawCommand;
 use ferrous_core::scene::MaterialHandle;
+
+pub enum SkyMode {
+    Solid(Color),
+    Cubemap(crate::passes::SkyboxPass),
+    Procedural(crate::passes::ProceduralSkyPass),
+}
 
 pub struct WorldPass {
     /// PBR pipeline used for opaque geometry.
@@ -66,11 +71,11 @@ pub struct WorldPass {
     material_registry: Option<crate::materials::MaterialRegistry>,
     /// Light data and bind group for PBR shading.
     /// encapsulates light data plus IBL resources
-    environment: Environment,
+    pub environment: Environment,
     /// Kept for environment bind-group reconstruction when point-light buffer grows.
     lights_layout: Arc<wgpu::BindGroupLayout>,
-    /// Optional skybox pass drawn before geometry.
-    skybox_pass: Option<crate::passes::SkyboxPass>,
+    /// Controls how the background is rendered.
+    pub sky_mode: SkyMode,
     /// HDR off-screen render target. The world pass renders into this instead
     /// of the swapchain surface so values > 1.0 can be preserved.
     pub hdr_texture: HdrTexture,
@@ -144,14 +149,15 @@ impl WorldPass {
         environment.update_shadow(device, &layouts.lights, &shadow_resources);
 
         // create skybox pass now that we have a valid environment bind group
-        let skybox_pass = Some(crate::passes::SkyboxPass::new(
+        let skybox_p = crate::passes::SkyboxPass::new(
             device,
             &layouts,
             camera_bind_group.clone(),
             environment.bind_group.clone(),
             HdrTexture::FORMAT,
             1, // HDR texture uses single sample count
-        ));
+        );
+        let sky_mode = SkyMode::Cubemap(skybox_p);
 
         // Dedicated bind group for the shadow pass — only the directional
         // light uniform, matched to `layouts.shadow_lights`.
@@ -187,7 +193,7 @@ impl WorldPass {
             material_registry: None,
             environment,
             lights_layout: Arc::clone(&layouts.lights),
-            skybox_pass,
+            sky_mode,
             hdr_texture,
             shadow_pipeline,
             shadow_pipeline_instanced,
@@ -304,9 +310,11 @@ impl WorldPass {
     ) {
         self.environment
             .update_point_lights(device, queue, &self.lights_layout, lights);
-        // if the bind group changed, propagate to the skybox pass
-        if let Some(sky) = &mut self.skybox_pass {
-            sky.set_env_bind_group(self.environment.bind_group.clone());
+        // if the bind group changed, propagate to the active sky pass
+        match &mut self.sky_mode {
+            SkyMode::Cubemap(sky) => sky.set_env_bind_group(self.environment.bind_group.clone()),
+            SkyMode::Procedural(sky) => sky.set_light_bind_group(self.environment.bind_group.clone()),
+            _ => {}
         }
     }
 
@@ -321,8 +329,10 @@ impl WorldPass {
     ) {
         self.environment
             .update_ssao(device, &self.lights_layout, ssao_view, ssao_sampler);
-        if let Some(sky) = &mut self.skybox_pass {
-            sky.set_env_bind_group(self.environment.bind_group.clone());
+        match &mut self.sky_mode {
+            SkyMode::Cubemap(sky) => sky.set_env_bind_group(self.environment.bind_group.clone()),
+            SkyMode::Procedural(sky) => sky.set_light_bind_group(self.environment.bind_group.clone()),
+            _ => {}
         }
     }
 }
@@ -351,16 +361,31 @@ impl RenderPass for WorldPass {
         // draw skybox before everything else (ignores depth writes)
         // Must render into the HDR texture, not the swapchain surface, so that
         // the skybox format matches the pipeline (Rgba16Float).
-        if let Some(sky) = &mut self.skybox_pass {
-            sky.execute(
-                _device,
-                _queue,
-                encoder,
-                &self.hdr_texture.view,
-                resolve_target,
-                depth_view,
-                packet,
-            );
+        // draw sky background before everything else
+        match &mut self.sky_mode {
+            SkyMode::Solid(_) => {}
+            SkyMode::Cubemap(sky) => {
+                sky.execute(
+                    _device,
+                    _queue,
+                    encoder,
+                    &self.hdr_texture.view,
+                    resolve_target,
+                    depth_view,
+                    packet,
+                );
+            }
+            SkyMode::Procedural(sky) => {
+                sky.execute(
+                    _device,
+                    _queue,
+                    encoder,
+                    &self.hdr_texture.view,
+                    resolve_target,
+                    depth_view,
+                    packet,
+                );
+            }
         }
         // ── Shadow map pass ─────────────────────────────────────────────
         // Render the scene from the light's point of view into a depth-only
@@ -408,10 +433,9 @@ impl RenderPass for WorldPass {
         // The post-process pass will read this and write to the final surface.
         // If the skybox already cleared and wrote to the HDR texture, use Load
         // so we preserve the skybox background.
-        let hdr_load_op = if self.skybox_pass.is_some() {
-            LoadOp::Load
-        } else {
-            LoadOp::Clear(self.clear_color)
+        let hdr_load_op = match &self.sky_mode {
+            SkyMode::Solid(color) => LoadOp::Clear(*color),
+            _ => LoadOp::Load,
         };
         let mut rpass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some(self.name()),
@@ -426,7 +450,7 @@ impl RenderPass for WorldPass {
             depth_stencil_attachment: depth_view.map(|v| RenderPassDepthStencilAttachment {
                 view: v,
                 depth_ops: Some(Operations {
-                    load: LoadOp::Clear(1.0),
+                    load: LoadOp::Load, // reuse depth from prepass
                     store: StoreOp::Store,
                 }),
                 stencil_ops: None,

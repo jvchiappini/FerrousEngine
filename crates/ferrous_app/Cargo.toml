@@ -4,10 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = ["text"]
+default = ["text", "assets"]
 gpu-driven = ["ferrous_renderer/gpu-driven"]
 bindless = ["ferrous_renderer/bindless"]
 text = ["ferrous_ui_render/text"]
+assets = ["ferrous_ui_render/assets"]
 
 [dependencies]
 ferrous_renderer = { path = "../ferrous_renderer", features = ["assets"] }
@@ -19,8 +20,8 @@ winit = "0.30"
 ferrous_events = { path = "../ferrous_events" }
 ferrous_gui = { path = "../ferrous_gui" }
 ferrous_ui_core = { path = "../ferrous_ui_core" }
-ferrous_ui_render = { path = "../ferrous_ui_render" }
-wgpu = "23.0"
+ferrous_ui_render = { path = "../ferrous_ui_render", features = ["text", "assets"] }
+wgpu = { workspace = true }
 ferrous_assets = { path = "../ferrous_assets" }
 fern = "0.6"
 anyhow = "1.0"
@@ -39,9 +40,9 @@ pollster = "0.3"
 wasm-bindgen-futures = "0.4"
 # JS interop: expose run() as a JS function and access the DOM canvas.
 wasm-bindgen = "0.2"
-web-sys = { version = "0.3", features = ["Window", "Document", "HtmlCanvasElement"] }
+web-sys = { version = "0.3", features = ["Window", "Document", "HtmlCanvasElement", "Element", "MouseEvent", "Event"] }
 # Drop-in Instant for wasm.
 web-time = "1.1"
+js-sys = "0.3"
 # Pretty panic messages in the browser console.
 console_error_panic_hook = "0.1"
-

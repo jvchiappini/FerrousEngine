@@ -1,0 +1,36 @@
+[package]
+name        = "ferrous_voxels"
+version     = "0.1.0"
+edition     = "2021"
+description = "Voxel world representation, HashDAG, chunk streaming and voxel edit API for FerrousEngine"
+
+[features]
+## Enables GPU upload types that depend on `wgpu`, `bytemuck`, and
+## `ferrous_render_graph`.  Pure-CPU code compiles without this feature.
+gpu = [
+    "dep:wgpu",
+    "dep:bytemuck",
+    "dep:ferrous_render_graph",
+]
+
+[dependencies]
+glam     = { workspace = true }
+log      = "0.4"
+bitflags = "2.5"
+
+# GPU feature — gated behind the `gpu` feature flag
+wgpu                 = { workspace = true, optional = true }
+bytemuck             = { version = "1.14", features = ["derive"], optional = true }
+ferrous_render_graph = { path = "../ferrous_render_graph", optional = true }
+
+[dev-dependencies]
+# hdda_viewer example
+ferrous_app          = { path = "../ferrous_app" }
+ferrous_render_graph = { path = "../ferrous_render_graph" }
+wgpu                 = { workspace = true }
+log                  = "0.4"
+env_logger           = "0.11"
+
+[[example]]
+name              = "hdda_viewer"
+required-features = ["gpu"]

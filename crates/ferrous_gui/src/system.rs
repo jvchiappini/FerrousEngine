@@ -1,158 +1,182 @@
 use ferrous_events::EventManager;
 use ferrous_layout::LayoutEngine;
 use ferrous_ui_core::{NodeId, Rect, UiEvent, UiTree, Widget};
+use ferrous_ui_core::render_collector::RenderCollector;
 use ferrous_ui_render::{GuiBatch, ToBatches};
+use crate::toaster::Toaster;
 
-/// `UiSystem` es el orquestador maestro del sistema de UI.
+
+/// `UiSystem` is the master orchestrator of the UI system.
 ///
-/// Coordina el estado de los widgets (`UiTree`), el motor de layout (`LayoutEngine`),
-/// la gestión de eventos (`EventManager`) y facilita la generación de comandos de dibujo.
+/// Coordinates widget state (`UiTree`), the layout engine (`LayoutEngine`),
+/// event management (`EventManager`), and facilitates draw command generation.
 pub struct UiSystem<App> {
-    /// Árbol de widgets que contiene la jerarquía y el estado reactivo.
+    /// Widget tree containing hierarchy and reactive state.
     pub tree: UiTree<App>,
-    /// Motor encargado de calcular posiciones y tamaños usando Taffy (Flexbox).
+    /// Engine responsible for calculating positions and sizes using Taffy (Flexbox).
     pub layout_engine: LayoutEngine,
-    /// Gestor de interacción, foco y hover.
+    /// Manager for interactions, focus, and hover.
     pub event_manager: EventManager,
-    /// Pila de padres implícitos para `spawn_with`.
-    /// Cuando no está vacía, los `.spawn()` insertan el widget como hijo del tope.
+    /// Stack of implicit parents for `spawn_with`.
+    /// When not empty, `.spawn()` inserts the widget as a child of the top node.
     pub(crate) parent_stack: Vec<NodeId>,
+    /// Global toaster manager.
+    pub toaster: Toaster<App>,
 }
 
-impl<App> UiSystem<App> {
-    /// Crea un nuevo sistema de UI con configuraciones por defecto.
+
+impl<App: 'static> UiSystem<App> {
+    /// Creates a new UI system with default settings.
     pub fn new() -> Self {
         Self {
             tree: UiTree::new(),
             layout_engine: LayoutEngine::new(),
             event_manager: EventManager::new(),
             parent_stack: Vec::new(),
+            toaster: Toaster::new(),
         }
     }
 
-    /// Empuja un padre implícito. Usado por `PanelBuilder::spawn_with`.
+
+    /// Pushes an implicit parent. Used by `PanelBuilder::spawn_with`.
     pub fn push_parent(&mut self, id: NodeId) {
         self.parent_stack.push(id);
     }
 
-    /// Saca el último padre implícito.
+    /// Pops the last implicit parent.
     pub fn pop_parent(&mut self) {
         self.parent_stack.pop();
     }
 
-    /// Devuelve el padre implícito actual, si existe.
+    /// Returns the current implicit parent, if one exists.
     pub fn current_parent(&self) -> Option<NodeId> {
         self.parent_stack.last().copied()
     }
 
-    /// Añade un widget a la raíz del sistema (alias de add_node).
+    /// Adds a widget to the system root (alias of add_node).
     pub fn add(&mut self, widget: impl Widget<App> + 'static) -> NodeId {
         self.tree.add_node(Box::new(widget), None)
     }
 
-    /// Registra un widget especial de Viewport.
-    /// En esta versión, simplemente lo añade como un nodo más.
+    /// Registers a special Viewport widget.
+    /// In this version, it simply adds it as a regular node.
     pub fn register_viewport(&mut self, viewport: impl Widget<App> + 'static) -> NodeId {
         self.tree.add_node(Box::new(viewport), None)
     }
 
-    /// Punto de entrada para el ciclo de actualización.
-    /// Procesa la reactividad y recalcula la disposición de los elementos.
-    pub fn update(&mut self, dt: f32, viewport_width: f32, viewport_height: f32) {
-        // 1. Actualizar la lógica interna de los widgets y el sistema reactivo.
+    /// Entry point for the update cycle.
+    /// Processes reactivity and recalculates element layout.
+    pub fn update(&mut self, dt: f32, viewport_width: f32, viewport_height: f32) 
+    {
+        // 0. Update toaster system
+        Toaster::update_system(self, dt);
+
+        // 1. Update internal widget logic and reactive system.
         self.tree.update(dt);
 
-        // 2. Recalcular el layout de todo el árbol.
-        // Taffy es eficiente y solo recalcula lo que ha cambiado internamente (Dirty Nodes).
+        // 2. Recalculate layout for the entire tree.
+        // Taffy is efficient and only recalculates changed nodes (Dirty Nodes).
         self.layout_engine
             .compute_layout(&mut self.tree, viewport_width, viewport_height);
+            
+        // 3. Update UI AABB index to accelerate hit-testing collisions to O(1).
+        self.tree.update_spatial_index();
     }
 
-    /// Despacha un evento de entrada al sistema.
-    /// Maneja automáticamente el Hit-Testing y la propagación de eventos (Bubbling).
+    /// Dispatches an input event to the system.
+    /// Automatically handles Hit-Testing and event propagation (Bubbling).
     pub fn dispatch_event(&mut self, app: &mut App, event: UiEvent) {
         self.event_manager
             .dispatch_event(&mut self.tree, app, event);
     }
 
-    /// Genera un lote de quads listos para ser enviados al backend de renderizado (WGPU).
-    /// Realiza culling automático basado en el viewport proporcionado.
+    /// Generates a batch of quads ready to be sent to the rendering backend (WGPU).
+    /// Performs automatic culling based on the provided viewport.
     #[cfg(feature = "text")]
     pub fn render(&mut self, viewport: Rect, font: Option<&ferrous_assets::Font>) -> GuiBatch {
-        let mut cmds = Vec::new();
-        self.tree.collect_commands(&mut cmds, viewport);
+        let mut captured = Vec::new();
+        RenderCollector::collect(&mut self.tree, &mut captured, viewport);
 
         let mut batch = GuiBatch::new();
-        for cmd in cmds {
-            cmd.to_batches(&mut batch, font);
+        for cap in captured {
+            cap.cmd.to_batches(&mut batch, font, cap.z, cap.node_id);
         }
+        
+        // Calculate and attach the damage union for the current frame.
+        batch.damage_union = self.damage_union();
         batch
     }
 
-    /// Versión de renderizado cuando el soporte de texto está deshabilitado.
+    /// Render version when text support is disabled.
     #[cfg(not(feature = "text"))]
     pub fn render(&mut self, viewport: Rect) -> GuiBatch {
-        let mut cmds = Vec::new();
-        self.tree.collect_commands(&mut cmds, viewport);
+        let mut captured = Vec::new();
+        RenderCollector::collect(&mut self.tree, &mut captured, viewport);
 
         let mut batch = GuiBatch::new();
-        for cmd in cmds {
-            cmd.to_batches(&mut batch);
+        for cap in captured {
+            cap.cmd.to_batches(&mut batch, cap.z, cap.node_id);
         }
+        batch.damage_union = self.damage_union();
         batch
     }
 
+    /// Returns the union of all damaged regions in this frame.
+    pub fn damage_union(&self) -> Option<Rect> {
+        let regions: Vec<_> = self.tree.damage_regions.iter()
+            .filter(|r| r.width > 0.0 && r.height > 0.0)
+            .collect();
+            
+        if regions.is_empty() {
+            return None;
+        }
+        
+        let mut union = *regions[0];
+        for rect in &regions[1..] {
+            union = union.union(**rect);
+        }
+        Some(union)
+    }
+
+    /// Clears the list of damaged regions after rendering.
+    pub fn clear_damage(&mut self) {
+        self.tree.clear_damage();
+    }
+
     // =========================================================================
-    // API fluent — conveniencia para crear widgets sin tocar UiTree directamente
+    // Fluent API — convenience for creating widgets without touching UiTree directly
     // =========================================================================
 
-    /// Inicia la construccion de un boton con texto.
-    ///
-    /// ```rust,ignore
-    /// ui.button("Guardar")
-    ///     .at(10.0, 10.0)
-    ///     .size(120.0, 36.0)
-    ///     .on_click(|_| println!("guardado"))
-    ///     .spawn(&mut ui);
-    /// ```
+    /// Starts building a button with text.
     pub fn button(&mut self, label: impl Into<String>) -> crate::builder::ButtonBuilder<App> {
         crate::builder::ButtonBuilder::new(label)
     }
 
-    /// Inicia la construccion de un label (texto estatico o dinamico).
-    ///
-    /// ```rust,ignore
-    /// ui.label("Hola")
-    ///     .at(20.0, 60.0)
-    ///     .font_size(18.0)
-    ///     .spawn(&mut ui);
-    /// ```
+    /// Starts building a label (static or dynamic text).
     pub fn label(&mut self, text: impl Into<String>) -> crate::builder::LabelBuilder<App> {
         crate::builder::LabelBuilder::new(text)
     }
 
-    /// Inicia la construccion de un panel (contenedor con fondo).
-    ///
-    /// ```rust,ignore
-    /// ui.panel()
-    ///     .at(50.0, 50.0)
-    ///     .size(300.0, 200.0)
-    ///     .spawn_with(&mut ui, |ui, p| {
-    ///         ui.button("OK").child_of(p).at(8.0, 8.0).size(80.0, 32.0).spawn(ui);
-    ///     });
-    /// ```
+    /// Starts building an icon (MSDF vector icon).
+    pub fn icon(&mut self, name: impl Into<String>) -> crate::builder::IconBuilder<App> {
+        crate::builder::IconBuilder::new(name)
+    }
+
+
+
+    /// Shows a toast notification.
+    pub fn show_toast(&mut self, message: impl Into<String>, duration: f32) {
+        Toaster::show_system(self, message, duration);
+    }
+
+
+
+    /// Starts building a panel (container with background).
     pub fn panel(&mut self) -> crate::builder::PanelBuilder<App> {
         crate::builder::PanelBuilder::new()
     }
 
-    /// Inicia la construccion de cualquier widget personalizado.
-    ///
-    /// ```rust,ignore
-    /// ui.widget(MyCustomWidget::new())
-    ///     .at(0.0, 0.0)
-    ///     .size(200.0, 100.0)
-    ///     .spawn(&mut ui);
-    /// ```
+    /// Starts building any custom widget.
     pub fn widget(
         &mut self,
         widget: impl Widget<App> + 'static,
@@ -161,7 +185,8 @@ impl<App> UiSystem<App> {
     }
 }
 
-impl<App> Default for UiSystem<App> {
+
+impl<App: 'static> Default for UiSystem<App> {
     fn default() -> Self {
         Self::new()
     }

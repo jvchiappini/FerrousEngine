@@ -97,9 +97,27 @@ impl<App: 'static> PanelBuilder<App> {
         self
     }
 
+    pub fn shadow(mut self, shadow: bool) -> Self {
+        self.inner = self.inner.with_shadow(shadow);
+        self
+    }
+
+    pub fn border(mut self, color: Color) -> Self {
+        self.inner = self.inner.with_border(Some(color));
+        self
+    }
+
     /// Instancia el panel en el `UiSystem` y devuelve su `NodeId`.
     pub fn spawn(self, ui: &mut UiSystem<App>) -> NodeId {
-        let (style, explicit_parent, id_str) = self.base.into_style();
+        let (mut style, explicit_parent, id_str) = self.base.into_style();
+        style.display = self.inner.display;
+        style.alignment = self.inner.alignment;
+        if self.inner.gap > 0.0 {
+            style.gap = self.inner.gap;
+        }
+        if self.inner.pad > 0.0 {
+            style.padding = ferrous_ui_core::RectOffset::all(self.inner.pad);
+        }
         let parent = explicit_parent.or_else(|| ui.current_parent());
         let id = ui.tree.add_node_with_id(Box::new(self.inner), parent, id_str);
         ui.tree.set_node_style(id, style);

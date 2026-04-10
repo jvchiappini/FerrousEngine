@@ -56,8 +56,8 @@ struct FsOut {
 fn fs_main(in: VsOut) -> FsOut {
     let uv = in.uv;
 
-    // Centre pixel depth
-    let centre_depth = textureSample(nd_tex, nd_sampler, uv).a;
+    // Centres pixel depth
+    let centre_depth = textureSampleLevel(nd_tex, nd_sampler, uv, 0.0).a;
 
     // Step direction in UV space
     var step = vec2<f32>(0.0, 0.0);
@@ -73,8 +73,8 @@ fn fs_main(in: VsOut) -> FsOut {
 
     for (var i: i32 = -2; i <= 2; i = i + 1) {
         let offset_uv   = uv + step * f32(i);
-        let sample_ao   = textureSample(ssao_tex, ssao_sampler, offset_uv).r;
-        let sample_depth = textureSample(nd_tex, nd_sampler, offset_uv).a;
+        let sample_ao   = textureSampleLevel(ssao_tex, ssao_sampler, offset_uv, 0.0).r;
+        let sample_depth = textureSampleLevel(nd_tex, nd_sampler, offset_uv, 0.0).a;
 
         // Bilateral weight: full weight if depth is similar, zero if too different
         let depth_diff = abs(sample_depth - centre_depth);
@@ -86,7 +86,7 @@ fn fs_main(in: VsOut) -> FsOut {
 
     // Avoid divide by zero (all neighbours rejected → keep centre value)
     let final_ao = select(
-        textureSample(ssao_tex, ssao_sampler, uv).r,
+        textureSampleLevel(ssao_tex, ssao_sampler, uv, 0.0).r,
         result / weight_sum,
         weight_sum > 0.0001
     );

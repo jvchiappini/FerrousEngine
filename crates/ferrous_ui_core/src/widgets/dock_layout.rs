@@ -41,7 +41,7 @@
 
 use crate::{
     Widget, RenderCommand, DrawContext, BuildContext, LayoutContext, EventContext,
-    EventResponse, UiEvent, Rect, Vec2, NodeId, Color, StyleBuilder, StyleExt, Units,
+    EventResponse, UiEvent, Rect, Vec2, NodeId, StyleBuilder, Units,
 };
 
 // ─── DockZone ────────────────────────────────────────────────────────────────

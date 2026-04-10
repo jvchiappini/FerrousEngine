@@ -1,6 +1,6 @@
 ﻿//! `ApplicationHandler` implementation for `Runner` â€” window lifecycle and events.
 
-use ferrous_core::glam::{self, Vec3};
+use ferrous_core::glam::{self};
 use std::sync::Arc;
 use winit::{
     application::ApplicationHandler,
@@ -28,26 +28,37 @@ use ferrous_assets::Font;
 
 use super::types::Runner;
 
-impl<A: FerrousApp> ApplicationHandler for Runner<A> {
+impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        self.app.configure_ui(&mut self.ui.tree);
+        self.app.configure_ui(&mut self.ui);
+
+        let mut window_size = (self.config.width, self.config.height);
+        
+        #[cfg(target_arch = "wasm32")]
+        {
+            if let Some(win) = web_sys::window() {
+                let w = win.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(window_size.0 as f64) as u32;
+                let h = win.inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(window_size.1 as f64) as u32;
+                window_size = (w, h);
+            }
+        }
 
         let attributes = Window::default_attributes()
             .with_title(&self.config.title)
             .with_resizable(self.config.resizable)
             .with_decorations(self.config.decorations)
             .with_inner_size(winit::dpi::PhysicalSize::new(
-                self.config.width,
-                self.config.height,
+                window_size.0,
+                window_size.1,
             ));
 
         let window = Arc::new(event_loop.create_window(attributes).unwrap());
-        self.window_size = (self.config.width, self.config.height);
+        self.window_size = window_size;
         self.viewport = ferrous_core::Viewport {
             x: 0,
             y: 0,
-            width: self.config.width,
-            height: self.config.height,
+            width: window_size.0,
+            height: window_size.1,
         };
 
         // â”€â”€ Desktop: synchronous blocking GPU init â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

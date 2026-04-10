@@ -103,8 +103,8 @@ struct FsOut {
 fn fs_main(in: VsOut) -> FsOut {
     let uv = in.uv;
 
-    // Sample the prepass texture
-    let nd       = textureSample(normal_depth_tex, normal_depth_sampler, uv);
+    // Sample the prepass texture (unconditional)
+    let nd       = textureSampleLevel(normal_depth_tex, normal_depth_sampler, uv, 0.0);
     let linear_d = nd.a;
 
     // Skip sky/background pixels (depth == 0 means no geometry)
@@ -122,7 +122,7 @@ fn fs_main(in: VsOut) -> FsOut {
 
     // Sample noise texture — tiled every 4 pixels
     let noise_uv = uv * params.noise_scale;
-    let rvec     = textureSample(noise_tex, noise_sampler, noise_uv).xyz * 2.0 - vec3<f32>(1.0);
+    let rvec     = textureSampleLevel(noise_tex, noise_sampler, noise_uv, 0.0).xyz * 2.0 - vec3<f32>(1.0);
 
     // Build the per-pixel rotation matrix
     let tbn = tbn_from_normal(view_normal, rvec);
@@ -146,20 +146,16 @@ fn fs_main(in: VsOut) -> FsOut {
             -clip.y * 0.5 + 0.5
         );
 
-        // Bounds check: skip samples that land outside the screen
-        if (sample_uv.x < 0.0 || sample_uv.x > 1.0 || sample_uv.y < 0.0 || sample_uv.y > 1.0) {
-            continue;
-        }
-
         // Read the actual geometry depth at the projected UV
-        let scene_nd    = textureSample(normal_depth_tex, normal_depth_sampler, sample_uv);
+        // Use textureSampleLevel to ensure uniform control flow compatibility
+        let scene_nd    = textureSampleLevel(normal_depth_tex, normal_depth_sampler, sample_uv, 0.0);
         let scene_depth = scene_nd.a;
 
-        // The sample is occluded if the geometry at that screen position is
-        // closer to the camera than our sample (accounting for bias).
-        let sample_depth = -sample_pos.z; // positive linear depth
+        // Only count samples that are inside the screen and within range
+        let in_screen    = (sample_uv.x >= 0.0 && sample_uv.x <= 1.0 && sample_uv.y >= 0.0 && sample_uv.y <= 1.0);
         let in_range     = smoothstep(0.0, 1.0, params.radius / abs(linear_d - scene_depth + 0.0001));
-        if (scene_depth >= (sample_depth + params.bias)) {
+        
+        if (in_screen && scene_depth >= ((-sample_pos.z) + params.bias)) {
             occlusion += in_range;
         }
     }

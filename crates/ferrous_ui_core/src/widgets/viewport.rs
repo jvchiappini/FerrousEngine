@@ -1,4 +1,4 @@
-use crate::{Widget, RenderCommand, DrawContext, BuildContext, LayoutContext, EventContext, EventResponse, UiEvent, Rect, Vec2};
+use crate::{Widget, RenderCommand, DrawContext, LayoutContext, EventContext, EventResponse, UiEvent, Rect, Vec2};
 
 /// `ViewportWidget` reserva un espacio en el layout para que el motor 3D 
 /// pueda renderizar la escena en esa zona específica.
@@ -15,7 +15,7 @@ impl ViewportWidget {
 }
 
 impl<App> Widget<App> for ViewportWidget {
-    fn draw(&self, ctx: &mut DrawContext, _cmds: &mut Vec<RenderCommand>) {
+    fn draw(&self, _ctx: &mut DrawContext, _cmds: &mut Vec<RenderCommand>) {
         // El viewport no dibuja nada por sí mismo en la UI, 
         // solo sirve como marcador de posición.
     }

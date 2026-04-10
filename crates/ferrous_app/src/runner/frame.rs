@@ -6,7 +6,6 @@ use ferrous_assets::AssetState;
 use ferrous_core::glam::Vec3;
 use ferrous_gui::GuiBatch;
 use ferrous_ui_core::Rect;
-use ferrous_ui_render::ToBatches;
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -21,7 +20,7 @@ use crate::traits::{DrawContext, FerrousApp};
 
 use super::types::Runner;
 
-impl<A: FerrousApp> Runner<A> {
+impl<A: FerrousApp + 'static> Runner<A> {
     /// Executes one full update + render cycle.
     pub(super) fn render_frame(&mut self, event_loop: &ActiveEventLoop) {
         // wasm32: drain async GPU init result before anything else.
@@ -152,7 +151,6 @@ impl<A: FerrousApp> Runner<A> {
             if self.viewport != ctx.viewport {
                 self.viewport = ctx.viewport;
                 gfx.renderer.set_viewport(self.viewport);
-                // self.ui.viewport = ctx.viewport; // No longer needed here, passed to collect_commands
             }
             self.ui.update(
                 time.delta,
@@ -230,7 +228,6 @@ impl<A: FerrousApp> Runner<A> {
             };
 
             let ui_render_batch = self.ui.render(viewport_rect, self.font.as_ref());
-            // Fusionar los comandos de la UI con los comandos inmediatos (si los hay)
             gui_batch.extend(ui_render_batch);
 
             // ── 3. RENDER FINAL ─────────────────────────────────────────────
@@ -245,10 +242,15 @@ impl<A: FerrousApp> Runner<A> {
             let view = frame
                 .texture
                 .create_view(&wgpu::TextureViewDescriptor::default());
+
             gfx.renderer
                 .render_to_view(&mut encoder, &view, Some(gui_batch));
             gfx.renderer.context.queue.submit(Some(encoder.finish()));
+            
             frame.present();
+               
+            // Important: Clear damage regions after rendering
+            self.ui.clear_damage();
         }
 
         self.input.end_frame();

@@ -17,6 +17,8 @@ pub struct Vertex {
     pub color: [f32; 3],
     /// UV coordinates for texture lookup.
     pub uv: [f32; 2],
+    /// Padding to force 64-byte alignment (crucial for WASM/WebGPU stability)
+    pub _pad: f32,
 }
 
 impl Vertex {
@@ -24,9 +26,8 @@ impl Vertex {
     /// layout.  Pass this to `wgpu::VertexState::buffers` when building a
     /// render pipeline.
     pub fn layout<'a>() -> wgpu::VertexBufferLayout<'a> {
-        // stride is known to be 60 bytes from the ordered fields above
         wgpu::VertexBufferLayout {
-            array_stride: 60,
+            array_stride: 64, // Padded from 60 to 64
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &[
                 // @location(0) position
@@ -72,6 +73,7 @@ impl Vertex {
             tangent: [1.0, 0.0, 0.0, 1.0],
             color: [1.0, 1.0, 1.0],
             uv,
+            _pad: 0.0,
         }
     }
 }

@@ -6,7 +6,6 @@ use ferrous_core::{
     VelocitySystem, Viewport, World,
 };
 use ferrous_ecs::prelude::{ResourceMap, Stage, StagedScheduler};
-use ferrous_ui_core::UiTree;
 use std::sync::Arc;
 use winit::window::Window;
 
@@ -28,7 +27,7 @@ use crate::traits::FerrousApp;
 
 // ─── Runner ─────────────────────────────────────────────────────────────────
 
-pub(crate) struct Runner<A: FerrousApp> {
+pub(crate) struct Runner<A: FerrousApp + 'static> {
     pub(super) app: A,
     pub(super) config: AppConfig,
     pub(super) window: Option<Arc<Window>>,
@@ -58,7 +57,7 @@ pub(crate) struct Runner<A: FerrousApp> {
     pub(super) shift_held: bool,
 }
 
-impl<A: FerrousApp> Runner<A> {
+impl<A: FerrousApp + 'static> Runner<A> {
     pub(super) fn new(app: A, config: AppConfig) -> Self {
         let mut systems = StagedScheduler::new();
         systems.add(Stage::PreUpdate, TimeSystem);

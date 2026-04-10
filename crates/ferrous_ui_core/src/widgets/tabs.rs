@@ -27,7 +27,7 @@
 
 use crate::{
     Widget, RenderCommand, DrawContext, BuildContext, LayoutContext, EventContext,
-    EventResponse, UiEvent, Rect, Vec2, NodeId, Color, StyleBuilder, StyleExt,
+    EventResponse, UiEvent, Rect, Vec2, NodeId, Color, StyleBuilder,
 };
 
 // ─── TabButton (interna) ─────────────────────────────────────────────────────
@@ -36,14 +36,14 @@ use crate::{
 struct TabButton {
     title: String,
     /// Índice lógico de esta pestaña. Usado para discriminar clicks en `Tabs::on_event`.
-    pub tab_index: usize,
+    pub _tab_index: usize,
     /// Estado visual: true si es la pestaña activa.
     pub is_active: bool,
 }
 
 impl TabButton {
     fn new(title: String, tab_index: usize, is_active: bool) -> Self {
-        Self { title, tab_index, is_active }
+        Self { title, _tab_index: tab_index, is_active }
     }
 }
 

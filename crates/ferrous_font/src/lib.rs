@@ -13,6 +13,9 @@ pub mod msdf_gen;
 pub mod parser;
 pub mod path;
 pub mod tables;
+pub mod icons;
+pub use icons::{IconAtlas, IconMetrics};
+
 
 pub use atlas::{FontAtlas, GlyphMetrics};
 pub use charset::{ascii, cyrillic, from_str as charset_from_str, latin_extended, latin_western};
@@ -20,7 +23,9 @@ pub use charset::{ascii, cyrillic, from_str as charset_from_str, latin_extended,
 /// High‑level font object holding an atlas; previously in `ferrous_assets`.
 pub struct Font {
     pub atlas: FontAtlas,
+    pub icons: Option<IconAtlas>,
 }
+
 
 impl Font {
     /// Load a font from the filesystem (desktop) or use a fallback (wasm).
@@ -85,9 +90,10 @@ impl Font {
 
         let atlas = FontAtlas::new(device, queue, &parser, final_chars)
             .expect("Failed to build font atlas");
-
-        Self { atlas }
+ 
+        Self { atlas, icons: None }
     }
+
 
     /// Generate a minimal in-memory TrueType fallback font containing only
     /// the character 'A'.  Used when loading fails or on wasm targets.

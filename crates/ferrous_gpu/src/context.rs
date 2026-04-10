@@ -57,29 +57,57 @@ impl EngineContext {
             .context(ContextError::AdapterUnavailable)?;
 
         let info = adapter.get_info();
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
+            "[WGPU] Selected Adapter: {} ({:?}) - Backend: {:?}",
+            info.name, info.device_type, info.backend
+        )));
+        #[cfg(not(target_arch = "wasm32"))]
         println!(
-            "[WGPU] Selected Adapter: {} ({:?})",
-            info.name, info.backend
+            "[WGPU] Selected Adapter: {} ({:?}) - Backend: {:?}",
+            info.name, info.device_type, info.backend
         );
         let backend = info.backend;
 
         // WebGL2 tiene límites mucho más bajos que un backend nativo;
         // usar Limits::default() en GL hace que request_device falle o
         // active rutas de validación lentas. Usamos los límites correctos.
-        let limits = if backend == wgpu::Backend::Gl {
+        let mut limits = if backend == wgpu::Backend::Gl {
             wgpu::Limits::downlevel_webgl2_defaults()
         } else {
             wgpu::Limits::default()
         };
 
+        // Solicitar límites de búfer más grandes del adaptador para soportar escenas
+        // grandes de voxels, pero con un tope para WebAssembly (32-bit).
+        let phys_limits = adapter.limits();
+        
+        #[cfg(target_arch = "wasm32")]
+        {
+            // WebAssembly tiene un espacio de direccionamiento de 4GB total.
+            // No podemos pedir buffers de gigabytes para evitar "Memory Access Out of Bounds".
+            limits.max_storage_buffer_binding_size = phys_limits.max_storage_buffer_binding_size.min(256 * 1024 * 1024); // 256MB
+            limits.max_buffer_size = phys_limits.max_buffer_size.min(512 * 1024 * 1024); // 512MB
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            limits.max_storage_buffer_binding_size = phys_limits.max_storage_buffer_binding_size;
+            limits.max_buffer_size = phys_limits.max_buffer_size;
+        }
+
         // Request only the features the engine actually uses.  The texture
         // binding array features are required by the GUI renderer when the
         // `assets` feature is enabled (texture arrays in the GUI shader).
-        // Both are widely supported on Vulkan/DX12/Metal; the adapter check
-        // below lets us fall back gracefully on devices that lack them.
+        // Both are widely supported on Vulkan/DX12/Metal; however, the WebGPU
+        // backend currently panics if we even ask for BINDING_INDEXING support
+        // when it's not fully conformant.
         let adapter_features = adapter.features();
+        #[cfg(not(target_arch = "wasm32"))]
         let desired_features = wgpu::Features::TEXTURE_BINDING_ARRAY
             | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING;
+        #[cfg(target_arch = "wasm32")]
+        let desired_features = wgpu::Features::empty();
+
         let required_features = adapter_features & desired_features;
 
         let (device, queue) = adapter

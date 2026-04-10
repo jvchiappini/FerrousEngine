@@ -1,0 +1,11 @@
+[package]
+name = "ferrous_svg"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+lyon_tessellation = "1.0"
+lyon_svg = "0.13" # The more common SVG parser for lyon
+usvg = "0.44" # Alternative if we want more full SVG support
+bytemuck = { version = "1.16", features = ["derive"] }
+glam = { workspace = true }

@@ -43,9 +43,12 @@ pub struct FrameBuilder {
     pub shared_quad_mesh: Option<crate::geometry::Mesh>,
     /// Shared sphere mesh + (latitudes, longitudes) key.
     pub shared_sphere_mesh: Option<(crate::geometry::Mesh, u32, u32)>,
-    /// Cache of arbitrary meshes keyed by asset string. Only available when
-    /// the `assets` feature is enabled; otherwise the field is omitted and
-    /// related logic is compiled away.
+    /// Cache of procedurally-generated meshes registered via `register_mesh`.
+    /// Always available (no feature gate) so that WASM procedural terrain
+    /// and other runtime-generated geometry works without the `assets` feature.
+    pub procedural_mesh_cache: HashMap<String, crate::geometry::Mesh>,
+    /// Cache of arbitrary asset-loaded meshes keyed by asset string.
+    /// Only available when the `assets` feature is enabled.
     #[cfg(feature = "assets")]
     pub mesh_cache: HashMap<String, crate::geometry::Mesh>,
 
@@ -79,6 +82,7 @@ impl FrameBuilder {
             shared_cube_mesh: None,
             shared_quad_mesh: None,
             shared_sphere_mesh: None,
+            procedural_mesh_cache: HashMap::new(),
             #[cfg(feature = "assets")]
             mesh_cache: HashMap::new(),
             world_instanced: Vec::new(),
@@ -133,6 +137,8 @@ impl FrameBuilder {
             self.mesh_cache
                 .retain(|k, _| live_keys.contains(k.as_str()));
         }
+        // Note: procedural_mesh_cache is NOT pruned automatically — caller
+        // must call `free_procedural_mesh` explicitly when geometry is freed.
 
         type MeshGroupKey = (usize, usize, bool);
         type MeshGroupVal = (crate::geometry::Mesh, usize, Vec<glam::Mat4>);
@@ -142,8 +148,8 @@ impl FrameBuilder {
         // All-objects groups for shadow pass (no frustum culling)
         let mut shadow_groups: HashMap<MeshGroupKey, MeshGroupVal> = HashMap::new();
 
-        for (_entity, element, transform, material) in
-            world.ecs.query3::<Element, Transform, MaterialComponent>()
+        for (_entity, (element, transform, material)) in
+            ferrous_ecs::query::Query::<(&Element, &Transform, &MaterialComponent)>::new(&world.ecs).iter()
         {
             let is_renderable = matches!(
                 element.kind,
@@ -168,22 +174,28 @@ impl FrameBuilder {
                     .get_or_insert_with(|| create_cube(device))
                     .clone(),
                 ElementKind::Mesh { asset_key } => {
-                    #[cfg(feature = "assets")]
-                    {
-                        if let Some(m) = self.mesh_cache.get(asset_key.as_str()) {
-                            m.clone()
-                        } else {
+                    // 1. Try unconditional procedural cache first (terrain, runtime geometry)
+                    if let Some(m) = self.procedural_mesh_cache.get(asset_key.as_str()) {
+                        m.clone()
+                    } else {
+                        // 2. Fall back to the asset-file cache when feature is enabled
+                        #[cfg(feature = "assets")]
+                        {
+                            if let Some(m) = self.mesh_cache.get(asset_key.as_str()) {
+                                m.clone()
+                            } else {
+                                self.shared_cube_mesh
+                                    .get_or_insert_with(|| create_cube(device))
+                                    .clone()
+                            }
+                        }
+                        #[cfg(not(feature = "assets"))]
+                        {
+                            // No match in either cache — fall back to a cube placeholder
                             self.shared_cube_mesh
                                 .get_or_insert_with(|| create_cube(device))
                                 .clone()
                         }
-                    }
-                    #[cfg(not(feature = "assets"))]
-                    {
-                        // without asset support we just fall back to a cube mesh
-                        self.shared_cube_mesh
-                            .get_or_insert_with(|| create_cube(device))
-                            .clone()
                     }
                 }
                 ElementKind::Quad { .. } => self
@@ -195,10 +207,8 @@ impl FrameBuilder {
                     longitudes,
                     ..
                 } => {
-                    let lat = latitudes;
-                    let lon = longitudes;
                     let use_mesh = if let Some((m, l, o)) = &self.shared_sphere_mesh {
-                        if l == lat && o == lon {
+                        if l == latitudes && o == longitudes {
                             Some(m.clone())
                         } else {
                             None
@@ -209,8 +219,8 @@ impl FrameBuilder {
                     if let Some(m) = use_mesh {
                         m
                     } else {
-                        let new = create_sphere(device, 1.0, *lat, *lon);
-                        self.shared_sphere_mesh = Some((new.clone(), *lat, *lon));
+                        let new = create_sphere(device, 1.0, *latitudes, *longitudes);
+                        self.shared_sphere_mesh = Some((new.clone(), *latitudes, *longitudes));
                         new
                     }
                 }
@@ -221,8 +231,7 @@ impl FrameBuilder {
             let material_slot = material.handle.0 as usize;
 
             // Compute a quick AABB from the matrix for frustum culling
-            let local_aabb = crate::scene::culling::Aabb::unit_cube();
-            let world_aabb = local_aabb.transform(&matrix);
+            let world_aabb = mesh.aabb.transform(&matrix);
 
             let key = (
                 Arc::as_ptr(&mesh.vertex_buffer) as usize,

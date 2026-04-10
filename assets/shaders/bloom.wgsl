@@ -30,7 +30,7 @@ fn fs_downsample(in: VsOut) -> @location(0) vec4<f32> {
     for (var y: i32 = -1; y <= 1; y = y + 1) {
         for (var x: i32 = -1; x <= 1; x = x + 1) {
             let offset = vec2<f32>(f32(x), f32(y)) * inv;
-            sum += textureSample(t_input, s_input, in.uv + offset);
+            sum += textureSampleLevel(t_input, s_input, in.uv + offset, 0.0);
         }
     }
     return sum / 9.0;
@@ -47,7 +47,7 @@ fn fs_downsample_threshold(in: VsOut) -> @location(0) vec4<f32> {
     for (var y: i32 = -1; y <= 1; y = y + 1) {
         for (var x: i32 = -1; x <= 1; x = x + 1) {
             let offset = vec2<f32>(f32(x), f32(y)) * inv;
-            sum += textureSample(t_input, s_input, in.uv + offset);
+            sum += textureSampleLevel(t_input, s_input, in.uv + offset, 0.0);
         }
     }
     let color = sum / 9.0;
@@ -71,16 +71,16 @@ fn fs_upsample(in: VsOut) -> @location(0) vec4<f32> {
     let inv = 1.0 / dim;
     var c = vec4<f32>(0.0);
     // corners × 1
-    c += textureSample(t_input, s_input, in.uv + vec2<f32>(-inv.x, -inv.y));
-    c += textureSample(t_input, s_input, in.uv + vec2<f32>( inv.x, -inv.y));
-    c += textureSample(t_input, s_input, in.uv + vec2<f32>(-inv.x,  inv.y));
-    c += textureSample(t_input, s_input, in.uv + vec2<f32>( inv.x,  inv.y));
+    c += textureSampleLevel(t_input, s_input, in.uv + vec2<f32>(-inv.x, -inv.y), 0.0);
+    c += textureSampleLevel(t_input, s_input, in.uv + vec2<f32>( inv.x, -inv.y), 0.0);
+    c += textureSampleLevel(t_input, s_input, in.uv + vec2<f32>(-inv.x,  inv.y), 0.0);
+    c += textureSampleLevel(t_input, s_input, in.uv + vec2<f32>( inv.x,  inv.y), 0.0);
     // edges × 2
-    c += textureSample(t_input, s_input, in.uv + vec2<f32>(    0.0, -inv.y)) * 2.0;
-    c += textureSample(t_input, s_input, in.uv + vec2<f32>(    0.0,  inv.y)) * 2.0;
-    c += textureSample(t_input, s_input, in.uv + vec2<f32>(-inv.x,     0.0)) * 2.0;
-    c += textureSample(t_input, s_input, in.uv + vec2<f32>( inv.x,     0.0)) * 2.0;
+    c += textureSampleLevel(t_input, s_input, in.uv + vec2<f32>(    0.0, -inv.y), 0.0) * 2.0;
+    c += textureSampleLevel(t_input, s_input, in.uv + vec2<f32>(    0.0,  inv.y), 0.0) * 2.0;
+    c += textureSampleLevel(t_input, s_input, in.uv + vec2<f32>(-inv.x,     0.0), 0.0) * 2.0;
+    c += textureSampleLevel(t_input, s_input, in.uv + vec2<f32>( inv.x,     0.0), 0.0) * 2.0;
     // center × 4
-    c += textureSample(t_input, s_input, in.uv) * 4.0;
+    c += textureSampleLevel(t_input, s_input, in.uv, 0.0) * 4.0;
     return c / 16.0;
 }

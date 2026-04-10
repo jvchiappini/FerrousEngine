@@ -47,10 +47,10 @@ fn aces_tone_mapping(x: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // 1. Sample the raw HDR colour from the intermediate texture.
-    let hdr_color = textureSample(t_hdr, s_hdr, in.uv).rgb;
+    let hdr_color = textureSampleLevel(t_hdr, s_hdr, in.uv, 0.0).rgb;
     // sample the bloom contribution produced by the bloom pass.  we expect
     // level-0 of the bloom chain to already contain the accumulated result.
-    let bloom_color = textureSample(t_bloom, s_bloom, in.uv).rgb;
+    let bloom_color = textureSampleLevel(t_bloom, s_bloom, in.uv, 0.0).rgb;
 
     // 2. Exposure — multiply before tone mapping to control overall brightness.
     //    Outdoor HDRIs are typically very bright (sky > 1.0), so an exposure

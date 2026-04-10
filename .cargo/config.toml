@@ -1,0 +1,4 @@
+[target.wasm32-unknown-unknown]
+rustflags = [
+    "-C", "link-arg=-zstack-size=4194304", # 4MB stack (default is often 64KB-1MB)
+]

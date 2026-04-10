@@ -25,6 +25,10 @@ pub struct Panel {
     pub pad: f32,
     /// Fondo personalizado del panel. `Background::None` usa el color de superficie del tema.
     pub background: Background,
+    /// Indica si el panel debe dibujar una sombra de elevación
+    pub shadow: bool,
+    /// Color de borde opcional
+    pub border: Option<Color>,
 }
 
 impl Panel {
@@ -37,6 +41,8 @@ impl Panel {
             gap: 0.0,
             pad: 0.0,
             background: Background::None,
+            shadow: false,
+            border: None,
         }
     }
 
@@ -75,6 +81,16 @@ impl Panel {
         self.background = bg;
         self
     }
+
+    pub fn with_shadow(mut self, shadow: bool) -> Self {
+        self.shadow = shadow;
+        self
+    }
+
+    pub fn with_border(mut self, border: Option<Color>) -> Self {
+        self.border = border;
+        self
+    }
 }
 
 impl<App> Widget<App> for Panel {
@@ -105,6 +121,10 @@ impl<App> Widget<App> for Panel {
         let radius = self.radius.unwrap_or(ctx.theme.border_radius);
         let radii = [radius; 4];
 
+        if self.shadow {
+            cmds.push(RenderCommand::shadow_md(ctx.rect));
+        }
+
         // Base sólido siempre presente
         cmds.push(RenderCommand::Quad {
             rect: ctx.rect,
@@ -120,6 +140,15 @@ impl<App> Widget<App> for Panel {
                 background: self.background.clone(),
                 radii,
                 raster_resolution: (0, 0),
+            });
+        }
+
+        if let Some(bc) = self.border {
+            cmds.push(RenderCommand::Border {
+                rect: ctx.rect,
+                color: bc.to_array(),
+                radii,
+                width: 1.0,
             });
         }
     }

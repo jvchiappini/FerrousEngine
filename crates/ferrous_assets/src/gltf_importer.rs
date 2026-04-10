@@ -68,6 +68,11 @@ impl Asset for GltfModel {
         let model = gltf_loader::load_gltf(path)?;
         Ok(GltfModel(model))
     }
+
+    fn import_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
+        let model = gltf_loader::load_gltf_from_slice(bytes)?;
+        Ok(GltfModel(model))
+    }
 }
 
 // `GltfModel` contains only `Vec<_>` and plain data — it is `Send + Sync`.

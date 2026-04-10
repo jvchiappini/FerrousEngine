@@ -85,5 +85,6 @@ pub fn cube(device: &wgpu::Device) -> Mesh {
         index_count: indices.len() as u32,
         vertex_count: vertices.len() as u32,
         index_format: wgpu::IndexFormat::Uint16,
+        aabb: crate::scene::culling::Aabb::unit_cube(),
     }
 }

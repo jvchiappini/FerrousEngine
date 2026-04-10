@@ -56,9 +56,12 @@ fn draw_checkbox(gui: &mut GuiBatch, x: f32, y: f32, size: f32, checked: bool) {
         uv0: [0.0, 0.0],
         uv1: [1.0, 1.0],
         color: [0.35, 0.35, 0.35, 1.0],
+        color_b: [0.0; 4],
         radii: [3.0; 4],
         tex_index: 0,
         flags: 0,
+        z_order: 0.0,
+        node_id: 0,
     });
     // inner fill when checked
     if checked {
@@ -69,9 +72,12 @@ fn draw_checkbox(gui: &mut GuiBatch, x: f32, y: f32, size: f32, checked: bool) {
             uv0: [0.0, 0.0],
             uv1: [1.0, 1.0],
             color: [0.3, 0.8, 0.5, 1.0],
+            color_b: [0.0; 4],
             radii: [1.5; 4],
             tex_index: 0,
             flags: 0,
+            z_order: 0.0,
+            node_id: 0,
         });
     }
 }
@@ -85,9 +91,12 @@ fn draw_radio(gui: &mut GuiBatch, cx: f32, cy: f32, r: f32, selected: bool) {
         uv0: [0.0, 0.0],
         uv1: [1.0, 1.0],
         color: [0.4, 0.4, 0.4, 1.0],
+        color_b: [0.0; 4],
         radii: [r; 4],
         tex_index: 0,
         flags: 0,
+        z_order: 0.0,
+        node_id: 0,
     });
     if selected {
         let ir = r * 0.55;
@@ -97,9 +106,12 @@ fn draw_radio(gui: &mut GuiBatch, cx: f32, cy: f32, r: f32, selected: bool) {
             uv0: [0.0, 0.0],
             uv1: [1.0, 1.0],
             color: [0.3, 0.75, 1.0, 1.0],
+            color_b: [0.0; 4],
             radii: [ir; 4],
             tex_index: 0,
             flags: 0,
+            z_order: 0.0,
+            node_id: 0,
         });
     }
 }
@@ -208,9 +220,12 @@ impl MaterialInspector {
             uv0: [0.0, 0.0],
             uv1: [1.0, 1.0],
             color: [0.10, 0.10, 0.12, 0.88],
+            color_b: [0.0; 4],
             radii: [0.0; 4],
             tex_index: 0,
             flags: 0,
+            z_order: 0.0,
+            node_id: 0,
         });
 
         let Some(font) = font else {
@@ -290,7 +305,7 @@ impl MaterialInspector {
             };
             cp.draw(&mut dc, &mut cmds);
             for cmd in cmds {
-                cmd.to_batches(gui, Some(font));
+                cmd.to_batches(gui, Some(font), 0.0, 0);
             }
         }
 
@@ -320,7 +335,7 @@ impl MaterialInspector {
             };
             sl.borrow().draw(&mut dc, &mut cmds);
             for cmd in cmds {
-                cmd.to_batches(gui, Some(font));
+                cmd.to_batches(gui, Some(font), 0.0, 0);
             }
         };
 

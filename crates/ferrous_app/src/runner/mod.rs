@@ -31,10 +31,11 @@ pub(crate) fn run_internal<A: FerrousApp + 'static>(config: AppConfig, app: A) {
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn run_internal<A: FerrousApp + 'static>(config: AppConfig, app: A) {
     console_error_panic_hook::set_once();
-    let mut runner = Runner::new(app, config);
+    use winit::platform::web::EventLoopExtWebSys;
+    let runner = Runner::new(app, config);
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Wait);
-    event_loop.run_app(&mut runner).unwrap();
+    event_loop.spawn_app(runner);
 }
 
 // ── Plugin-based entry point ──────────────────────────────────────────────────
@@ -60,8 +61,9 @@ pub(crate) fn run_plugin_app(mut builder: crate::plugin::AppBuilder) {
     #[cfg(target_arch = "wasm32")]
     {
         console_error_panic_hook::set_once();
+        use winit::platform::web::EventLoopExtWebSys;
         let event_loop = EventLoop::new().unwrap();
         event_loop.set_control_flow(ControlFlow::Wait);
-        event_loop.run_app(&mut runner).unwrap();
+        event_loop.spawn_app(runner);
     }
 }

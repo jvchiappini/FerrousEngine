@@ -18,6 +18,9 @@ pub struct CameraUniform {
     /// eye/camera world-space position (padding to 16 bytes required)
     pub position: [f32; 3],
     pub _pad: f32,
+    /// Reserved space to reach 256-byte alignment (WebGPU requirement)
+    pub _alignment_padding_a: [f32; 32], 
+    pub _alignment_padding_b: [f32; 12],
 }
 
 impl CameraUniform {
@@ -27,6 +30,8 @@ impl CameraUniform {
             view_proj: Mat4::IDENTITY.to_cols_array_2d(),
             position: [0.0; 3],
             _pad: 0.0,
+            _alignment_padding_a: [0.0; 32],
+            _alignment_padding_b: [0.0; 12],
         }
     }
 
