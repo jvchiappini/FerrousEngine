@@ -35,12 +35,12 @@ def extract_class_body(source: str, class_decl: str) -> str:
     raise ValueError(f"Could not locate closing brace for '{class_decl}'")
 
 
-def parse_rust_api(lib_rs: str) -> set[str]:
+def parse_rust_api(rust_sources: str) -> set[str]:
     pattern = re.compile(
         r"#\[wasm_bindgen(?:\([^\)]*\))?\]\s*pub\s+fn\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(",
         re.MULTILINE,
     )
-    methods = set(pattern.findall(lib_rs))
+    methods = set(pattern.findall(rust_sources))
     methods.discard("new")
     return methods
 
@@ -104,15 +104,17 @@ def report_diff(lhs_name: str, lhs: set[str], rhs_name: str, rhs: set[str]) -> l
 
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
-    lib_rs_path = root / "crates" / "ferrous_web" / "src" / "lib.rs"
+    src_dir = root / "crates" / "ferrous_web" / "src"
     dts_path = root / "crates" / "ferrous_web" / "pkg" / "ferrous_web.d.ts"
     js_path = root / "crates" / "ferrous_web" / "pkg" / "ferrous_web.js"
 
-    lib_rs = read_text(lib_rs_path)
+    rust_sources = "\n".join(
+        read_text(path) for path in sorted(src_dir.rglob("*.rs"))
+    )
     dts = read_text(dts_path)
     js = read_text(js_path)
 
-    rust_api = parse_rust_api(lib_rs)
+    rust_api = parse_rust_api(rust_sources)
     dts_api = parse_dts_api(dts)
     js_api = parse_js_api(js)
     wasm_exports = parse_dts_wasm_exports(dts)
