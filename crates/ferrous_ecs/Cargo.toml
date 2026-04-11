@@ -19,6 +19,7 @@ description = "Archetype-based Entity Component System for Ferrous Engine"
 # keep this crate lightweight.
 rayon = { version = "1", optional = true }
 ferrous_ecs_macros = { path = "../ferrous_ecs_macros", optional = true }
+serde = { workspace = true }
 
 [dev-dependencies]
 # nothing yet

@@ -25,7 +25,9 @@ use ferrous_ecs::prelude::Component;
 ///     },
 /// ));
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct DirectionalLight {
     /// World-space direction the light is travelling **towards**.  Normalised.
     pub direction: glam::Vec3,

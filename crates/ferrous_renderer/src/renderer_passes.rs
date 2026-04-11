@@ -235,8 +235,8 @@ impl RendererPasses {
             let ssao_sampler = Arc::new(self.context.device.create_sampler(
                 &wgpu::SamplerDescriptor {
                     label: Some("SSAO Result Sampler"),
-                    mag_filter: wgpu::FilterMode::Linear,
-                    min_filter: wgpu::FilterMode::Linear,
+                    mag_filter: wgpu::FilterMode::Nearest,
+                    min_filter: wgpu::FilterMode::Nearest,
                     address_mode_u: wgpu::AddressMode::ClampToEdge,
                     address_mode_v: wgpu::AddressMode::ClampToEdge,
                     ..Default::default()
@@ -366,6 +366,7 @@ impl RendererPasses {
             encoder,
             &self.world_pass.hdr_texture,
             target_view,
+            &self.camera_system.gpu.bind_group,
         );
 
         // -- 6. UI Pass --------------------------------------------------------

@@ -52,4 +52,15 @@ impl GpuCamera {
         self.uniform.update_view_proj(camera);
         buffer::update_uniform(queue, &self.buffer, &self.uniform);
     }
+
+    pub fn set_exposure(&mut self, queue: &wgpu::Queue, exposure: f32) {
+        self.uniform.exposure = exposure;
+        buffer::update_uniform(queue, &self.buffer, &self.uniform);
+    }
+
+    pub fn set_fog(&mut self, queue: &wgpu::Queue, color: [f32; 3], density: f32) {
+        self.uniform.fog_color = color;
+        self.uniform.fog_density = density;
+        buffer::update_uniform(queue, &self.buffer, &self.uniform);
+    }
 }

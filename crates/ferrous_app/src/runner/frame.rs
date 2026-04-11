@@ -32,6 +32,15 @@ impl<A: FerrousApp + 'static> Runner<A> {
                         self.graphics = slot.borrow_mut().take();
                         self.gfx_pending = None;
                         if let (Some(gfx), Some(window)) = (&mut self.graphics, &self.window) {
+                            let size = window.inner_size();
+                            self.window_size = (size.width, size.height);
+                            self.viewport = ferrous_core::Viewport {
+                                x: 0,
+                                y: 0,
+                                width: size.width,
+                                height: size.height,
+                            };
+                            gfx.resize(size.width, size.height);
                             gfx.renderer.set_viewport(self.viewport);
                             let time = self.clock.peek();
                             let mut ctx = AppContext {
@@ -73,6 +82,23 @@ impl<A: FerrousApp + 'static> Runner<A> {
         let (Some(gfx), Some(window)) = (&mut self.graphics, &self.window) else {
             return;
         };
+
+        // wasm32: proactive size sync as browser layout can be delayed/asynchronous
+        #[cfg(target_arch = "wasm32")]
+        {
+            let size = window.inner_size();
+            if size.width > 0 && size.height > 0 && (size.width != self.window_size.0 || size.height != self.window_size.1) {
+                self.window_size = (size.width, size.height);
+                self.viewport = ferrous_core::Viewport {
+                    x: 0,
+                    y: 0,
+                    width: size.width,
+                    height: size.height,
+                };
+                gfx.resize(size.width, size.height);
+                gfx.renderer.set_viewport(self.viewport);
+            }
+        }
 
         let now = Instant::now();
         self.last_frame = now;
@@ -162,6 +188,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
         // ECS → renderer sync and 3-D camera input are only needed in Game3D.
         let dt = time.delta;
         if self.config.mode == AppMode::Game3D {
+            self.app.on_sync_world(&self.world);
             gfx.renderer.sync_world(&self.world);
 
             if self.viewport.width > 0 && self.viewport.height > 0 {

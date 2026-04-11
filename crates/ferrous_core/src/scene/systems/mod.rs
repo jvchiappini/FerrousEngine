@@ -16,7 +16,7 @@
 //! ```text
 //! PreUpdate  →  TimeSystem
 //! Update     →  VelocitySystem, AnimationSystem, BehaviorSystem, OrbitCameraSystem
-//! PostUpdate →  TransformSystem
+//! PostUpdate →  TransformSystem, SkinningSystem
 //! ```
 
 pub mod animation;
@@ -24,6 +24,7 @@ pub mod behavior;
 pub mod camera;
 pub mod hierarchy;
 pub mod lighting;
+pub mod skinning_sys;
 pub mod time;
 
 // ── Re-export stage ──────────────────────────────────────────────────────────
@@ -43,6 +44,9 @@ pub use hierarchy::{Children, GlobalTransform, Parent, TransformSystem};
 
 // ── lighting ─────────────────────────────────────────────────────────────────
 pub use lighting::DirectionalLight;
+
+// ── skinning ─────────────────────────────────────────────────────────────────
+pub use skinning_sys::SkinningSystem;
 
 // ── time ─────────────────────────────────────────────────────────────────────
 pub use time::{TimeSystem, Velocity, VelocitySystem};

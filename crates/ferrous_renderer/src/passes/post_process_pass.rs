@@ -52,6 +52,8 @@ pub struct PostProcessPass {
     initial_downsample_pipeline: Option<Arc<RenderPipeline>>,
     /// Pipeline used for the upsample pass (blend-add).
     upsample_pipeline: Option<Arc<RenderPipeline>>,
+    /// Layout for the camera bind group.
+    camera_layout: Option<Arc<BindGroupLayout>>,
 }
 
 impl PostProcessPass {
@@ -65,11 +67,16 @@ impl PostProcessPass {
             downsample_pipeline: None,
             initial_downsample_pipeline: None,
             upsample_pipeline: None,
+            camera_layout: None,
         }
     }
 
+    pub fn set_camera_layout(&mut self, layout: Arc<BindGroupLayout>) {
+        self.camera_layout = Some(layout);
+    }
+
     /// Build (or rebuild) the render pipeline for the given swapchain format.
-    fn build_pipeline(&mut self, device: &Device, surface_format: wgpu::TextureFormat) {
+    fn build_pipeline(&mut self, device: &Device, surface_format: wgpu::TextureFormat, camera_layout: &wgpu::BindGroupLayout) {
         let bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("PostProcess BGL"),
             entries: &[
@@ -115,7 +122,7 @@ impl PostProcessPass {
 
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("PostProcess Pipeline Layout"),
-            bind_group_layouts: &[&bgl],
+            bind_group_layouts: &[&bgl, camera_layout],
             push_constant_ranges: &[],
         });
 
@@ -475,6 +482,7 @@ impl PostProcessPass {
         encoder: &mut CommandEncoder,
         hdr: &HdrTexture,
         output_view: &TextureView,
+        camera_bind_group: &wgpu::BindGroup,
     ) {
         let pipeline = self
             .pipeline
@@ -499,6 +507,7 @@ impl PostProcessPass {
 
         rpass.set_pipeline(pipeline);
         rpass.set_bind_group(0, &bind_group, &[]);
+        rpass.set_bind_group(1, camera_bind_group, &[]);
         // Three vertices → one fullscreen triangle (no vertex buffer).
         rpass.draw(0..3, 0..1);
     }
@@ -522,7 +531,13 @@ impl RenderPass for PostProcessPass {
         format: wgpu::TextureFormat,
         _sample_count: u32,
     ) {
-        self.build_pipeline(device, format);
+        if let Some(layout) = self.camera_layout.clone() {
+            self.build_pipeline(device, format, &layout);
+        } else {
+            log::warn!("PostProcessPass::on_attach called without camera_layout; pipeline might be invalid");
+            // use a temporary layout to avoid crashing if possible, but 
+            // realistically we should have set it.
+        }
         // bloom pipelines do not depend on the swapchain format but they
         // need to exist so that a subsequent call to `on_resize` can
         // allocate the textures and we can render the chain.  Build them

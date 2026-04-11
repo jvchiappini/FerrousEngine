@@ -69,7 +69,7 @@ impl GraphicsState {
                      canvas.style().set_property("position", "fixed").ok();
                      canvas.style().set_property("top", "0").ok();
                      canvas.style().set_property("left", "0").ok();
-                     canvas.style().set_property("z-index", "-1").ok(); // Detrás de la UI de React
+                     canvas.style().set_property("z-index", "0").ok();
                  }
             }
             
@@ -82,6 +82,14 @@ impl GraphicsState {
             // the canvas needs a tabindex to be focusable.
             canvas.set_attribute("tabindex", "0").ok();
             canvas.focus().ok();
+
+            // Auto-focus on click to capture keyboard input (often blocked programmatically without interactions)
+            let focus_canvas = canvas.clone();
+            let on_pointer_down = wasm_bindgen::prelude::Closure::<dyn FnMut(web_sys::PointerEvent)>::new(move |e: web_sys::PointerEvent| {
+                focus_canvas.focus().ok();
+            });
+            canvas.add_event_listener_with_callback("pointerdown", on_pointer_down.as_ref().unchecked_ref()).ok();
+            on_pointer_down.forget();
 
             // Disable browser context menu to allow right-click interaction in 3D
             let on_context_menu = wasm_bindgen::prelude::Closure::<dyn FnMut(web_sys::MouseEvent)>::new(|e: web_sys::MouseEvent| {

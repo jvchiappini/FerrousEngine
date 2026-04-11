@@ -5,11 +5,13 @@
 //! generation, so dangling handles (from a previous incarnation of that slot)
 //! are reliably detected.
 
+use serde::{Deserialize, Serialize};
+
 /// A lightweight, copy-able entity handle.
 ///
 /// Internally `{ index: u32, generation: u32 }` packed into a single `u64`
 /// for cache-efficiency.  Null/sentinel value: `Entity::DANGLING`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Entity {
     /// Index into the entity table.
     pub index: u32,

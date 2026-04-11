@@ -12,8 +12,7 @@ use std::sync::Arc;
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 use wgpu::{
-    BindGroupLayout, CommandEncoder, Device, LoadOp, Operations,
-    RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline, StoreOp,
+    BindGroupLayout, CommandEncoder, Device, ComputePipeline,
 };
 
 use crate::passes::ssao_pass::SsaoTexture;
@@ -37,7 +36,7 @@ pub struct SsaoBlurPass {
     /// Intermediate texture for the horizontal pass.
     intermediate: SsaoTexture,
 
-    pipeline: Arc<RenderPipeline>,
+    pipeline: Arc<ComputePipeline>,
     params_layout: Arc<BindGroupLayout>,
     textures_layout: Arc<BindGroupLayout>,
 
@@ -92,6 +91,7 @@ impl SsaoBlurPass {
             &raw_ssao.sampler,
             normal_depth,
             &self.intermediate.view,
+            &self.intermediate.texture,
         );
 
         // ── Pass 2: vertical blur → blurred ───────────────────────────────────
@@ -108,6 +108,7 @@ impl SsaoBlurPass {
             &self.intermediate.sampler,
             normal_depth,
             &self.blurred.view,
+            &self.blurred.texture,
         );
     }
 
@@ -128,6 +129,7 @@ impl SsaoBlurPass {
         src_sampler: &wgpu::Sampler,
         normal_depth: &NormalDepthTexture,
         dst_view: &wgpu::TextureView,
+        dst_texture: &wgpu::Texture,
     ) {
         let params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Blur Params Buffer"),
@@ -164,36 +166,35 @@ impl SsaoBlurPass {
                     binding: 3,
                     resource: wgpu::BindingResource::Sampler(&normal_depth.sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(dst_view),
+                },
             ],
         });
 
-        let mut rpass = encoder.begin_render_pass(&RenderPassDescriptor {
-            label: Some("SSAO Blur Pass"),
-            color_attachments: &[Some(RenderPassColorAttachment {
-                view: dst_view,
-                resolve_target: None,
-                ops: Operations {
-                    load: LoadOp::Clear(wgpu::Color::WHITE),
-                    store: StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            occlusion_query_set: None,
+        let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("SSAO Blur Compute Pass"),
             timestamp_writes: None,
         });
 
-        rpass.set_pipeline(&self.pipeline);
-        rpass.set_bind_group(0, &bg0, &[]);
-        rpass.set_bind_group(1, &bg1, &[]);
-        rpass.draw(0..3, 0..1);
+        cpass.set_pipeline(&self.pipeline);
+        cpass.set_bind_group(0, &bg0, &[]);
+        cpass.set_bind_group(1, &bg1, &[]);
+        
+        let w = dst_texture.width();
+        let h = dst_texture.height();
+        let x = (w + 7) / 8;
+        let y = (h + 7) / 8;
+        cpass.dispatch_workgroups(x, y, 1);
     }
 
-    fn build_pipeline(device: &Device) -> (BindGroupLayout, BindGroupLayout, RenderPipeline) {
+    fn build_pipeline(device: &Device) -> (BindGroupLayout, BindGroupLayout, ComputePipeline) {
         let params_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Blur Params BGL"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
+                visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -209,44 +210,55 @@ impl SsaoBlurPass {
                 // binding 0: raw SSAO texture
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Texture {
                         multisampled: false,
                         view_dimension: wgpu::TextureViewDimension::D2,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
                     },
                     count: None,
                 },
                 // binding 1: sampler
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
                     count: None,
                 },
                 // binding 2: normal-depth texture
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Texture {
                         multisampled: false,
                         view_dimension: wgpu::TextureViewDimension::D2,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
                     },
                     count: None,
                 },
                 // binding 3: normal-depth sampler
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                    count: None,
+                },
+                // binding 4: output storage texture
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: SsaoTexture::FORMAT,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
                     count: None,
                 },
             ],
         });
 
         let shader = device.create_shader_module(
-            wgpu::include_wgsl!("../../../../assets/shaders/ssao_blur.wgsl")
+            wgpu::include_wgsl!("../../../../assets/shaders/ssao_blur_compute.wgsl")
         );
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -255,32 +267,12 @@ impl SsaoBlurPass {
             push_constant_ranges: &[],
         });
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("SSAO Blur Pipeline"),
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("SSAO Blur Compute Pipeline"),
             layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: SsaoTexture::FORMAT,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::RED,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            module: &shader,
+            entry_point: Some("main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: None,
         });
 

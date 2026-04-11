@@ -31,8 +31,8 @@ pub use crate::render_target::RenderTarget;
 pub use crate::resources::InstanceBuffer;
 pub use ferrous_core::scene::{RenderStyle, MaterialDescriptor};
 pub use crate::passes::{
-    CelShadedPass, FlatShadedPass, OutlinePass, PostProcessPass, PrePass, ProceduralSkyPass,
-    SkyMode, SsaoBlurPass, SsaoPass, WorldPass,
+    CelShadedPass, FlatShadedPass, OutlinePass, ParticleSystem, PostProcessPass, PrePass,
+    ProceduralSkyPass, SkinningPass, SkyMode, SsaoBlurPass, SsaoPass, WorldPass,
 };
 
 #[cfg(feature = "gui")]
@@ -117,6 +117,7 @@ pub struct Renderer {
     instance_buf: InstanceBuffer,
     /// Layout for the instance storage buffer bind group.
     instance_layout: Arc<wgpu::BindGroupLayout>,
+    pub particle_system: Option<ParticleSystem>,
     /// A copy of the pipeline bind-group layouts; needed when creating
     /// new materials or other GPU resources that rely on them.
     // Note: shared mesh caches (cube/quad/sphere) and mesh_cache are now
@@ -162,6 +163,8 @@ pub struct Renderer {
     pub ssao_blur_pass: SsaoBlurPass,
     /// CPU-side SSAO resources (kernel, noise, params buffers).
     pub ssao_resources: SsaoResources,
+    /// GPU skinning pass.
+    pub skinning_pass: SkinningPass,
     /// When true, SSAO is computed and applied to the IBL ambient term.
     pub ssao_enabled: bool,
 
@@ -292,7 +295,12 @@ impl Renderer {
             aspect: width as f32 / height as f32,
             znear: 0.1,
             zfar: 2000.0,
-            controller: Controller::with_default_wasd(),
+            controller: {
+                let mut c = Controller::new();
+                c.speed = 0.0;
+                c.mouse_sensitivity = 0.0;
+                c
+            },
         };
         let gpu_camera = GpuCamera::new(device, &camera, &layouts.camera);
         let camera_system = CameraSystem {
@@ -345,6 +353,7 @@ impl Renderer {
         #[cfg(feature = "gui")]
         let ui_pass = UiPass::new(ui_renderer);
         let mut post_process_pass = PostProcessPass::new();
+        post_process_pass.set_camera_layout(layouts.camera.clone());
         // on_attach builds the bloom pipelines (and the tone-mapping pipeline
         // keyed to the swapchain format); must be called before on_resize.
         post_process_pass.on_attach(device, &context.queue, format, sample_count);
@@ -366,6 +375,8 @@ impl Renderer {
         let ssao_pass = SsaoPass::new(device, width, height);
         let ssao_blur_pass = SsaoBlurPass::new(device, width, height);
         let ssao_resources = SsaoResources::new(device, &context.queue);
+        let skinning_pass = SkinningPass::new(device);
+        let particle_system = ParticleSystem::new(device, &layouts.camera, 1_000_000);
 
         Self {
             context,
@@ -378,6 +389,7 @@ impl Renderer {
             camera_system,
             world_material_descs: HashMap::new(),
             instance_buf,
+            particle_system: Some(particle_system),
             instance_layout: layouts.instance.clone(),
             gizmo_system,
             frame_builder: FrameBuilder::new(),
@@ -399,6 +411,7 @@ impl Renderer {
             ssao_pass,
             ssao_blur_pass,
             ssao_resources,
+            skinning_pass,
             ssao_enabled: true,
             render_style: RenderStyle::Pbr,
             cel_pass: None,
@@ -715,6 +728,28 @@ impl Renderer {
             }
         }
 
+        // 0d. Sync ParticleEmitter ECS components → ParticleSystem
+        {
+            use ferrous_core::scene::ParticleEmitter;
+            use ferrous_ecs::prelude::Query;
+            let emitters = Query::<(&ferrous_core::scene::GlobalTransform, &ParticleEmitter)>::new(&world.ecs);
+            let emitters_data: Vec<_> = emitters.iter()
+                .map(|(_, (t, e))| (t.clone(), e.clone()))
+                .collect();
+            
+            if let Some((transform, emitter)) = emitters_data.first() {
+                if let Some(ps) = &mut self.particle_system {
+                    let (_, _, translation) = transform.0.to_scale_rotation_translation();
+                    ps.update(
+                        &self.context.queue,
+                        0.016, // hardcoded for now, should use TimeSystem
+                        [translation.x, translation.y, translation.z],
+                        if emitter.active { emitter.spawn_rate } else { 0.0 },
+                    );
+                }
+            }
+        }
+
         // 0b. Sync Camera3D ECS component → renderer camera (if present)
         {
             use ferrous_core::scene::Camera3D;
@@ -820,6 +855,15 @@ impl Renderer {
         let material_table = self.material_registry.bind_group_table();
         self.world_pass.set_material_table(&material_table, &self.material_registry);
         self.prepass.set_material_table(&material_table, &self.material_registry);
+        if let Some(p) = &mut self.cel_pass {
+            p.set_material_table(&material_table);
+        }
+        if let Some(p) = &mut self.outline_pass {
+            p.set_material_table(&material_table);
+        }
+        if let Some(p) = &mut self.flat_pass {
+            p.set_material_table(&material_table);
+        }
 
 
         self.render_stats = stats;
@@ -892,8 +936,8 @@ impl Renderer {
             let ssao_view = Arc::new(self.ssao_blur_pass.blurred.texture.create_view(&wgpu::TextureViewDescriptor::default()));
             let ssao_sampler = Arc::new(self.context.device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some("SSAO Result Sampler"),
-                mag_filter: wgpu::FilterMode::Linear,
-                min_filter: wgpu::FilterMode::Linear,
+                mag_filter: wgpu::FilterMode::Nearest,
+                min_filter: wgpu::FilterMode::Nearest,
                 address_mode_u: wgpu::AddressMode::ClampToEdge,
                 address_mode_v: wgpu::AddressMode::ClampToEdge,
                 ..Default::default()
@@ -923,6 +967,34 @@ impl Renderer {
             Some(&self.render_target.depth.view),
             &packet,
         );
+
+        // -- 4b. Particle Render Pass (Additive) -------------------------------
+        if let Some(ps) = &self.particle_system {
+            ps.run_compute(encoder);
+            
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Particle Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.world_pass.hdr_texture.view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.render_target.depth.view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                occlusion_query_set: None,
+                timestamp_writes: None,
+            });
+            ps.run_render(&mut rpass, &self.camera_system.gpu.bind_group);
+        }
 
         // -- 5. Render Style Passes ------------------------------------------
         match &self.render_style {
@@ -958,7 +1030,7 @@ impl Renderer {
         self.gizmo_system.execute(&self.context.device, encoder, &self.world_pass.hdr_texture.view, &self.render_target.depth.view, &self.camera_system.gpu.bind_group);
 
         // -- 7. Post-Process (Tone Mapping) ------------------------------------
-        self.post_process_pass.render(&self.context.device, encoder, &self.world_pass.hdr_texture, view);
+        self.post_process_pass.render(&self.context.device, encoder, &self.world_pass.hdr_texture, view, &self.camera_system.gpu.bind_group);
 
         // -- 8. UI Pass --------------------------------------------------------
         self.ui_pass.prepare(&self.context.device, &self.context.queue, &packet);
@@ -1024,6 +1096,15 @@ impl Renderer {
 
     pub fn set_clear_color(&mut self, color: wgpu::Color) {
         crate::renderer_api::set_clear_color(&mut self.world_pass, color);
+    }
+
+    /// Configure global atmosphere settings (fog and exposure).
+    pub fn set_exposure(&mut self, exposure: f32) {
+        crate::renderer_api::set_exposure(&mut self.camera_system, &self.context.queue, exposure);
+    }
+
+    pub fn set_fog(&mut self, color: [f32; 3], density: f32) {
+        crate::renderer_api::set_fog(&mut self.camera_system, &self.context.queue, color, density);
     }
 
     pub fn set_font_atlas(&mut self, view: &wgpu::TextureView, sampler: &wgpu::Sampler) {

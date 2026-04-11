@@ -1,22 +1,32 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU32, Ordering};
+use once_cell::sync::Lazy;
 
 use ferrous_app::{AppContext, Color, DrawContext, FerrousApp, Quat, Vec3};
 use ferrous_core::scene::ElementKind;
+use ferrous_renderer::Vertex;
 
 use crate::camera::CameraController;
 use crate::commands::JsCommand;
 use crate::config::{CameraControlMode, EngineConfig, EngineMetrics};
+
+pub static ASSET_RESOLVERS: Lazy<Mutex<HashMap<u32, js_sys::Function>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+pub static NEXT_REQUEST_ID: AtomicU32 = AtomicU32::new(1);
 
 pub struct WebRuntime {
     pub command_queue: Arc<Mutex<Vec<JsCommand>>>,
     pub camera_override: Arc<Mutex<Option<([f32; 3], [f32; 3])>>>,
     pub metrics: Arc<Mutex<EngineMetrics>>,
     pub enabled_plugins: Arc<Mutex<HashSet<String>>>,
+    pub error_callback: Arc<Mutex<Option<js_sys::Function>>>,
     pub debug_mode: bool,
     pub camera: CameraController,
     pub scenes: HashMap<u32, Vec<String>>,
     pub active_scene: u32,
+    pub pending_textures: HashMap<u32, ferrous_assets::AssetHandle<ferrous_assets::ImageData>>,
+    pub pending_models: HashMap<u32, ferrous_assets::AssetHandle<ferrous_assets::GltfModel>>,
+    pub plugins: Vec<Box<dyn crate::plugin::WebPlugin>>,
 }
 
 impl WebRuntime {
@@ -25,37 +35,59 @@ impl WebRuntime {
         camera_override: Arc<Mutex<Option<([f32; 3], [f32; 3])>>>,
         metrics: Arc<Mutex<EngineMetrics>>,
         enabled_plugins: Arc<Mutex<HashSet<String>>>,
+        error_callback: Arc<Mutex<Option<js_sys::Function>>>,
+        plugins: Vec<Box<dyn crate::plugin::WebPlugin>>,
         config: EngineConfig,
         debug_mode: bool,
     ) -> Self {
-        let mut scenes = HashMap::new();
-        scenes.insert(1, Vec::new());
         Self {
             command_queue,
             camera_override,
             metrics,
             enabled_plugins,
+            error_callback,
             debug_mode,
             camera: CameraController::new(config),
-            scenes,
+            scenes: HashMap::new(),
             active_scene: 1,
+            pending_textures: HashMap::new(),
+            pending_models: HashMap::new(),
+            plugins,
         }
     }
 
-    fn add_entity_to_active_scene(&mut self, name: String) {
+    pub fn report_error(&self, code: &str, message: &str) {
+        let payload = format!(
+            "{{\"code\":\"{}\",\"message\":\"{}\"}}",
+            code,
+            message.replace('"', "\\\"")
+        );
+        if let Some(callback) = self.error_callback.lock().unwrap().as_ref() {
+            use wasm_bindgen::JsValue;
+            let _ = callback.call1(&JsValue::NULL, &JsValue::from_str(&payload));
+        } else {
+            log::error!("[Ferrous:{}] {}", code, message);
+        }
+    }
+
+    pub fn is_plugin_enabled(&self, name: &str) -> bool {
+        self.enabled_plugins.lock().unwrap().contains(name)
+    }
+
+    pub fn add_entity_to_active_scene(&mut self, name: String) {
         self.scenes
             .entry(self.active_scene)
             .or_default()
             .push(name);
     }
 
-    fn remove_entity_from_scenes(&mut self, name: &str) {
+    pub fn remove_entity_from_scenes(&mut self, name: &str) {
         for entities in self.scenes.values_mut() {
             entities.retain(|entry| entry != name);
         }
     }
 
-    fn apply_legacy_terrain(&mut self, ctx: &mut AppContext) {
+    pub fn apply_legacy_terrain(&mut self, ctx: &mut AppContext) {
         if let Some(handle) = ctx.world.find_entity_by_name("LegacyTerrain") {
             ctx.world.despawn(handle);
         }
@@ -69,10 +101,99 @@ impl WebRuntime {
         ctx.world.set_color(handle, Color::rgb(0.35, 0.4, 0.38));
         self.add_entity_to_active_scene("LegacyTerrain".to_string());
     }
+
+    fn ensure_fallback_scene(&mut self, ctx: &mut AppContext) {
+        if !ctx.world.is_empty() {
+            return;
+        }
+
+        let floor = ctx.world.spawn_box(
+            "FallbackFloor",
+            Vec3::new(0.0, -1.25, 0.0),
+            Vec3::new(12.0, 0.25, 12.0),
+        );
+        ctx.world.set_color(floor, Color::rgb(0.18, 0.22, 0.3));
+
+        let cube = ctx.world.spawn_box(
+            "FallbackCube",
+            Vec3::new(0.0, 0.8, 0.0),
+            Vec3::new(1.8, 1.8, 1.8),
+        );
+        ctx.world.set_color(cube, Color::rgb(1.0, 0.25, 0.15));
+
+        let near_cube = ctx.world.spawn_box(
+            "FallbackNearCube",
+            Vec3::new(0.0, 1.0, 2.2),
+            Vec3::new(0.9, 0.9, 0.9),
+        );
+        ctx.world.set_color(near_cube, Color::rgb(1.0, 1.0, 1.0));
+
+        let tri_vertices = vec![
+            Vertex::new([-1.2, -1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0]),
+            Vertex::new([1.2, -1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0]),
+            Vertex::new([0.0, 1.2, 0.0], [0.0, 0.0, 1.0], [0.5, 1.0]),
+        ];
+        let tri_indices = vec![0_u32, 1_u32, 2_u32];
+        let tri_mesh = ctx
+            .render
+            .create_mesh("FallbackTriangleMesh", tri_vertices, tri_indices);
+        ctx.render.register_mesh("fallback_triangle_mesh", tri_mesh);
+
+        ctx.world
+            .spawn("FallbackTriangle")
+            .with_kind(ElementKind::Mesh {
+                asset_key: "fallback_triangle_mesh".to_string(),
+            })
+            .with_position(Vec3::new(0.0, 1.0, -1.6))
+            .with_scale(Vec3::new(2.0, 2.0, 2.0))
+            .with_color(Color::rgb(1.0, 1.0, 0.0))
+            .build();
+
+        ctx.world.spawn_point_light(
+            "FallbackLight",
+            Vec3::new(2.5, 3.0, 1.5),
+            [1.0, 1.0, 1.0],
+            9.0,
+            30.0,
+        );
+
+        ctx.render
+            .set_directional_light([0.25, -1.0, 0.2], [1.0, 1.0, 1.0], 2.5);
+        self.camera.set_camera([0.8, 1.4, 4.0], [0.0, 1.0, 0.0]);
+
+        self.add_entity_to_active_scene("FallbackFloor".to_string());
+        self.add_entity_to_active_scene("FallbackCube".to_string());
+        self.add_entity_to_active_scene("FallbackNearCube".to_string());
+        self.add_entity_to_active_scene("FallbackTriangle".to_string());
+
+        log::warn!("[Ferrous] Fallback scene activated (world was empty)");
+    }
+
+    pub fn resolve_scene_export(&self, request_id: u32, json: String) {
+        if let Some(resolver) = ASSET_RESOLVERS.lock().unwrap().remove(&request_id) {
+            let _ = resolver.call1(&wasm_bindgen::JsValue::NULL, &wasm_bindgen::JsValue::from_str(&json));
+        }
+    }
+
+    pub fn refresh_active_scene_from_world(&mut self, ctx: &AppContext) {
+        let mut names = Vec::new();
+        for entity in ctx.world.iter() {
+            names.push(entity.name.clone());
+        }
+        self.scenes.insert(self.active_scene, names);
+    }
 }
 
 impl FerrousApp for WebRuntime {
-    fn setup(&mut self, _ctx: &mut AppContext) {}
+    fn setup(&mut self, ctx: &mut AppContext) {
+        ctx.render.set_ssao(false);
+        ctx.render.set_style(ferrous_renderer::RenderStyle::Pbr);
+        ctx.render.set_clear_color(Color::rgb(0.08, 0.1, 0.14));
+        ctx.render
+            .set_directional_light([0.25, -1.0, 0.2], [1.0, 1.0, 1.0], 2.0);
+        ctx.render.set_camera_eye(self.camera.eye());
+        ctx.render.renderer_mut().camera_mut().target = self.camera.target();
+    }
 
     fn update(&mut self, ctx: &mut AppContext) {
         let camera_override = {
@@ -89,195 +210,69 @@ impl FerrousApp for WebRuntime {
             queue.drain(..).collect::<Vec<_>>()
         };
 
-        {
-            let mut m = self.metrics.lock().unwrap();
-            m.commands_processed += commands.len() as u64;
-        }
-
         if !commands.is_empty() {
+            {
+                let mut m = self.metrics.lock().unwrap();
+                m.commands_processed += commands.len() as u64;
+            }
             log::info!("[Ferrous] Processing {} queued command(s)", commands.len());
         }
 
         for cmd in commands {
-            match cmd {
-                JsCommand::CreateScene { scene_id } => {
-                    self.scenes.entry(scene_id).or_default();
+            crate::dispatcher::CommandDispatcher::dispatch(self, ctx, cmd);
+        }
+
+        // --- Plugin Update Hooks ---
+        let dt = ctx.time.delta;
+        for plugin in &mut self.plugins {
+            plugin.on_update(ctx, dt);
+        }
+
+        // --- Asset Polling ---
+        let mut finished_textures = Vec::new();
+        for (&req_id, &handle) in &self.pending_textures {
+            if let ferrous_assets::AssetState::Ready(img) = ctx.asset_server.get(handle) {
+                // Register texture in GPU
+                let gpu_handle = ctx.render.register_texture(img.width, img.height, &img.pixels);
+                
+                // Notify JS
+                if let Some(resolver) = ASSET_RESOLVERS.lock().unwrap().remove(&req_id) {
+                    let _ = resolver.call1(&wasm_bindgen::JsValue::NULL, &wasm_bindgen::JsValue::from_f64(gpu_handle.0 as f64));
                 }
-                JsCommand::SetActiveScene { scene_id } => {
-                    self.scenes.entry(scene_id).or_default();
-                    self.active_scene = scene_id;
-                }
-                JsCommand::CreateBox {
-                    name,
-                    position,
-                    size,
-                    color,
-                } => {
-                    let handle = ctx.world.spawn_box(
-                        name.clone(),
-                        Vec3::from_array(position),
-                        Vec3::from_array(size),
-                    );
-                    ctx.world.set_color(handle, Color::rgb(color[0], color[1], color[2]));
-                    self.add_entity_to_active_scene(name);
-                }
-                JsCommand::CreateSphere {
-                    name,
-                    position,
-                    radius,
-                    segments,
-                    color,
-                } => {
-                    let handle = ctx.world.spawn_sphere(
-                        name.clone(),
-                        Vec3::from_array(position),
-                        radius,
-                        segments,
-                    );
-                    ctx.world.set_color(handle, Color::rgb(color[0], color[1], color[2]));
-                    self.add_entity_to_active_scene(name);
-                }
-                JsCommand::SpawnEntity {
-                    name,
-                    kind,
-                    position,
-                    color,
-                } => {
-                    let mut builder = ctx.world.spawn(name.clone());
-                    match kind.as_str() {
-                        "Cube" => {
-                            builder = builder.with_kind(ElementKind::Cube {
-                                half_extents: Vec3::splat(0.5),
-                            })
-                        }
-                        "Sphere" => {
-                            builder = builder.with_kind(ElementKind::Sphere {
-                                radius: 0.5,
-                                latitudes: 12,
-                                longitudes: 16,
-                            })
-                        }
-                        mesh_key => {
-                            builder = builder.with_kind(ElementKind::Mesh {
-                                asset_key: mesh_key.to_string(),
-                            })
-                        }
-                    }
-                    builder
-                        .with_position(Vec3::from_array(position))
-                        .with_color(Color::rgb(color[0], color[1], color[2]))
-                        .build();
-                    self.add_entity_to_active_scene(name);
-                }
-                JsCommand::SetTransform {
-                    name,
-                    position,
-                    rotation,
-                    scale,
-                } => {
-                    if let Some(handle) = ctx.world.find_entity_by_name(&name) {
-                        ctx.world.set_position(handle, Vec3::from_array(position));
-                        let rot = Quat::from_rotation_y(rotation[1])
-                            * Quat::from_rotation_x(rotation[0])
-                            * Quat::from_rotation_z(rotation[2]);
-                        ctx.world.set_rotation(handle, rot);
-                        ctx.world.set_scale(handle, Vec3::from_array(scale));
-                    }
-                }
-                JsCommand::SetCamera { eye, target } => {
-                    self.camera.set_camera(eye, target);
-                }
-                JsCommand::SetCameraControlMode { mode } => {
-                    if let Some(parsed_mode) = CameraControlMode::parse(&mode) {
-                        self.camera.set_mode(parsed_mode);
-                    }
-                }
-                JsCommand::AddPointLight {
-                    name,
-                    position,
-                    color,
-                    intensity,
-                    range,
-                } => {
-                    ctx.world.spawn_point_light(
-                        name.clone(),
-                        Vec3::from_array(position),
-                        color,
-                        intensity,
-                        range,
-                    );
-                    self.add_entity_to_active_scene(name);
-                }
-                JsCommand::SetDirectionalLight {
-                    direction,
-                    color,
-                    intensity,
-                } => {
-                    ctx.render.set_directional_light(direction, color, intensity);
-                }
-                JsCommand::UpdateMaterial {
-                    entity_name,
-                    r,
-                    g,
-                    b,
-                    metallic,
-                    roughness,
-                } => {
-                    if let Some(handle) = ctx.world.find_entity_by_name(&entity_name) {
-                        let mut desc = ctx
-                            .world
-                            .get_material_descriptor(handle)
-                            .cloned()
-                            .unwrap_or_default();
-                        desc.base_color = [r, g, b, 1.0];
-                        desc.metallic = metallic;
-                        desc.roughness = roughness;
-                        ctx.world.set_material_descriptor(handle, desc);
-                        ctx.world.set_color(handle, Color::rgb(r, g, b));
-                    }
-                }
-                JsCommand::RemoveEntity { name } => {
-                    if let Some(handle) = ctx.world.find_entity_by_name(&name) {
-                        ctx.world.despawn(handle);
-                    }
-                    self.remove_entity_from_scenes(&name);
-                }
-                JsCommand::ClearWorld => {
-                    ctx.world.clear();
-                    for entities in self.scenes.values_mut() {
-                        entities.clear();
-                    }
-                }
-                JsCommand::SetDebugMode { enabled } => {
-                    self.debug_mode = enabled;
-                    log::info!("[Ferrous] Debug mode: {}", if enabled { "on" } else { "off" });
-                }
-                JsCommand::EnablePlugin { name } => {
-                    self.enabled_plugins.lock().unwrap().insert(name);
-                }
-                JsCommand::DisablePlugin { name } => {
-                    self.enabled_plugins.lock().unwrap().remove(&name);
-                }
-                JsCommand::LegacyCreateTerrain => {
-                    if self.enabled_plugins.lock().unwrap().contains("terrain") {
-                        self.apply_legacy_terrain(ctx);
-                    } else {
-                        log::warn!("[Ferrous] terrain plugin disabled; create_terrain ignored");
-                    }
-                }
-                JsCommand::LegacyToggleSky => {
-                    if self.enabled_plugins.lock().unwrap().contains("sky") {
-                        ctx.render.renderer_mut().set_sky_procedural();
-                    } else {
-                        log::warn!("[Ferrous] sky plugin disabled; toggle_sky ignored");
-                    }
-                }
+                finished_textures.push(req_id);
+            } else if let ferrous_assets::AssetState::Failed(e) = ctx.asset_server.get(handle) {
+                self.report_error("asset.load_failed", &format!("Texture load failed: {}", e));
+                finished_textures.push(req_id);
             }
         }
+        for id in finished_textures { self.pending_textures.remove(&id); }
+
+        let mut finished_models = Vec::new();
+        for (&req_id, &handle) in &self.pending_models {
+            if let ferrous_assets::AssetState::Ready(_model) = ctx.asset_server.get(handle) {
+                // For models, we might want to return some data, but for now just success
+                if let Some(resolver) = ASSET_RESOLVERS.lock().unwrap().remove(&req_id) {
+                    let _ = resolver.call1(&wasm_bindgen::JsValue::NULL, &wasm_bindgen::JsValue::NULL);
+                }
+                finished_models.push(req_id);
+            } else if let ferrous_assets::AssetState::Failed(e) = ctx.asset_server.get(handle) {
+                self.report_error("asset.load_failed", &format!("Model load failed: {}", e));
+                finished_models.push(req_id);
+            }
+        }
+        for id in finished_models { self.pending_models.remove(&id); }
+
+        self.ensure_fallback_scene(ctx);
 
         self.camera.update_from_input(ctx);
         ctx.render.set_camera_eye(self.camera.eye());
         ctx.render.renderer_mut().camera_mut().target = self.camera.target();
+    }
+
+    fn on_sync_world(&mut self, world: &ferrous_core::World) {
+        for plugin in &mut self.plugins {
+            plugin.on_sync_world(world);
+        }
     }
 
     fn draw_ui(&mut self, dc: &mut DrawContext<'_, '_>) {
@@ -288,7 +283,7 @@ impl FerrousApp for WebRuntime {
         let (w, h) = (dc.ctx.window_size.0 as f32, dc.ctx.window_size.1 as f32);
         dc.gui.rect_r(w - 260.0, 14.0, 245.0, 52.0, [0.08, 0.1, 0.14, 0.86], 8.0);
         dc.gui.draw_text(dc.font, "Ferrous Web Engine", [w - 246.0, 30.0], 11.0, [0.56, 0.84, 1.0, 1.0]);
-        dc.gui.draw_text(dc.font, &format!("scene={} entities={}", self.active_scene, self.scenes.get(&self.active_scene).map(|s| s.len()).unwrap_or(0)), [w - 246.0, 48.0], 9.0, [0.9, 0.92, 0.95, 0.95]);
+        dc.gui.draw_text(dc.font, &format!("FPS: {:.0} | scene={} entities={}", dc.ctx.time.fps, self.active_scene, self.scenes.get(&self.active_scene).map(|s| s.len()).unwrap_or(0)), [w - 246.0, 48.0], 9.0, [0.9, 0.92, 0.95, 0.95]);
 
         let _ = h;
     }

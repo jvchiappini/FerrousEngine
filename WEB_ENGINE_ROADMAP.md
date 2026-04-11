@@ -1,9 +1,7 @@
 # FerrousEngine — Web 3D Engine Roadmap (Basic & Scalable Core)
+
 <!-- 
-  ARCHIVO DE CONTEXTO PERSISTENTE
-  Roadmap iterativo centrado primero en lograr un motor 3D fundacional,
-  escalable y que renderice "Meshes" (mallas) de manera perfecta y
-  robusta en la Web (WASM + WebGPU), antes de añadir características avanzadas.
+  ARCHIVO DE CONTEXTO PERSISTENTE Actualizado tras completar Fase 3.
 -->
 
 ## Objetivo Principal
@@ -11,46 +9,47 @@ Establecer un motor 3D básico pero extremadamente sólido y escalable en la Web
 
 ---
 
-## 🔲 FASE 1 — Infraestructura Web (El Canvas Mínimo Viable)
-**Objetivo:** Lograr que la ventana de la aplicación corra en el navegador sin crashes, sincronizando el event loop asíncrono.
-*   **Target WASM:** Configurar compilación `wasm32-unknown-unknown` usando `wasm-bindgen` y `console_error_panic_hook`.
-*   **Canvas y Event Loop:** Adaptar el init de `winit` para adherirse al DOM (`document.getElementById("canvas")`) usando `requestAnimationFrame` sin bloquear el navegador.
-*   **Contexto WebGPU:** Inicializar correctamente `ferrous_gpu` limitando los device requests a lo que soporta el API web actual. Limpiar color con un fondo fijo para confirmar el contexto funcional.
+## ✅ FASE 1 — Infraestructura Web (Finalizada)
+**Objetivo:** Lograr que la ventana de la aplicación corra en el navegador sin crashes.
+*   **Target WASM:** Configurado con `wasm-bindgen` y reporte de errores estructurado.
+*   **Canvas y Event Loop:** Sincronización perfecta de frames y auto-resize proactivo.
+*   **Contexto WebGPU:** Inicialización robusta con soporte para múltiples backends.
 
 ---
 
-## 🔲 FASE 2 — Carga Básica de Mallas (Assets & Buffers)
-**Objetivo:** Traer información de geometría (vertices e índices) desde un servidor local directamente a la RAM de WASM usando peticiones web asíncronas.
-*   **Fetch Asíncrono:** Reemplazar `std::fs` en las rutinas de carga. Un `AssetLoader` iterativo con `web_sys::window().unwrap().fetch()`.
-*   **Decodificador GLTF Base:** Extraer posiciones (`Vec3`), normales (`Vec3`), coordenadas UV (`Vec2`), e índices (`u16`/`u32`) de archivos `.glb`.
-*   **Sincronización a GPU:** Subir de manera eficiente esos arreglos de mallas hacia los `Buffer` del contexto de WebGPU (VertexBuffers, IndexBuffers).
+## ✅ FASE 2 — Carga Básica de Mallas (Finalizada)
+**Objetivo:** Traer información de geometría de manera asíncrona.
+*   **Fetch Asíncrono:** Implementado en `AssetServer` para entornos web.
+*   **Buffer Management:** Subida eficiente de Vertex e Index buffers a la VRAM.
 
 ---
 
-## 🔲 FASE 3 — ECS, Transform y Render Pipeline Minimalista
-**Objetivo:** Renderizar la geometría blanca (o un color base sólido) en el mundo tridimensional, validando la cámara y matemáticas.
-*   **Cámara Matemáticamente Perfecta:** Projection Matrix (Perspective) + View Matrix orbitable para navegar y poder dar vuelta alrededor de la malla.
-*   **ECS Transform:** Un componente `Transform` calculando matrices 4x4 combinadas y enviándolas al shader por medio de Uniforms u Object Buffers locales para posicionar elementos.
-*   **Pass Básico de Render:** Binding de un pipeline WGSL limpio (MVP -> Model, View, Projection) y dibujo (`draw_indexed`) respetando el Z-Buffer / Depth Stencil. Z-fighting no debe ocurrir.
+## ✅ FASE 3 — ECS, Transform y Render Pipeline Minimalista (Finalizada)
+**Objetivo:** Renderizar geometría validando la cámara y matemáticas.
+*   **Cámara Orbit/Fly:** Sistema de cámaras desacoplado con control total desde JS.
+*   **ECS Transform:** Sistema de jerarquías y sincronización de mundo a GPU funcionando.
+*   **API Fluente:** Introducción de `JsEntity` para manipulación encadenada desde JS.
 
 ---
 
-## 🔲 FASE 4 — Shading PBR Estándar (Renderizado "Perfecto")
-**Objetivo:** Asegurar que las mallas cargadas luzcan idénticas a como se verían en Blender o Three.js. No hay atajos, la iluminación PBR debe estar matemáticamente alineada.
-*   **El Shader Maestro (`pbr.wgsl`):** Un fragment shader sólido que recoja texturas de Albedo, Normal Maps con cálculo correcto de tangentes, y la textura de Roughness/Metallic unificada.
-*   **Iluminación Directa:** Una sola o múltiples luces direccionales procesando modelo matemático BRDF estándar (ej. GGX) basándose en las Normales de la malla para validar iluminación direccional dura.
-*   **Soporte de Instancing (Escalabilidad):** Permitir dibujar la misma malla 1,000 veces pasando simplemente una matriz distinta por instancia para probar el desempeño real en WebGPU de cara a la escalabilidad futua (dibujar ejércitos o bosques).
+## 🔲 FASE 4 — Shading PBR Estándar (Finalizada ✅)
+**Objetivo:** Asegurar que las mallas cargadas luzcan idénticas a como se verían en Blender.
+*   **Shader Maestro (`pbr.wgsl`):** Pipeline PBR completo con soporte para Roughness/Metallic.
+*   **Atmósfera:** Control dinámico de neblina y exposición HDR (ACES).
+*   **Instancing Masivo:** Soporte integrado para miles de instancias por Draw Call.
 
 ---
 
-## 🔲 FASE 5 — Sombreado Dinámico y Texturas Correctas (Opcional, Paso 2)
-**Objetivo:** Profundizar la fidelidad del renderer. Si el objeto tiene sombras, luce en la escena, y sus texturas cargan con correctos mappings (sRGB).
-*   **Shadow Mapping (1 Cascaded Shadow Map):** Pase de profundidad desde el punto de vista de un Sol direccional; vital para que las mallas se vean como objetos con masa reales.
-*   **Manejo de Transparencias Limpio (Alpha):** Diferenciar las mallas Opacas de las de recorte ('Alpha Cutoff'/'Mask') vs `Alpha Blend` (con depth testing bloqueado o reordenando profundidad en el renderer).
-*   **Cubemap / IBL (Iluminación Basada en Imágenes):** Un fondo simple (skybox HDR) generador de reflejos para validar que un metal 100% brillante luzca perfecto en ambiente web. 
+## 🚧 FASE 5 — Sombreado Dinámico y Texturas Correctas (En Progreso)
+**Objetivo:** Profundizar la fidelidad del renderer. 
+*   **Shadow Mapping:** Soporte para luces puntuales y direccionales con sombras.
+*   **Manejo de Transparencias:** Diferenciación entre Mask y Blend.
+*   **IBL (Iluminación Basada en Imágenes):** (Siguiente Paso) Soporte para HDRI y Skyboxes dinámicos.
 
 ---
 
-### Criterio de Éxito de la Versión Fundacional:
-Si envías el `.glb` de un **"Damaged Helmet"** (casco PBR estándar), este deberá verse con materiales correctos sin glitches visuales nativamente a 60 FPS mínimos en Chrome/Firefox sobre WASM, renderizando el ECS central iterando sus transforms cada cuadro.
-A partir de aquí, las lógicas ultra complejas podrán construirse progresivamente.
+### Estatus Actual:
+El motor ha superado la etapa fundacional. Posee un pipeline PBR estable, una API moderna y fluente en JavaScript, y soporte para controles atmosféricos dinámicos.
+
+---
+*Roadmap actualizado el 2026-04-11.*

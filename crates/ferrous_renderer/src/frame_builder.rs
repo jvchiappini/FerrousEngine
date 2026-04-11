@@ -15,7 +15,14 @@ use ferrous_core::scene::world::{Element, ElementKind, MaterialComponent};
 use ferrous_core::transform::Transform;
 
 use crate::geometry::primitives::{
-    cube::cube as create_cube, quad::quad as create_quad, sphere::sphere as create_sphere,
+    capsule::capsule as create_capsule,
+    circle::{circle as create_circle, ring as create_ring},
+    cube::cube as create_cube,
+    cylinder::cylinder as create_cylinder,
+    plane::plane as create_plane,
+    quad::quad as create_quad,
+    sphere::sphere as create_sphere,
+    torus::torus as create_torus,
 };
 use crate::graph::frame_packet::{CameraPacket, FramePacket, InstancedDrawCommand, Viewport};
 use crate::render_stats::RenderStats;
@@ -43,6 +50,16 @@ pub struct FrameBuilder {
     pub shared_quad_mesh: Option<crate::geometry::Mesh>,
     /// Shared sphere mesh + (latitudes, longitudes) key.
     pub shared_sphere_mesh: Option<(crate::geometry::Mesh, u32, u32)>,
+    /// Cylinder/cone meshes keyed by (radius_top_bits, radius_bottom_bits, height_bits, segs, rings, open).
+    pub cylinder_cache: HashMap<(u32, u32, u32, u32, u32, u8), crate::geometry::Mesh>,
+    /// Torus meshes keyed by (radius_bits, tube_bits, radial_segs, tubular_segs).
+    pub torus_cache: HashMap<(u32, u32, u32, u32), crate::geometry::Mesh>,
+    /// Plane meshes keyed by (width_bits, height_bits, w_segs, h_segs).
+    pub plane_cache: HashMap<(u32, u32, u32, u32), crate::geometry::Mesh>,
+    /// Capsule meshes keyed by (radius_bits, height_bits, radial_segs, cap_segs).
+    pub capsule_cache: HashMap<(u32, u32, u32, u32), crate::geometry::Mesh>,
+    /// Circle/Ring meshes keyed by (inner_bits, outer_bits, segs, rings).
+    pub disc_cache: HashMap<(u32, u32, u32, u32), crate::geometry::Mesh>,
     /// Cache of procedurally-generated meshes registered via `register_mesh`.
     /// Always available (no feature gate) so that WASM procedural terrain
     /// and other runtime-generated geometry works without the `assets` feature.
@@ -82,6 +99,11 @@ impl FrameBuilder {
             shared_cube_mesh: None,
             shared_quad_mesh: None,
             shared_sphere_mesh: None,
+            cylinder_cache: HashMap::new(),
+            torus_cache: HashMap::new(),
+            plane_cache: HashMap::new(),
+            capsule_cache: HashMap::new(),
+            disc_cache: HashMap::new(),
             procedural_mesh_cache: HashMap::new(),
             #[cfg(feature = "assets")]
             mesh_cache: HashMap::new(),
@@ -157,6 +179,12 @@ impl FrameBuilder {
                     | ElementKind::Mesh { .. }
                     | ElementKind::Quad { .. }
                     | ElementKind::Sphere { .. }
+                    | ElementKind::Cylinder { .. }
+                    | ElementKind::Torus { .. }
+                    | ElementKind::Plane { .. }
+                    | ElementKind::Capsule { .. }
+                    | ElementKind::Circle { .. }
+                    | ElementKind::Ring { .. }
             );
             if !is_renderable || !element.visible {
                 continue;
@@ -223,6 +251,85 @@ impl FrameBuilder {
                         self.shared_sphere_mesh = Some((new.clone(), *latitudes, *longitudes));
                         new
                     }
+                }
+                ElementKind::Cylinder {
+                    radius_top,
+                    radius_bottom,
+                    height,
+                    radial_segments,
+                    height_segments,
+                    open_ended,
+                } => {
+                    let key = (
+                        radius_top.to_bits(), radius_bottom.to_bits(), height.to_bits(),
+                        *radial_segments, *height_segments, *open_ended as u8,
+                    );
+                    self.cylinder_cache
+                        .entry(key)
+                        .or_insert_with(|| create_cylinder(
+                            device, *radius_top, *radius_bottom, *height,
+                            *radial_segments, *height_segments, *open_ended,
+                        ))
+                        .clone()
+                }
+                ElementKind::Torus { radius, tube, radial_segments, tubular_segments } => {
+                    let key = (
+                        radius.to_bits(), tube.to_bits(),
+                        *radial_segments, *tubular_segments,
+                    );
+                    self.torus_cache
+                        .entry(key)
+                        .or_insert_with(|| create_torus(
+                            device, *radius, *tube,
+                            *radial_segments, *tubular_segments,
+                            std::f32::consts::TAU,
+                        ))
+                        .clone()
+                }
+                ElementKind::Plane { width, height, width_segments, height_segments } => {
+                    let key = (
+                        width.to_bits(), height.to_bits(),
+                        *width_segments, *height_segments,
+                    );
+                    self.plane_cache
+                        .entry(key)
+                        .or_insert_with(|| create_plane(
+                            device, *width, *height,
+                            *width_segments, *height_segments,
+                        ))
+                        .clone()
+                }
+                ElementKind::Capsule { radius, height, radial_segments, cap_segments } => {
+                    let key = (
+                        radius.to_bits(), height.to_bits(),
+                        *radial_segments, *cap_segments,
+                    );
+                    self.capsule_cache
+                        .entry(key)
+                        .or_insert_with(|| create_capsule(
+                            device, *radius, *height,
+                            *radial_segments, *cap_segments,
+                        ))
+                        .clone()
+                }
+                ElementKind::Circle { radius, segments } => {
+                    let key = (0u32, radius.to_bits(), *segments, 1u32);
+                    self.disc_cache
+                        .entry(key)
+                        .or_insert_with(|| create_circle(device, *radius, *segments))
+                        .clone()
+                }
+                ElementKind::Ring { inner_radius, outer_radius, segments, rings } => {
+                    let key = (
+                        inner_radius.to_bits(), outer_radius.to_bits(),
+                        *segments, *rings,
+                    );
+                    self.disc_cache
+                        .entry(key)
+                        .or_insert_with(|| create_ring(
+                            device, *inner_radius, *outer_radius, *segments, *rings,
+                        ))
+                        .clone()
                 }
                 _ => continue,
             };

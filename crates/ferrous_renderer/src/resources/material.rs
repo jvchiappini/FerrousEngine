@@ -154,15 +154,12 @@ pub struct Material {
 pub struct MaterialUniformPbr {
     pub base_color: [f32; 4],         // albedo (linear RGBA)
     pub emissive: [f32; 4],           // xyz=color hdr, w=strength
-    pub metallic_roughness: [f32; 4], // x=metallic, y=roughness, z=ao_strength, w=reserved
-    pub normal_ao: [f32; 4],          // x=normal_scale, rest reserved
+    pub metallic_roughness: [f32; 4], // x=metallic, y=roughness, z=ao_strength, w=opacity
+    pub extra_params: [f32; 4],       // x=normal_scale, y=clearcoat, z=clearcoat_rough, w=reserved
     pub flags: u32,                   // bitmask describing which textures are bound
-    // after the flags word we insert a float used for alpha-test cutoff;
-    // two u32s pad the remainder so we still hit the 80‑byte boundary.
     pub alpha_cutoff: f32,
-    pub _pad: [u32; 2], // fills offset 72..80
-    // final padding word to round the total size up to 96 bytes.
-    pub _pad1: [u32; 4], // covers 80..96
+    pub _pad: [u32; 2],               // offset 72..80
+    pub _pad1: [u32; 4],              // offset 80..96
 }
 
 /// bitflags for the `flags` field in [`MaterialUniformPbr`].  these must
@@ -181,8 +178,8 @@ impl Default for MaterialUniformPbr {
         Self {
             base_color: [1.0, 1.0, 1.0, 1.0],
             emissive: [0.0, 0.0, 0.0, 0.0],
-            metallic_roughness: [0.0, 0.5, 1.0, 0.0],
-            normal_ao: [1.0, 0.0, 0.0, 0.0],
+            metallic_roughness: [0.0, 0.5, 1.0, 1.0], // w=opacity 1.0
+            extra_params: [1.0, 0.0, 0.0, 0.0],       // x=normal_scale 1.0, y=clearcoat 0.0
             flags: 0,
             alpha_cutoff: 0.0,
             _pad: [0; 2],
@@ -256,8 +253,8 @@ impl Material {
             desc.emissive[2],
             desc.emissive_strength,
         ];
-        uniform.metallic_roughness = [desc.metallic, desc.roughness, desc.ao_strength, 0.0];
-        uniform.normal_ao = [desc.normal_scale, 0.0, 0.0, 0.0];
+        uniform.metallic_roughness = [desc.metallic, desc.roughness, desc.ao_strength, desc.opacity];
+        uniform.extra_params = [desc.normal_scale, desc.clearcoat, desc.clearcoat_roughness, 0.0];
         uniform.flags = flags;
         uniform.alpha_cutoff = alpha_cutoff;
 

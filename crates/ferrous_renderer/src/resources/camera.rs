@@ -15,12 +15,15 @@ use glam::Mat4;
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraUniform {
     pub view_proj: [[f32; 4]; 4],
-    /// eye/camera world-space position (padding to 16 bytes required)
+    /// eye/camera world-space position
     pub position: [f32; 3],
-    pub _pad: f32,
+    pub exposure: f32, // repurposed from _pad
+    pub fog_color: [f32; 3],
+    pub fog_density: f32,
     /// Reserved space to reach 256-byte alignment (WebGPU requirement)
-    pub _alignment_padding_a: [f32; 32], 
-    pub _alignment_padding_b: [f32; 12],
+    /// 64 (mat4) + 12 (pos) + 4 (exp) + 12 (fog) + 4 (dens) = 96 bytes.
+    /// 256 - 96 = 160 bytes = 40 f32s.
+    pub _alignment_padding: [[f32; 4]; 10],
 }
 
 impl CameraUniform {
@@ -29,9 +32,10 @@ impl CameraUniform {
         Self {
             view_proj: Mat4::IDENTITY.to_cols_array_2d(),
             position: [0.0; 3],
-            _pad: 0.0,
-            _alignment_padding_a: [0.0; 32],
-            _alignment_padding_b: [0.0; 12],
+            exposure: 0.5,
+            fog_color: [0.75, 0.8, 0.85],
+            fog_density: 0.02,
+            _alignment_padding: [[0.0; 4]; 10],
         }
     }
 

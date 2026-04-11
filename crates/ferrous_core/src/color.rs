@@ -16,8 +16,10 @@
 //! let [r, g, b, a] = sky.to_array();
 //! ```
 
+use serde::{Serialize, Deserialize};
+
 /// Linear-space RGBA colour.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Color {
     pub r: f32,
     pub g: f32,

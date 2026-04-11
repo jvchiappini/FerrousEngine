@@ -9,7 +9,10 @@ const PI: f32 = 3.14159265359;
 
 struct Camera {
     view_proj : mat4x4<f32>,
-    eye_pos   : vec4<f32>,   // xyz = world-space camera position, w = padding
+    eye_pos   : vec3<f32>,
+    exposure  : f32,
+    fog_color : vec3<f32>,
+    fog_density: f32,
 };
 
 @group(0) @binding(0)
@@ -25,13 +28,13 @@ var<uniform> model: Model;
 
 struct MaterialUniform {
     base_color : vec4<f32>,
-    emissive : vec4<f32>, // w == strength
-    metallic_roughness : vec4<f32>, // x=met, y=rough, z=ao_strength
-    normal_ao : vec4<f32>, // x = normal_scale
+    emissive : vec4<f32>,           // w == strength
+    metallic_roughness : vec4<f32>, // x=met, y=rough, z=ao_strength, w=opacity
+    extra_params : vec4<f32>,       // x=normal_scale, y=clearcoat, z=clearcoat_rough
     flags : u32,
     alpha_cutoff: f32,
-    // pad the remaining three dwords to maintain 80‑byte total size
     _pad: vec2<u32>,
+    _pad1: vec4<u32>,
 };
 
 @group(2) @binding(0)
@@ -221,11 +224,10 @@ struct FragmentOutput {
 fn fs_main(frag_in: FragmentInput) -> FragmentOutput {
     var albedo = material.base_color.xyz * frag_in.color;
     // track alpha separately; start with material base alpha
-    var out_alpha = material.base_color.w;
+    var out_alpha = material.base_color.w * material.metallic_roughness.w; // w = opacity
     if ((material.flags & 1u) != 0u) {
         let sample = textureSampleLevel(tex_albedo, mat_sampler, frag_in.uv, 0.0);
         albedo *= sample.xyz;
-        // modulate alpha by texture's alpha channel as well
         out_alpha *= sample.a;
     }
     var ao_factor = material.metallic_roughness.z;  // ao_strength
@@ -237,9 +239,8 @@ fn fs_main(frag_in: FragmentInput) -> FragmentOutput {
     var N = normalize(frag_in.world_normal);
     if ((material.flags & 2u) != 0u) {
         var normal_sample = textureSampleLevel(tex_normal, mat_sampler, frag_in.uv, 0.0).xyz * 2.0 - vec3<f32>(1.0);
-        // WGSL forbids writing to swizzles; expand manually.
-        normal_sample.x = normal_sample.x * material.normal_ao.x;
-        normal_sample.y = normal_sample.y * material.normal_ao.x;
+        normal_sample.x = normal_sample.x * material.extra_params.x; // extra_params.x = normal_scale
+        normal_sample.y = normal_sample.y * material.extra_params.x;
         let T = normalize(frag_in.world_tangent);
         let B = normalize(frag_in.world_bitangent);
         let TBN = mat3x3<f32>(T, B, N);
@@ -277,7 +278,20 @@ fn fs_main(frag_in: FragmentInput) -> FragmentOutput {
     let D       = distribution_ggx(NdotH, roughness);
     let G       = geometry_smith(NdotV, NdotL, roughness);
     let F       = fresnel_schlick(VdotH, F0);
-    let specular = (D * G * F) / (4.0 * NdotV * NdotL + 0.0001);
+    var specular = (D * G * F) / (4.0 * NdotV * NdotL + 0.0001);
+
+    // ── Clearcoat Specular ──────────────────────────────────────────────────
+    let cc_factor = material.extra_params.y;
+    let cc_rough  = max(material.extra_params.z, 0.001);
+    if (cc_factor > 0.01) {
+        let D_cc = distribution_ggx(NdotH, cc_rough);
+        let G_cc = geometry_schlick_ggx_direct(NdotV, cc_rough) * geometry_schlick_ggx_direct(NdotL, cc_rough);
+        let F_cc = fresnel_schlick(VdotH, vec3<f32>(0.04)) * cc_factor; // Clearcoat IOR is usually 1.5 (F0=0.04)
+        let specular_cc = (D_cc * G_cc * F_cc) / (4.0 * NdotV * NdotL + 0.0001);
+        
+        // Combine clearcoat: clearcoat layer sits on top, attenuating base specular and diffuse
+        specular = specular * (1.0 - F_cc) + specular_cc;
+    }
 
     // energy conservation: kD = 0 for metals (all energy goes to specular)
     let kD = (vec3<f32>(1.0) - F) * (1.0 - metallic);
@@ -395,9 +409,9 @@ fn fs_main(frag_in: FragmentInput) -> FragmentOutput {
     // ── Professional Distance Fog ──────────────────────────────────────────
     // Simulates aerial perspective by blending distant pixels into the horizon haze.
     // This is what makes a localized terrain feel "infinite".
-    let fog_color = vec3<f32>(0.75, 0.8, 0.85); // Matches p_horizon in procedural_sky.wgsl
-    let fog_density = 0.02; // Adjust for "Inifinite" look feel
-    let dist = length(camera.eye_pos.xyz - frag_in.world_pos);
+    let fog_color = camera.fog_color;
+    let fog_density = camera.fog_density;
+    let dist = length(camera.eye_pos - frag_in.world_pos);
     let fog_factor = 1.0 - exp(-dist * fog_density);
     
     // Final color with fog

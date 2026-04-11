@@ -9,6 +9,7 @@ use glam::Vec3;
 
 use crate::scene::{MaterialDescriptor, MaterialHandle, MATERIAL_DEFAULT};
 use crate::transform::Transform;
+use serde::{Serialize, Deserialize};
 
 // ── ID generation ────────────────────────────────────────────────────────────
 
@@ -24,7 +25,7 @@ pub(super) fn next_id() -> u64 {
 ///
 /// Handles are stable — despawning other entities does not invalidate
 /// existing handles.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Handle(pub u64);
 
 // ── PointLightComponent ──────────────────────────────────────────────────────
@@ -32,7 +33,7 @@ pub struct Handle(pub u64);
 /// Component for entities that emit point light.
 ///
 /// Collected by `sync_world` each frame and uploaded to the GPU light buffer.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct PointLightComponent {
     pub color: [f32; 3],
     pub intensity: f32,
@@ -54,7 +55,7 @@ impl Default for PointLightComponent {
 // ── MaterialComponent ────────────────────────────────────────────────────────
 
 /// Material handle + CPU-side descriptor for an entity.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MaterialComponent {
     pub handle: MaterialHandle,
     pub descriptor: MaterialDescriptor,
@@ -74,8 +75,9 @@ impl Default for MaterialComponent {
 // ── ElementKind ──────────────────────────────────────────────────────────────
 
 /// Geometric or logical kind of a scene entity.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ElementKind {
+    // ── Existing ────────────────────────────────────────────────────────────
     Cube {
         half_extents: Vec3,
     },
@@ -97,7 +99,57 @@ pub enum ElementKind {
         intensity: f32,
     },
     Empty,
+
+    // ── New primitives ───────────────────────────────────────────────────────
+
+    /// A cylinder, cone (top_radius = 0), or frustum.
+    Cylinder {
+        radius_top: f32,
+        radius_bottom: f32,
+        height: f32,
+        /// Number of sides around the axis.
+        radial_segments: u32,
+        /// Horizontal ring subdivisions on the body.
+        height_segments: u32,
+        /// If true, no end caps are generated.
+        open_ended: bool,
+    },
+    /// A torus (donut shape).
+    Torus {
+        radius: f32,
+        tube: f32,
+        radial_segments: u32,
+        tubular_segments: u32,
+    },
+    /// A flat subdivided plane lying in the XZ plane (Y = 0).
+    Plane {
+        width: f32,
+        height: f32,
+        width_segments: u32,
+        height_segments: u32,
+    },
+    /// A capsule: cylinder body capped with hemispheres.
+    Capsule {
+        radius: f32,
+        /// Length of the cylindrical body (not including caps).
+        height: f32,
+        radial_segments: u32,
+        cap_segments: u32,
+    },
+    /// A flat filled disc in the XZ plane.
+    Circle {
+        radius: f32,
+        segments: u32,
+    },
+    /// A flat ring (annulus) in the XZ plane.
+    Ring {
+        inner_radius: f32,
+        outer_radius: f32,
+        segments: u32,
+        rings: u32,
+    },
 }
+
 
 impl ferrous_ecs::prelude::Component for ElementKind {}
 
@@ -109,8 +161,7 @@ impl Default for ElementKind {
 
 // ── Element ──────────────────────────────────────────────────────────────────
 
-/// Complete data for one scene entity.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Element {
     pub id: u64,
     pub name: String,
@@ -119,6 +170,7 @@ pub struct Element {
     pub kind: ElementKind,
     pub visible: bool,
     pub tags: Vec<String>,
+    #[serde(skip)]
     pub render_handle: Option<usize>,
     pub point_light: Option<PointLightComponent>,
 }

@@ -36,17 +36,33 @@ def extract_class_body(source: str, class_decl: str) -> str:
 
 
 def parse_rust_api(rust_sources: str) -> set[str]:
+    # Match #[wasm_bindgen(js_name = setPosition)] or #[wasm_bindgen(js_name = "setPosition")]
+    # Group 1: js_name without quotes
+    # Group 2: js_name with quotes
+    # Group 3: rust method name
     pattern = re.compile(
-        r"#\[wasm_bindgen(?:\([^\)]*\))?\]\s*pub\s+fn\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(",
+        r"#\[wasm_bindgen(?:\(\s*js_name\s*=\s*(?:([a-zA-Z0-9_]+)|\"([a-zA-Z0-9_]+)\")\s*\))?\]\s*pub\s+fn\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(",
         re.MULTILINE,
     )
-    methods = set(pattern.findall(rust_sources))
+    
+    methods = set()
+    for js_name_no_quotes, js_name_quotes, rust_name in pattern.findall(rust_sources):
+        if js_name_no_quotes:
+            methods.add(js_name_no_quotes)
+        elif js_name_quotes:
+            methods.add(js_name_quotes)
+        else:
+            methods.add(rust_name)
+            
     methods.discard("new")
     return methods
 
 
-def parse_dts_api(dts: str) -> set[str]:
-    body = extract_class_body(dts, "export class FerrousWebEngine")
+def parse_dts_api(dts: str, class_name: str) -> set[str]:
+    try:
+        body = extract_class_body(dts, f"export class {class_name}")
+    except ValueError:
+        return set()
 
     methods = set()
     for raw_line in body.splitlines():
@@ -63,8 +79,11 @@ def parse_dts_api(dts: str) -> set[str]:
     return methods
 
 
-def parse_js_api(js: str) -> set[str]:
-    body = extract_class_body(js, "export class FerrousWebEngine")
+def parse_js_api(js: str, class_name: str) -> set[str]:
+    try:
+        body = extract_class_body(js, f"export class {class_name}")
+    except ValueError:
+        return set()
 
     methods = set()
     for raw_line in body.splitlines():
@@ -81,8 +100,8 @@ def parse_js_api(js: str) -> set[str]:
     return methods
 
 
-def parse_dts_wasm_exports(dts: str) -> set[str]:
-    pattern = re.compile(r"readonly\s+ferrouswebengine_([a-zA-Z0-9_]+):")
+def parse_dts_wasm_exports(dts: str, prefix: str) -> set[str]:
+    pattern = re.compile(rf"readonly\s+{prefix}_([a-zA-Z0-9_]+):")
     exports = set(pattern.findall(dts))
     exports.discard("new")
     exports.discard("free")
@@ -115,14 +134,25 @@ def main() -> int:
     js = read_text(js_path)
 
     rust_api = parse_rust_api(rust_sources)
-    dts_api = parse_dts_api(dts)
-    js_api = parse_js_api(js)
-    wasm_exports = parse_dts_wasm_exports(dts)
+    
+    # Check FerrousWebEngine
+    dts_engine = parse_dts_api(dts, "FerrousWebEngine")
+    js_engine = parse_js_api(js, "FerrousWebEngine")
+    wasm_engine = parse_dts_wasm_exports(dts, "ferrouswebengine")
+    
+    # Check JsEntity
+    dts_entity = parse_dts_api(dts, "JsEntity")
+    js_entity = parse_js_api(js, "JsEntity")
+    wasm_entity = parse_dts_wasm_exports(dts, "jsentity")
+    
+    combined_dts = dts_engine | dts_entity
+    combined_js = js_engine | js_entity
+    combined_wasm = wasm_engine | wasm_entity
 
     errors: list[str] = []
-    errors.extend(report_diff("Rust API", rust_api, "TypeScript class API", dts_api))
-    errors.extend(report_diff("Rust API", rust_api, "Generated JS class API", js_api))
-    errors.extend(report_diff("Rust API", rust_api, "WASM export table", wasm_exports))
+    errors.extend(report_diff("Rust API", rust_api, "TypeScript class API", combined_dts))
+    errors.extend(report_diff("Rust API", rust_api, "Generated JS class API", combined_js))
+    errors.extend(report_diff("Rust API", rust_api, "WASM export table", combined_wasm))
 
     if errors:
         print("[PR1 Check] Ferrous Web API export sync FAILED")

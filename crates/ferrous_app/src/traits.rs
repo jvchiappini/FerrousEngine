@@ -154,6 +154,12 @@ pub trait FerrousApp {
     /// `ctx.camera_eye` contains the world-space camera position this frame.
     fn draw_3d(&mut self, ctx: &mut AppContext) {}
 
+    /// Called right before the ECS world is synced to the renderer.
+    ///
+    /// Use this to inject final data into the world or read back state
+    /// that is only available after all systems have run but before GPU upload.
+    fn on_sync_world(&mut self, world: &ferrous_core::World) {}
+
     /// Called whenever the window is resized.
     ///
     /// The new physical pixel dimensions are in `new_size`.  The runner

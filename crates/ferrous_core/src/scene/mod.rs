@@ -1,21 +1,28 @@
 #![cfg(feature = "ecs")]
 //! Scene subsystem — World, Element, Camera, Controller.
 
+pub mod blueprint;
 pub mod camera;
 pub mod controller;
 pub mod gizmo;
 pub mod material;
+pub mod particles;
+pub mod skinning;
 pub mod systems;
 pub mod world;
 
+pub use blueprint::SceneBlueprint;
+
 // World types
 pub use world::{Element, ElementKind, Handle, PointLightComponent, World};
+pub use particles::ParticleEmitter;
+pub use skinning::{Skeleton, SkinnedMesh, BoneInfluence};
 
 // Systems and stage enum
 pub use systems::{
     AnimationClip, AnimationPlayer, AnimationSystem, Behavior, BehaviorComponent, BehaviorSystem,
     Camera3D, Camera3DBuilder, Children, DirectionalLight, GlobalTransform, Keyframe, OrbitCamera,
-    OrbitCameraSystem, Parent, Stage, TimeSystem, TransformSystem, Velocity, VelocitySystem,
+    OrbitCameraSystem, Parent, Stage, SkinningSystem, TimeSystem, TransformSystem, Velocity, VelocitySystem,
 };
 
 // Camera

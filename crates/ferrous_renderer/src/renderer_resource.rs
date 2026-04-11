@@ -243,8 +243,8 @@ impl MaterialRegistry {
             desc.emissive[2],
             desc.emissive_strength,
         ];
-        uniform.metallic_roughness = [desc.metallic, desc.roughness, desc.ao_strength, 0.0];
-        uniform.normal_ao = [desc.normal_scale, 0.0, 0.0, 0.0];
+        uniform.metallic_roughness = [desc.metallic, desc.roughness, desc.ao_strength, desc.opacity];
+        uniform.extra_params = [desc.normal_scale, desc.clearcoat, desc.clearcoat_roughness, 0.0];
 
         let mut flags = 0;
         if desc.albedo_tex.is_some() {

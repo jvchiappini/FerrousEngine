@@ -11,6 +11,7 @@
 #[cfg(feature = "ecs")]
 use ferrous_ecs::prelude::Component;
 use glam::{Mat4, Quat, Vec3};
+use serde::{Deserialize, Serialize};
 
 /// World-space transform component.
 ///
@@ -22,7 +23,7 @@ use glam::{Mat4, Quat, Vec3};
 /// let t = Transform::from_position(Vec3::new(1.0, 0.0, 0.0));
 /// let m = t.matrix(); // ready to upload as a model uniform
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Transform {
     /// World-space position.
     pub position: Vec3,

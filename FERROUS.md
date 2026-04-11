@@ -21,7 +21,7 @@ A través de un puente bidireccional (vía WebAssembly Bindings o FFI), **tú di
 ### 2. Render Pipeline PBR Altamente Completo 
 *   No necesitas armar luces y primitivas experimentales desde ceros. Nuestro Pass Rendering incluye:
     *   **ACES Tonemapping (HDR Pipeline)** de rango dinámico para que la óptica sea hiper-realista.
-    *   Iluminación Base PBR Global con materiales Avanzados (Roughness/Metallic).
+    *   Iluminación Base PBR Global con materiales Avanzados (Roughness/Metallic, **Clearcoat**, **Opacity**).
     *   Arquitectura Data-Oriented (ECS) preparada por defecto para **Instancing Masivo** (dibujar miles de assets copiados gastando solo un Draw Call en CPU).
     *   Soporte dinámico opcional en la estructura modular para Voxel Global Illumination, SSGI y WebXR Opcional.
 
@@ -34,19 +34,24 @@ Tu proyecto jamás pesará o incluirá módulos que te estorben. Ferrous separa 
 *   `ferrous_gui`: Si requirieses crear UI directamente sobre el Contexto Hardware y evitar usar CSS temporalmente o para herramientas de escritorio internas.
 
 ### 4. Zero-Friction Interop
-Expón una instancia global *Singleton* hacia cualquier Front-End mediante nuestros bindings:
+Expón una instancia global *Singleton* hacia cualquier Front-End mediante nuestros bindings fluentes:
 ```javascript
 import { FerrousWebEngine } from 'ferrous_web';
 
-// Instanciar el Core C++ (Rust)
+// Instanciar el Core Industrial (Rust)
 const engine = new FerrousWebEngine();
 
-// Arrancarlo y montarlo de fondo del Body Themed
+// Arrancarlo y montarlo de fondo 
 engine.mount_and_run(); 
 
-// Alterar lógicas al vuelo sin recompilar modelos desde 0 
-engine.load_mesh("/car.glb");
-engine.set_entity_position(engine.getEntity('car'), 10.0, 0.0, 5.0); 
+// API Fluente: Crea y configura objetos en una sola línea
+engine.createBox("HeroBox", 0, 0, 0, 1, 1, 1, 1, 0, 0)
+      .set_position(0, 5, 0)
+      .set_material(1, 0.5, 0, 0.8, 0.1); // Color, Metal, Roughness
+
+// Control atmosférico dinámico
+engine.set_environment(0.1, 0.1, 0.15, 0.02); // Fog color & density
+engine.set_exposure(0.6); // HDR Exposure
 ```
 
 ---

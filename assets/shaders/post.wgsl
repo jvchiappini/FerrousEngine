@@ -9,6 +9,16 @@
 @group(0) @binding(2) var t_bloom: texture_2d<f32>;
 @group(0) @binding(3) var s_bloom: sampler;
 
+struct Camera {
+    view_proj : mat4x4<f32>,
+    eye_pos   : vec3<f32>,
+    exposure  : f32,
+    fog_color : vec3<f32>,
+    fog_density: f32,
+};
+
+@group(1) @binding(0) var<uniform> camera: Camera;
+
 // ── Vertex shader ─────────────────────────────────────────────────────────────
 // Generates a fullscreen triangle from the vertex index — no vertex buffer needed.
 // Indices 0-2 cover the entire NDC square through the classic clip-space trick.
@@ -53,9 +63,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let bloom_color = textureSampleLevel(t_bloom, s_bloom, in.uv, 0.0).rgb;
 
     // 2. Exposure — multiply before tone mapping to control overall brightness.
-    //    Outdoor HDRIs are typically very bright (sky > 1.0), so an exposure
-    //    value < 1.0 brings the scene into a nicer range for ACES.
-    let exposure = 0.5;
+    let exposure = camera.exposure;
     let exposed = (hdr_color + bloom_color * 0.15) * exposure;
 
     // 3. ACES filmic tone mapping — compresses the HDR range to [0, 1].

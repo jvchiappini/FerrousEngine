@@ -42,9 +42,9 @@ impl OrbitState {
         }
 
         // ── Right-drag orbital rotation ───────────────────────────────────
-        if input.is_button_down(MouseButton::Right) {
+        let sens = camera.controller.mouse_sensitivity;
+        if sens > 0.0 && input.is_button_down(MouseButton::Right) {
             let (dx, dy) = input.consume_mouse_delta();
-            let sens = camera.controller.mouse_sensitivity;
             self.yaw   -= dx * sens;
             self.pitch -= dy * sens;
 

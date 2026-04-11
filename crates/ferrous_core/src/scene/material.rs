@@ -6,18 +6,20 @@
 //! introducing a cyclic dependency.  The renderer re-exports the same types
 //! for convenience.
 
+use serde::{Serialize, Deserialize};
+
 /// Opaque handle referencing a material slot in the renderer's material
 /// registry.  Internally this is just a small integer index, but wrapping it
 /// in a newtype prevents misuse and makes the intention explicit in the
 /// core crate.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MaterialHandle(pub u32);
 /// The well‑known default material slot that the renderer guarantees will
 /// always exist.  It corresponds to a neutral white opaque PBR material.
 pub const MATERIAL_DEFAULT: MaterialHandle = MaterialHandle(0);
 
 /// How the material handles transparency.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum AlphaMode {
     /// fully opaque; no blending or alpha-test
     Opaque,
@@ -31,7 +33,7 @@ pub enum AlphaMode {
 /// Describes every parameter required to build a PBR material.  This is the
 /// ergonomic, serialisable type that engine clients will typically construct
 /// on the CPU; the renderer converts it into a GPU bind group.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MaterialDescriptor {
     // scalar parameters ------------------------------------------------------
     pub base_color: [f32; 4],
@@ -41,6 +43,9 @@ pub struct MaterialDescriptor {
     pub roughness: f32,
     pub normal_scale: f32,
     pub ao_strength: f32,
+    pub clearcoat: f32,
+    pub clearcoat_roughness: f32,
+    pub opacity: f32,
 
     // texture slots ----------------------------------------------------------
     // the fields are renderer-local indices; we avoid pulling the actual
@@ -72,6 +77,9 @@ impl Default for MaterialDescriptor {
             roughness: 0.5,
             normal_scale: 1.0,
             ao_strength: 1.0,
+            clearcoat: 0.0,
+            clearcoat_roughness: 0.0,
+            opacity: 1.0,
             albedo_tex: None,
             normal_tex: None,
             metallic_roughness_tex: None,
@@ -96,7 +104,7 @@ impl Default for MaterialDescriptor {
 ///
 /// `Clone + Copy + PartialEq` so it can live inside `MaterialDescriptor`
 /// without extra complexity.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum RenderStyle {
     /// Standard physically-based rendering (PBR) with IBL.  Default.
     Pbr,
@@ -134,7 +142,7 @@ impl Default for RenderStyle {
 /// | Medium  | ❌   | ✅    | ✅ 512  | ❌  | 1x   |
 /// | Low     | ❌   | ❌    | ❌      | ❌  | 1x   |
 /// | Minimal | ❌   | ❌    | ❌      | ❌  | 1x (depth only) |
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RenderQuality {
     /// Full PBR + SSAO + Bloom + 4x MSAA — maximum visual fidelity.
     Ultra,
@@ -246,7 +254,7 @@ use ferrous_ecs::component::Component;
 ///     Material::pbr().color(Color::srgb(0.9, 0.1, 0.1)).metallic(0.0).roughness(0.3).build(),
 /// ));
 /// ```
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Material {
     /// Base/albedo colour (linear space).
     pub base_color: Color,
@@ -265,6 +273,12 @@ pub struct Material {
     /// Per-material shading style override.  `None` inherits the global
     /// renderer style.
     pub style_override: Option<RenderStyle>,
+    /// Clearcoat factor (0 = no clearcoat, 1 = maximum clearcoat).
+    pub clearcoat: f32,
+    /// Clearcoat roughness (0 = mirror-smooth, 1 = fully rough).
+    pub clearcoat_roughness: f32,
+    /// Opacity factor (0 = fully transparent, 1 = fully opaque).
+    pub opacity: f32,
 }
 
 impl Component for Material {}
@@ -280,6 +294,9 @@ impl Default for Material {
             alpha_mode: AlphaMode::Opaque,
             double_sided: false,
             style_override: None,
+            clearcoat: 0.0,
+            clearcoat_roughness: 0.0,
+            opacity: 1.0,
         }
     }
 }
@@ -319,6 +336,9 @@ impl Material {
             alpha_mode: self.alpha_mode.clone(),
             double_sided: self.double_sided,
             style_override: self.style_override,
+            clearcoat: self.clearcoat,
+            clearcoat_roughness: self.clearcoat_roughness,
+            opacity: self.opacity,
             ..MaterialDescriptor::default()
         }
     }
@@ -388,6 +408,19 @@ impl MaterialBuilder {
     /// Render both sides of every face.
     pub fn double_sided(mut self) -> Self {
         self.inner.double_sided = true;
+        self
+    }
+
+    /// Set clearcoat factor and roughness.
+    pub fn clearcoat(mut self, factor: f32, roughness: f32) -> Self {
+        self.inner.clearcoat = factor.clamp(0.0, 1.0);
+        self.inner.clearcoat_roughness = roughness.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Set opacity factor.
+    pub fn opacity(mut self, v: f32) -> Self {
+        self.inner.opacity = v.clamp(0.0, 1.0);
         self
     }
 

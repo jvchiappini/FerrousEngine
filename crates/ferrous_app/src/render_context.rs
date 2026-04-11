@@ -91,6 +91,18 @@ impl<'r> RenderContext<'r> {
     pub fn set_clear_color(&mut self, color: Color) {
         self.inner.set_clear_color(color.to_wgpu());
     }
+    
+    /// Enable and configure distance fog.
+    /// `color`: linear RGB. `density`: typical values 0.01 - 0.05.
+    pub fn set_fog(&mut self, color: [f32; 3], density: f32) {
+        self.inner.set_fog(color, density);
+    }
+    
+    /// Adjust the global exposure multiplier.
+    /// Values < 1.0 are darker, > 1.0 are brighter. 0.5 is a good baseline for HDR.
+    pub fn set_exposure(&mut self, exposure: f32) {
+        self.inner.set_exposure(exposure);
+    }
 
     // ── Custom passes ────────────────────────────────────────────────────────
 
@@ -126,6 +138,11 @@ impl<'r> RenderContext<'r> {
     /// frame.
     pub fn update_material(&mut self, handle: MaterialHandle, desc: &MaterialDescriptor) {
         self.inner.update_material_params(handle, desc);
+    }
+
+    /// Register a GPU texture from raw RGBA8 bytes.
+    pub fn register_texture(&mut self, width: u32, height: u32, data: &[u8]) -> ferrous_renderer::TextureHandle {
+        self.inner.register_texture(width, height, data)
     }
 
     // ── Lighting ─────────────────────────────────────────────────────────────

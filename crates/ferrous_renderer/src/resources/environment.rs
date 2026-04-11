@@ -237,8 +237,8 @@ impl Environment {
         let ssao_view = ssao_dummy_tex.create_view(&wgpu::TextureViewDescriptor::default());
         let ssao_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("DummySSAOSampler"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             ..Default::default()
@@ -798,8 +798,8 @@ impl Environment {
                 ssao_dummy_tex.create_view(&wgpu::TextureViewDescriptor::default());
             let ssao_sampler_hdri = device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some("DummySSAOSampler"),
-                mag_filter: wgpu::FilterMode::Linear,
-                min_filter: wgpu::FilterMode::Linear,
+                mag_filter: wgpu::FilterMode::Nearest,
+                min_filter: wgpu::FilterMode::Nearest,
                 address_mode_u: wgpu::AddressMode::ClampToEdge,
                 address_mode_v: wgpu::AddressMode::ClampToEdge,
                 ..Default::default()

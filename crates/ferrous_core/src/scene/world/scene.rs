@@ -8,6 +8,7 @@ use ferrous_ecs::prelude::{Entity, World as EcsWorld};
 use glam::Vec3;
 
 use crate::transform::Transform;
+use crate::scene::{DirectionalLight, SceneBlueprint};
 
 use super::builder::EntityBuilder;
 use super::types::{next_id, Element, ElementKind, Handle, PointLightComponent};
@@ -158,7 +159,127 @@ impl World {
             .build()
     }
 
-    // ── Despawn ─────────────────────────────────────────────────────────────
+    /// Convenience: spawn a cylinder (or closed cone when `radius_top = 0`).
+    pub fn spawn_cylinder(
+        &mut self,
+        name: impl Into<String>,
+        position: Vec3,
+        radius_top: f32,
+        radius_bottom: f32,
+        height: f32,
+        radial_segments: u32,
+    ) -> Handle {
+        self.spawn(name)
+            .with_kind(ElementKind::Cylinder {
+                radius_top,
+                radius_bottom,
+                height,
+                radial_segments,
+                height_segments: 1,
+                open_ended: false,
+            })
+            .with_position(position)
+            .build()
+    }
+
+    /// Convenience: spawn a torus.
+    pub fn spawn_torus(
+        &mut self,
+        name: impl Into<String>,
+        position: Vec3,
+        radius: f32,
+        tube: f32,
+        radial_segments: u32,
+        tubular_segments: u32,
+    ) -> Handle {
+        self.spawn(name)
+            .with_kind(ElementKind::Torus {
+                radius,
+                tube,
+                radial_segments,
+                tubular_segments,
+            })
+            .with_position(position)
+            .build()
+    }
+
+    /// Convenience: spawn a subdivided plane in the XZ plane.
+    pub fn spawn_plane(
+        &mut self,
+        name: impl Into<String>,
+        position: Vec3,
+        width: f32,
+        height: f32,
+        width_segments: u32,
+        height_segments: u32,
+    ) -> Handle {
+        self.spawn(name)
+            .with_kind(ElementKind::Plane {
+                width,
+                height,
+                width_segments,
+                height_segments,
+            })
+            .with_position(position)
+            .build()
+    }
+
+    /// Convenience: spawn a capsule (cylinder + hemispherical caps).
+    pub fn spawn_capsule(
+        &mut self,
+        name: impl Into<String>,
+        position: Vec3,
+        radius: f32,
+        height: f32,
+        radial_segments: u32,
+        cap_segments: u32,
+    ) -> Handle {
+        self.spawn(name)
+            .with_kind(ElementKind::Capsule {
+                radius,
+                height,
+                radial_segments,
+                cap_segments,
+            })
+            .with_position(position)
+            .build()
+    }
+
+    /// Convenience: spawn a flat circle disc.
+    pub fn spawn_circle(
+        &mut self,
+        name: impl Into<String>,
+        position: Vec3,
+        radius: f32,
+        segments: u32,
+    ) -> Handle {
+        self.spawn(name)
+            .with_kind(ElementKind::Circle { radius, segments })
+            .with_position(position)
+            .build()
+    }
+
+    /// Convenience: spawn a ring (annulus).
+    pub fn spawn_ring(
+        &mut self,
+        name: impl Into<String>,
+        position: Vec3,
+        inner_radius: f32,
+        outer_radius: f32,
+        segments: u32,
+        rings: u32,
+    ) -> Handle {
+        self.spawn(name)
+            .with_kind(ElementKind::Ring {
+                inner_radius,
+                outer_radius,
+                segments,
+                rings,
+            })
+            .with_position(position)
+            .build()
+    }
+
 
     /// Remove the entity from the world.  Returns `true` if it existed.
     pub fn despawn(&mut self, handle: Handle) -> bool {
@@ -290,5 +411,44 @@ impl World {
         self.ecs.clear();
         self.ecs_mapping.clear();
         self.count = 0;
+    }
+
+    /// Captures the current world state into a serializable blueprint.
+    pub fn to_blueprint(&self, name: impl Into<String>) -> SceneBlueprint {
+        let mut blueprint = SceneBlueprint::new(name);
+        for entity in self.entities.iter().flatten() {
+            blueprint.entities.push(entity.clone());
+        }
+        
+        // Capture global directional light if present
+        blueprint.directional_light = self.ecs.query::<DirectionalLight>()
+            .map(|(_, l)| *l)
+            .next();
+            
+        blueprint
+    }
+
+    /// Reconstructs the world state from a blueprint.
+    /// 
+    /// This clears the current world and spawns all entities/lights
+    /// defined in the blueprint.
+    pub fn from_blueprint(&mut self, blueprint: SceneBlueprint) {
+        self.clear();
+        
+        for elem in blueprint.entities {
+            // We use the ID from the blueprint to keep handles stable if possible,
+            // but usually a load-time re-ID is safer if merging scenes.
+            // For persistence, we trust the blueprint IDs.
+            let builder = EntityBuilder {
+                world: self,
+                element: elem,
+            };
+            // Re-spawn into ECS and internal registry
+            builder.build();
+        }
+        
+        if let Some(light) = blueprint.directional_light {
+            self.ecs.spawn((light,));
+        }
     }
 }

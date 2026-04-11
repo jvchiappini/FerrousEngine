@@ -275,6 +275,15 @@ pub fn set_point_lights(
     world_pass.update_point_lights(device, queue, lights);
 }
 
+/// Configure global atmosphere settings (fog and exposure).
+pub fn set_exposure(camera_system: &mut CameraSystem, queue: &wgpu::Queue, exposure: f32) {
+    camera_system.set_exposure(queue, exposure);
+}
+
+pub fn set_fog(camera_system: &mut CameraSystem, queue: &wgpu::Queue, color: [f32; 3], density: f32) {
+    camera_system.set_fog(queue, color, density);
+}
+
 // -- Pass Management ---------------------------------------------------------
 
 /// Appends a custom pass after the built-in ones.

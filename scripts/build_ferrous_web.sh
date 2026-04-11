@@ -37,4 +37,9 @@ fi
 echo "[build_ferrous_web] Running export sync check..."
 python3 "$ROOT_DIR/scripts/check_ferrous_web_exports.py"
 
+echo "[build_ferrous_web] Copying package to Koncreta frontend..."
+KONCRETA_PKG="/opt/softwaremaker/workspaces/8af62d16-b60c-4e7a-95d6-74deb2d46c2e/frontend/ferrous-web-pkg"
+mkdir -p "$KONCRETA_PKG"
+cp -r "$OUT_DIR"/* "$KONCRETA_PKG"/
+
 echo "[build_ferrous_web] Done."

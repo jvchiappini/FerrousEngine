@@ -11,6 +11,9 @@ edition = "2021"
  thiserror = "1.0"
  # needed for input types and later editor/event loop
  winit = { version = "0.30", optional = true }
+ serde = { workspace = true }
+ serde_json = { workspace = true }
+ bytemuck = "1.16"
 
 
 # NOTE: we intentionally do *not* depend on `ferrous_renderer` here.  the
