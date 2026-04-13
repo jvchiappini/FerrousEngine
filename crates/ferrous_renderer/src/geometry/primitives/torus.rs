@@ -65,8 +65,8 @@ pub fn torus(
             let b = (j + 1) * stride + i;
             let c = (j + 1) * stride + i + 1;
             let d = j * stride + i + 1;
-            // CCW quads
-            indices_u32.extend_from_slice(&[a, b, d, b, c, d]);
+            // CW quads (Matches working sphere pattern)
+            indices_u32.extend_from_slice(&[a, d, b, b, d, c]);
         }
     }
 

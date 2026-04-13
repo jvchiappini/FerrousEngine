@@ -100,8 +100,8 @@ pub fn ring(
             let b = r * stride + s + 1;
             let c = (r + 1) * stride + s;
             let d = (r + 1) * stride + s + 1;
-            // CCW viewed from above
-            indices_u32.extend_from_slice(&[a, c, b, b, c, d]);
+            // CW viewed from above
+            indices_u32.extend_from_slice(&[a, d, b, a, c, d]);
         }
     }
 

@@ -46,8 +46,8 @@ pub fn plane(
             let b = iz * stride + ix + 1;
             let c = (iz + 1) * stride + ix;
             let d = (iz + 1) * stride + ix + 1;
-            // CCW when viewed from above (+Y)
-            indices_u32.extend_from_slice(&[a, c, b, b, c, d]);
+            // CW viewed from above (+Y)
+            indices_u32.extend_from_slice(&[a, d, b, a, c, d]);
         }
     }
 

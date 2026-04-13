@@ -19,6 +19,8 @@ image = { version = "0.25", optional = true, default-features = false, features 
 ferrous_assets = { path = "../ferrous_assets", optional = true }
 log = "0.4"
 rand = "0.8"
+fontmesh = "0.4.1"
+ttf-parser = "0.25.1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon = "1.11.0"

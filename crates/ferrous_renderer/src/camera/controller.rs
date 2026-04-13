@@ -33,9 +33,9 @@ impl OrbitState {
         // ── WASD / arrow-key translation ──────────────────────────────────
         let move_dir = camera.controller.direction(input);
         if move_dir.length_squared() > 1e-6 {
-            let forward  = (camera.target - camera.eye).normalize();
-            let right    = forward.cross(camera.up).normalize();
-            let world    = (forward * move_dir.z + right * move_dir.x).normalize();
+            let forward  = (camera.target - camera.eye).normalize_or_zero();
+            let right    = forward.cross(camera.up).normalize_or(glam::Vec3::X);
+            let world    = (forward * move_dir.z + right * move_dir.x).normalize_or_zero();
             let disp     = world * camera.controller.speed * dt;
             camera.eye    += disp;
             camera.target += disp;

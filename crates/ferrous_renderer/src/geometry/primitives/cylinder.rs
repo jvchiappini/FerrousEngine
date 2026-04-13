@@ -65,8 +65,8 @@ pub fn cylinder(
             let b = body_start + r * stride + s + 1;
             let c = body_start + (r + 1) * stride + s;
             let d = body_start + (r + 1) * stride + s + 1;
-            // Two CCW triangles
-            indices_u32.extend_from_slice(&[a, b, d, a, d, c]);
+            // CW quads (Fixed striped appearance by ensuring both triangles are CW)
+            indices_u32.extend_from_slice(&[a, d, b, a, c, d]);
         }
     }
 
@@ -104,14 +104,14 @@ pub fn cylinder(
 
             for s in 0..segments {
                 if normal_y > 0.0 {
-                    // top cap — CCW when viewed from above
+                    // top cap — CW when viewed from above
                     indices_u32.extend_from_slice(&[
                         center_idx,
                         rim_start + s + 1,
                         rim_start + s,
                     ]);
                 } else {
-                    // bottom cap — CCW when viewed from below
+                    // bottom cap — CW when viewed from below
                     indices_u32.extend_from_slice(&[
                         center_idx,
                         rim_start + s,

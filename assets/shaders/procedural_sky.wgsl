@@ -4,15 +4,24 @@
 // based on the current sun direction.
 
 struct Camera {
+    view      : mat4x4<f32>,
+    proj      : mat4x4<f32>,
     view_proj : mat4x4<f32>,
-    eye_pos   : vec4<f32>,
+    eye_pos   : vec3<f32>,
+    exposure  : f32,
+    fog_color : vec3<f32>,
+    fog_density: f32,
+    ambient_color: vec3<f32>,
+    ambient_intensity: f32,
+    _padding: array<vec4<f32>, 17>,
 };
 
 struct Light {
-    direction: vec4<f32>,
-    color: vec4<f32>,
+    direction: vec3<f32>,
+    _pad0: f32,
+    color: vec3<f32>,
     intensity: f32,
-    _pad: vec3<f32>,
+    light_view_proj: mat4x4<f32>,
 };
 
 @group(0) @binding(0)

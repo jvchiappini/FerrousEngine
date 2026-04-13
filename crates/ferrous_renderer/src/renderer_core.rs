@@ -1107,6 +1107,10 @@ impl Renderer {
         crate::renderer_api::set_fog(&mut self.camera_system, &self.context.queue, color, density);
     }
 
+    pub fn set_ambient_light(&mut self, color: [f32; 3], intensity: f32) {
+        crate::renderer_api::set_ambient_light(&mut self.camera_system, &self.context.queue, color, intensity);
+    }
+
     pub fn set_font_atlas(&mut self, view: &wgpu::TextureView, sampler: &wgpu::Sampler) {
         #[cfg(feature = "gui")]
         crate::renderer_api::set_font_atlas(&mut self.ui_pass, view, sampler);

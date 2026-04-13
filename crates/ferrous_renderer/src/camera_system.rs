@@ -73,6 +73,10 @@ impl CameraSystem {
         self.gpu.set_fog(queue, color, density);
     }
 
+    pub fn set_ambient_light(&mut self, queue: &wgpu::Queue, color: [f32; 3], intensity: f32) {
+        self.gpu.set_ambient_light(queue, color, intensity);
+    }
+
     /// Set the camera aspect ratio (called on resize).
     pub fn set_aspect(&mut self, aspect: f32) {
         self.camera.set_aspect(aspect);

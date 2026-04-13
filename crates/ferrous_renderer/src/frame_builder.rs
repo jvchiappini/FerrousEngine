@@ -60,6 +60,8 @@ pub struct FrameBuilder {
     pub capsule_cache: HashMap<(u32, u32, u32, u32), crate::geometry::Mesh>,
     /// Circle/Ring meshes keyed by (inner_bits, outer_bits, segs, rings).
     pub disc_cache: HashMap<(u32, u32, u32, u32), crate::geometry::Mesh>,
+    /// Text3D meshes keyed by (text, depth_bits, bevel_enabled, bevel_thickness_bits, bevel_size_bits, quality).
+    pub text3d_cache: HashMap<(String, u32, bool, u32, u32, u8), crate::geometry::Mesh>,
     /// Cache of procedurally-generated meshes registered via `register_mesh`.
     /// Always available (no feature gate) so that WASM procedural terrain
     /// and other runtime-generated geometry works without the `assets` feature.
@@ -104,6 +106,7 @@ impl FrameBuilder {
             plane_cache: HashMap::new(),
             capsule_cache: HashMap::new(),
             disc_cache: HashMap::new(),
+            text3d_cache: HashMap::new(),
             procedural_mesh_cache: HashMap::new(),
             #[cfg(feature = "assets")]
             mesh_cache: HashMap::new(),
@@ -185,6 +188,7 @@ impl FrameBuilder {
                     | ElementKind::Capsule { .. }
                     | ElementKind::Circle { .. }
                     | ElementKind::Ring { .. }
+                    | ElementKind::Text3D { .. }
             );
             if !is_renderable || !element.visible {
                 continue;
@@ -329,6 +333,27 @@ impl FrameBuilder {
                         .or_insert_with(|| create_ring(
                             device, *inner_radius, *outer_radius, *segments, *rings,
                         ))
+                        .clone()
+                }
+                ElementKind::Text3D { text, font_data, depth, bevel_enabled, bevel_thickness, bevel_size, quality } => {
+                    let key = (
+                        text.clone(),
+                        depth.to_bits(),
+                        *bevel_enabled,
+                        bevel_thickness.to_bits(),
+                        bevel_size.to_bits(),
+                        *quality,
+                    );
+                    self.text3d_cache
+                        .entry(key)
+                        .or_insert_with(|| {
+                            let builder = crate::geometry::primitives::Text3dBuilder::new(text, font_data)
+                                .depth(*depth)
+                                .quality(*quality)
+                                .bevel(*bevel_enabled, *bevel_thickness, *bevel_size);
+                            let tmesh = builder.build(device).unwrap_or_else(|_| create_cube(device));
+                            tmesh
+                        })
                         .clone()
                 }
                 _ => continue,

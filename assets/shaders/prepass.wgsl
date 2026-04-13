@@ -5,8 +5,16 @@
 // to recover per-pixel normals and positions in view space.
 
 struct Camera {
+    view      : mat4x4<f32>,
+    proj      : mat4x4<f32>,
     view_proj : mat4x4<f32>,
-    eye_pos   : vec4<f32>,
+    eye_pos   : vec3<f32>,
+    exposure  : f32,
+    fog_color : vec3<f32>,
+    fog_density: f32,
+    ambient_color: vec3<f32>,
+    ambient_intensity: f32,
+    _padding: array<vec4<f32>, 17>,
 };
 
 struct Model {
@@ -14,20 +22,8 @@ struct Model {
     normal_mat : mat4x4<f32>,
 };
 
-// We also need the raw view and projection matrices for the prepass so
-// we can transform positions/normals into view space.  These are packed
-// into a second uniform in the same camera bind group slot, but since
-// the existing Camera uniform only exposes view_proj we store view and
-// proj separately via a dedicated uniform.
-struct PrepassCamera {
-    view      : mat4x4<f32>,
-    proj      : mat4x4<f32>,
-    view_proj : mat4x4<f32>,
-    eye_pos   : vec4<f32>,
-};
-
 @group(0) @binding(0)
-var<uniform> camera: PrepassCamera;
+var<uniform> camera: Camera;
 
 @group(1) @binding(0)
 var<uniform> model: Model;

@@ -5,15 +5,21 @@
 // This matches the layout used by the instancing pipeline (group 1 =
 // storage buffer, not dynamic uniform).
 
-struct PrepassCamera {
+struct Camera {
     view      : mat4x4<f32>,
     proj      : mat4x4<f32>,
     view_proj : mat4x4<f32>,
-    eye_pos   : vec4<f32>,
+    eye_pos   : vec3<f32>,
+    exposure  : f32,
+    fog_color : vec3<f32>,
+    fog_density: f32,
+    ambient_color: vec3<f32>,
+    ambient_intensity: f32,
+    _padding: array<vec4<f32>, 17>,
 };
 
 @group(0) @binding(0)
-var<uniform> camera: PrepassCamera;
+var<uniform> camera: Camera;
 
 // Array of model matrices — one per instance (matches instancing pipeline).
 @group(1) @binding(0)

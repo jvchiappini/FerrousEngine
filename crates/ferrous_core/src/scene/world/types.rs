@@ -148,6 +148,16 @@ pub enum ElementKind {
         segments: u32,
         rings: u32,
     },
+    /// A 3D generated text mesh.
+    Text3D {
+        text: String,
+        font_data: Vec<u8>,
+        depth: f32,
+        bevel_enabled: bool,
+        bevel_thickness: f32,
+        bevel_size: f32,
+        quality: u8,
+    },
 }
 
 

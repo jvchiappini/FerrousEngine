@@ -61,7 +61,7 @@ pub fn capsule(
             let b = top_start + lat * stride + lon + 1;
             let c = top_start + (lat + 1) * stride + lon;
             let d = top_start + (lat + 1) * stride + lon + 1;
-            indices_u32.extend_from_slice(&[a, b, d, a, d, c]);
+            indices_u32.extend_from_slice(&[a, d, b, a, c, d]);
         }
     }
 
@@ -94,7 +94,7 @@ pub fn capsule(
             let b = body_start + r * stride + lon + 1;
             let c = body_start + (r + 1) * stride + lon;
             let d = body_start + (r + 1) * stride + lon + 1;
-            indices_u32.extend_from_slice(&[a, b, d, a, d, c]);
+            indices_u32.extend_from_slice(&[a, d, b, a, c, d]);
         }
     }
 
@@ -133,7 +133,7 @@ pub fn capsule(
             let b = bot_start + lat * stride + lon + 1;
             let c = bot_start + (lat + 1) * stride + lon;
             let d = bot_start + (lat + 1) * stride + lon + 1;
-            indices_u32.extend_from_slice(&[a, b, d, a, d, c]);
+            indices_u32.extend_from_slice(&[a, d, b, a, c, d]);
         }
     }
 

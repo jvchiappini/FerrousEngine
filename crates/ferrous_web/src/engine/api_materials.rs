@@ -7,14 +7,20 @@ impl FerrousWebEngine {
     #[wasm_bindgen(js_name = updateMaterial)]
     pub fn update_material(
         &self, name: String,
-        r: f32, g: f32, b: f32,
+        color: Vec<f32>,
         metal: f32, rough: f32,
         clearcoat: f32, clearcoat_rough: f32,
         opacity: f32,
     ) {
+        let c = [
+            color.get(0).copied().unwrap_or(1.0),
+            color.get(1).copied().unwrap_or(1.0),
+            color.get(2).copied().unwrap_or(1.0),
+        ];
+
         self.push_command(JsCommand::UpdateMaterial {
             entity_name: name,
-            r, g, b,
+            r: c[0], g: c[1], b: c[2],
             metallic: metal,
             roughness: rough,
             clearcoat,

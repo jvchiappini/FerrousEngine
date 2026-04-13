@@ -63,4 +63,10 @@ impl GpuCamera {
         self.uniform.fog_density = density;
         buffer::update_uniform(queue, &self.buffer, &self.uniform);
     }
+
+    pub fn set_ambient_light(&mut self, queue: &wgpu::Queue, color: [f32; 3], intensity: f32) {
+        self.uniform.ambient_color = color;
+        self.uniform.ambient_intensity = intensity;
+        buffer::update_uniform(queue, &self.buffer, &self.uniform);
+    }
 }

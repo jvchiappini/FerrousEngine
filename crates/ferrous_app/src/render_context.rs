@@ -103,6 +103,13 @@ impl<'r> RenderContext<'r> {
     pub fn set_exposure(&mut self, exposure: f32) {
         self.inner.set_exposure(exposure);
     }
+    
+    /// Set the global ambient light for the scene.
+    /// `color`: linear RGB. `intensity`: scalar multiplier.
+    /// This light is correctly occluded by SSAO in PBR and Instanced shaders.
+    pub fn set_ambient_light(&mut self, color: [f32; 3], intensity: f32) {
+        self.inner.set_ambient_light(color, intensity);
+    }
 
     // ── Custom passes ────────────────────────────────────────────────────────
 

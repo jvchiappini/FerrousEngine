@@ -127,3 +127,5 @@ mod api_materials;
 mod api_primitives;
 mod api_scene;
 mod api_plugins;
+mod api_primitives_dx;
+pub mod api_shared;

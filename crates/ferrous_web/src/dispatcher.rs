@@ -220,6 +220,24 @@ impl CommandDispatcher {
                 ensure_unique_material(ctx, handle);
                 runtime.add_entity_to_active_scene(name);
             }
+            JsCommand::CreateText3D {
+                name, text, font_data, position, depth, bevel_enabled, bevel_thickness, bevel_size, quality, color,
+            } => {
+                let handle = ctx.world.spawn(name.clone())
+                    .with_kind(ElementKind::Text3D { text, font_data, depth, bevel_enabled, bevel_thickness, bevel_size, quality: quality as u8 })
+                    .with_position(Vec3::from_array(position))
+                    .with_color(Color::rgb(color[0], color[1], color[2]))
+                    .build();
+                
+                // Force double-sided material for text to ensure all extrusion sides are visible
+                let mut desc = ctx.world.get_material_descriptor(handle).cloned().unwrap_or_default();
+                desc.double_sided = true;
+                let new_handle = ctx.render.create_material(&desc);
+                ctx.world.set_material_handle(handle, new_handle);
+                ctx.world.set_material_descriptor(handle, desc);
+
+                runtime.add_entity_to_active_scene(name);
+            }
 
             // ── Transform ────────────────────────────────────────────────────
             JsCommand::SetPosition { name, position } => {
@@ -278,8 +296,8 @@ impl CommandDispatcher {
                 ctx.render.set_directional_light(direction, color, intensity);
             }
             JsCommand::SetAmbientLight { color, intensity } => {
-                // ctx.render.set_ambient_light(color, intensity); // Not yet supported in Renderer API
-                log::warn!("set_ambient_light not yet implemented in renderer");
+                ctx.render.set_ambient_light(color, intensity);
+                log::info!("[dispatcher] setAmbientLight applied: color={:?}, intensity={}", color, intensity);
             }
 
             // ── Materials ────────────────────────────────────────────────────
@@ -306,6 +324,18 @@ impl CommandDispatcher {
                     // Force the renderer to allocate a NEW handle so it doesn't overwrite others
                     let new_mat_handle = ctx.render.create_material(&desc);
                     ctx.world.set_material_handle(handle, new_mat_handle);
+
+                    // Update the ECS component to prevent sync_world from overwriting this!
+                    if let Some(entity) = ctx.world.ecs_mapping.get(&handle.0) {
+                        if let Some(mut m) = ctx.world.ecs.get_mut::<ferrous_core::scene::Material>(*entity) {
+                            m.base_color = ferrous_app::Color::rgba(r, g, b, 1.0);
+                            m.metallic = metallic;
+                            m.roughness = roughness;
+                            m.clearcoat = clearcoat;
+                            m.clearcoat_roughness = clearcoat_roughness;
+                            m.opacity = opacity;
+                        }
+                    }
                 } else {
                     runtime.report_error(
                         "entity.not_found",

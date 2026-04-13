@@ -29,19 +29,10 @@ use crate::geometry::Vertex;
 use crate::graph::{FramePacket, RenderPass};
 use crate::resources::texture::{self, RenderTextureDesc};
 
-// ── GPU-facing camera struct (prepass variant) ────────────────────────────────
+use crate::resources::camera::CameraUniform;
 
-/// Camera uniform uploaded specifically for the prepass.  Includes the
-/// raw view and projection matrices (not just `view_proj`) so the shader
-/// can transform into view space.
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-pub struct PrepassCameraUniform {
-    pub view: [[f32; 4]; 4],
-    pub proj: [[f32; 4]; 4],
-    pub view_proj: [[f32; 4]; 4],
-    pub eye_pos: [f32; 4],
-}
+// PrepassCameraUniform is now deprecated in favor of the global CameraUniform
+// described in crates/ferrous_renderer/src/resources/camera.rs.
 
 // ── Normal-depth texture ──────────────────────────────────────────────────────
 
@@ -125,12 +116,7 @@ impl PrepassCamera {
             }),
         );
 
-        let zero_cam = PrepassCameraUniform {
-            view: glam::Mat4::IDENTITY.to_cols_array_2d(),
-            proj: glam::Mat4::IDENTITY.to_cols_array_2d(),
-            view_proj: glam::Mat4::IDENTITY.to_cols_array_2d(),
-            eye_pos: [0.0; 4],
-        };
+        let zero_cam = CameraUniform::new();
 
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Prepass Camera Buffer"),
@@ -154,7 +140,7 @@ impl PrepassCamera {
         }
     }
 
-    pub fn update(&self, queue: &Queue, uniform: &PrepassCameraUniform) {
+    pub fn update(&self, queue: &Queue, uniform: &CameraUniform) {
         queue.write_buffer(&self.buffer, 0, bytemuck::bytes_of(uniform));
     }
 }
@@ -243,12 +229,14 @@ impl PrePass {
         proj: glam::Mat4,
         eye: glam::Vec3,
     ) {
-        let uniform = PrepassCameraUniform {
-            view: view.to_cols_array_2d(),
-            proj: proj.to_cols_array_2d(),
-            view_proj: (proj * view).to_cols_array_2d(),
-            eye_pos: [eye.x, eye.y, eye.z, 0.0],
-        };
+        let mut uniform = CameraUniform::new();
+        // Manually fill fields to match the provided matrices (ignoring internal build logic for now
+        // to reuse the caller's specific matrices if they differ, though they shouldn't)
+        uniform.view = view.to_cols_array_2d();
+        uniform.proj = proj.to_cols_array_2d();
+        uniform.view_proj = (proj * view).to_cols_array_2d();
+        uniform.position = eye.to_array();
+        
         self.prepass_camera.update(queue, &uniform);
     }
 

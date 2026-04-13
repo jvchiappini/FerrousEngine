@@ -68,7 +68,7 @@ impl Environment {
 
         // helper that writes the same 4-byte color to each layer of a cubemap
         let write_cube = |tex: &wgpu::Texture| {
-            let pixel = [30u8, 30, 30, 255];
+            let pixel = [80u8, 85u8, 100u8, 255];
             for layer in 0..6 {
                 queue.write_texture(
                     wgpu::ImageCopyTexture {
@@ -145,7 +145,7 @@ impl Environment {
         };
         let brdf_tex = device.create_texture(&brdf_desc);
         let brdf_view = brdf_tex.create_view(&wgpu::TextureViewDescriptor::default());
-        let brdf_pixel = [255u8, 0, 0, 255];
+        let brdf_pixel = [128u8, 64u8, 0, 255];
         queue.write_texture(
             wgpu::ImageCopyTexture {
                 texture: &brdf_tex,

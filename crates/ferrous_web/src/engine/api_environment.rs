@@ -5,8 +5,9 @@ use crate::commands::JsCommand;
 #[wasm_bindgen]
 impl FerrousWebEngine {
     #[wasm_bindgen(js_name = setEnvironment)]
-    pub fn set_environment(&self, fr: f32, fg: f32, fb: f32, density: f32) {
-        self.push_command(JsCommand::SetEnvironment { fog_color: [fr, fg, fb], fog_density: density });
+    pub fn set_environment(&self, color: Vec<f32>, density: f32) {
+        let c = [color.get(0).copied().unwrap_or(0.1), color.get(1).copied().unwrap_or(0.1), color.get(2).copied().unwrap_or(0.1)];
+        self.push_command(JsCommand::SetEnvironment { fog_color: c, fog_density: density });
     }
 
     #[wasm_bindgen(js_name = setExposure)]
@@ -15,8 +16,9 @@ impl FerrousWebEngine {
     }
 
     #[wasm_bindgen(js_name = setBackground)]
-    pub fn set_background(&self, r: f32, g: f32, b: f32) {
-        self.push_command(JsCommand::SetBackground { r, g, b });
+    pub fn set_background(&self, color: Vec<f32>) {
+        let c = [color.get(0).copied().unwrap_or(0.0), color.get(1).copied().unwrap_or(0.0), color.get(2).copied().unwrap_or(0.0)];
+        self.push_command(JsCommand::SetBackground { r: c[0], g: c[1], b: c[2] });
     }
 
     #[wasm_bindgen(js_name = setDebugMode)]

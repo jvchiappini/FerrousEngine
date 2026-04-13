@@ -8,11 +8,17 @@ const PI: f32 = 3.14159265359;
 // bind groups and structs
 
 struct Camera {
+    view      : mat4x4<f32>,
+    proj      : mat4x4<f32>,
     view_proj : mat4x4<f32>,
     eye_pos   : vec3<f32>,
     exposure  : f32,
     fog_color : vec3<f32>,
     fog_density: f32,
+    ambient_color: vec3<f32>,
+    ambient_intensity: f32,
+    // explicitly pad to 512 bytes (matches Rust CameraUniform)
+    _padding: array<vec4<f32>, 17>,
 };
 
 @group(0) @binding(0)
@@ -20,7 +26,6 @@ var<uniform> camera: Camera;
 
 struct Model {
     model : mat4x4<f32>,
-    normal_mat : mat4x4<f32>,
 };
 
 @group(1) @binding(0)
@@ -152,8 +157,8 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.shadow_pos = dir_light.light_view_proj * world_pos4;
 
     // transform normals and tangents
-    out.world_normal = (model.normal_mat * vec4<f32>(in.normal, 0.0)).xyz;
-    out.world_tangent = (model.normal_mat * vec4<f32>(in.tangent.xyz, 0.0)).xyz;
+    out.world_normal = (model.model * vec4<f32>(in.normal, 0.0)).xyz;
+    out.world_tangent = (model.model * vec4<f32>(in.tangent.xyz, 0.0)).xyz;
     let n = normalize(out.world_normal);
     let t = normalize(out.world_tangent);
     let b = normalize(cross(n, t) * in.tangent.w);
@@ -395,7 +400,11 @@ fn fs_main(frag_in: FragmentInput) -> FragmentOutput {
     let ssao_uv   = vec2<f32>(ndc_ssao.x * 0.5 + 0.5, -ndc_ssao.y * 0.5 + 0.5);
     let ssao_factor = textureSampleLevel(ssao_tex, ssao_sampler, ssao_uv, 0.0).r;
 
-    let ambient = (diffuse_ambient + specular_ambient) * ao_factor * ssao_factor * 0.8;
+    let global_ambient = camera.ambient_color * camera.ambient_intensity * albedo;
+    let total_ambient = (diffuse_ambient + specular_ambient + global_ambient) * ao_factor * ssao_factor;
+    
+    // We add a subtle constant minimum to keep everything from going pitch black with SSAO
+    let ambient = total_ambient * 0.9 + global_ambient * 0.1;
 
     var color = ambient + Lo;
 

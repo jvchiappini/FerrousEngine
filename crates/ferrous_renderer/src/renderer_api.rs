@@ -284,6 +284,10 @@ pub fn set_fog(camera_system: &mut CameraSystem, queue: &wgpu::Queue, color: [f3
     camera_system.set_fog(queue, color, density);
 }
 
+pub fn set_ambient_light(camera_system: &mut CameraSystem, queue: &wgpu::Queue, color: [f32; 3], intensity: f32) {
+    camera_system.set_ambient_light(queue, color, intensity);
+}
+
 // -- Pass Management ---------------------------------------------------------
 
 /// Appends a custom pass after the built-in ones.

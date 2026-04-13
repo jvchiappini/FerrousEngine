@@ -87,6 +87,18 @@ pub enum JsCommand {
         rings: u32,
         color: [f32; 3],
     },
+    CreateText3D {
+        name: String,
+        text: String,
+        font_data: Vec<u8>,
+        position: [f32; 3],
+        depth: f32,
+        bevel_enabled: bool,
+        bevel_thickness: f32,
+        bevel_size: f32,
+        quality: u32,
+        color: [f32; 3],
+    },
 
     // ── Transform ───────────────────────────────────────────────────────────
     SetPosition { name: String, position: [f32; 3] },

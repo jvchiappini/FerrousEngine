@@ -4,8 +4,16 @@
 // but strips translation so the cube follows the camera.
 
 struct Camera {
+    view      : mat4x4<f32>,
+    proj      : mat4x4<f32>,
     view_proj : mat4x4<f32>,
-    eye_pos   : vec4<f32>,
+    eye_pos   : vec3<f32>,
+    exposure  : f32,
+    fog_color : vec3<f32>,
+    fog_density: f32,
+    ambient_color: vec3<f32>,
+    ambient_intensity: f32,
+    _padding: array<vec4<f32>, 17>,
 };
 @group(0) @binding(0)
 var<uniform> camera: Camera;

@@ -6,7 +6,10 @@ use crate::config::CameraControlMode;
 #[wasm_bindgen]
 impl FerrousWebEngine {
     #[wasm_bindgen(js_name = setCamera)]
-    pub fn set_camera(&self, ex: f32, ey: f32, ez: f32, tx: f32, ty: f32, tz: f32) {
+    pub fn set_camera(&self, position: Vec<f32>, target: Vec<f32>) {
+        if position.len() < 3 || target.len() < 3 { return; }
+        let (ex, ey, ez) = (position[0], position[1], position[2]);
+        let (tx, ty, tz) = (target[0], target[1], target[2]);
         *self.camera_override.lock().unwrap() = Some(([ex, ey, ez], [tx, ty, tz]));
         self.push_command(JsCommand::SetCamera {
             eye: [ex, ey, ez],
