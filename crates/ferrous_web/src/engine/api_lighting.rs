@@ -41,4 +41,8 @@ impl FerrousWebEngine {
         let c = [color.get(0).copied().unwrap_or(0.1), color.get(1).copied().unwrap_or(0.1), color.get(2).copied().unwrap_or(0.1)];
         self.push_command(JsCommand::SetAmbientLight { color: c, intensity });
     }
+    #[wasm_bindgen(js_name = setSsaoParams)]
+    pub fn set_ssao_params(&self, radius: f32, bias: f32, intensity: f32, power: f32) {
+        self.push_command(JsCommand::SetSsaoParams { radius, bias, intensity, power });
+    }
 }

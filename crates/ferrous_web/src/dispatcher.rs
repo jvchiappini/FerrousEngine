@@ -375,6 +375,9 @@ impl CommandDispatcher {
             JsCommand::DisablePlugin { name } => {
                 runtime.enabled_plugins.lock().unwrap().remove(&name);
             }
+            JsCommand::SetSsaoParams { radius, bias, intensity, power } => {
+                ctx.render.set_ssao_params(radius, bias, intensity, power);
+            }
             JsCommand::LegacyCreateTerrain => {
                 if runtime.is_plugin_enabled("terrain") {
                     runtime.apply_legacy_terrain(ctx);

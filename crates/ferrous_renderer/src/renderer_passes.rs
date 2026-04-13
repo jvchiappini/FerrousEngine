@@ -232,11 +232,14 @@ impl RendererPasses {
                     .texture
                     .create_view(&wgpu::TextureViewDescriptor::default()),
             );
+            // Linear filtering is critical: SSAO runs at half-res so we must
+            // bilinearly upsample the blurred AO when the PBR pass reads it.
+            // Nearest-filter would produce 2×2 block artifacts on every surface.
             let ssao_sampler = Arc::new(self.context.device.create_sampler(
                 &wgpu::SamplerDescriptor {
                     label: Some("SSAO Result Sampler"),
-                    mag_filter: wgpu::FilterMode::Nearest,
-                    min_filter: wgpu::FilterMode::Nearest,
+                    mag_filter: wgpu::FilterMode::Linear,
+                    min_filter: wgpu::FilterMode::Linear,
                     address_mode_u: wgpu::AddressMode::ClampToEdge,
                     address_mode_v: wgpu::AddressMode::ClampToEdge,
                     ..Default::default()

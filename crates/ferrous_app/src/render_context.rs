@@ -77,6 +77,15 @@ impl<'r> RenderContext<'r> {
         self.inner.ssao_enabled = enabled;
     }
 
+    /// Configure SSAO parameters.
+    /// * `radius`: view-space radius (default ~0.25).
+    /// * `bias`: self-occlusion bias (default ~0.02).
+    /// * `intensity`: strength multiplier (default 1.0).
+    /// * `power`: contrast curve (default 1.2).
+    pub fn set_ssao_params(&mut self, radius: f32, bias: f32, intensity: f32, power: f32) {
+        self.inner.set_ssao_params(radius, bias, intensity, power);
+    }
+
     /// Enable or disable GPU-driven frustum culling via a compute shader.
     ///
     /// When enabled, per-batch visible instance counts are determined on the

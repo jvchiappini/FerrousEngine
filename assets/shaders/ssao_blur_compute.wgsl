@@ -1,4 +1,9 @@
 // SSAO Bilateral Blur (Compute Version)
+//
+// A separable 9-tap [Gaussian × bilateral] filter that smooths the raw
+// half-resolution SSAO output while preventing occlusion from bleeding
+// across geometric edges.  Two passes are dispatched: horizontal (dir=0)
+// followed by vertical (dir=1).
 
 struct BlurParams {
     texel_size   : vec2<f32>,
@@ -9,65 +14,75 @@ struct BlurParams {
 @group(0) @binding(0)
 var<uniform> params: BlurParams;
 
+// Raw SSAO texture (R32Float, non-filterable): use textureLoad
 @group(1) @binding(0)
 var ssao_tex     : texture_2d<f32>;
-@group(1) @binding(1)
-var ssao_sampler : sampler;
 
-@group(1) @binding(2)
+// Normal-depth texture (Rgba16Float, filterable): used for depth gating
+@group(1) @binding(1)
 var nd_tex     : texture_2d<f32>;
-@group(1) @binding(3)
+@group(1) @binding(2)
 var nd_sampler : sampler;
 
 // Output: R32Float storage texture
-@group(1) @binding(4)
+@group(1) @binding(3)
 var out_tex : texture_storage_2d<r32float, write>;
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let screen_pos = global_id.xy;
-    let dims = vec2<f32>(textureDimensions(out_tex));
+    let out_dims   = vec2<u32>(textureDimensions(out_tex));
     
-    if (f32(screen_pos.x) >= dims.x || f32(screen_pos.y) >= dims.y) {
+    if (screen_pos.x >= out_dims.x || screen_pos.y >= out_dims.y) {
         return;
     }
 
-    let uv = (vec2<f32>(screen_pos) + 0.5) / dims;
+    let uv = (vec2<f32>(screen_pos) + 0.5) / vec2<f32>(out_dims);
 
-    // Centres pixel depth
+    // Centre pixel depth (from the full-res normal-depth texture)
     let centre_depth = textureSampleLevel(nd_tex, nd_sampler, uv, 0.0).a;
 
-    var step = vec2<f32>(0.0, 0.0);
+    // Build per-axis step in texel units of the SSAO texture
+    var step = vec2<i32>(0, 0);
     if (params.direction == 0u) {
-        step = vec2<f32>(params.texel_size.x, 0.0);
+        step = vec2<i32>(1, 0);   // horizontal
     } else {
-        step = vec2<f32>(0.0, params.texel_size.y);
+        step = vec2<i32>(0, 1);   // vertical
     }
 
-    var result = 0.0;
+    var result     = 0.0;
     var weight_sum = 0.0;
 
-    // 9-tap bilateral blur (radius 4)
-    for (var i: i32 = -4; i <= 4; i = i + 1) {
-        let offset_uv   = uv + step * f32(i);
-        let sample_ao   = textureSampleLevel(ssao_tex, ssao_sampler, offset_uv, 0.0).r;
-        let sample_depth = textureSampleLevel(nd_tex, nd_sampler, offset_uv, 0.0).a;
+    let ssao_dims = vec2<i32>(textureDimensions(ssao_tex));
+    let nd_dims   = vec2<i32>(textureDimensions(nd_tex));
 
-        let depth_diff = abs(sample_depth - centre_depth);
-        // Gaussian-ish weight based on distance from center
-        let dist_weight = exp(-f32(i * i) / 8.0); 
-        let billateral_w = select(0.0, 1.0, depth_diff < params.depth_thresh);
-        let w = dist_weight * billateral_w;
+    // 9-tap bilateral Gaussian blur (radius 4)
+    for (var i: i32 = -4; i <= 4; i = i + 1) {
+        let tap_pos   = vec2<i32>(screen_pos) + step * i;
+
+        // Clamp to texture bounds
+        let clamped_tap = clamp(tap_pos, vec2<i32>(0), ssao_dims - vec2<i32>(1));
+        let sample_ao   = textureLoad(ssao_tex, clamped_tap, 0).r;
+
+        // Fetch depth at this tap from the full-res normal-depth texture.
+        // The two textures may be different resolutions, so convert via UV.
+        let tap_uv       = (vec2<f32>(clamped_tap) + 0.5) / vec2<f32>(ssao_dims);
+        let sample_depth = textureSampleLevel(nd_tex, nd_sampler, tap_uv, 0.0).a;
+
+        let depth_diff  = abs(sample_depth - centre_depth);
+        // Gaussian weight by tap distance
+        let dist_weight = exp(-f32(i * i) / 8.0);
+        // Hard bilateral gate: reject taps whose depth differs too much
+        let bilateral_w = select(0.0, 1.0, depth_diff < params.depth_thresh);
+        let w = dist_weight * bilateral_w;
 
         result     += sample_ao * w;
         weight_sum += w;
     }
 
-    let final_ao = select(
-        textureSampleLevel(ssao_tex, ssao_sampler, uv, 0.0).r,
-        result / weight_sum,
-        weight_sum > 0.0001
-    );
+    // Fallback to original value if all taps were rejected
+    let centre_ao  = textureLoad(ssao_tex, vec2<i32>(screen_pos), 0).r;
+    let final_ao   = select(centre_ao, result / weight_sum, weight_sum > 0.0001);
 
     textureStore(out_tex, screen_pos, vec4<f32>(final_ao, 0.0, 0.0, 0.0));
 }

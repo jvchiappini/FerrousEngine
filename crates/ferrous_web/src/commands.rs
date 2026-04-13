@@ -151,6 +151,12 @@ pub enum JsCommand {
     SetDebugMode { enabled: bool },
     EnablePlugin  { name: String },
     DisablePlugin { name: String },
+    SetSsaoParams {
+        radius: f32,
+        bias: f32,
+        intensity: f32,
+        power: f32,
+    },
     LegacyCreateTerrain,
     LegacyToggleSky,
 }

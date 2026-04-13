@@ -117,7 +117,7 @@ impl SsaoPass {
             ],
         });
 
-        // Group 1: normal-depth + noise textures
+        // Group 1: normal-depth + noise textures (no noise sampler — use textureLoad)
         let bg1 = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("SSAO BG1 (textures)"),
             layout: &self.textures_layout,
@@ -136,10 +136,6 @@ impl SsaoPass {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: wgpu::BindingResource::Sampler(&ssao_res.noise_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
                     resource: wgpu::BindingResource::TextureView(&self.ssao_texture.view),
                 },
             ],
@@ -194,7 +190,7 @@ impl SsaoPass {
         let textures_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("SSAO Textures BGL"),
             entries: &[
-                // binding 0: normal-depth texture
+                // binding 0: normal-depth texture (filterable)
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::COMPUTE,
@@ -205,14 +201,14 @@ impl SsaoPass {
                     },
                     count: None,
                 },
-                // binding 1: normal-depth sampler
+                // binding 1: normal-depth sampler (filtering)
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
-                // binding 2: noise texture
+                // binding 2: noise texture (non-filterable → textureLoad)
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
                     visibility: wgpu::ShaderStages::COMPUTE,
@@ -223,16 +219,9 @@ impl SsaoPass {
                     },
                     count: None,
                 },
-                // binding 3: noise sampler
+                // binding 3: output storage texture
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
-                    count: None,
-                },
-                // binding 4: output storage texture
-                wgpu::BindGroupLayoutEntry {
-                    binding: 4,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::StorageTexture {
                         access: wgpu::StorageTextureAccess::WriteOnly,

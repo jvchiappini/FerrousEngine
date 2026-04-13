@@ -88,7 +88,6 @@ impl SsaoBlurPass {
             encoder,
             &params_h,
             &raw_ssao.view,
-            &raw_ssao.sampler,
             normal_depth,
             &self.intermediate.view,
             &self.intermediate.texture,
@@ -105,7 +104,6 @@ impl SsaoBlurPass {
             encoder,
             &params_v,
             &self.intermediate.view,
-            &self.intermediate.sampler,
             normal_depth,
             &self.blurred.view,
             &self.blurred.texture,
@@ -126,7 +124,6 @@ impl SsaoBlurPass {
         encoder: &mut CommandEncoder,
         params: &BlurParams,
         src_view: &wgpu::TextureView,
-        src_sampler: &wgpu::Sampler,
         normal_depth: &NormalDepthTexture,
         dst_view: &wgpu::TextureView,
         dst_texture: &wgpu::Texture,
@@ -146,6 +143,9 @@ impl SsaoBlurPass {
             }],
         });
 
+        // Layout: binding 0 = ssao_tex (non-filterable, textureLoad),
+        //         binding 1 = nd_tex (filterable), binding 2 = nd_sampler,
+        //         binding 3 = out_tex (storage write)
         let bg1 = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Blur BG1 (textures)"),
             layout: &self.textures_layout,
@@ -156,18 +156,14 @@ impl SsaoBlurPass {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(src_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
                     resource: wgpu::BindingResource::TextureView(&normal_depth.view),
                 },
                 wgpu::BindGroupEntry {
-                    binding: 3,
+                    binding: 2,
                     resource: wgpu::BindingResource::Sampler(&normal_depth.sampler),
                 },
                 wgpu::BindGroupEntry {
-                    binding: 4,
+                    binding: 3,
                     resource: wgpu::BindingResource::TextureView(dst_view),
                 },
             ],
@@ -207,7 +203,7 @@ impl SsaoBlurPass {
         let textures_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Blur Textures BGL"),
             entries: &[
-                // binding 0: raw SSAO texture
+                // binding 0: raw SSAO texture (R32Float, non-filterable → textureLoad only)
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::COMPUTE,
@@ -218,16 +214,9 @@ impl SsaoBlurPass {
                     },
                     count: None,
                 },
-                // binding 1: sampler
+                // binding 1: normal-depth texture (filterable, used with textureSampleLevel)
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
-                    count: None,
-                },
-                // binding 2: normal-depth texture
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Texture {
                         multisampled: false,
@@ -236,16 +225,16 @@ impl SsaoBlurPass {
                     },
                     count: None,
                 },
-                // binding 3: normal-depth sampler
+                // binding 2: normal-depth sampler (filtering)
                 wgpu::BindGroupLayoutEntry {
-                    binding: 3,
+                    binding: 2,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
-                // binding 4: output storage texture
+                // binding 3: output storage texture
                 wgpu::BindGroupLayoutEntry {
-                    binding: 4,
+                    binding: 3,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::StorageTexture {
                         access: wgpu::StorageTextureAccess::WriteOnly,

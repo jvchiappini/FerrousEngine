@@ -40,15 +40,21 @@ pub struct SsaoParams {
     pub radius: f32,
     /// Self-occlusion bias.
     pub bias: f32,
+    /// SSAO intensity multiplier.
+    pub intensity: f32,
+    /// Contrast exponent (1.0 = linear).
+    pub power: f32,
+    /// SSAO texture dimensions (half-res).
+    pub screen_size: [f32; 2],
     /// Projection matrix (col-major).
     pub proj: [[f32; 4]; 4],
     /// Inverse projection matrix (col-major).
     pub inv_proj: [[f32; 4]; 4],
-    /// SSAO texture dimensions (half-res).
-    pub screen_size: [f32; 2],
     /// Number of active kernel samples (≤ 64).
     pub kernel_size: u32,
     pub _pad: u32,
+    pub _pad1: u32,
+    pub _pad2: u32,
 }
 
 // ── Main struct ───────────────────────────────────────────────────────────────
@@ -68,15 +74,24 @@ pub struct SsaoResources {
     pub radius: f32,
     /// Bias for depth comparison.
     pub bias: f32,
+    /// Strength multiplier.
+    pub intensity: f32,
+    /// Contrast exponent.
+    pub power: f32,
     /// Number of kernel samples (1–64).
     pub kernel_size: u32,
 }
 
 impl SsaoResources {
-    /// Default SSAO radius (view-space units). Reduced for better detail on small objects.
-    pub const DEFAULT_RADIUS: f32 = 0.15;
-    /// Default self-occlusion bias. Increased to reduce surface banding.
-    pub const DEFAULT_BIAS: f32 = 0.05;
+    /// Default SSAO radius (view-space units).
+    /// 0.5 gives clearly visible contact shadows on medium primitives.
+    pub const DEFAULT_RADIUS: f32 = 0.5;
+    /// Default self-occlusion bias.
+    pub const DEFAULT_BIAS: f32 = 0.025;
+    /// Default intensity multiplier (stronger = more visible AO crevices).
+    pub const DEFAULT_INTENSITY: f32 = 1.5;
+    /// Default power (contrast exponent: higher = sharper dark corners).
+    pub const DEFAULT_POWER: f32 = 2.0;
     /// Number of hemisphere samples.
     pub const KERNEL_SIZE: u32 = 64;
 
@@ -96,11 +111,15 @@ impl SsaoResources {
             noise_scale: [1.0, 1.0],
             radius: Self::DEFAULT_RADIUS,
             bias: Self::DEFAULT_BIAS,
+            intensity: Self::DEFAULT_INTENSITY,
+            power: Self::DEFAULT_POWER,
             proj: glam::Mat4::IDENTITY.to_cols_array_2d(),
             inv_proj: glam::Mat4::IDENTITY.to_cols_array_2d(),
             screen_size: [1.0, 1.0],
             kernel_size: Self::KERNEL_SIZE,
             _pad: 0,
+            _pad1: 0,
+            _pad2: 0,
         };
         let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("SSAO Params Buffer"),
@@ -165,6 +184,8 @@ impl SsaoResources {
             kernel,
             radius: Self::DEFAULT_RADIUS,
             bias: Self::DEFAULT_BIAS,
+            intensity: Self::DEFAULT_INTENSITY,
+            power: Self::DEFAULT_POWER,
             kernel_size: Self::KERNEL_SIZE,
         }
     }
@@ -182,11 +203,15 @@ impl SsaoResources {
             noise_scale: [ssao_width as f32 / 4.0, ssao_height as f32 / 4.0],
             radius: self.radius,
             bias: self.bias,
+            intensity: self.intensity,
+            power: self.power,
             proj: proj.to_cols_array_2d(),
             inv_proj: inv_proj.to_cols_array_2d(),
             screen_size: [ssao_width as f32, ssao_height as f32],
             kernel_size: self.kernel_size.min(64),
             _pad: 0,
+            _pad1: 0,
+            _pad2: 0,
         };
         queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&params));
     }
@@ -201,17 +226,18 @@ impl SsaoResources {
         }; 64];
 
         for (i, sample) in samples.iter_mut().enumerate() {
-            // Random direction in the +Z hemisphere
+            // Clamp z to [0.1, 1.0] so no samples graze the tangent plane
             let x = rng.gen_range(-1.0_f32..1.0_f32);
             let y = rng.gen_range(-1.0_f32..1.0_f32);
-            let z = rng.gen_range(0.0_f32..1.0_f32);
-            let mut s = Vec3::new(x, y, z).normalize();
+            let z = rng.gen_range(0.1_f32..1.0_f32);
+            let dir = Vec3::new(x, y, z).normalize();
 
-            // Random magnitude
+            // Accelerating distribution: cluster near origin for contact shadows
             let scale_t = i as f32 / 64.0;
-            // Accelerating interpolation: more samples cluster near the origin
             let scale = lerp(0.1, 1.0, scale_t * scale_t);
-            s *= rng.gen_range(0.0_f32..1.0_f32) * scale;
+            // Minimum length of 0.1 so we never emit a zero-length sample
+            let length = lerp(0.1, scale, rng.gen_range(0.0_f32..1.0_f32));
+            let s = dir * length;
 
             sample.direction = [s.x, s.y, s.z, 0.0];
         }
@@ -219,21 +245,26 @@ impl SsaoResources {
         SsaoKernelUniform { samples }
     }
 
-    /// Generate a 4×4 noise texture with random XY rotation vectors packed as RGBA8.
+    /// Generate a 4x4 noise texture with random XY rotation vectors packed as RGBA8Unorm.
     fn generate_noise() -> Vec<u8> {
         let mut rng = rand::thread_rng();
-        let mut data = Vec::with_capacity(4 * 4 * 4); // 16 pixels × 4 bytes
+        let mut data = Vec::with_capacity(4 * 4 * 4); // 16 pixels x 4 bytes
 
         for _ in 0..16 {
-            // Random vector in XY plane (z = 0), normalised
-            let x = rng.gen_range(-1.0_f32..1.0_f32);
-            let y = rng.gen_range(-1.0_f32..1.0_f32);
-            let v = Vec3::new(x, y, 0.0).normalize();
+            // Rejection sample to avoid degenerate near-zero vectors
+            let v = loop {
+                let x = rng.gen_range(-1.0_f32..1.0_f32);
+                let y = rng.gen_range(-1.0_f32..1.0_f32);
+                let candidate = Vec3::new(x, y, 0.0);
+                if candidate.length() > 0.01 {
+                    break candidate.normalize();
+                }
+            };
 
-            // Pack [-1, 1] → [0, 255]
-            let r = ((v.x * 0.5 + 0.5) * 255.0) as u8;
-            let g = ((v.y * 0.5 + 0.5) * 255.0) as u8;
-            let b = 128_u8; // z = 0 packed
+            // Pack [-1, 1] to [0, 255]
+            let r = ((v.x * 0.5 + 0.5) * 255.0).round() as u8;
+            let g = ((v.y * 0.5 + 0.5) * 255.0).round() as u8;
+            let b = 128_u8; // z = 0 packed as 0.5
             let a = 255_u8;
             data.push(r);
             data.push(g);

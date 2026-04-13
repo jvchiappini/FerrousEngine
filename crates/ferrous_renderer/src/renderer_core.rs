@@ -1111,6 +1111,24 @@ impl Renderer {
         crate::renderer_api::set_ambient_light(&mut self.camera_system, &self.context.queue, color, intensity);
     }
 
+    pub fn set_ssao_params(&mut self, radius: f32, bias: f32, intensity: f32, power: f32) {
+        self.ssao_resources.radius = radius;
+        self.ssao_resources.bias = bias;
+        self.ssao_resources.intensity = intensity;
+        self.ssao_resources.power = power;
+        
+        // Sync to GPU immediately so the next frame uses new params
+        let cam = &self.camera_system.camera;
+        let proj = glam::Mat4::perspective_rh(cam.fovy, cam.aspect, cam.znear, cam.zfar);
+        self.ssao_resources.update_params(
+            &self.context.queue,
+            self.width,
+            self.height,
+            proj,
+            proj.inverse(),
+        );
+    }
+
     pub fn set_font_atlas(&mut self, view: &wgpu::TextureView, sampler: &wgpu::Sampler) {
         #[cfg(feature = "gui")]
         crate::renderer_api::set_font_atlas(&mut self.ui_pass, view, sampler);
