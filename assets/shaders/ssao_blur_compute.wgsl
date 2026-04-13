@@ -47,13 +47,17 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     var result = 0.0;
     var weight_sum = 0.0;
 
-    for (var i: i32 = -2; i <= 2; i = i + 1) {
+    // 9-tap bilateral blur (radius 4)
+    for (var i: i32 = -4; i <= 4; i = i + 1) {
         let offset_uv   = uv + step * f32(i);
         let sample_ao   = textureSampleLevel(ssao_tex, ssao_sampler, offset_uv, 0.0).r;
         let sample_depth = textureSampleLevel(nd_tex, nd_sampler, offset_uv, 0.0).a;
 
         let depth_diff = abs(sample_depth - centre_depth);
-        let w = select(0.0, 1.0, depth_diff < params.depth_thresh);
+        // Gaussian-ish weight based on distance from center
+        let dist_weight = exp(-f32(i * i) / 8.0); 
+        let billateral_w = select(0.0, 1.0, depth_diff < params.depth_thresh);
+        let w = dist_weight * billateral_w;
 
         result     += sample_ao * w;
         weight_sum += w;

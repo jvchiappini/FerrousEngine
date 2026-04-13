@@ -186,7 +186,7 @@ impl WebRuntime {
 
 impl FerrousApp for WebRuntime {
     fn setup(&mut self, ctx: &mut AppContext) {
-        ctx.render.set_ssao(false);
+        ctx.render.set_ssao(true);
         ctx.render.set_style(ferrous_renderer::RenderStyle::Pbr);
         ctx.render.set_clear_color(Color::rgb(0.08, 0.1, 0.14));
         ctx.render

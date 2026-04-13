@@ -73,10 +73,10 @@ pub struct SsaoResources {
 }
 
 impl SsaoResources {
-    /// Default SSAO radius (view-space units, roughly 0.5 m).
-    pub const DEFAULT_RADIUS: f32 = 0.5;
-    /// Default self-occlusion bias.
-    pub const DEFAULT_BIAS: f32 = 0.025;
+    /// Default SSAO radius (view-space units). Reduced for better detail on small objects.
+    pub const DEFAULT_RADIUS: f32 = 0.15;
+    /// Default self-occlusion bias. Increased to reduce surface banding.
+    pub const DEFAULT_BIAS: f32 = 0.05;
     /// Number of hemisphere samples.
     pub const KERNEL_SIZE: u32 = 64;
 

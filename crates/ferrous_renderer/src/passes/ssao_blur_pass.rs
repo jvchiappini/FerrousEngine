@@ -45,7 +45,7 @@ pub struct SsaoBlurPass {
 }
 
 impl SsaoBlurPass {
-    pub const DEFAULT_DEPTH_THRESH: f32 = 0.1;
+    pub const DEFAULT_DEPTH_THRESH: f32 = 0.2;
 
     pub fn new(device: &Device, width: u32, height: u32) -> Self {
         let blurred      = SsaoTexture::new(device, width, height);
@@ -232,7 +232,7 @@ impl SsaoBlurPass {
                     ty: wgpu::BindingType::Texture {
                         multisampled: false,
                         view_dimension: wgpu::TextureViewDimension::D2,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
                     },
                     count: None,
                 },
@@ -240,7 +240,7 @@ impl SsaoBlurPass {
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
                     visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
                 // binding 4: output storage texture

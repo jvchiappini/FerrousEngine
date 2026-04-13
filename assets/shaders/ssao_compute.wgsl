@@ -97,17 +97,25 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
         let sample_uv = vec2<f32>(clip.x * 0.5 + 0.5, -clip.y * 0.5 + 0.5);
 
+        // Filtered normal+depth sampling
         let scene_nd = textureSampleLevel(normal_depth_tex, normal_depth_sampler, sample_uv, 0.0);
         let scene_depth = scene_nd.a;
 
         let in_screen = (sample_uv.x >= 0.0 && sample_uv.x <= 1.0 && sample_uv.y >= 0.0 && sample_uv.y <= 1.0);
-        let in_range = smoothstep(0.0, 1.0, params.radius / abs(linear_d - scene_depth + 0.0001));
         
-        if (in_screen && scene_depth >= ((-sample_pos.z) + params.bias)) {
+        // Range check: fade out occlusion for objects too far apart.
+        // We also scale the bias slightly with depth to combat precision issues.
+        let depth_bias = params.bias * (1.0 + linear_d * 0.01);
+        let dist_diff = abs(linear_d - scene_depth);
+        let in_range = smoothstep(params.radius * 2.0, params.radius * 0.5, dist_diff);
+        
+        if (in_screen && scene_depth >= ((-sample_pos.z) + depth_bias)) {
             occlusion += in_range;
         }
     }
 
-    let raw_ao = 1.0 - (occlusion / f32(n_samples));
+    // Distance fade: completely disable SSAO after a certain point to avoid noise
+    let dist_fade = smoothstep(20.0, 10.0, linear_d);
+    let raw_ao = 1.0 - (occlusion / f32(n_samples)) * dist_fade;
     textureStore(out_tex, screen_pos, vec4<f32>(saturate(raw_ao), 0.0, 0.0, 0.0));
 }
