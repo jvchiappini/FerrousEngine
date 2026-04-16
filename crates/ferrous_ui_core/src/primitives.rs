@@ -116,23 +116,22 @@ impl Default for Units {
 
 /// Alignment of elements within their container.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum Alignment {
+    #[default]
     Start,
     Center,
     End,
     Stretch,
 }
 
-impl Default for Alignment {
-    fn default() -> Self {
-        Alignment::Start
-    }
-}
 
 /// Child layout behavior and node positioning logic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum DisplayMode {
     /// Standard block behavior (stacked or absolute).
+    #[default]
     Block,
     /// Horizontal flex layout.
     FlexRow,
@@ -140,31 +139,25 @@ pub enum DisplayMode {
     FlexColumn,
 }
 
-impl Default for DisplayMode {
-    fn default() -> Self {
-        DisplayMode::Block
-    }
-}
 
 /// How the node is positioned relative to siblings and parent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum Position {
     /// Relative to normal layout flow.
+    #[default]
     Relative,
     /// Absolute positioning relative to parent, ignoring siblings.
     Absolute,
 }
 
-impl Default for Position {
-    fn default() -> Self {
-        Position::Relative
-    }
-}
 
 /// Horizontal text alignment within a bounding box.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum HAlign {
     Left,
+    #[default]
     Center,
     Right,
     Custom {
@@ -174,16 +167,13 @@ pub enum HAlign {
     },
 }
 
-impl Default for HAlign {
-    fn default() -> Self {
-        HAlign::Center
-    }
-}
 
 /// Vertical text alignment within a bounding box.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum VAlign {
     Top,
+    #[default]
     Center,
     Bottom,
     Custom {
@@ -193,11 +183,6 @@ pub enum VAlign {
     },
 }
 
-impl Default for VAlign {
-    fn default() -> Self {
-        VAlign::Center
-    }
-}
 
 /// Combined horizontal and vertical text alignment.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
@@ -264,17 +249,14 @@ impl TextAlign {
 
 /// Content behavior when exceeding node dimensions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum Overflow {
+    #[default]
     Visible,
     Hidden,
     Scroll,
 }
 
-impl Default for Overflow {
-    fn default() -> Self {
-        Overflow::Visible
-    }
-}
 
 /// Container for visual and positioning properties of a Widget.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

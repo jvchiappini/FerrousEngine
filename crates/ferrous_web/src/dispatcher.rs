@@ -119,6 +119,32 @@ impl CommandDispatcher {
             }
 
             // ── Primitives ───────────────────────────────────────────────────
+            JsCommand::CreateSprite2d { name, position, size, z_index, color, texture_id } => {
+                ctx.ecs.spawn((
+                    ferrous_2d::components::Transform2d {
+                        position: glam::Vec2::new(position[0], position[1]),
+                        scale: glam::Vec2::new(1.0, 1.0),
+                        rotation: 0.0,
+                        z_index,
+                    },
+                    ferrous_2d::components::Sprite {
+                        color: glam::Vec4::new(color[0], color[1], color[2], color[3]),
+                        custom_size: Some(glam::Vec2::new(size[0], size[1])),
+                        texture_id,
+                        ..Default::default()
+                    }
+                ));
+                // Optional: Register to world to track it by name if required.
+                // However, ECS stands alone.
+            }
+            JsCommand::SetCamera2d { zoom, clear_color } => {
+                ctx.ecs.spawn((
+                    ferrous_2d::components::Camera2d {
+                        zoom,
+                        clear_color: clear_color.map(|c| glam::Vec4::new(c[0], c[1], c[2], c[3])),
+                    },
+                ));
+            }
             JsCommand::CreateBox { name, position, size, color } => {
                 let handle = ctx.world.spawn_box(
                     name.clone(),

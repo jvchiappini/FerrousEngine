@@ -9,6 +9,14 @@ use glam::{Mat4, Vec3};
 /// Camera used by both renderer and editor.  The struct lives in core so that
 /// applications can inspect or modify it directly; renderer-specific code still
 /// owns GPU resources such as the uniform buffer.
+/// Type of projection used by the camera.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ProjectionType {
+    Perspective,
+    Orthographic,
+}
+
+/// Simple camera state owned by the scene.
 #[derive(Debug, Clone)]
 pub struct Camera {
     // --- view parameters --------------------------------------------------
@@ -16,8 +24,14 @@ pub struct Camera {
     pub target: Vec3,
     pub up: Vec3,
     // --- projection parameters --------------------------------------------
+    pub projection_type: ProjectionType,
+    /// Vertical field of view in radians (for Perspective).
     pub fovy: f32,
+    /// Viewport aspect ratio (width / height).
     pub aspect: f32,
+    /// Vertical size of the view in world units (for Orthographic).
+    /// Typically represents the distance from center to top edge.
+    pub ortho_size: f32,
     pub znear: f32,
     pub zfar: f32,
     // --- input controller --------------------------------------------------
@@ -30,8 +44,10 @@ impl Default for Camera {
             eye: Vec3::ZERO,
             target: Vec3::ZERO,
             up: Vec3::Y,
+            projection_type: ProjectionType::Perspective,
             fovy: 45.0f32.to_radians(),
             aspect: 1.0,
+            ortho_size: 10.0,
             znear: 0.1,
             zfar: 100.0,
             controller: Controller::new(),
@@ -80,7 +96,16 @@ impl Camera {
     /// Build the combined view-projection matrix from the current parameters.
     pub fn build_view_projection_matrix(&self) -> Mat4 {
         let view = Mat4::look_at_rh(self.eye, self.target, self.up);
-        let proj = Mat4::perspective_rh(self.fovy, self.aspect, self.znear, self.zfar);
+        let proj = match self.projection_type {
+            ProjectionType::Perspective => {
+                Mat4::perspective_rh(self.fovy, self.aspect, self.znear, self.zfar)
+            }
+            ProjectionType::Orthographic => {
+                let h = self.ortho_size;
+                let w = h * self.aspect;
+                Mat4::orthographic_rh(-w, w, -h, h, self.znear, self.zfar)
+            }
+        };
         proj * view
     }
 

@@ -9,8 +9,8 @@ use crate::traits::FerrousApp;
 ///
 /// | Mode | 3D renderer | ECS world sync | `draw_3d` called |
 /// |------|-------------|----------------|------------------|
-/// | `Desktop2D` | ✓ (2-D only) | ✗ | ✗ |
-/// | `Game2D` | ✓ | ✗ | ✗ |
+/// | `Flat2D` | ✓ (2-D only) | ✗ | ✗ |
+/// | `Flat2D` | ✓ | ✗ | ✗ |
 /// | `Game3D` | ✓ | ✓ | ✓ |
 ///
 /// The renderer is always present so `draw_ui` / fonts / GUI work in every
@@ -20,12 +20,9 @@ pub enum AppMode {
     /// Full 3-D game: ECS world sync, camera input, `draw_3d` callback.
     #[default]
     Game3D,
-    /// 2-D game or side-scroller: renderer active, no 3-D world sync,
-    /// `draw_3d` is **not** called.
-    Game2D,
-    /// Desktop tool / editor panel: renderer active for GUI only,
-    /// no ECS world sync, no `draw_3d` callback.
-    Desktop2D,
+    /// Flat 2-D mode: renderer active in 2D fast-path, no 3-D world sync,
+    /// no camera input, no `draw_3d` callback.
+    Flat2D,
 }
 
 /// Configuración inicial de la ventana y el motor.
@@ -71,8 +68,8 @@ pub struct AppConfig {
     pub sample_count: u32,
     /// Which engine subsystems to activate.  See [`AppMode`] for details.
     ///
-    /// Default: [`AppMode::Game3D`].  Set to [`AppMode::Desktop2D`] for
-    /// tools that only need GUI, or [`AppMode::Game2D`] for 2-D games.
+    /// Default: [`AppMode::Game3D`].  Set to [`AppMode::Flat2D`] for
+    /// tools that only need GUI, or [`AppMode::Flat2D`] for 2-D games.
     pub mode: AppMode,
     /// Optional path to an HDR environment map.  If provided the renderer
     /// will initialise its IBL resources from this file.
@@ -90,6 +87,9 @@ pub struct AppConfig {
     /// the quality preset also drives the default MSAA sample count unless
     /// `msaa` is explicitly set in the TOML.
     pub render_quality: RenderQuality,
+    /// Resolution scale applied to the physical size of the window/canvas.
+    /// Defaults to 1.0. Set to 2.0 or higher for supersampling (improves clarity on Web).
+    pub resolution_scale: f64,
 }
 
 impl Default for AppConfig {
@@ -111,6 +111,7 @@ impl Default for AppConfig {
             render_style: RenderStyle::Pbr,
             render_quality: RenderQuality::High,
             mode: AppMode::Game3D,
+            resolution_scale: 1.0,
         }
     }
 }
@@ -293,17 +294,24 @@ impl<A: FerrousApp + 'static> App<A> {
     /// | Mode | Use when |
     /// |------|----------|
     /// | [`AppMode::Game3D`] | 3-D game or simulation (default) |
-    /// | [`AppMode::Game2D`] | 2-D game, top-down, side-scroller |
-    /// | [`AppMode::Desktop2D`] | GUI tool, editor, desktop utility |
+    /// | [`AppMode::Flat2D`] | 2-D game, top-down, side-scroller |
+    /// | [`AppMode::Flat2D`] | GUI tool, editor, desktop utility |
     ///
     /// # Example
     /// ```rust,ignore
     /// App::new(MyTool)
-    ///     .with_mode(AppMode::Desktop2D)
+    ///     .with_mode(AppMode::Flat2D)
     ///     .run();
     /// ```
     pub fn with_mode(mut self, mode: crate::builder::AppMode) -> Self {
         self.config.mode = mode;
+        self
+    }
+
+    /// Set a resolution multiplier for supersampling (e.g. 2.0 for 2x resolution).
+    /// Highly recommended for web and high-DPI displays if rendering is pixelated.
+    pub fn with_resolution_scale(mut self, scale: f64) -> Self {
+        self.config.resolution_scale = scale;
         self
     }
 

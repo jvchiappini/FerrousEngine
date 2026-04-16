@@ -1,6 +1,5 @@
 //! GPU Particle System Components
 
-use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "ecs")]

@@ -58,7 +58,7 @@ pub fn derive_ferrous_controller(input: TokenStream) -> TokenStream {
     // We can rely on a hack or require the user to implement `dispatch_fui_action` manually if we don't use an attribute macro.
     // Wait, let's just make the macro search for standard naming conventions. It won't know the methods.
     
-    let path_literal = match fui_path {
+    let _path_literal = match fui_path {
         Some(path) => quote! { Some(include_str!(#path)) }, // Assuming the path is relative to Cargo.toml
         None => quote! { None },
     };

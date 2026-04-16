@@ -188,7 +188,7 @@ impl<App: 'static + Send + Sync> Widget<App> for Tooltip<App> {
         let viewport = Rect::new(0.0, 0.0, 9999.0, 9999.0); // approx; ver nota
         let tip_rect = self.compute_tooltip_rect(self.cursor_pos, viewport);
 
-        let bg = self.bg_color.unwrap_or_else(|| theme.surface_elevated);
+        let bg = self.bg_color.unwrap_or(theme.surface_elevated);
         let fg = self.text_color.unwrap_or(theme.on_surface);
 
         // Sombra sutil

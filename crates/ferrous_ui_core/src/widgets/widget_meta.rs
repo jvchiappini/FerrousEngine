@@ -63,13 +63,19 @@ pub enum WidgetKind {
     // Input
     TextInput,
     Checkbox,
+    RadioButton,
+    Toggle,
     Slider,
+    RangeSlider,
     NumberInput,
     ToggleSwitch,
     DropDown,
     ColorPicker,
+    DateTimePicker,
+    FileInput,
     // Layout
     ScrollView,
+    ScrollArea,
     SplitPane,
     DockLayout,
     AspectRatio,
@@ -77,6 +83,7 @@ pub enum WidgetKind {
     Image,
     Svg,
     ProgressBar,
+    ProgressBarCircular,
     // Navigation / Containers
     Tabs,
     Accordion,
@@ -85,6 +92,8 @@ pub enum WidgetKind {
     Tooltip,
     // Data
     DataTable,
+    TableView,
+    ListView,
     VirtualList,
     VirtualGrid,
     // Feedback
@@ -109,24 +118,33 @@ impl WidgetKind {
             WidgetKind::Placeholder => "Placeholder",
             WidgetKind::TextInput => "Text Input",
             WidgetKind::Checkbox => "Checkbox",
+            WidgetKind::RadioButton => "Radio Button",
+            WidgetKind::Toggle => "Toggle",
             WidgetKind::Slider => "Slider",
+            WidgetKind::RangeSlider => "Range Slider",
             WidgetKind::NumberInput => "Number Input",
             WidgetKind::ToggleSwitch => "Toggle Switch",
             WidgetKind::DropDown => "Drop Down",
             WidgetKind::ColorPicker => "Color Picker",
+            WidgetKind::DateTimePicker => "Date/Time Picker",
+            WidgetKind::FileInput => "File Input",
             WidgetKind::ScrollView => "Scroll View",
+            WidgetKind::ScrollArea => "Scroll Area",
             WidgetKind::SplitPane => "Split Pane",
             WidgetKind::DockLayout => "Dock Layout",
             WidgetKind::AspectRatio => "Aspect Ratio",
             WidgetKind::Image => "Image",
             WidgetKind::Svg => "Svg",
             WidgetKind::ProgressBar => "Progress Bar",
+            WidgetKind::ProgressBarCircular => "Circular Progress",
             WidgetKind::Tabs => "Tabs",
             WidgetKind::Accordion => "Accordion",
             WidgetKind::TreeView => "Tree View",
             WidgetKind::Modal => "Modal",
             WidgetKind::Tooltip => "Tooltip",
             WidgetKind::DataTable => "Data Table",
+            WidgetKind::TableView => "Table View",
+            WidgetKind::ListView => "List View",
             WidgetKind::VirtualList => "Virtual List",
             WidgetKind::VirtualGrid => "Virtual Grid",
             WidgetKind::Toast => "Toast",
@@ -145,18 +163,24 @@ impl WidgetKind {
 
             WidgetKind::TextInput
             | WidgetKind::Checkbox
+            | WidgetKind::RadioButton
+            | WidgetKind::Toggle
             | WidgetKind::Slider
+            | WidgetKind::RangeSlider
             | WidgetKind::NumberInput
             | WidgetKind::ToggleSwitch
             | WidgetKind::DropDown
-            | WidgetKind::ColorPicker => WidgetCategory::Input,
+            | WidgetKind::ColorPicker
+            | WidgetKind::DateTimePicker
+            | WidgetKind::FileInput => WidgetCategory::Input,
 
             WidgetKind::ScrollView
+            | WidgetKind::ScrollArea
             | WidgetKind::SplitPane
             | WidgetKind::DockLayout
             | WidgetKind::AspectRatio => WidgetCategory::Layout,
 
-            WidgetKind::Image | WidgetKind::Svg | WidgetKind::ProgressBar => {
+            WidgetKind::Image | WidgetKind::Svg | WidgetKind::ProgressBar | WidgetKind::ProgressBarCircular => {
                 WidgetCategory::Display
             }
 
@@ -166,7 +190,11 @@ impl WidgetKind {
             | WidgetKind::Modal
             | WidgetKind::Tooltip => WidgetCategory::Navigation,
 
-            WidgetKind::DataTable | WidgetKind::VirtualList | WidgetKind::VirtualGrid => {
+            WidgetKind::DataTable 
+            | WidgetKind::TableView
+            | WidgetKind::ListView
+            | WidgetKind::VirtualList 
+            | WidgetKind::VirtualGrid => {
                 WidgetCategory::Data
             }
 
@@ -187,12 +215,12 @@ impl WidgetKind {
             WidgetKind::Spacer => (80.0, 20.0),
             WidgetKind::Placeholder => (120.0, 60.0),
             WidgetKind::Panel => (200.0, 150.0),
-            WidgetKind::ScrollView => (220.0, 180.0),
+            WidgetKind::ScrollView | WidgetKind::ScrollArea => (220.0, 180.0),
             WidgetKind::SplitPane => (300.0, 200.0),
             WidgetKind::DockLayout => (320.0, 220.0),
             WidgetKind::AspectRatio => (160.0, 90.0),
-            WidgetKind::DataTable => (360.0, 200.0),
-            WidgetKind::VirtualList => (200.0, 200.0),
+            WidgetKind::DataTable | WidgetKind::TableView => (360.0, 200.0),
+            WidgetKind::ListView | WidgetKind::VirtualList => (200.0, 200.0),
             WidgetKind::VirtualGrid => (280.0, 200.0),
             WidgetKind::Tabs => (280.0, 160.0),
             WidgetKind::Accordion => (240.0, 120.0),
@@ -200,14 +228,15 @@ impl WidgetKind {
             WidgetKind::Modal => (320.0, 200.0),
             WidgetKind::Image => (120.0, 90.0),
             WidgetKind::Svg => (64.0, 64.0),
-            WidgetKind::ProgressBar => (200.0, 20.0),
+            WidgetKind::ProgressBar | WidgetKind::ProgressBarCircular => (200.0, 20.0),
             WidgetKind::ColorPicker => (180.0, 220.0),
-            WidgetKind::Slider => (160.0, 28.0),
-            WidgetKind::ToggleSwitch => (80.0, 28.0),
+            WidgetKind::Slider | WidgetKind::RangeSlider => (160.0, 28.0),
+            WidgetKind::ToggleSwitch | WidgetKind::Toggle => (80.0, 28.0),
             WidgetKind::DropDown => (160.0, 32.0),
-            WidgetKind::Checkbox => (140.0, 28.0),
+            WidgetKind::Checkbox | WidgetKind::RadioButton => (140.0, 28.0),
             WidgetKind::NumberInput => (120.0, 32.0),
             WidgetKind::TextInput => (160.0, 32.0),
+            WidgetKind::DateTimePicker | WidgetKind::FileInput => (200.0, 32.0),
             WidgetKind::Toast => (260.0, 48.0),
             WidgetKind::Tooltip => (140.0, 36.0),
             WidgetKind::Button => (100.0, 34.0),

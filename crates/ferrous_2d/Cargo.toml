@@ -1,0 +1,11 @@
+[package]
+name = "ferrous_2d"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ferrous_ecs = { path = "../ferrous_ecs" }
+wgpu = { workspace = true }
+glam = { workspace = true, features = ["bytemuck"] }
+bytemuck = { version = "1.21", features = ["derive"] }
+log = "0.4"

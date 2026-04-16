@@ -115,6 +115,13 @@ impl Color {
         }
     }
 
+    /// Construct from a CSS-style hex string, assuming sRGB (gamma) space.
+    /// This is what you almost always want when copying colors from a design tool.
+    pub fn hex_srgb(s: &str) -> Self {
+        let linear = Self::hex(s);
+        Self::srgba(linear.r, linear.g, linear.b, linear.a)
+    }
+
     /// Construct from a packed `0xRRGGBBAA` hexadecimal `u32`.
     ///
     /// Identical to [`from_hex`] but named to make the byte-order explicit

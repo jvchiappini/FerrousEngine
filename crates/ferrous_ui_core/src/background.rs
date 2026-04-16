@@ -66,8 +66,10 @@ impl GradientAngle {
 
 /// Fondo configurable de un widget — desde sólido hasta degradados y procedurales.
 #[derive(Clone)]
+#[derive(Default)]
 pub enum Background {
     /// Sin fondo extra; el widget usa el color base del tema.
+    #[default]
     None,
 
     /// Color sólido, sobreescribe el color del tema.
@@ -131,8 +133,10 @@ pub enum Background {
 
 /// Modo de muestreo UV para texturas de fondo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum UvMode {
     /// La textura se estira para cubrir el rect completo.
+    #[default]
     Stretch,
     /// La textura se repite en tile.
     Repeat,
@@ -140,11 +144,6 @@ pub enum UvMode {
     Clamp,
 }
 
-impl Default for UvMode {
-    fn default() -> Self {
-        UvMode::Stretch
-    }
-}
 
 impl Background {
     /// Crea un degradado lineal de 2 stops (conveniencia).
@@ -254,11 +253,6 @@ impl Background {
     }
 }
 
-impl Default for Background {
-    fn default() -> Self {
-        Background::None
-    }
-}
 
 impl std::fmt::Debug for Background {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

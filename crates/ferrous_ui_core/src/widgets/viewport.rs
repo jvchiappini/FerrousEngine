@@ -6,6 +6,12 @@ pub struct ViewportWidget {
     pub resolved_rect: Rect,
 }
 
+impl Default for ViewportWidget {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ViewportWidget {
     pub fn new() -> Self {
         Self {

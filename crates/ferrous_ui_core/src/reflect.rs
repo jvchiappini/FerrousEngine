@@ -79,6 +79,12 @@ pub struct WidgetFactory<App> {
     creators: std::collections::HashMap<String, WidgetCreator<App>>,
 }
 
+impl<App: 'static + Send + Sync> Default for WidgetFactory<App> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<App: 'static + Send + Sync> WidgetFactory<App> {
     pub fn new() -> Self {
         Self {

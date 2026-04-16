@@ -47,7 +47,7 @@ impl BitGrid3D {
             "BitGrid3D: dimensions must be > 0"
         );
         let total = (size_x as usize) * (size_y as usize) * (size_z as usize);
-        let words = (total + 63) / 64;
+        let words = total.div_ceil(64);
         Self {
             size_x,
             size_y,

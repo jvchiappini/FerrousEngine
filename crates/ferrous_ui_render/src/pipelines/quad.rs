@@ -1,7 +1,5 @@
 use wgpu::RenderPipeline;
-use std::sync::Arc;
 use crate::gpu_types::GuiQuad;
-use crate::MAX_TEXTURE_SLOTS;
 
 pub fn create_quad_pipeline(
     device: &wgpu::Device,

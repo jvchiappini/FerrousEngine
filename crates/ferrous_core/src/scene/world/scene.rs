@@ -442,7 +442,9 @@ impl World {
             let builder = EntityBuilder {
                 world: self,
                 element: elem,
+                ecs_components: Vec::new(),
             };
+
             // Re-spawn into ECS and internal registry
             builder.build();
         }

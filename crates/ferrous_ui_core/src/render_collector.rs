@@ -17,7 +17,7 @@ impl RenderCollector {
                 VISITED = 0;
                 Self::collect_node(tree, root_id, cmds, viewport, 0.0, &mut VISITED);
                 TOTAL_FRAMES += 1;
-                if TOTAL_FRAMES % 120 == 0 {
+                if TOTAL_FRAMES.is_multiple_of(120) {
                     println!("[RenderCollector] Visited {} nodes, collected {} commands", VISITED, cmds.len());
                 }
             }

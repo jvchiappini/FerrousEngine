@@ -16,6 +16,7 @@ use super::types::{Element, ElementKind, Handle, PointLightComponent};
 pub struct EntityBuilder<'a> {
     pub(super) world: &'a mut World,
     pub(super) element: Element,
+    pub(super) ecs_components: Vec<Box<dyn FnOnce(&mut World, ferrous_ecs::prelude::Entity) + 'a>>,
 }
 
 impl<'a> EntityBuilder<'a> {
@@ -23,8 +24,18 @@ impl<'a> EntityBuilder<'a> {
         Self {
             world,
             element: Element::new(id, name),
+            ecs_components: Vec::new(),
         }
     }
+
+    pub fn with_component<T: ferrous_ecs::component::Component + Clone>(mut self, component: T) -> Self {
+
+        self.ecs_components.push(Box::new(move |world, entity| {
+            world.ecs.insert(entity, component);
+        }));
+        self
+    }
+
 
     pub fn with_position(mut self, pos: Vec3) -> Self {
         self.element.transform.position = pos;
@@ -102,6 +113,13 @@ impl<'a> EntityBuilder<'a> {
         self.world.entities[idx] = Some(self.element);
         self.world.ecs_mapping.insert(id, entity);
         self.world.count += 1;
+
+        // Apply deferred ECS components
+        for f in self.ecs_components {
+            f(self.world, entity);
+        }
+
         Handle(id)
     }
 }
+

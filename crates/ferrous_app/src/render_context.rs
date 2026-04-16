@@ -100,6 +100,17 @@ impl<'r> RenderContext<'r> {
     pub fn set_clear_color(&mut self, color: Color) {
         self.inner.set_clear_color(color.to_wgpu());
     }
+
+    /// Convenience helper to switch to Flat 2D mode with a specific background color.
+    /// This is the recommended mode for UI-only applications or 2D viewers.
+    pub fn enable_flat_2d(&mut self, background_color: Color) {
+        self.inner.enable_flat_2d(background_color.to_wgpu());
+    }
+
+    /// Convenience helper to switch back to full 3-D rendering and world-sync.
+    pub fn enable_full_3d(&mut self) {
+        self.inner.enable_full_3d();
+    }
     
     /// Enable and configure distance fog.
     /// `color`: linear RGB. `density`: typical values 0.01 - 0.05.
@@ -113,11 +124,45 @@ impl<'r> RenderContext<'r> {
         self.inner.set_exposure(exposure);
     }
     
+    /// Set the background clear color and switch to Solid sky mode.
+    pub fn set_background_color(&mut self, color: Color) {
+        self.inner.set_background_color(color.to_wgpu());
+    }
+
     /// Set the global ambient light for the scene.
     /// `color`: linear RGB. `intensity`: scalar multiplier.
-    /// This light is correctly occluded by SSAO in PBR and Instanced shaders.
     pub fn set_ambient_light(&mut self, color: [f32; 3], intensity: f32) {
         self.inner.set_ambient_light(color, intensity);
+    }
+
+    // ── Antialiasing ─────────────────────────────────────────────────────────
+
+    /// Configure the antialiasing algorithm applied after the gizmo pass and
+    /// before tone-mapping.
+    ///
+    /// | Mode                 | Cost    | Notes                                    |
+    /// |----------------------|---------|------------------------------------------|
+    /// | `AntialiasingMode::None` | none | Disabled; fastest debug mode             |
+    /// | `AntialiasingMode::Fxaa(p)` | very low | NVIDIA FXAA — recommended default |
+    /// | `AntialiasingMode::Smaa` | low  | 3-pass SMAA 1x — sharpest result         |
+    ///
+    /// ```rust,ignore
+    /// // FXAA (default quality)
+    /// ctx.render.set_antialiasing(AntialiasingMode::Fxaa(FxaaParams::default()));
+    ///
+    /// // SMAA
+    /// ctx.render.set_antialiasing(AntialiasingMode::Smaa);
+    ///
+    /// // Disabled
+    /// ctx.render.set_antialiasing(AntialiasingMode::None);
+    /// ```
+    pub fn set_antialiasing(&mut self, mode: ferrous_renderer::AntialiasingMode) {
+        self.inner.set_antialiasing(mode);
+    }
+
+    /// Returns the currently active antialiasing mode.
+    pub fn antialiasing_mode(&self) -> ferrous_renderer::AntialiasingMode {
+        self.inner.aa_pass.mode
     }
 
     // ── Custom passes ────────────────────────────────────────────────────────
@@ -207,12 +252,35 @@ impl<'r> RenderContext<'r> {
     }
 
     /// Set the world-space eye position on the renderer's built-in camera.
-    ///
-    /// Call this once during setup to synchronise the renderer camera with any
-    /// ECS orbit values you have computed.  After that, prefer driving the
-    /// camera purely through the ECS `OrbitCamera` component.
     pub fn set_camera_eye(&mut self, eye: Vec3) {
         self.inner.camera_mut().eye = eye;
+    }
+
+    /// Set the camera projection type (Perspective or Orthographic).
+    pub fn set_projection_type(&mut self, proj: ferrous_core::scene::camera::ProjectionType) {
+        self.inner.set_projection_type(proj);
+    }
+
+    /// Set the vertical size for the orthographic projection.
+    pub fn set_ortho_size(&mut self, size: f32) {
+        self.inner.set_ortho_size(size);
+    }
+
+    /// Draw a debug line for one frame.
+    pub fn draw_line(&mut self, start: Vec3, end: Vec3, color: Color) {
+        self.inner.draw_line(start, end, color);
+    }
+
+    /// Push a technical 2D shape for rendering this frame.
+    pub fn draw_2d_shape(&mut self, instance: ferrous_renderer::render_2d::ShapeInstance) {
+        self.inner.draw_2d_shape(instance);
+    }
+
+
+
+    /// Returns the current viewport size in pixels.
+    pub fn viewport_size(&self) -> ferrous_core::glam::Vec2 {
+        self.inner.viewport_size()
     }
 
     // ── Mesh Registration ──────────────────────────────────────────────────

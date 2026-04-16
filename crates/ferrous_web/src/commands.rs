@@ -87,6 +87,20 @@ pub enum JsCommand {
         rings: u32,
         color: [f32; 3],
     },
+    CreateSprite2d {
+        name: String,
+        position: [f32; 2],
+        size: [f32; 2],
+        z_index: f32,
+        color: [f32; 4],
+        texture_id: Option<u32>,
+    },
+
+    SetCamera2d {
+        zoom: f32,
+        clear_color: Option<[f32; 4]>,
+    },
+
     CreateText3D {
         name: String,
         text: String,

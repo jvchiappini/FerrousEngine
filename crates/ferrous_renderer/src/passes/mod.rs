@@ -1,3 +1,4 @@
+pub mod antialiasing_pass;
 pub mod cel_pass;
 pub mod compute_pass;
 #[cfg(feature = "gpu-driven")]
@@ -16,6 +17,7 @@ pub mod ssao_pass;
 pub mod ui_pass;
 pub mod world_pass;
 
+pub use antialiasing_pass::{AntialiasingMode, AntialiasingPass, FxaaParams};
 pub use cel_pass::{CelFrameData, CelShadedPass};
 pub use compute_pass::ComputePass;
 #[cfg(feature = "gpu-driven")]
@@ -33,3 +35,4 @@ pub use ssao_pass::SsaoPass;
 #[cfg(feature = "gui")]
 pub use ui_pass::UiPass;
 pub use world_pass::{SkyMode, WorldPass};
+pub mod sprite_pass;

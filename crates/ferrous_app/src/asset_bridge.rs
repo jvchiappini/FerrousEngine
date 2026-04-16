@@ -161,7 +161,7 @@ pub fn spawn_gltf(
 
         // we always use 32‑bit indices for simplicity; GLTF already gives us
         // u32 so no conversion is required.
-        let index_format = wgpu::IndexFormat::Uint32;
+        let _index_format = wgpu::IndexFormat::Uint32;
 
         let gpu_mesh = renderer.create_mesh("gltf_submesh", verts, mesh.indices.clone());
 
@@ -172,7 +172,7 @@ pub fn spawn_gltf(
         // Crucially we also store the full descriptor (including texture
         // handles) on the world entity so that sync_world's update_params
         // call keeps the GPU uniform buffer consistent with the bind group.
-        let handle = world.spawn_mesh(format!("{}", key), key.clone(), Vec3::ZERO);
+        let handle = world.spawn_mesh(key.to_string(), key.clone(), Vec3::ZERO);
         if let Some(mat_idx) = mesh.material_idx {
             if let Some((mat_h, mat_desc)) = mat_handles.get(mat_idx) {
                 world.set_material_handle(handle, *mat_h);

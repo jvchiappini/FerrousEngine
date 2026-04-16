@@ -10,18 +10,15 @@ use wgpu::{CommandEncoder, TextureView};
 
 use ferrous_core::scene::{MaterialDescriptor, World};
 use crate::scene::{SceneData, Frustum, GizmoDraw};
-use crate::camera::Camera;
 use crate::frame_builder::FrameBuilder;
 use crate::gizmo_system::GizmoSystem;
 use crate::graph::frame_packet::CameraPacket;
 use crate::graph::RenderPass;
-use crate::pipeline::PipelineLayouts;
 use crate::render_target::RenderTarget;
 use crate::render_stats::RenderStats;
 use crate::resources::InstanceBuffer;
 use crate::{CameraSystem, RenderStyle, RendererMode, Viewport};
 use ferrous_core::context::EngineContext as core_context;
-use ferrous_core::EngineContext;
 
 // Conditional imports for GUI feature
 #[cfg(feature = "gui")]
@@ -140,11 +137,11 @@ impl RendererPasses {
             packet.insert(b);
         }
 
-        // ── Desktop2D fast path ───────────────────────────────────────────────
+        // ── Flat2D fast path ───────────────────────────────────────────────
         // In GUI-only mode skip the world pass, render-style passes, gizmos,
         // and post-process entirely.  The UI pass already holds a clear_color
         // set by `set_mode` so it will clear the surface before drawing.
-        if self.mode == RendererMode::Desktop2D {
+        if self.mode == RendererMode::Flat2D {
             let target_view = match dest {
                 RenderDest::Target => &self.render_target.color.view,
                 RenderDest::View(v) => v,
@@ -280,6 +277,13 @@ impl RendererPasses {
         // pass(es).  All style passes render into the same HDR texture
         // (LoadOp::Load) so they composite on top of the world geometry.
         log::debug!("[WGPU-Render] Phase 5: Style Passes");
+        
+        let (scene_view, scene_rt) = if let Some(m_view) = &self.world_pass.hdr_texture.multisampled_view {
+            (m_view, Some(&self.world_pass.hdr_texture.view))
+        } else {
+            (&self.world_pass.hdr_texture.view, None)
+        };
+        
         match &self.render_style {
             RenderStyle::CelShaded {
                 toon_levels,
@@ -306,8 +310,8 @@ impl RendererPasses {
                         &self.context.device,
                         &self.context.queue,
                         encoder,
-                        &self.world_pass.hdr_texture.view,
-                        None,
+                        scene_view,
+                        scene_rt,
                         Some(&self.render_target.depth.view),
                         &packet,
                     );
@@ -319,8 +323,8 @@ impl RendererPasses {
                             &self.context.device,
                             &self.context.queue,
                             encoder,
-                            &self.world_pass.hdr_texture.view,
-                            None,
+                            scene_view,
+                            scene_rt,
                             Some(&self.render_target.depth.view),
                             &packet,
                         );
@@ -337,8 +341,8 @@ impl RendererPasses {
                         &self.context.device,
                         &self.context.queue,
                         encoder,
-                        &self.world_pass.hdr_texture.view,
-                        None,
+                        scene_view,
+                        scene_rt,
                         Some(&self.render_target.depth.view),
                         &packet,
                     );
@@ -352,7 +356,8 @@ impl RendererPasses {
         self.gizmo_system.execute(
             &self.context.device,
             encoder,
-            &self.world_pass.hdr_texture.view,
+            scene_view,
+            scene_rt,
             &self.render_target.depth.view,
             &self.camera_system.gpu.bind_group,
         );

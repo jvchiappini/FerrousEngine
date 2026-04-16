@@ -76,6 +76,26 @@ pub enum KeyCode {
     Digit7,
     Digit8,
     Digit9,
+
+    // editing / drafting extras
+    Tab,
+    Period,
+    Comma,
+    Minus,
+
+    // numpad (mirroring Digit0-9 for ease of use)
+    Numpad0,
+    Numpad1,
+    Numpad2,
+    Numpad3,
+    Numpad4,
+    Numpad5,
+    Numpad6,
+    Numpad7,
+    Numpad8,
+    Numpad9,
+    NumpadDecimal,
+    NumpadEnter,
 }
 
 /// Mouse buttons.
@@ -99,6 +119,7 @@ impl From<winit::keyboard::KeyCode> for KeyCode {
             winit::keyboard::KeyCode::Backspace => KeyCode::Backspace,
             winit::keyboard::KeyCode::Enter => KeyCode::Enter,
             winit::keyboard::KeyCode::Escape => KeyCode::Escape,
+            winit::keyboard::KeyCode::Tab => KeyCode::Tab,
             winit::keyboard::KeyCode::Space => KeyCode::Space,
             winit::keyboard::KeyCode::ArrowUp => KeyCode::ArrowUp,
             winit::keyboard::KeyCode::ArrowDown => KeyCode::ArrowDown,
@@ -150,6 +171,24 @@ impl From<winit::keyboard::KeyCode> for KeyCode {
             winit::keyboard::KeyCode::Digit7 => KeyCode::Digit7,
             winit::keyboard::KeyCode::Digit8 => KeyCode::Digit8,
             winit::keyboard::KeyCode::Digit9 => KeyCode::Digit9,
+
+            winit::keyboard::KeyCode::Tab => KeyCode::Tab,
+            winit::keyboard::KeyCode::Period => KeyCode::Period,
+            winit::keyboard::KeyCode::Comma => KeyCode::Comma,
+            winit::keyboard::KeyCode::Minus => KeyCode::Minus,
+
+            winit::keyboard::KeyCode::Numpad0 => KeyCode::Numpad0,
+            winit::keyboard::KeyCode::Numpad1 => KeyCode::Numpad1,
+            winit::keyboard::KeyCode::Numpad2 => KeyCode::Numpad2,
+            winit::keyboard::KeyCode::Numpad3 => KeyCode::Numpad3,
+            winit::keyboard::KeyCode::Numpad4 => KeyCode::Numpad4,
+            winit::keyboard::KeyCode::Numpad5 => KeyCode::Numpad5,
+            winit::keyboard::KeyCode::Numpad6 => KeyCode::Numpad6,
+            winit::keyboard::KeyCode::Numpad7 => KeyCode::Numpad7,
+            winit::keyboard::KeyCode::Numpad8 => KeyCode::Numpad8,
+            winit::keyboard::KeyCode::Numpad9 => KeyCode::Numpad9,
+            winit::keyboard::KeyCode::NumpadDecimal => KeyCode::NumpadDecimal,
+            winit::keyboard::KeyCode::NumpadEnter => KeyCode::NumpadEnter,
 
             // catch‑all for keys we don't explicitly handle
             _ => KeyCode::Unknown,

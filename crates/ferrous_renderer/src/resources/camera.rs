@@ -29,6 +29,14 @@ pub struct CameraUniform {
     pub _alignment_padding: [[f32; 4]; 17],
 }
 
+#[rustfmt::skip]
+pub const OPENGL_TO_WGPU_MATRIX: Mat4 = Mat4::from_cols(
+    glam::Vec4::new(1.0, 0.0, 0.0, 0.0),
+    glam::Vec4::new(0.0, 1.0, 0.0, 0.0),
+    glam::Vec4::new(0.0, 0.0, 0.5, 0.0),
+    glam::Vec4::new(0.0, 0.0, 0.5, 1.0),
+);
+
 impl CameraUniform {
     /// Create an identity/inactive uniform.
     pub fn new() -> Self {
@@ -48,16 +56,29 @@ impl CameraUniform {
 
     /// Update the fields from a CPU-side [`Camera`] instance.
     pub fn update_view_proj(&mut self, camera: &Camera) {
+        use ferrous_core::scene::camera::ProjectionType;
+        
         let view = glam::Mat4::look_at_rh(camera.eye, camera.target, camera.up);
-        let proj = glam::Mat4::perspective_rh(
-            camera.fovy,
-            camera.aspect,
-            camera.znear,
-            camera.zfar,
-        );
+        let proj = match camera.projection_type {
+            ProjectionType::Perspective => glam::Mat4::perspective_rh(
+                camera.fovy,
+                camera.aspect,
+                camera.znear,
+                camera.zfar,
+            ),
+            ProjectionType::Orthographic => {
+                let h = camera.ortho_size;
+                let w = h * camera.aspect;
+                glam::Mat4::orthographic_rh(-w, w, -h, h, camera.znear, camera.zfar)
+            }
+        };
+
+        // Correct depth from [-1, 1] (GL) to [0, 1] (WGPU)
+        let corrected_proj = OPENGL_TO_WGPU_MATRIX * proj;
+        
         self.view = view.to_cols_array_2d();
-        self.proj = proj.to_cols_array_2d();
-        self.view_proj = (proj * view).to_cols_array_2d();
+        self.proj = corrected_proj.to_cols_array_2d();
+        self.view_proj = (corrected_proj * view).to_cols_array_2d();
         self.position = camera.eye.to_array();
     }
 }

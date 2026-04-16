@@ -12,19 +12,40 @@ use crate::resources::texture::{self, RenderTextureDesc};
 pub struct HdrTexture {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
+    pub multisampled_texture: Option<wgpu::Texture>,
+    pub multisampled_view: Option<wgpu::TextureView>,
     pub sampler: wgpu::Sampler,
     pub width: u32,
     pub height: u32,
+    pub sample_count: u32,
 }
 
 impl HdrTexture {
     pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
-    pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
+    pub fn new(device: &wgpu::Device, width: u32, height: u32, sample_count: u32) -> Self {
+        let (multisampled_texture, multisampled_view) = if sample_count > 1 {
+            let mt = texture::create_render_texture(
+                device,
+                &RenderTextureDesc {
+                    label: "HDR Multisampled Texture",
+                    width,
+                    height,
+                    format: Self::FORMAT,
+                    sample_count,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                },
+            );
+            let mv = texture::default_view(&mt);
+            (Some(mt), Some(mv))
+        } else {
+            (None, None)
+        };
+
         let texture = texture::create_render_texture(
             device,
             &RenderTextureDesc {
-                label: "HDR Texture",
+                label: "HDR Resolved Texture",
                 width,
                 height,
                 format: Self::FORMAT,
@@ -49,9 +70,12 @@ impl HdrTexture {
         Self {
             texture,
             view,
+            multisampled_texture,
+            multisampled_view,
             sampler,
             width,
             height,
+            sample_count,
         }
     }
 
@@ -61,6 +85,6 @@ impl HdrTexture {
         if self.width == width && self.height == height {
             return;
         }
-        *self = Self::new(device, width, height);
+        *self = Self::new(device, width, height, self.sample_count);
     }
 }

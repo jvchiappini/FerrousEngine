@@ -185,9 +185,12 @@ impl<A: FerrousApp + 'static> Runner<A> {
             );
         }
 
-        // ECS → renderer sync and 3-D camera input are only needed in Game3D.
+        // ECS → renderer sync and 3-D camera input are active in Game3D mode
+        // OR if the renderer has been explicitly switched to Full3D (hybrid mode).
         let dt = time.delta;
-        if self.config.mode == AppMode::Game3D {
+        let renderer_mode = gfx.renderer.mode;
+        
+        if self.config.mode == AppMode::Game3D || renderer_mode == ferrous_renderer::RendererMode::Full3D {
             self.app.on_sync_world(&self.world);
             gfx.renderer.sync_world(&self.world);
 
@@ -227,11 +230,10 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 asset_server: &mut self.asset_server,
             };
 
-            if self.viewport.width > 0 {
-                if self.config.mode == AppMode::Game3D {
+            if self.viewport.width > 0
+                && self.config.mode == AppMode::Game3D {
                     self.app.draw_3d(&mut ctx);
                 }
-            }
 
             for gizmo in ctx.gizmos.drain(..) {
                 ctx.render.inner.queue_gizmo(gizmo);

@@ -105,8 +105,10 @@ impl Default for MaterialDescriptor {
 /// `Clone + Copy + PartialEq` so it can live inside `MaterialDescriptor`
 /// without extra complexity.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum RenderStyle {
     /// Standard physically-based rendering (PBR) with IBL.  Default.
+    #[default]
     Pbr,
     /// Toon / cel-shaded.  `toon_levels` controls how many discrete colour
     /// bands the ramp produces (2 = binary, 4 = cartoon look).
@@ -121,11 +123,6 @@ pub enum RenderStyle {
     FlatShaded,
 }
 
-impl Default for RenderStyle {
-    fn default() -> Self {
-        RenderStyle::Pbr
-    }
-}
 
 // ── Render Quality ────────────────────────────────────────────────────────────
 
@@ -143,10 +140,12 @@ impl Default for RenderStyle {
 /// | Low     | ❌   | ❌    | ❌      | ❌  | 1x   |
 /// | Minimal | ❌   | ❌    | ❌      | ❌  | 1x (depth only) |
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum RenderQuality {
     /// Full PBR + SSAO + Bloom + 4x MSAA — maximum visual fidelity.
     Ultra,
     /// Full PBR + SSAO + Bloom + 2x MSAA — high fidelity, lower GPU cost.
+    #[default]
     High,
     /// PBR without SSAO; bloom active; no IBL; 1x MSAA — balanced.
     Medium,
@@ -156,11 +155,6 @@ pub enum RenderQuality {
     Minimal,
 }
 
-impl Default for RenderQuality {
-    fn default() -> Self {
-        RenderQuality::High
-    }
-}
 
 impl RenderQuality {
     /// Returns `true` if screen-space ambient occlusion should be enabled.

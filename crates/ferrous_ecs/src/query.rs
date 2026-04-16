@@ -114,7 +114,7 @@ unsafe impl<T: Component> WorldQuery for &T {
     }
 
     #[inline]
-    unsafe fn fetch<'w>(arch: &'w Archetype, row: usize) -> &'w T {
+    unsafe fn fetch(arch: &Archetype, row: usize) -> &T {
         // SAFETY: matches() was true so column exists; row is in bounds
         arch.column::<T>().unwrap_unchecked().get::<T>(row)
     }
@@ -148,7 +148,7 @@ unsafe impl<T: Component> WorldQuery for &mut T {
     }
 
     #[inline]
-    unsafe fn fetch<'w>(arch: &'w Archetype, row: usize) -> &'w mut T {
+    unsafe fn fetch(arch: &Archetype, row: usize) -> &mut T {
         // SAFETY: caller guarantees no aliasing mutable fetches for the same T;
         // we cast away the shared reference to get a mutable one.
         let col =
@@ -179,7 +179,7 @@ unsafe impl<T: Component> WorldQuery for Option<&T> {
     }
 
     #[inline]
-    unsafe fn fetch<'w>(arch: &'w Archetype, row: usize) -> Option<&'w T> {
+    unsafe fn fetch(arch: &Archetype, row: usize) -> Option<&T> {
         arch.column::<T>().map(|col| col.get::<T>(row))
     }
 

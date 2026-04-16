@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+ferrous_2d = { path = "../ferrous_2d" }
 wgpu = { workspace = true }
 anyhow = "1.0"
 thiserror = "1.0"

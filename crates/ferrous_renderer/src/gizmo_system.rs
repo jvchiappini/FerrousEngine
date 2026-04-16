@@ -27,6 +27,8 @@ pub struct GizmoSystem {
     pub pipeline: GizmoPipeline,
     /// Gizmos queued for the current frame; cleared after each `execute`.
     pub draws: Vec<GizmoDraw>,
+    /// Simple lines for the current frame.
+    pub lines: Vec<crate::renderer_core::DebugLine>,
 }
 
 impl GizmoSystem {
@@ -40,7 +42,14 @@ impl GizmoSystem {
         Self {
             pipeline: GizmoPipeline::new(device, hdr_format, sample_count, layouts),
             draws: Vec::new(),
+            lines: Vec::new(),
         }
+    }
+
+    /// Queue a debug line to be rendered this frame.
+    #[inline]
+    pub fn draw_line(&mut self, line: crate::renderer_core::DebugLine) {
+        self.lines.push(line);
     }
 
     /// Queue a gizmo to be rendered this frame.
@@ -55,7 +64,7 @@ impl GizmoSystem {
     /// Returns `true` if there are any gizmos queued this frame.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.draws.is_empty()
+        self.draws.is_empty() && self.lines.is_empty()
     }
 
     /// Bake vertex data for all queued gizmos, upload a transient vertex
@@ -74,6 +83,7 @@ impl GizmoSystem {
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         hdr_view: &wgpu::TextureView,
+        resolve_target: Option<&wgpu::TextureView>,
         depth_view: &wgpu::TextureView,
         camera_bind_group: &Arc<wgpu::BindGroup>,
     ) {
@@ -225,6 +235,13 @@ impl GizmoSystem {
             }
         }
 
+        // -- Add simple debug lines ------------------------------------------
+        for line in &self.lines {
+            push_line(line.start.into(), line.color);
+            push_line(line.end.into(), line.color);
+        }
+
+
         // -- Upload transient vertex buffer -----------------------------------
         if vertices.is_empty() {
             return;
@@ -243,7 +260,7 @@ impl GizmoSystem {
             label: Some("Gizmo Pass"),
             color_attachments: &[Some(RenderPassColorAttachment {
                 view: hdr_view,
-                resolve_target: None,
+                resolve_target,
                 ops: Operations {
                     load: LoadOp::Load,
                     store: StoreOp::Store,
@@ -270,5 +287,6 @@ impl GizmoSystem {
 
         // Clear for the next frame.
         self.draws.clear();
+        self.lines.clear();
     }
 }

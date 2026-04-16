@@ -18,7 +18,6 @@
 /// matrices so the shader can transform positions and normals into view space.
 use std::sync::Arc;
 
-use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 use wgpu::{
     BindGroupLayout, CommandEncoder, Device, LoadOp, Operations, Queue, RenderPassColorAttachment,
@@ -41,19 +40,40 @@ use crate::resources::camera::CameraUniform;
 pub struct NormalDepthTexture {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
+    pub multisampled_texture: Option<wgpu::Texture>,
+    pub multisampled_view: Option<wgpu::TextureView>,
     pub sampler: wgpu::Sampler,
     pub width: u32,
     pub height: u32,
+    pub sample_count: u32,
 }
 
 impl NormalDepthTexture {
     pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
-    pub fn new(device: &Device, width: u32, height: u32) -> Self {
+    pub fn new(device: &Device, width: u32, height: u32, sample_count: u32) -> Self {
+        let (multisampled_texture, multisampled_view) = if sample_count > 1 {
+            let mt = texture::create_render_texture(
+                device,
+                &RenderTextureDesc {
+                    label: "Normal-Depth multisampled Texture",
+                    width,
+                    height,
+                    format: Self::FORMAT,
+                    sample_count,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                },
+            );
+            let mv = texture::default_view(&mt);
+            (Some(mt), Some(mv))
+        } else {
+            (None, None)
+        };
+
         let texture = texture::create_render_texture(
             device,
             &RenderTextureDesc {
-                label: "Normal-Depth Texture",
+                label: "Normal-Depth Resolved Texture",
                 width,
                 height,
                 format: Self::FORMAT,
@@ -63,6 +83,7 @@ impl NormalDepthTexture {
             },
         );
         let view = texture::default_view(&texture);
+
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Normal-Depth Sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -76,9 +97,12 @@ impl NormalDepthTexture {
         Self {
             texture,
             view,
+            multisampled_texture,
+            multisampled_view,
             sampler,
             width,
             height,
+            sample_count,
         }
     }
 
@@ -86,7 +110,7 @@ impl NormalDepthTexture {
         if self.width == width && self.height == height {
             return;
         }
-        *self = Self::new(device, width, height);
+        *self = Self::new(device, width, height, self.sample_count);
     }
 }
 
@@ -180,17 +204,18 @@ impl PrePass {
         instance_layout: Arc<BindGroupLayout>,
         width: u32,
         height: u32,
+        sample_count: u32,
     ) -> Self {
-        let normal_depth = NormalDepthTexture::new(device, width, height);
+        let normal_depth = NormalDepthTexture::new(device, width, height, sample_count);
 
         let prepass_camera = PrepassCamera::new(device);
 
         // ── Instanced pipeline: group 1 = storage buffer ───────────────────────
         let instanced_pipeline =
-            Self::build_pipeline(device, &prepass_camera.layout, &instance_layout);
+            Self::build_pipeline(device, &prepass_camera.layout, &instance_layout, sample_count);
 
         // ── Dedicated depth target for the prepass ────────────────────────────
-        let (depth_texture, depth_view) = Self::make_depth(device, width, height);
+        let (depth_texture, depth_view) = Self::make_depth(device, width, height, sample_count);
 
         Self {
             normal_depth,
@@ -246,6 +271,7 @@ impl PrePass {
         device: &Device,
         camera_layout: &BindGroupLayout,
         group1_layout: &BindGroupLayout,
+        sample_count: u32,
     ) -> RenderPipeline {
         let shader = device.create_shader_module(wgpu::include_wgsl!(
             "../../../../assets/shaders/prepass_instanced.wgsl"
@@ -290,7 +316,7 @@ impl PrePass {
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState {
-                count: 1,
+                count: sample_count,
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
@@ -299,7 +325,7 @@ impl PrePass {
         })
     }
 
-    fn make_depth(device: &Device, width: u32, height: u32) -> (wgpu::Texture, wgpu::TextureView) {
+    fn make_depth(device: &Device, width: u32, height: u32, sample_count: u32) -> (wgpu::Texture, wgpu::TextureView) {
         let tex = texture::create_render_texture(
             device,
             &RenderTextureDesc {
@@ -307,7 +333,7 @@ impl PrePass {
                 width,
                 height,
                 format: wgpu::TextureFormat::Depth32Float,
-                sample_count: 1,
+                sample_count,
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             },
         );
@@ -323,7 +349,7 @@ impl RenderPass for PrePass {
 
     fn on_resize(&mut self, device: &Device, _queue: &Queue, width: u32, height: u32) {
         self.normal_depth.resize(device, width, height);
-        let (dt, dv) = Self::make_depth(device, width, height);
+        let (dt, dv) = Self::make_depth(device, width, height, self.normal_depth.sample_count);
         self.depth_texture = dt;
         self.depth_view = dv;
     }
@@ -342,11 +368,17 @@ impl RenderPass for PrePass {
     ) {
         let actual_depth_view = depth_view.unwrap_or(&self.depth_view);
         
+        let (view, resolve_target) = if let Some(m_view) = &self.normal_depth.multisampled_view {
+            (m_view, Some(&self.normal_depth.view))
+        } else {
+            (&self.normal_depth.view, None)
+        };
+
         let mut rpass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("Prepass"),
             color_attachments: &[Some(RenderPassColorAttachment {
-                view: &self.normal_depth.view,
-                resolve_target: None,
+                view,
+                resolve_target,
                 ops: Operations {
                     load: LoadOp::Clear(wgpu::Color {
                         r: 0.5,

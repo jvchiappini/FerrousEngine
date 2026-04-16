@@ -157,7 +157,7 @@ impl<App> VirtualGrid<App> {
     /// Alto total del contenido (todos los ítems).
     fn content_height(&self, cols: usize) -> f32 {
         if cols == 0 { return 0.0; }
-        let rows = (self.item_count + cols - 1) / cols;
+        let rows = self.item_count.div_ceil(cols);
         self.padding * 2.0 + rows as f32 * (self.cell_height + self.gap) - self.gap
     }
 

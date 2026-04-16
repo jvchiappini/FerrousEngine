@@ -379,7 +379,7 @@ impl HashDAG {
                 // Propagate emissive flag from child.
                 let emissive = self.pools[level - 1]
                     .get(child_idx)
-                    .map_or(false, |n| n.emissive_mask != 0);
+                    .is_some_and(|n| n.emissive_mask != 0);
                 if emissive {
                     node.emissive_mask |= 1 << octant;
                 } else {

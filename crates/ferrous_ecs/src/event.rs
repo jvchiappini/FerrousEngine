@@ -63,7 +63,7 @@ impl<T: Send + Sync + 'static> Events<T> {
     ///
     /// The returned iterator borrows from the previous buffer; the reader's
     /// cursor is advanced to the end so subsequent calls start later.
-    pub fn read<'w>(&'w mut self) -> impl Iterator<Item = &'w T> {
+    pub fn read(&mut self) -> impl Iterator<Item = &T> {
         let slice = &self.previous;
         slice.iter()
     }

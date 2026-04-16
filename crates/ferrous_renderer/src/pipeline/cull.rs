@@ -70,7 +70,7 @@ impl GpuCullPipeline {
         if instance_count == 0 {
             return;
         }
-        let workgroups = (instance_count + 63) / 64;
+        let workgroups = instance_count.div_ceil(64);
         let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("CullPass: compute"),
             timestamp_writes: None,

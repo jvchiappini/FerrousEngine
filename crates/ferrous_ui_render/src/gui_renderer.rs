@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
-use crate::gpu_types::{GuiQuad, TextQuad, SvgCommand};
+use crate::gpu_types::{GuiQuad, TextQuad};
 use crate::gui_batch::GuiBatch;
 use crate::MAX_TEXTURE_SLOTS;
 use crate::pipelines::{
@@ -13,7 +13,6 @@ use crate::pipelines::{
     quad::create_quad_pipeline,
     text::create_text_pipeline,
     id::create_id_pipeline,
-    svg::create_svg_pipeline,
 };
 
 /// Main UI rendering engine on the GPU.
@@ -139,8 +138,8 @@ impl GuiRenderer {
             min_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
-        let dummy_views: Vec<&wgpu::TextureView> = std::iter::repeat(&dummy_view).take(MAX_TEXTURE_SLOTS as usize).collect();
-        let dummy_samplers: Vec<&wgpu::Sampler> = std::iter::repeat(&dummy_sampler).take(MAX_TEXTURE_SLOTS as usize).collect();
+        let dummy_views: Vec<&wgpu::TextureView> = std::iter::repeat_n(&dummy_view, MAX_TEXTURE_SLOTS as usize).collect();
+        let dummy_samplers: Vec<&wgpu::Sampler> = std::iter::repeat_n(&dummy_sampler, MAX_TEXTURE_SLOTS as usize).collect();
 
         #[cfg(not(target_arch = "wasm32"))]
         let image_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -424,7 +423,7 @@ impl GuiRenderer {
                 let new_max = (all_indices.len() as u32).next_power_of_two().max(1024);
                 self.svg_index_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("GUI SVG Index Buffer (resized)"),
-                    size: (new_max as u64 * 4) as u64,
+                    size: (new_max as u64 * 4),
                     usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
@@ -478,14 +477,13 @@ impl GuiRenderer {
             (0, 0, self.resolution[0] as u32, self.resolution[1] as u32)
         };
 
-        if base_sw == 0 || base_sh == 0 {
-            if matches!(load_op, wgpu::LoadOp::Load) { return; }
-        }
+        if (base_sw == 0 || base_sh == 0)
+            && matches!(load_op, wgpu::LoadOp::Load) { return; }
         
         static mut FRAME_COUNT: u32 = 0;
         unsafe {
             FRAME_COUNT += 1;
-            if FRAME_COUNT % 120 == 0 {
+            if FRAME_COUNT.is_multiple_of(120) {
                 println!("[GuiRenderer] Render: segments={}, quads={}, text={}, icons={}, svg={}", 
                     batch.segments.len(), batch.quads.len(), batch.text_quads.len(), batch.icon_quads.len(), batch.svg_commands.len());
                 println!("[GuiRenderer] Base Scissor: x={}, y={}, w={}, h={}", base_sx, base_sy, base_sw, base_sh);
@@ -498,8 +496,8 @@ impl GuiRenderer {
         for segment in &batch.segments {
             // Apply scissor if present, intersected with base_scissor
             let (sx, sy, sw, sh) = if let Some(s) = segment.scissor {
-                let sx = (s.x.max(base_sx as f32) as u32).min((base_sx + base_sw) as u32);
-                let sy = (s.y.max(base_sy as f32) as u32).min((base_sy + base_sh) as u32);
+                let sx = (s.x.max(base_sx as f32) as u32).min(((base_sx + base_sw)));
+                let sy = (s.y.max(base_sy as f32) as u32).min(((base_sy + base_sh)));
                 let sw = ( (s.x + s.width).min((base_sx + base_sw) as f32) as u32 ).saturating_sub(sx);
                 let sh = ( (s.y + s.height).min((base_sy + base_sh) as f32) as u32 ).saturating_sub(sy);
                 (sx, sy, sw, sh)
@@ -667,7 +665,7 @@ impl GuiRenderer {
     /// This is normally called during Event Dispatch if AABB check returns custom widgets.
     pub fn hit_test_gpu(
         &self,
-        queue: &wgpu::Queue,
+        _queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         x: u32,
         y: u32,
@@ -675,7 +673,7 @@ impl GuiRenderer {
     ) -> u32 {
         // In a real environment, this should be asynchronous to avoid blocking CPU.
         // For editor tools (GUIMaker), 1-frame latency is acceptable.
-        let receiver = self.read_pixel_id(encoder, x, y, batch);
+        let _receiver = self.read_pixel_id(encoder, x, y, batch);
         // El encoder debe enviarse antes de recibir.
         // Como no tenemos el control del submit aquí, asumimos que se llamará después.
         // En una implementación perfecta, esto se divide.

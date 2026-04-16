@@ -76,6 +76,7 @@ impl Default for MaterialComponent {
 
 /// Geometric or logical kind of a scene entity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum ElementKind {
     // ── Existing ────────────────────────────────────────────────────────────
     Cube {
@@ -98,6 +99,7 @@ pub enum ElementKind {
         radius: f32,
         intensity: f32,
     },
+    #[default]
     Empty,
 
     // ── New primitives ───────────────────────────────────────────────────────
@@ -163,11 +165,6 @@ pub enum ElementKind {
 
 impl ferrous_ecs::prelude::Component for ElementKind {}
 
-impl Default for ElementKind {
-    fn default() -> Self {
-        ElementKind::Empty
-    }
-}
 
 // ── Element ──────────────────────────────────────────────────────────────────
 

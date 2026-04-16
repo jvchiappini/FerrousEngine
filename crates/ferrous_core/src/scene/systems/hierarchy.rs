@@ -15,12 +15,10 @@ impl Component for Parent {}
 
 /// List of direct children.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct Children(pub Vec<ferrous_ecs::entity::Entity>);
 impl Component for Children {}
 
-impl Default for Children {
-    fn default() -> Self { Children(Vec::new()) }
-}
 
 /// Computed world-space transform — read-only output of `TransformSystem`.
 #[derive(Debug, Clone, Copy, PartialEq)]

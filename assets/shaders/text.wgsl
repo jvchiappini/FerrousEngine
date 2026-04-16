@@ -74,8 +74,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let sig_dist = median(sample.r, sample.g, sample.b);
     let w = max(fwidth(sig_dist), 0.001); // Asegurar que w nunca sea negativo/cero
 
-    // CORRECCIÓN WGSL: bordes ordenados de menor a mayor e invertimos:
-    let opacity = 1.0 - smoothstep(0.5 - w, 0.5 + w, sig_dist);
+    // El MSDF generado en msdf_gen.rs usa:
+    // - Adentro del glifo: sig_dist < 0.5
+    // - Afuera del glifo: sig_dist > 0.5
+    // Por lo tanto, queremos opacidad 1.0 cuando dist < 0.5.
+    let opacity = smoothstep(0.5 + w, 0.5 - w, sig_dist);
 
     return vec4<f32>(in.color.rgb, in.color.a * opacity);
 }

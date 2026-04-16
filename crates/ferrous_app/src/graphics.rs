@@ -55,6 +55,19 @@ impl GraphicsState {
             
             let web_window = web_sys::window().expect("no window");
             let document = web_window.document().expect("no document");
+
+            // ── HiDPI: set the canvas buffer to physical pixels ──────────────
+            // `width`/`height` CSS controls how the canvas LOOKS on screen, but
+            // the actual GPU render buffer size is the canvas element attribute.
+            // Winit passes physical pixels via `with_inner_size(PhysicalSize{..})`,
+            // so `width`/`height` here are already DPR-scaled physical pixels.
+            canvas.set_width(width);
+            canvas.set_height(height);
+            let dpr = web_window.device_pixel_ratio();
+            web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
+                "[WGPU-Init] Canvas buffer = {}x{} physical pixels (DPR={:.2})",
+                width, height, dpr
+            )));
             
             // Si el usuario proporcionó un contenedor específico, mover la canvas ahí
             if let Some(container) = document.get_element_by_id("ferrous-container") {
@@ -73,8 +86,11 @@ impl GraphicsState {
                  }
             }
             
+            // CSS size = 100% of container. The browser scales our physical-pixel
+            // buffer back down to CSS pixels, producing a crisp HiDPI image.
             canvas.style().set_property("width", "100%").ok();
             canvas.style().set_property("height", "100%").ok();
+            canvas.style().set_property("image-rendering", "auto").ok();
             canvas.style().set_property("display", "block").ok();
             canvas.style().set_property("outline", "none").ok();
             
@@ -179,7 +195,7 @@ impl GraphicsState {
             config.format,
             sample_count,
             // convert Option<String> -> Option<&Path>
-            hdri_path.as_ref().map(|s| std::path::Path::new(s)),
+            hdri_path.as_ref().map(std::path::Path::new),
         ));
 
         #[cfg(target_arch = "wasm32")]

@@ -172,7 +172,7 @@ impl FrameBuilder {
         let mut visible_groups: HashMap<MeshGroupKey, MeshGroupVal> = HashMap::new();
         // All-objects groups for shadow pass (no frustum culling)
         let mut shadow_groups: HashMap<MeshGroupKey, MeshGroupVal> = HashMap::new();
-
+        
         for (_entity, (element, transform, material)) in
             ferrous_ecs::query::Query::<(&Element, &Transform, &MaterialComponent)>::new(&world.ecs).iter()
         {
@@ -351,8 +351,8 @@ impl FrameBuilder {
                                 .depth(*depth)
                                 .quality(*quality)
                                 .bevel(*bevel_enabled, *bevel_thickness, *bevel_size);
-                            let tmesh = builder.build(device).unwrap_or_else(|_| create_cube(device));
-                            tmesh
+                            
+                            builder.build(device).unwrap_or_else(|_| create_cube(device))
                         })
                         .clone()
                 }

@@ -180,8 +180,8 @@ impl SsaoBlurPass {
         
         let w = dst_texture.width();
         let h = dst_texture.height();
-        let x = (w + 7) / 8;
-        let y = (h + 7) / 8;
+        let x = w.div_ceil(8);
+        let y = h.div_ceil(8);
         cpass.dispatch_workgroups(x, y, 1);
     }
 

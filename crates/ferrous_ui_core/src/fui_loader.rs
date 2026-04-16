@@ -53,7 +53,7 @@ impl FuiLoader {
         let node_id = tree.add_node(widget_box, parent); 
         
         // Setup layout based on node.layout
-        if let Some(mut n) = tree.get_node_mut(node_id) {
+        if let Some(n) = tree.get_node_mut(node_id) {
             n.style.size = (crate::primitives::Units::Px(node.layout.w), crate::primitives::Units::Px(node.layout.h));
             // Just positioning
             n.rect.x = node.layout.x;

@@ -392,7 +392,7 @@ impl PipelineLayouts {
         let cel_lights = Arc::new(device.create_bind_group_layout(
             &wgpu::BindGroupLayoutDescriptor {
                 label: Some("Layout: Cel Lights"),
-                entries: &[dir_light_entry.clone(), cel_params_entry.clone()],
+                entries: &[dir_light_entry, cel_params_entry],
             },
         ));
 
@@ -413,8 +413,8 @@ impl PipelineLayouts {
             &wgpu::BindGroupLayoutDescriptor {
                 label: Some("Layout: Outline Lights"),
                 entries: &[
-                    dir_light_entry.clone(),
-                    cel_params_entry.clone(),
+                    dir_light_entry,
+                    cel_params_entry,
                     outline_color_entry,
                 ],
             },

@@ -46,6 +46,12 @@ pub struct ReactivitySystem {
     pub(crate) pending_dirty_nodes: Vec<NodeId>,
 }
 
+impl Default for ReactivitySystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ReactivitySystem {
     pub fn new() -> Self {
         Self {

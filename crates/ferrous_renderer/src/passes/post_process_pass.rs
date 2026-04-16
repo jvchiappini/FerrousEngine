@@ -511,6 +511,84 @@ impl PostProcessPass {
         // Three vertices → one fullscreen triangle (no vertex buffer).
         rpass.draw(0..3, 0..1);
     }
+
+    /// Like [`render`] but takes an explicit `(primary_view, primary_sampler)` pair
+    /// instead of an [`HdrTexture`].  Used when the antialiasing pass has
+    /// produced a separate output texture that replaces the raw HDR input.
+    pub fn render_with_view(
+        &self,
+        device: &Device,
+        encoder: &mut CommandEncoder,
+        primary_view: &TextureView,
+        primary_sampler: &wgpu::Sampler,
+        hdr: &HdrTexture,             // still needed for the bloom fallback
+        output_view: &TextureView,
+        camera_bind_group: &wgpu::BindGroup,
+    ) {
+        let pipeline = self
+            .pipeline
+            .as_ref()
+            .expect("PostProcessPass not initialised");
+
+        let bgl = self
+            .bind_group_layout
+            .as_ref()
+            .expect("PostProcessPass not initialised");
+
+        let bloom_view = if let Some(bt) = &self.bloom_textures {
+            &bt.acc_view
+        } else {
+            &hdr.view
+        };
+        let bloom_sampler = if let Some(bt) = &self.bloom_textures {
+            &bt.sampler
+        } else {
+            &hdr.sampler
+        };
+
+        let bind_group = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("PostProcess (AA) BindGroup"),
+            layout: bgl,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(primary_view),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Sampler(primary_sampler),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: BindingResource::TextureView(bloom_view),
+                },
+                BindGroupEntry {
+                    binding: 3,
+                    resource: BindingResource::Sampler(bloom_sampler),
+                },
+            ],
+        });
+
+        let mut rpass = encoder.begin_render_pass(&RenderPassDescriptor {
+            label: Some("PostProcess (AA) Pass"),
+            color_attachments: &[Some(RenderPassColorAttachment {
+                view: output_view,
+                resolve_target: None,
+                ops: Operations {
+                    load: LoadOp::Clear(wgpu::Color::BLACK),
+                    store: StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes: None,
+        });
+
+        rpass.set_pipeline(pipeline);
+        rpass.set_bind_group(0, &bind_group, &[]);
+        rpass.set_bind_group(1, camera_bind_group, &[]);
+        rpass.draw(0..3, 0..1);
+    }
 }
 
 impl Default for PostProcessPass {

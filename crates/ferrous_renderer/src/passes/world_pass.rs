@@ -118,6 +118,7 @@ impl WorldPass {
         layouts: &PipelineLayouts,
         width: u32,
         height: u32,
+        sample_count: u32,
         hdri_path: Option<&std::path::Path>,
     ) -> Self {
         // environment bundle includes directional light and IBL textures. if
@@ -137,7 +138,7 @@ impl WorldPass {
         } else {
             Environment::new_dummy(device, queue, &layouts.lights)
         };
-        let hdr_texture = HdrTexture::new(device, width, height);
+        let hdr_texture = HdrTexture::new(device, width, height, sample_count);
 
         // create two shadow pipelines: one for regular objects and one for
         // instanced geometry.  They differ only in the first bind-group
@@ -151,11 +152,11 @@ impl WorldPass {
         // create skybox pass now that we have a valid environment bind group
         let skybox_p = crate::passes::SkyboxPass::new(
             device,
-            &layouts,
+            layouts,
             camera_bind_group.clone(),
             environment.bind_group.clone(),
             HdrTexture::FORMAT,
-            1, // HDR texture uses single sample count
+            sample_count,
         );
         let sky_mode = SkyMode::Cubemap(skybox_p);
 
@@ -358,6 +359,12 @@ impl RenderPass for WorldPass {
         depth_view: Option<&TextureView>,
         packet: &FramePacket,
     ) {
+        let (view, rt) = if let Some(m_view) = &self.hdr_texture.multisampled_view {
+            (m_view, Some(&self.hdr_texture.view))
+        } else {
+            (&self.hdr_texture.view, None)
+        };
+
         // draw skybox before everything else (ignores depth writes)
         // Must render into the HDR texture, not the swapchain surface, so that
         // the skybox format matches the pipeline (Rgba16Float).
@@ -369,8 +376,8 @@ impl RenderPass for WorldPass {
                     _device,
                     _queue,
                     encoder,
-                    &self.hdr_texture.view,
-                    resolve_target,
+                    view,
+                    rt,
                     depth_view,
                     packet,
                 );
@@ -380,8 +387,8 @@ impl RenderPass for WorldPass {
                     _device,
                     _queue,
                     encoder,
-                    &self.hdr_texture.view,
-                    resolve_target,
+                    view,
+                    rt,
                     depth_view,
                     packet,
                 );
@@ -437,11 +444,17 @@ impl RenderPass for WorldPass {
             SkyMode::Solid(color) => LoadOp::Clear(*color),
             _ => LoadOp::Load,
         };
+        let (view, resolve_target) = if let Some(m_view) = &self.hdr_texture.multisampled_view {
+            (m_view, Some(&self.hdr_texture.view))
+        } else {
+            (&self.hdr_texture.view, None)
+        };
+
         let mut rpass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some(self.name()),
             color_attachments: &[Some(RenderPassColorAttachment {
-                view: &self.hdr_texture.view,
-                resolve_target: None,
+                view,
+                resolve_target,
                 ops: Operations {
                     load: hdr_load_op,
                     store: StoreOp::Store,

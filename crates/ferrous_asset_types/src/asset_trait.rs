@@ -35,7 +35,7 @@ pub trait Asset: Send + Sync + 'static {
         Self: Sized;
 
     /// Load raw asset data from an in-memory byte slice. Useful for WASM / Async fetch environments.
-    fn import_bytes(bytes: &[u8]) -> anyhow::Result<Self>
+    fn import_bytes(_bytes: &[u8]) -> anyhow::Result<Self>
     where
         Self: Sized
     {

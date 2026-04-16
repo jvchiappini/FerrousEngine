@@ -7,6 +7,12 @@ pub struct Separator {
     pub color: Option<Color>,
 }
 
+impl Default for Separator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Separator {
     pub fn new() -> Self {
         Self { color: None }

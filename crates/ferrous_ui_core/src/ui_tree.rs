@@ -68,6 +68,12 @@ impl DirtyFlags {
 
 // ── CmdQueue Implementation ────────────────────────────────────────────────────
 
+impl Default for CmdQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CmdQueue {
     pub fn new() -> Self {
         Self {}

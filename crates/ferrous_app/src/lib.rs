@@ -64,13 +64,19 @@ pub use winit::window::CursorIcon;
 // ── Render style ───────────────────────────────────────────────────────────
 pub use ferrous_core::RenderQuality;
 pub use ferrous_renderer::RenderStyle;
+pub use ferrous_renderer::RendererMode;
+
+// ── Antialiasing ────────────────────────────────────────────────────────────
+pub use ferrous_renderer::{AntialiasingMode, FxaaParams};
+
 
 // ── Re-export the most-used ferrous_core primitives ────────────────────────
 // Users can do `use ferrous_app::{Color, Time, World, Handle, Vec3};` without
 // adding ferrous_core as a direct dependency.
 pub use ferrous_core::{
-    Color, Handle, InputState, KeyCode, MouseButton, Time, TimeClock, Transform, World,
+    Color, ElementKind, Handle, InputState, KeyCode, MouseButton, Time, TimeClock, Transform, World,
 };
+pub use ferrous_core::scene::camera::{Camera, ProjectionType};
 
 // glam math types — re-exported for convenience
 pub use ferrous_core::glam::{Mat4, Quat, Vec2, Vec3, Vec4};

@@ -14,7 +14,7 @@ struct BlurParams {
 @group(0) @binding(0)
 var<uniform> params: BlurParams;
 
-// Raw SSAO texture (R32Float, non-filterable): use textureLoad
+// Raw SSAO texture (Rgba8Unorm, non-filterable): use textureLoad
 @group(1) @binding(0)
 var ssao_tex     : texture_2d<f32>;
 
@@ -24,9 +24,9 @@ var nd_tex     : texture_2d<f32>;
 @group(1) @binding(2)
 var nd_sampler : sampler;
 
-// Output: R32Float storage texture
+// Output: Rgba8Unorm storage texture
 @group(1) @binding(3)
-var out_tex : texture_storage_2d<r32float, write>;
+var out_tex : texture_storage_2d<rgba8unorm, write>;
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
@@ -72,15 +72,20 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         let depth_diff  = abs(sample_depth - centre_depth);
         // Gaussian weight by tap distance
         let dist_weight = exp(-f32(i * i) / 8.0);
-        // Hard bilateral gate: reject taps whose depth differs too much
-        let bilateral_w = select(0.0, 1.0, depth_diff < params.depth_thresh);
+        
+        // Soft bilateral gate: gracefully reduce weight as depth difference increases.
+        // We scale the threshold by the center depth so surfaces further away
+        // (which naturally have larger depth gradients) don't falsely reject all taps.
+        let dynamic_thresh = params.depth_thresh * max(1.0, centre_depth * 0.5);
+        let bilateral_w = saturate(1.0 - (depth_diff / dynamic_thresh));
+        
         let w = dist_weight * bilateral_w;
 
         result     += sample_ao * w;
         weight_sum += w;
     }
 
-    // Fallback to original value if all taps were rejected
+    // Fallback to original value if all taps were rejected (extremely rare now)
     let centre_ao  = textureLoad(ssao_tex, vec2<i32>(screen_pos), 0).r;
     let final_ao   = select(centre_ao, result / weight_sum, weight_sum > 0.0001);
 

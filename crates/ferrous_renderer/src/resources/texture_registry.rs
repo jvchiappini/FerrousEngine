@@ -351,12 +351,11 @@ impl TextureRegistry {
             return;
         }
         let idx = handle.0 as usize;
-        if idx < self.textures.len() {
-            if self.textures[idx].is_some() {
+        if idx < self.textures.len()
+            && self.textures[idx].is_some() {
                 self.textures[idx] = None;
                 self.free_slots.push(handle.0);
             }
-        }
     }
 
     /// Update the pixel data for an existing texture.  This is used for

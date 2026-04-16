@@ -7,6 +7,8 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+ferrous_2d = { path = "../ferrous_2d" }
+ferrous_ecs = { path = "../ferrous_ecs" }
 ferrous_app = { path = "../ferrous_app" }
 ferrous_core = { path = "../ferrous_core" }
 ferrous_gui = { path = "../ferrous_gui" }

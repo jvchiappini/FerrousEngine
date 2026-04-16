@@ -256,6 +256,7 @@ impl Plugin for CorePlugin {
 /// This plugin is essentially a marker — window creation is handled by the
 /// runner's `resumed` callback.  Use it to distinguish between headless and
 /// windowed configurations in the future.
+#[derive(Default)]
 pub struct WindowPlugin {
     /// Override the window title.  `None` uses [`AppConfig::title`].
     pub title: Option<String>,
@@ -265,15 +266,6 @@ pub struct WindowPlugin {
     pub height: Option<u32>,
 }
 
-impl Default for WindowPlugin {
-    fn default() -> Self {
-        Self {
-            title: None,
-            width: None,
-            height: None,
-        }
-    }
-}
 
 impl Plugin for WindowPlugin {
     fn name(&self) -> &'static str {
@@ -357,7 +349,7 @@ impl Plugin for RendererPlugin {
     }
 
     fn build(&self, app: &mut AppBuilder) {
-        app.config.render_style = self.render_style.clone();
+        app.config.render_style = self.render_style;
         app.config.hdri_path = self.hdri_path.clone();
         app.config.sample_count = self.sample_count;
     }

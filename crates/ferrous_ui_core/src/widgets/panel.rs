@@ -31,6 +31,12 @@ pub struct Panel {
     pub border: Option<Color>,
 }
 
+impl Default for Panel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Panel {
     pub fn new() -> Self {
         Self {

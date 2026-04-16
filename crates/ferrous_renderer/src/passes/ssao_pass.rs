@@ -29,7 +29,9 @@ pub struct SsaoTexture {
 }
 
 impl SsaoTexture {
-    pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
+    /// Rgba8Unorm allows both write-only storage usage in core WebGPU AND linear filtering.
+    /// R32Float does not support linear filtering in core WebGPU.
+    pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
     pub fn new(device: &Device, width: u32, height: u32) -> Self {
         // Half resolution
@@ -151,8 +153,8 @@ impl SsaoPass {
         cpass.set_bind_group(1, &bg1, &[]);
         
         // Dispatch 8x8 workgroups
-        let x = (self.ssao_texture.width + 7) / 8;
-        let y = (self.ssao_texture.height + 7) / 8;
+        let x = self.ssao_texture.width.div_ceil(8);
+        let y = self.ssao_texture.height.div_ceil(8);
         cpass.dispatch_workgroups(x, y, 1);
     }
 

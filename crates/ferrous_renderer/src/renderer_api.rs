@@ -15,7 +15,6 @@ use crate::render_target::RenderTarget;
 use crate::resources::InstanceBuffer;
 use crate::scene::{SceneData, GizmoDraw};
 use ferrous_core::scene::{MaterialDescriptor, MaterialHandle, RenderStyle};
-use ferrous_core::scene::{AlphaMode, MATERIAL_DEFAULT};
 use ferrous_core::input::InputState;
 use crate::resources::texture_registry::TextureHandle;
 use crate::camera::controller::OrbitState;
@@ -405,7 +404,7 @@ pub fn set_render_style(
 /// Switch between the full 3-D pipeline and the lightweight 2-D/GUI-only
 /// pipeline.
 ///
-/// In `Desktop2D` mode the world pass, render-style passes, gizmos, and
+/// In `Flat2D` mode the world pass, render-style passes, gizmos, and
 /// post-process pass are all skipped. The UI pass clears the surface to
 /// `world_pass.clear_color` instead of compositing on top of a rendered
 /// scene, so the background colour is preserved.
@@ -421,7 +420,7 @@ pub fn set_mode(
     *mode = new_mode;
     #[cfg(feature = "gui")]
     {
-        let clear = if new_mode == RendererMode::Desktop2D {
+        let clear = if new_mode == RendererMode::Flat2D {
             Some(world_pass.clear_color)
         } else {
             None
@@ -626,8 +625,17 @@ pub fn set_viewport(viewport: &mut Viewport, new_viewport: Viewport) {
 // -- Configuration Helpers ----------------------------------------------------
 
 /// Sets the clear color for the render target.
-pub fn set_clear_color(world_pass: &mut crate::passes::WorldPass, color: wgpu::Color) {
+pub fn set_clear_color(
+    world_pass: &mut crate::passes::WorldPass,
+    #[cfg(feature = "gui")] ui_pass: &mut crate::passes::UiPass,
+    mode: crate::RendererMode,
+    color: wgpu::Color,
+) {
     world_pass.clear_color = color;
+    #[cfg(feature = "gui")]
+    if mode == crate::RendererMode::Flat2D {
+        ui_pass.set_clear_color(Some(color));
+    }
 }
 
 /// Sets the font atlas texture view and sampler for UI rendering.

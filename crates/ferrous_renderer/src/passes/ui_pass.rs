@@ -16,7 +16,7 @@ use crate::graph::{FramePacket, RenderPass};
 pub struct UiPass {
     renderer: GuiRenderer,
     /// When `Some`, the pass clears the target to this colour before drawing
-    /// the UI.  Set by the renderer when `RendererMode::Desktop2D` is active
+    /// the UI.  Set by the renderer when `RendererMode::Flat2D` is active
     /// so that the world / post-process passes can be skipped entirely.
     clear_color: Option<wgpu::Color>,
 }
@@ -34,7 +34,7 @@ impl UiPass {
     }
 
     /// Override the `LoadOp` for the next frame(s).  Pass `Some(color)` to
-    /// clear the target before drawing (use in `Desktop2D` mode); pass `None`
+    /// clear the target before drawing (use in `Flat2D` mode); pass `None`
     /// to restore the default `LoadOp::Load` behaviour (composite on top of
     /// the rendered scene).
     pub fn set_clear_color(&mut self, color: Option<wgpu::Color>) {
@@ -61,7 +61,7 @@ impl RenderPass for UiPass {
     fn execute(
         &mut self,
         _device: &Device,
-        queue: &Queue,
+        _queue: &Queue,
         encoder: &mut CommandEncoder,
         color_view: &TextureView,
         resolve_target: Option<&TextureView>,

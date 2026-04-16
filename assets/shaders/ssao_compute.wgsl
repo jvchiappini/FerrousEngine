@@ -39,25 +39,38 @@ var normal_depth_sampler : sampler;
 @group(1) @binding(2)
 var noise_tex     : texture_2d<f32>;
 
-// Output: R32Float storage texture (half-res)
+// Output: Rgba8Unorm storage texture (half-res)
 @group(1) @binding(3)
-var out_tex : texture_storage_2d<r32float, write>;
+var out_tex : texture_storage_2d<rgba8unorm, write>;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Reconstruct view-space position from UV + linear depth.
 fn reconstruct_view_pos(uv: vec2<f32>, linear_depth: f32) -> vec3<f32> {
+    // Detect projection type: Orthographic matrices have proj[3][3] == 1.0
+    // while Perspective have proj[3][3] == 0.0.
+    let is_ortho = params.proj[3][3] > 0.5;
+
     // Convert UV → NDC (WebGPU NDC z is [0, 1])
     let ndc_x =  uv.x * 2.0 - 1.0;
     let ndc_y = (1.0 - uv.y) * 2.0 - 1.0;
-    let ndc = vec4<f32>(ndc_x, ndc_y, 0.5, 1.0);
     
-    // Unproject to an arbitrary point on the view ray
-    let view_ray = params.inv_proj * ndc;
-    let ray_dir = view_ray.xyz / view_ray.w;
-    
-    // Scale the ray so its Z-coordinate equals -linear_depth
-    return ray_dir * (-linear_depth / ray_dir.z);
+    if (is_ortho) {
+        // Orthographic: X and Y are linear functions of NDC
+        // View-space X = NDC_X / Proj[0][0]
+        // View-space Y = NDC_Y / Proj[1][1]
+        let vx = ndc_x / params.proj[0][0];
+        let vy = ndc_y / params.proj[1][1];
+        return vec3<f32>(vx, vy, -linear_depth);
+    } else {
+        // Perspective: Rays converge at eye
+        let ndc = vec4<f32>(ndc_x, ndc_y, 0.5, 1.0);
+        let view_ray = params.inv_proj * ndc;
+        let ray_dir = view_ray.xyz / view_ray.w;
+        
+        // Scale the ray so its Z-coordinate equals -linear_depth
+        return ray_dir * (-linear_depth / ray_dir.z);
+    }
 }
 
 fn tbn_from_normal(normal: vec3<f32>, rvec: vec3<f32>) -> mat3x3<f32> {

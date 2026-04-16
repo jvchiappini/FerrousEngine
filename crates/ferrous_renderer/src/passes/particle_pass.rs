@@ -3,14 +3,12 @@
 //! Manages simulation and rendering of millions of particles using
 //! compute shaders and vertex pulling.
 
-use std::sync::Arc;
 use bytemuck::{Pod, Zeroable};
 use wgpu::{
     BindGroup, BindGroupLayout, CommandEncoder, ComputePipeline, Device,
     Queue, RenderPipeline,
 };
 
-use crate::graph::RenderPass;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
@@ -52,7 +50,7 @@ pub struct ParticleSystem {
 }
 
 impl ParticleSystem {
-    pub fn new(device: &Device, camera_layout: &BindGroupLayout, max_particles: u32) -> Self {
+    pub fn new(device: &Device, camera_layout: &BindGroupLayout, max_particles: u32, sample_count: u32) -> Self {
         // 1. Create Buffers
         let particles_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Particles Storage Buffer"),
@@ -167,7 +165,11 @@ impl ParticleSystem {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: sample_count,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             multiview: None,
             cache: None,
         });
@@ -239,7 +241,7 @@ impl ParticleSystem {
         cpass.set_bind_group(0, &self.bind_group0, &[]);
         cpass.set_bind_group(1, &self.bind_group1_update, &[]);
         
-        let x = (self.max_particles + 63) / 64;
+        let x = self.max_particles.div_ceil(64);
         cpass.dispatch_workgroups(x, 1, 1);
     }
 

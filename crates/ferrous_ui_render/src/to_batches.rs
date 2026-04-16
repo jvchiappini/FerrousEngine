@@ -6,7 +6,7 @@
 
 use crate::gpu_types::{GuiQuad, SvgCommand};
 use crate::gui_batch::GuiBatch;
-use crate::{GRADIENT_BIT, GRADIENT_V_BIT, GRADIENT_RADIAL_BIT, BORDER_BIT, TEXTURED_BIT, MAX_TEXTURE_SLOTS, SHADOW_BIT};
+use crate::{GRADIENT_BIT, GRADIENT_V_BIT, GRADIENT_RADIAL_BIT, BORDER_BIT, TEXTURED_BIT};
 use ferrous_ui_core::background::Background;
 
 /// Extension to convert abstract render commands into GPU-optimized batches.

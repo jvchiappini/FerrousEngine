@@ -327,7 +327,7 @@ impl<App> Widget<App> for TextInput<App> {
                 let visible_w = ctx.rect.width - 16.0;
 
                 match result {
-                    FieldKeyResult::Ignored => return EventResponse::Ignored,
+                    FieldKeyResult::Ignored => EventResponse::Ignored,
                     FieldKeyResult::Handled => {
                         self.update_scroll(visible_w, char_width);
                         self.commit_text(ctx, text);

@@ -17,7 +17,7 @@ members = [
     "crates/ferrous_ui_macros",
     "crates/ferrous_voxels",
     "crates/ferrous_svg", "crates/ferrous_state", "crates/ferrous_reflection",
-    "crates/ferrous_web",
+    "crates/ferrous_web", "crates/ferrous_2d",
 ]
 resolver = "2"
 

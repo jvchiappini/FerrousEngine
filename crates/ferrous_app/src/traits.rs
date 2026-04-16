@@ -1,7 +1,6 @@
 use crate::context::AppContext;
 use ferrous_assets::Font;
 use ferrous_gui::GuiBatch;
-use ferrous_ui_core::UiTree;
 
 /// Aggregates all mutable drawing resources passed to [`FerrousApp::draw_ui`].
 pub struct DrawContext<'a, 'b> {
@@ -93,14 +92,14 @@ impl<'a, 'b> DrawContext<'a, 'b> {
 /// you need.  The runner only calls the callbacks that make sense for the
 /// active [`crate::AppMode`]:
 ///
-/// | Callback | `Desktop2D` | `Game2D` | `Game3D` |
+/// | Callback | `Flat2D` | `Flat2D` | `Game3D` |
 /// |----------|:-----------:|:--------:|:--------:|
 /// | `setup` / `update` / `draw_ui` | ✓ | ✓ | ✓ |
 /// | `draw_3d` | ✗ | ✗ | ✓ |
 /// | ECS world sync | ✗ | ✗ | ✓ |
 ///
 /// A minimal "hello world" GUI tool needs zero methods and
-/// `App::new(MyTool).with_mode(AppMode::Desktop2D).run()`.
+/// `App::new(MyTool).with_mode(AppMode::Flat2D).run()`.
 /// A full 3-D game uses the default [`AppMode::Game3D`] and overrides
 /// `setup`, `update`, and optionally `draw_3d`.
 ///

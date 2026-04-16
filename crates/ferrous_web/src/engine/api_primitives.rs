@@ -5,6 +5,40 @@ use crate::commands::JsCommand;
 
 #[wasm_bindgen]
 impl FerrousWebEngine {
+    #[wasm_bindgen(js_name = createSprite2d)]
+    pub fn create_sprite2d(
+        &self,
+        name: String,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        z_index: f32,
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
+        texture_id: Option<u32>,
+    ) -> JsEntity {
+        self.push_command(JsCommand::CreateSprite2d {
+            name: name.clone(),
+            position: [x, y],
+            size: [w, h],
+            z_index,
+            color: [r, g, b, a],
+            texture_id,
+        });
+        JsEntity::new(name, self.tx.clone())
+    }
+
+    #[wasm_bindgen(js_name = setCamera2d)]
+    pub fn set_camera2d(&self, zoom: f32, clear_r: f32, clear_g: f32, clear_b: f32, clear_a: f32) {
+        self.push_command(JsCommand::SetCamera2d {
+            zoom,
+            clear_color: Some([clear_r, clear_g, clear_b, clear_a]),
+        });
+    }
+
     #[wasm_bindgen(js_name = createBox)]
     pub fn create_box(
         &self, name: String,

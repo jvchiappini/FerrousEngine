@@ -301,7 +301,7 @@ impl<App> Widget<App> for Button<App> {
         let r = self.radii[0];
         // Si todos los radios son iguales y >= la mitad del lado menor → es un círculo/óvalo
         let is_circle = self.radii.iter().all(|rr| *rr == r)
-            && r.map_or(false, |rv| rv * 2.0 >= size.x.min(size.y));
+            && r.is_some_and(|rv| rv * 2.0 >= size.x.min(size.y));
         if is_circle {
             let center = size * 0.5;
             let radius = size.x.min(size.y) * 0.5;

@@ -4,7 +4,7 @@
 //! rendering segments optimized for GPU execution.
 
 use crate::gpu_types::{GuiQuad, TextQuad, DrawSegment, SvgCommand};
-use crate::{TEXTURED_BIT, MAX_TEXTURE_SLOTS, SHADOW_BIT, BORDER_BIT};
+use crate::{TEXTURED_BIT, MAX_TEXTURE_SLOTS};
 
 
 /// Grouping of UI primitives organized by rendering segments.
@@ -22,6 +22,12 @@ pub struct GuiBatch {
     pub damage_union: Option<ferrous_ui_core::Rect>,
 }
 
+
+impl Default for GuiBatch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl GuiBatch {
     fn add_damage_rect(&mut self, mut rect: ferrous_ui_core::Rect) {

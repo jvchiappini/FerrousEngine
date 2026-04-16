@@ -37,9 +37,20 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
         #[cfg(target_arch = "wasm32")]
         {
             if let Some(win) = web_sys::window() {
-                let w = win.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(window_size.0 as f64) as u32;
-                let h = win.inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(window_size.1 as f64) as u32;
-                window_size = (w, h);
+                // Use devicePixelRatio so the WebGPU surface matches physical pixels.
+                // Without this, on HiDPI screens the canvas is rendered at CSS-pixel
+                // resolution and then scaled up by the browser → jagged/pixelated edges.
+                let dpr = win.device_pixel_ratio(); // e.g. 2.0 on Retina, 1.0 on standard
+                let scale = self.config.resolution_scale;
+                let css_w = win.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(window_size.0 as f64);
+                let css_h = win.inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(window_size.1 as f64);
+                let phys_w = (css_w * dpr * scale).round() as u32;
+                let phys_h = (css_h * dpr * scale).round() as u32;
+                window_size = (phys_w.max(1), phys_h.max(1));
+                web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
+                    "[WGPU-Init] DPR={:.2} Scale={:.2} CSS={}x{} Physical={}x{}",
+                    dpr, scale, css_w as u32, css_h as u32, phys_w, phys_h
+                )));
             }
         }
 
@@ -76,11 +87,11 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
             gfx.renderer
                 .set_clear_color(self.config.background_color.to_wgpu());
             gfx.renderer
-                .set_render_style(self.config.render_style.clone());
+                .set_render_style(self.config.render_style);
             // Propagate the app mode to the renderer
-            if self.config.mode == AppMode::Desktop2D {
+            if self.config.mode == AppMode::Flat2D {
                 gfx.renderer
-                    .set_mode(ferrous_renderer::RendererMode::Desktop2D);
+                    .set_mode(ferrous_renderer::RendererMode::Flat2D);
             }
 
             if let Some(bytes) = self.config.font_bytes {
@@ -157,9 +168,9 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
                 gfx.renderer.set_clear_color(bg);
                 gfx.renderer.set_viewport(vp);
                 gfx.renderer.set_render_style(render_style);
-                if app_mode == AppMode::Desktop2D {
+                if app_mode == AppMode::Flat2D {
                     gfx.renderer
-                        .set_mode(ferrous_renderer::RendererMode::Desktop2D);
+                        .set_mode(ferrous_renderer::RendererMode::Flat2D);
                 }
 
                 if let Some(bytes) = font_bytes {
@@ -340,7 +351,25 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
                     }
                 }
             }
-            WindowEvent::Resized(size) => {
+            WindowEvent::Resized(mut size) => {
+                #[cfg(target_arch = "wasm32")]
+                {
+                    use wasm_bindgen::JsCast;
+                    size.width = (size.width as f64 * self.config.resolution_scale).round() as u32;
+                    size.height = (size.height as f64 * self.config.resolution_scale).round() as u32;
+                    
+                    if let Some(window) = web_sys::window() {
+                        if let Some(doc) = window.document() {
+                            if let Ok(Some(c)) = doc.query_selector("canvas") {
+                                if let Ok(html_canvas) = c.dyn_into::<web_sys::HtmlCanvasElement>() {
+                                    html_canvas.set_width(size.width);
+                                    html_canvas.set_height(size.height);
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if let Some(gfx) = &mut self.graphics {
                     gfx.resize(size.width, size.height);
                 }

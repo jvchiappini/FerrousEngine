@@ -57,7 +57,7 @@ impl FontParser {
         let rec = self
             .tables
             .get(b"head")
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "no head"))?;
+            .ok_or_else(|| std::io::Error::other("no head"))?;
         let mut cur = std::io::Cursor::new(
             &self.data[rec.offset as usize..rec.offset as usize + rec.length as usize],
         );
@@ -70,7 +70,7 @@ impl FontParser {
 
     fn read_loca(&self) -> std::io::Result<()> {
         if !self.tables.contains_key(b"loca") {
-            return Err(std::io::Error::new(std::io::ErrorKind::Other, "no loca"));
+            return Err(std::io::Error::other("no loca"));
         }
         Ok(())
     }
@@ -275,7 +275,7 @@ impl FontParser {
             return None;
         }
 
-        Some(self.decode_simple_contours(&mut cur, number_of_contours as u16)?)
+        self.decode_simple_contours(&mut cur, number_of_contours as u16)
     }
 
     /// Walk a composite glyph (numberOfContours < 0) and accumulate the

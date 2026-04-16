@@ -1,6 +1,6 @@
 use crate::geometry::mesh::Mesh;
 use crate::geometry::vertex::Vertex;
-use glam::{Vec2, Vec3, Vec4};
+use glam::{Vec2, Vec3};
 
 pub struct Text3dBuilder {
     pub text: String,
@@ -208,9 +208,9 @@ impl Text3dBuilder {
             let edge2 = v2 - v0;
             let face_normal = edge1.cross(edge2).normalize_or_zero();
 
-            let mut v0_obj = all_vertices[i0].clone();
-            let mut v1_obj = all_vertices[i1].clone();
-            let mut v2_obj = all_vertices[i2].clone();
+            let mut v0_obj = all_vertices[i0];
+            let mut v1_obj = all_vertices[i1];
+            let mut v2_obj = all_vertices[i2];
 
             v0_obj.normal = face_normal.to_array();
             v1_obj.normal = face_normal.to_array();

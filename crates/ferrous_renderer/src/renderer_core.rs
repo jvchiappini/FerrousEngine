@@ -29,6 +29,7 @@ pub use crate::geometry::{Mesh, Vertex, compute_tangents};
 pub use render_stats::RenderStats;
 pub use crate::render_target::RenderTarget;
 pub use crate::resources::InstanceBuffer;
+pub use ferrous_core::Color;
 pub use ferrous_core::scene::{RenderStyle, MaterialDescriptor};
 pub use crate::passes::{
     CelShadedPass, FlatShadedPass, OutlinePass, ParticleSystem, PostProcessPass, PrePass,
@@ -48,6 +49,9 @@ use crate::resources::SsaoResources;
 use camera::controller::OrbitState;
 pub use pipeline::InstancingPipeline;
 
+use ferrous_2d::render::{Renderer2d, ShapeBatcher};
+
+
 use ferrous_core::context::EngineContext;
 use crate::graph::frame_packet::CameraPacket;
 use crate::scene::culling::Frustum;
@@ -63,7 +67,7 @@ enum RenderDest<'a> {
 }
 
 /// | `Full3D` | ✓ | ✓ |
-/// | `Desktop2D` | ✗ (skipped) | ✓ (clears to `world_pass.clear_color`) |
+/// | `Flat2D` | ✗ (skipped) | ✓ (clears to `world_pass.clear_color`) |
 ///
 /// Set via [`Renderer::set_mode`].  The default is [`RendererMode::Full3D`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -73,7 +77,7 @@ pub enum RendererMode {
     Full3D,
     /// 2-D GUI-only pipeline: the UI pass clears the surface directly.
     /// WorldPass, render-style passes, gizmos, and post-process are all skipped.
-    Desktop2D,
+    Flat2D,
 }
 
 /// Top-level renderer.
@@ -126,6 +130,7 @@ pub struct Renderer {
     // -- Gizmo system (Phase 3: extracted to GizmoSystem) -------------------
     /// Owns the line-list GPU pipeline and per-frame draw queue.
     pub gizmo_system: GizmoSystem,
+    pub debug_lines: Vec<DebugLine>,
 
     // -- Per-frame state (Fase 3: extracted to FrameBuilder) ------------------
     frame_builder: FrameBuilder,
@@ -146,7 +151,7 @@ pub struct Renderer {
 
     // -- Renderer mode --------------------------------------------------------
     /// Controls which passes execute each frame.  Defaults to `Full3D`.
-    /// Use `set_mode(RendererMode::Desktop2D)` for GUI-only applications.
+    /// Use `set_mode(RendererMode::Flat2D)` for GUI-only applications.
     pub mode: RendererMode,
 
     // -- Per-frame render statistics ------------------------------------------
@@ -192,7 +197,16 @@ pub struct Renderer {
     /// `enable_gpu_culling(true)` is called.
     #[cfg(feature = "gpu-driven")]
     cull_pass: Option<CullPass>,
+
+    // -- Antialiasing (Phase AA) ----------------------------------------------
+    /// Configurable antialiasing post-process (FXAA / SMAA / None).
+    pub aa_pass: crate::passes::AntialiasingPass,
+
+    // -- Technical 2D Rendering -----------------------------------------------
+    pub renderer_2d: Renderer2d,
+    pub shape_batcher: ShapeBatcher,
 }
+
 
 impl Renderer {
     /// Creates a `Renderer` with the default world + UI passes.
@@ -208,6 +222,7 @@ impl Renderer {
     ) -> Self {
         let device = &context.device;
 
+        log::info!("[WGPU] Creating Renderer with {}x MSAA", sample_count);
         let rt = RenderTarget::new(device, width, height, format, sample_count);
 
         let layouts = PipelineLayouts::new(device);
@@ -291,8 +306,10 @@ impl Renderer {
             eye: glam::Vec3::new(0.0, 0.0, 5.0),
             target: glam::Vec3::ZERO,
             up: glam::Vec3::Y,
+            projection_type: ferrous_core::scene::camera::ProjectionType::Perspective,
             fovy: 45.0f32.to_radians(),
             aspect: width as f32 / height as f32,
+            ortho_size: 2.0,
             znear: 0.1,
             zfar: 2000.0,
             controller: {
@@ -328,6 +345,7 @@ impl Renderer {
             &layouts,
             width,
             height,
+            rt.sample_count(),
             hdri_path,
         );
         // when the pass is created it will internally construct its own
@@ -341,11 +359,11 @@ impl Renderer {
         #[cfg(feature = "gui")]
         let ui_renderer = ferrous_gui::GuiRenderer::new(
             device.clone(),
-            format,
+            hdr_format,
             1024, // initial max instances
             width,
             height,
-            sample_count,
+            sample_count, // Use hardware MSAA
         );
 
         // now that we have a GUI renderer instance, create the corresponding
@@ -369,14 +387,22 @@ impl Renderer {
         let gizmo_system = GizmoSystem::new(device, hdr_format, rt.sample_count(), layouts.clone());
 
         // -- SSAO: build passes before the Self literal consumes the buffers --
-        let mut prepass = PrePass::new(device, layouts.instance.clone(), width, height);
+        let mut prepass = PrePass::new(device, layouts.instance.clone(), width, height, sample_count);
         prepass.set_instance_buffer(instance_buf.bind_group.clone());
         prepass.set_material_table(&material_registry.bind_group_table(), &material_registry);
         let ssao_pass = SsaoPass::new(device, width, height);
         let ssao_blur_pass = SsaoBlurPass::new(device, width, height);
         let ssao_resources = SsaoResources::new(device, &context.queue);
         let skinning_pass = SkinningPass::new(device);
-        let particle_system = ParticleSystem::new(device, &layouts.camera, 1_000_000);
+        let particle_system = ParticleSystem::new(device, &layouts.camera, 1_000_000, sample_count);
+
+        // -- Antialiasing pass -----------------------------------------------
+        let mut aa_pass = crate::passes::AntialiasingPass::new(device);
+        aa_pass.on_attach(device, hdr_format);
+        aa_pass.on_resize(device, width, height);
+
+        let renderer_2d = Renderer2d::new(context.device.clone(), hdr_format, sample_count, 1024);
+        let shape_batcher = ShapeBatcher::default();
 
         Self {
             context,
@@ -392,6 +418,7 @@ impl Renderer {
             particle_system: Some(particle_system),
             instance_layout: layouts.instance.clone(),
             gizmo_system,
+            debug_lines: Vec::new(),
             frame_builder: FrameBuilder::new(),
             shadow_instance_buf,
             material_registry,
@@ -423,8 +450,12 @@ impl Renderer {
             gpu_culling_enabled: false,
             #[cfg(feature = "gpu-driven")]
             cull_pass: None,
+            aa_pass,
+            renderer_2d,
+            shape_batcher,
         }
     }
+
 
     /// Resizes the renderer's internal render target and updates all dependent passes.
     pub fn resize(&mut self, new_width: u32, new_height: u32) {
@@ -469,6 +500,8 @@ impl Renderer {
             new_width,
             new_height,
         );
+        self.aa_pass.on_resize(&self.context.device, new_width, new_height);
+        
         #[cfg(feature = "gui")]
         {
             self.ui_pass.on_resize(
@@ -487,12 +520,14 @@ impl Renderer {
                 new_height,
             );
         }
+        // Antialiasing textures
+        self.aa_pass.on_resize(&self.context.device, new_width, new_height);
     }
 
     /// Switch between the full 3-D pipeline and the lightweight 2-D/GUI-only
     /// pipeline.
     ///
-    /// In `Desktop2D` mode the world pass, render-style passes, gizmos, and
+    /// In `Flat2D` mode the world pass, render-style passes, gizmos, and
     /// post-process pass are all skipped.  The UI pass clears the surface to
     /// `world_pass.clear_color` instead of compositing on top of a rendered
     /// scene, so the background colour is preserved.
@@ -503,13 +538,24 @@ impl Renderer {
         self.mode = mode;
         #[cfg(feature = "gui")]
         {
-            let clear = if mode == RendererMode::Desktop2D {
+            let clear = if mode == RendererMode::Flat2D {
                 Some(self.world_pass.clear_color)
             } else {
                 None
             };
             self.ui_pass.set_clear_color(clear);
         }
+    }
+
+    /// Convenience helper to switch to Flat 2D mode with a specific background color.
+    pub fn enable_flat_2d(&mut self, background_color: wgpu::Color) {
+        self.set_mode(RendererMode::Flat2D);
+        self.set_clear_color(background_color);
+    }
+
+    /// Convenience helper to switch back to full 3-D mode.
+    pub fn enable_full_3d(&mut self) {
+        self.set_mode(RendererMode::Full3D);
     }
 
     /// Sets the active render style (PBR, CelShaded, or FlatShaded).
@@ -587,6 +633,44 @@ impl Renderer {
         self.viewport = vp;
         self.camera_system
             .set_aspect(vp.width as f32 / vp.height as f32);
+    }
+
+    /// Set the camera projection type (Perspective or Orthographic).
+    pub fn set_projection_type(&mut self, proj: ferrous_core::scene::camera::ProjectionType) {
+        self.camera_system.camera.projection_type = proj;
+    }
+
+    /// Set the vertical size for the orthographic projection.
+    pub fn set_ortho_size(&mut self, size: f32) {
+        self.camera_system.camera.ortho_size = size;
+    }
+
+    /// Set the background clear color and switch to Solid sky mode.
+    pub fn set_background_color(&mut self, color: wgpu::Color) {
+        self.set_clear_color(color);
+        self.world_pass.sky_mode = SkyMode::Solid(color);
+    }
+
+    /// Set the global ambient light for the scene.
+    pub fn set_ambient_light(&mut self, color: [f32; 3], intensity: f32) {
+        crate::renderer_api::set_ambient_light(&mut self.camera_system, &self.context.queue, color, intensity);
+    }
+
+    /// Configure the antialiasing mode applied after the gizmo pass.
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// // FXAA with default quality (recommended for most use cases)
+    /// renderer.set_antialiasing(AntialiasingMode::Fxaa(FxaaParams::default()));
+    ///
+    /// // SMAA — sharper edges, three sub-passes
+    /// renderer.set_antialiasing(AntialiasingMode::Smaa);
+    ///
+    /// // Disabled — fastest, no blur
+    /// renderer.set_antialiasing(AntialiasingMode::None);
+    /// ```
+    pub fn set_antialiasing(&mut self, mode: crate::passes::AntialiasingMode) {
+        self.aa_pass.set_mode(mode);
     }
 
     /// Handles input events, specifically camera control input.
@@ -734,7 +818,7 @@ impl Renderer {
             use ferrous_ecs::prelude::Query;
             let emitters = Query::<(&ferrous_core::scene::GlobalTransform, &ParticleEmitter)>::new(&world.ecs);
             let emitters_data: Vec<_> = emitters.iter()
-                .map(|(_, (t, e))| (t.clone(), e.clone()))
+                .map(|(_, (t, e))| (*t, e.clone()))
                 .collect();
             
             if let Some((transform, emitter)) = emitters_data.first() {
@@ -765,31 +849,27 @@ impl Renderer {
 
         // 0c. Sync Material ECS components → MaterialDescriptors
         {
-            use ferrous_core::scene::Material;
-            let mat_only: Vec<(u32, ferrous_core::scene::MaterialDescriptor)> = world
+            use ferrous_core::scene::world::MaterialComponent;
+            let mat_updates: Vec<(u64, ferrous_core::scene::MaterialHandle, ferrous_core::scene::MaterialDescriptor)> = world
                 .ecs
-                .query::<Material>()
-                .map(|(e, m)| (e.index, m.to_descriptor()))
+                .query::<MaterialComponent>()
+                .map(|(e, m)| (e.index as u64, m.handle, m.descriptor.clone()))
                 .collect();
-            for (ecs_idx, desc) in mat_only {
-                let ecs_id = ecs_idx as u64;
+
+            for (ecs_id, handle, desc) in mat_updates {
                 let needs_update = self
                     .world_material_descs
                     .get(&ecs_id)
                     .map(|prev| *prev != desc)
                     .unwrap_or(true);
+                
                 if needs_update {
-                    for element in world.iter() {
-                        if element.id == ecs_id {
-                            self.material_registry.update_params(
-                                &self.context.queue,
-                                element.material.handle,
-                                &desc,
-                            );
-                            self.world_material_descs.insert(ecs_id, desc.clone());
-                            break;
-                        }
-                    }
+                    self.material_registry.update_params(
+                        &self.context.queue,
+                        handle,
+                        &desc,
+                    );
+                    self.world_material_descs.insert(ecs_id, desc.clone());
                 }
             }
         }
@@ -872,8 +952,8 @@ impl Renderer {
             packet.insert(b);
         }
 
-        // ── Desktop2D fast path ───────────────────────────────────────────────
-        if self.mode == RendererMode::Desktop2D {
+        // ── Flat2D fast path ───────────────────────────────────────────────
+        if self.mode == RendererMode::Flat2D {
             self.ui_pass.prepare(&self.context.device, &self.context.queue, &packet);
             self.ui_pass.execute(
                 &self.context.device,
@@ -968,15 +1048,19 @@ impl Renderer {
             &packet,
         );
 
-        // -- 4b. Particle Render Pass (Additive) -------------------------------
+        let (scene_view, scene_rt) = if let Some(m_view) = &self.world_pass.hdr_texture.multisampled_view {
+            (m_view, Some(&self.world_pass.hdr_texture.view))
+        } else {
+            (&self.world_pass.hdr_texture.view, None)
+        };
         if let Some(ps) = &self.particle_system {
             ps.run_compute(encoder);
             
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Particle Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.world_pass.hdr_texture.view,
-                    resolve_target: None,
+                    view: scene_view,
+                    resolve_target: scene_rt,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
@@ -997,6 +1081,7 @@ impl Renderer {
         }
 
         // -- 5. Render Style Passes ------------------------------------------
+
         match &self.render_style {
             RenderStyle::CelShaded { toon_levels, outline_width } => {
                 let toon_levels = *toon_levels;
@@ -1007,12 +1092,12 @@ impl Renderer {
                 }
                 if let Some(p) = &mut self.cel_pass {
                     p.prepare(&self.context.device, &self.context.queue, &packet);
-                    p.execute(&self.context.device, &self.context.queue, encoder, &self.world_pass.hdr_texture.view, None, Some(&self.render_target.depth.view), &packet);
+                    p.execute(&self.context.device, &self.context.queue, encoder, scene_view, scene_rt, Some(&self.render_target.depth.view), &packet);
                 }
                 if outline_width > 0.0 {
                     if let Some(p) = &mut self.outline_pass {
                         p.prepare(&self.context.device, &self.context.queue, &packet);
-                        p.execute(&self.context.device, &self.context.queue, encoder, &self.world_pass.hdr_texture.view, None, Some(&self.render_target.depth.view), &packet);
+                        p.execute(&self.context.device, &self.context.queue, encoder, scene_view, scene_rt, Some(&self.render_target.depth.view), &packet);
                     }
                 }
             }
@@ -1020,21 +1105,106 @@ impl Renderer {
                 packet.insert(crate::passes::FlatFrameData { light: self.current_dir_light });
                 if let Some(p) = &mut self.flat_pass {
                     p.prepare(&self.context.device, &self.context.queue, &packet);
-                    p.execute(&self.context.device, &self.context.queue, encoder, &self.world_pass.hdr_texture.view, None, Some(&self.render_target.depth.view), &packet);
+                    p.execute(&self.context.device, &self.context.queue, encoder, scene_view, scene_rt, Some(&self.render_target.depth.view), &packet);
                 }
             }
             RenderStyle::Pbr => {}
         }
 
         // -- 6. Gizmo Pass -----------------------------------------------------
-        self.gizmo_system.execute(&self.context.device, encoder, &self.world_pass.hdr_texture.view, &self.render_target.depth.view, &self.camera_system.gpu.bind_group);
+        for line in self.debug_lines.drain(..) {
+            self.gizmo_system.draw_line(line);
+        }
+
+        self.gizmo_system.execute(&self.context.device, encoder, scene_view, scene_rt, &self.render_target.depth.view, &self.camera_system.gpu.bind_group);
+
+        // -- 6a. Technical 2D Pass (Walls, etc.) -------------------------------
+        self.renderer_2d.update_camera(&self.context.queue, self.camera_system.view_proj());
+        self.renderer_2d.prepare_shapes(&self.context.queue, &self.shape_batcher);
+        
+        {
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Technical 2D Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: scene_view,
+                    resolve_target: scene_rt,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.render_target.depth.view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            self.renderer_2d.render_shapes(&mut rpass, &self.shape_batcher);
+        }
+
+        // -- 6b. UI Pass (Hardware MSAA) ---------------------------------------
+        // By rendering UI to the MSAA target before resolve, we get perfect edges.
+        #[cfg(feature = "gui")]
+        {
+            self.ui_pass.prepare(&self.context.device, &self.context.queue, &packet);
+            self.ui_pass.execute(
+                &self.context.device,
+                &self.context.queue,
+                encoder,
+                scene_view,
+                scene_rt,
+                None, // UI doesn't need depth resolve
+                &packet,
+            );
+        }
+
+        // -- 6c. Antialiasing Pass (between gizmos and tone-mapping) -----------
+
+        self.aa_pass.update_params(&self.context.queue, self.width, self.height);
+        self.aa_pass.run_aa(&self.context.device, encoder, &self.world_pass.hdr_texture);
 
         // -- 7. Post-Process (Tone Mapping) ------------------------------------
-        self.post_process_pass.render(&self.context.device, encoder, &self.world_pass.hdr_texture, view, &self.camera_system.gpu.bind_group);
+        // Route through AA output when a mode is active; fall back to raw HDR.
+        use crate::passes::AntialiasingMode;
+        match self.aa_pass.mode {
+            AntialiasingMode::None => {
+                self.post_process_pass.render(
+                    &self.context.device, encoder,
+                    &self.world_pass.hdr_texture,
+                    view,
+                    &self.camera_system.gpu.bind_group,
+                );
+            }
+            _ => {
+                // aa_pass.output() borrows self.aa_pass and self.world_pass.hdr_texture.
+                // We need to pass the views by raw ptr to avoid conflicting borrows
+                // with the encoder.  This is sound because the textures outlive
+                // the render pass scope and are never moved during the blit.
+                let aa_view    = self.aa_pass.output(&self.world_pass.hdr_texture) as *const _;
+                let aa_sampler = self.aa_pass.output_sampler(&self.world_pass.hdr_texture) as *const _;
+                // SAFETY: views & samplers are GPU-side descriptors stored in
+                // self.aa_pass / self.world_pass which cannot be deallocated while
+                // self is alive.
+                let aa_view    = unsafe { &*aa_view };
+                let aa_sampler = unsafe { &*aa_sampler };
+                self.post_process_pass.render_with_view(
+                    &self.context.device, encoder,
+                    aa_view, aa_sampler,
+                    &self.world_pass.hdr_texture,
+                    view,
+                    &self.camera_system.gpu.bind_group,
+                );
+            }
+        }
 
-        // -- 8. UI Pass --------------------------------------------------------
-        self.ui_pass.prepare(&self.context.device, &self.context.queue, &packet);
-        self.ui_pass.execute(&self.context.device, &self.context.queue, encoder, view, None, None, &packet);
+        // -- Clear batcher for next frame --
+
+        self.shape_batcher.clear();
 
         // -- 9. Extra Passes ---------------------------------------------------
         for pass in &mut self.extra_passes {
@@ -1095,7 +1265,12 @@ impl Renderer {
     }
 
     pub fn set_clear_color(&mut self, color: wgpu::Color) {
-        crate::renderer_api::set_clear_color(&mut self.world_pass, color);
+        crate::renderer_api::set_clear_color(
+            &mut self.world_pass,
+            #[cfg(feature = "gui")] &mut self.ui_pass,
+            self.mode,
+            color,
+        );
     }
 
     /// Configure global atmosphere settings (fog and exposure).
@@ -1107,9 +1282,7 @@ impl Renderer {
         crate::renderer_api::set_fog(&mut self.camera_system, &self.context.queue, color, density);
     }
 
-    pub fn set_ambient_light(&mut self, color: [f32; 3], intensity: f32) {
-        crate::renderer_api::set_ambient_light(&mut self.camera_system, &self.context.queue, color, intensity);
-    }
+
 
     pub fn set_ssao_params(&mut self, radius: f32, bias: f32, intensity: f32, power: f32) {
         self.ssao_resources.radius = radius;
@@ -1153,7 +1326,13 @@ impl Renderer {
         &mut self.camera_system.camera
     }
 
+    /// Push a technical 2D shape for rendering this frame.
+    pub fn draw_2d_shape(&mut self, instance: ferrous_2d::render::types::ShapeInstance) {
+        self.shape_batcher.push_shape(instance);
+    }
+
     /// Push a fully-assembled SceneData to the renderer for this frame.
+
     pub fn set_scene(&mut self, scene: &SceneData) {
         if let Some(cam) = &scene.camera {
             self.camera_system.camera.eye = cam.eye;
@@ -1174,5 +1353,26 @@ impl Renderer {
         if !scene.instances.is_empty() {
             self.frame_builder.scene_dirty = true;
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct DebugLine {
+    pub start: ferrous_core::glam::Vec3,
+    pub end: ferrous_core::glam::Vec3,
+    pub color: [f32; 3],
+}
+
+impl Renderer {
+    pub fn draw_line(&mut self, start: ferrous_core::glam::Vec3, end: ferrous_core::glam::Vec3, color: Color) {
+        let [r, g, b, _] = color.to_array();
+        self.debug_lines.push(DebugLine { start, end, color: [r, g, b] });
+    }
+
+    pub fn viewport_size(&self) -> ferrous_core::glam::Vec2 {
+        ferrous_core::glam::Vec2::new(
+            self.render_target.width as f32,
+            self.render_target.height as f32,
+        )
     }
 }

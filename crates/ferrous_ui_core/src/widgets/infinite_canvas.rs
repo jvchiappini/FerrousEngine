@@ -1,11 +1,16 @@
 use crate::{Widget, RenderCommand, DrawContext, LayoutContext, UpdateContext, EventContext, EventResponse, UiEvent, Vec2};
-use crate::primitives::Rect;
 
 pub struct InfiniteCanvas<App = ()> {
     pub pan: Vec2,
     pub zoom: f32,
     pub is_dragging: bool,
     _marker: std::marker::PhantomData<App>,
+}
+
+impl<App> Default for InfiniteCanvas<App> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<App> InfiniteCanvas<App> {
@@ -20,11 +25,11 @@ impl<App> InfiniteCanvas<App> {
 }
 
 impl<App: Send + Sync> Widget<App> for InfiniteCanvas<App> {
-    fn draw(&self, ctx: &mut DrawContext, _cmds: &mut Vec<RenderCommand>) {
+    fn draw(&self, _ctx: &mut DrawContext, _cmds: &mut Vec<RenderCommand>) {
         // Draw the background grid or pattern using procedurals or commands
     }
 
-    fn update(&mut self, ctx: &mut UpdateContext) {
+    fn update(&mut self, _ctx: &mut UpdateContext) {
         // ...
     }
 
@@ -48,7 +53,7 @@ impl<App: Send + Sync> Widget<App> for InfiniteCanvas<App> {
                 self.is_dragging = false;
                 EventResponse::Consumed
             }
-            UiEvent::MouseMove { pos } => {
+            UiEvent::MouseMove { pos: _ } => {
                 // We need previous pos to calculate delta.
                 // In a real impl, EventManager passes delta, or we store last_pos.
                 EventResponse::Ignored

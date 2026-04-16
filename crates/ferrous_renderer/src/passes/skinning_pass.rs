@@ -4,7 +4,6 @@
 
 use wgpu::{
     BindGroup, BindGroupLayout, CommandEncoder, ComputePipeline, Device,
-    Queue,
 };
 
 pub struct SkinningPass {
@@ -112,7 +111,7 @@ impl SkinningPass {
         cpass.set_bind_group(1, bg1, &[]);
         cpass.set_bind_group(2, bg2, &[]);
         
-        let x = (vertex_count + 63) / 64;
+        let x = vertex_count.div_ceil(64);
         cpass.dispatch_workgroups(x, 1, 1);
     }
 }

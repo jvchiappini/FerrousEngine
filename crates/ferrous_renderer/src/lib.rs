@@ -52,6 +52,8 @@ pub use renderer_core::{
     CelShadedPass, FlatShadedPass, OutlinePass, PostProcessPass, PrePass, SsaoBlurPass,
     SsaoPass, WorldPass,
 };
+// Antialiasing
+pub use passes::{AntialiasingMode, AntialiasingPass, FxaaParams};
 
 // Re-export geometry types
 pub use geometry::{Mesh, Vertex};
@@ -73,3 +75,9 @@ pub use ferrous_core::input::{KeyCode, MouseButton};
 // Re-export GUI types when gui feature is enabled
 #[cfg(feature = "gui")]
 pub use ferrous_ui_render::{GuiBatch, GuiQuad};
+
+// -- 2D Technical Rendering Re-exports ----------------------------------------
+pub mod render_2d {
+    pub use ferrous_2d::render::types::ShapeInstance;
+    pub use ferrous_2d::components::Shape2d;
+}
