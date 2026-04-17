@@ -69,7 +69,7 @@ impl ComponentInfo {
             std::ptr::drop_in_place(ptr as *mut C);
         }
         unsafe fn clone_impl<C: Clone>(src: *const u8, dst: *mut u8) {
-            let cloned = (*(src as *const C)).clone();
+            let cloned = (&*(src as *const C)).clone();
             std::ptr::write(dst as *mut C, cloned);
         }
 

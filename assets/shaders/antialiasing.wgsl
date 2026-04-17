@@ -16,8 +16,8 @@
 //  Module-level constants (must be at top-level in WGSL)
 // ---------------------------------------------------------------------------
 const FXAA_SEARCH_STEPS        : i32 = 12;    // tap count along edge (quality)
-const SMAA_THRESHOLD           : f32 = 0.05;  // more sensitive edge detection
-const SMAA_MAX_SEARCH_STEPS    : i32 = 32;    // longer search range for smoother long lines
+const SMAA_THRESHOLD           : f32 = 0.03;  // aggressive edge detection for CAD-like thin lines
+const SMAA_MAX_SEARCH_STEPS    : i32 = 48;    // longer search range for long technical segments
 const SMAA_CORNER_ROUNDING     : f32 = 25.0;  // corner rounding in [0-100]
 
 // ---------------------------------------------------------------------------
@@ -330,16 +330,30 @@ fn fs_smaa_blend(in: VsOut) -> @location(0) vec4<f32> {
 fn fs_smaa_final(in: VsOut) -> @location(0) vec4<f32> {
     let inv  = vec2<f32>(1.0 / aa.resolution_x, 1.0 / aa.resolution_y);
     let wt   = textureSampleLevel(t_aux, s_aux, in.uv, 0.0);
-    var c    = textureSampleLevel(t_color, s_color, in.uv, 0.0);
+    let c0   = textureSampleLevel(t_color, s_color, in.uv, 0.0);
 
-    if abs(wt.r) + abs(wt.g) > 1e-4 {
-        c = mix(c, textureSampleLevel(t_color, s_color, in.uv - vec2<f32>(inv.x, 0.0), 0.0), wt.r);
-        c = mix(c, textureSampleLevel(t_color, s_color, in.uv + vec2<f32>(inv.x, 0.0), 0.0), wt.g);
-    }
-    if abs(wt.b) + abs(wt.a) > 1e-4 {
-        c = mix(c, textureSampleLevel(t_color, s_color, in.uv - vec2<f32>(0.0, inv.y), 0.0), wt.b);
-        c = mix(c, textureSampleLevel(t_color, s_color, in.uv + vec2<f32>(0.0, inv.y), 0.0), wt.a);
+    let w_left  = max(wt.r, 0.0);
+    let w_right = max(wt.g, 0.0);
+    let w_up    = max(wt.b, 0.0);
+    let w_down  = max(wt.a, 0.0);
+    let w_sum   = w_left + w_right + w_up + w_down;
+
+    if w_sum <= 1e-4 {
+        return c0;
     }
 
-    return c;
+    let c_left  = textureSampleLevel(t_color, s_color, in.uv - vec2<f32>(inv.x, 0.0), 0.0);
+    let c_right = textureSampleLevel(t_color, s_color, in.uv + vec2<f32>(inv.x, 0.0), 0.0);
+    let c_up    = textureSampleLevel(t_color, s_color, in.uv - vec2<f32>(0.0, inv.y), 0.0);
+    let c_down  = textureSampleLevel(t_color, s_color, in.uv + vec2<f32>(0.0, inv.y), 0.0);
+
+    // Keep center contribution to avoid over-blur at high-contrast CAD corners.
+    let center_weight = max(0.0, 1.0 - min(1.0, w_sum));
+    let accum = c0 * center_weight
+              + c_left  * w_left
+              + c_right * w_right
+              + c_up    * w_up
+              + c_down  * w_down;
+
+    return accum / max(1e-4, center_weight + w_sum);
 }

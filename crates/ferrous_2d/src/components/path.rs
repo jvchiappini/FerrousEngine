@@ -1,5 +1,11 @@
 use glam::Vec2;
 
+// ─── Memory Safety Constants ───
+/// Maximum number of commands allowed in a single path to prevent buffer overflow
+const MAX_PATH_COMMANDS: usize = 10_000;
+/// Pre-allocated capacity for common path sizes (typically 50-100 commands)
+const PATH_BUILDER_CAPACITY: usize = 256;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JoinStyle {
     Miter,
@@ -20,29 +26,45 @@ pub enum PathCommand {
     LineTo(Vec2),
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct PathBuilder {
     commands: Vec<PathCommand>,
 }
 
+impl Default for PathBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PathBuilder {
     pub fn new() -> Self {
-        Self {
-            commands: Vec::new(),
-        }
+        let mut commands = Vec::new();
+        commands.reserve(PATH_BUILDER_CAPACITY);
+        Self { commands }
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        let mut commands = Vec::new();
+        commands.reserve(capacity.min(MAX_PATH_COMMANDS));
+        Self { commands }
     }
 
     pub fn move_to(mut self, pos: Vec2) -> Self {
-        self.commands.push(PathCommand::MoveTo(pos));
+        if self.commands.len() < MAX_PATH_COMMANDS {
+            self.commands.push(PathCommand::MoveTo(pos));
+        }
         self
     }
 
     pub fn line_to(mut self, pos: Vec2) -> Self {
-        self.commands.push(PathCommand::LineTo(pos));
+        if self.commands.len() < MAX_PATH_COMMANDS {
+            self.commands.push(PathCommand::LineTo(pos));
+        }
         self
     }
     
-    pub fn close(mut self) -> Self {
+    pub fn close(self) -> Self {
         // Un helper para poder invocarlo si se necesita cerrar explicitamente 
         self
     }

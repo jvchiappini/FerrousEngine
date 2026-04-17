@@ -53,12 +53,11 @@ fn vs_main(
 
     let pos = positions[model.vertex_index];
     
-    // Anti-aliasing gradient padding
-    // We expand the geometry quad by 0.5 world units on all sides to guarantee there 
-    // is enough fragment space for the SDF smoothstep gradient to fully resolve to 0.0 alpha.
-    // Failing to do this causes the triangle boundary to clip the gradient, 
-    // resulting in hard aliased jagged edges for thin objects or rotated lines.
-    let padding = 0.5;
+    // Anti-aliasing gradient padding.
+    // Clamp padding to a small world-space band to avoid ghost-lines at huge zoom-out,
+    // while still leaving enough room for the SDF transition.
+    let min_scale = max(0.0001, min(scale.x, scale.y));
+    let padding = clamp(min_scale * 0.25, 0.0025, 0.03);
     let expand_x = select(padding / scale.x, 0.0, scale.x < 0.0001);
     let expand_y = select(padding / scale.y, 0.0, scale.y < 0.0001);
     let expanded_pos = pos + sign(pos) * vec2<f32>(expand_x, expand_y);

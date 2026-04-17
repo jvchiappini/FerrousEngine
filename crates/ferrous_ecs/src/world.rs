@@ -209,7 +209,7 @@ impl World {
         let new_arch = &mut self.archetypes.archetypes[new_arch_id];
         if let Some(col) = new_arch.column_mut::<C>() {
             let slot = unsafe { col.get_mut::<C>(new_row) };
-            *slot = component;
+            unsafe { std::ptr::write(slot, component) };
         }
 
         self.change_tick += 1;
@@ -347,7 +347,7 @@ impl World {
         if let Some(col) = new_arch.column_mut::<C>() {
             // The column was pushed with uninitialized data; write the actual value
             let slot = unsafe { col.get_mut::<C>(new_row) };
-            *slot = component;
+            unsafe { std::ptr::write(slot, component) };
         }
 
         self.change_tick += 1;
@@ -480,33 +480,9 @@ impl World {
         old_row: usize,
         new_id: usize,
     ) {
-        // Phase 1: collect everything we need from the old archetype into owned buffers.
-        // (old_id != new_id is guaranteed by callers since we only call this when adding
-        //  a brand-new component type)
         debug_assert_ne!(old_id, new_id);
 
-        let new_sig = self.archetypes.archetypes[new_id].signature.clone();
-
-        // For each column in the NEW archetype that also exists in the OLD, clone the bytes.
-        // We collect (new_col_idx, owned_bytes) pairs.
-        let mut cloned_data: Vec<(usize, Vec<u8>)> = Vec::new();
-        {
-            let old_arch = &self.archetypes.archetypes[old_id];
-            for (old_col_idx, old_col) in old_arch.columns.iter().enumerate() {
-                let tid = old_col.info.type_id;
-                if let Ok(new_col_idx) = new_sig.0.binary_search(&tid) {
-                    let size = old_col.info.size;
-                    let mut buf = vec![0u8; size];
-                    if size > 0 {
-                        unsafe { old_col.clone_into(old_row, buf.as_mut_ptr()) };
-                    }
-                    cloned_data.push((new_col_idx, buf));
-                }
-                let _ = old_col_idx;
-            }
-        }
-
-        // Phase 2: push entity + data into the new archetype.
+        // Advance the new archetype by one row
         let new_row = {
             let new_arch = &mut self.archetypes.archetypes[new_id];
             new_arch.entities.push(entity);
@@ -515,28 +491,42 @@ impl World {
                 col.reserve(1);
                 col.len += 1;
             }
-            for (new_col_idx, buf) in &cloned_data {
-                let col = &mut new_arch.columns[*new_col_idx];
-                if col.info.size > 0 {
-                    unsafe {
-                        let dst = col.get_raw_mut(row);
-                        std::ptr::copy_nonoverlapping(buf.as_ptr(), dst, col.info.size);
-                    }
-                }
-            }
             row
         };
 
-        // Phase 3: drop the component value from the old archetype WITHOUT
-        // triggering the column's normal drop (it was moved/cloned above).
-        // We do a raw swap-remove and skip the drop by overwriting before removing.
+        let new_sig = self.archetypes.archetypes[new_id].signature.clone();
+
+        // Clone components from old to new directly
+        {
+            // We have mutable access to `self.archetypes.archetypes`
+            // but we need mutable access to `new_arch` and immutable access to `old_arch`
+            let (left, right) = self.archetypes.archetypes.split_at_mut(std::cmp::max(old_id, new_id));
+            let (old_arch, new_arch) = if old_id < new_id {
+                (&left[old_id], &mut right[0])
+            } else {
+                (&right[0], &mut left[new_id])
+            };
+
+            for old_col in old_arch.columns.iter() {
+                let tid = old_col.info.type_id;
+                if let Ok(new_col_idx) = new_sig.0.binary_search(&tid) {
+                    let new_col = &mut new_arch.columns[new_col_idx];
+                    if old_col.info.size > 0 {
+                        unsafe {
+                            let dst = new_col.get_raw_mut(new_row);
+                            old_col.clone_into(old_row, dst);
+                        }
+                    }
+                }
+            }
+        }
+
         let swapped = unsafe { self.archetypes.archetypes[old_id].swap_remove_no_drop(old_row) };
         if let Some(moved) = swapped {
             let moved_rec = self.entities.get_mut(moved.index as usize).unwrap();
             moved_rec.row = old_row;
         }
 
-        // Phase 4: update entity record.
         let rec = self.entities.get_mut(entity.index as usize).unwrap();
         rec.archetype_id = Some(new_id);
         rec.row = new_row;
@@ -554,27 +544,6 @@ impl World {
     ) {
         debug_assert_ne!(old_id, new_id);
 
-        let new_sig = self.archetypes.archetypes[new_id].signature.clone();
-
-        let mut cloned_data: Vec<(usize, Vec<u8>)> = Vec::new();
-        {
-            let old_arch = &self.archetypes.archetypes[old_id];
-            for old_col in old_arch.columns.iter() {
-                let tid = old_col.info.type_id;
-                if tid == skip_type {
-                    continue;
-                }
-                if let Ok(new_col_idx) = new_sig.0.binary_search(&tid) {
-                    let size = old_col.info.size;
-                    let mut buf = vec![0u8; size];
-                    if size > 0 {
-                        unsafe { old_col.clone_into(old_row, buf.as_mut_ptr()) };
-                    }
-                    cloned_data.push((new_col_idx, buf));
-                }
-            }
-        }
-
         let new_row = {
             let new_arch = &mut self.archetypes.archetypes[new_id];
             new_arch.entities.push(entity);
@@ -583,19 +552,36 @@ impl World {
                 col.reserve(1);
                 col.len += 1;
             }
-            for (new_col_idx, buf) in &cloned_data {
-                let col = &mut new_arch.columns[*new_col_idx];
-                if col.info.size > 0 {
-                    unsafe {
-                        let dst = col.get_raw_mut(row);
-                        std::ptr::copy_nonoverlapping(buf.as_ptr(), dst, col.info.size);
-                    }
-                }
-            }
             row
         };
 
-        // For the removed component: let the old archetype's swap_remove DROP it normally.
+        let new_sig = self.archetypes.archetypes[new_id].signature.clone();
+
+        {
+            let (left, right) = self.archetypes.archetypes.split_at_mut(std::cmp::max(old_id, new_id));
+            let (old_arch, new_arch) = if old_id < new_id {
+                (&left[old_id], &mut right[0])
+            } else {
+                (&right[0], &mut left[new_id])
+            };
+
+            for old_col in old_arch.columns.iter() {
+                let tid = old_col.info.type_id;
+                if tid == skip_type {
+                    continue;
+                }
+                if let Ok(new_col_idx) = new_sig.0.binary_search(&tid) {
+                    let new_col = &mut new_arch.columns[new_col_idx];
+                    if old_col.info.size > 0 {
+                        unsafe {
+                            let dst = new_col.get_raw_mut(new_row);
+                            old_col.clone_into(old_row, dst);
+                        }
+                    }
+                }
+            }
+        }
+
         let swapped = unsafe { self.archetypes.archetypes[old_id].swap_remove(old_row) };
         if let Some(moved) = swapped {
             let moved_rec = self.entities.get_mut(moved.index as usize).unwrap();

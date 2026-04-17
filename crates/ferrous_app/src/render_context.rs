@@ -293,6 +293,11 @@ impl<'r> RenderContext<'r> {
         ferrous_renderer::register_mesh(self.inner.frame_builder_mut(), key, mesh);
     }
 
+    /// Remove a procedural mesh previously registered under `key`.
+    pub fn free_mesh(&mut self, key: &str) {
+        ferrous_renderer::free_mesh(self.inner.frame_builder_mut(), key);
+    }
+
     /// Helper: Create a GPU mesh from a list of vertices and indices.
     ///
     /// This is a convenience wrapper around buffer allocation and tangent
