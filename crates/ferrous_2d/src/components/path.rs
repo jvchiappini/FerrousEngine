@@ -79,6 +79,7 @@ impl PathBuilder {
             cap_style: CapStyle::Flat,
             is_filled: false,
             is_closed: false,
+            z_index: 0.0,
         }
     }
 }
@@ -97,6 +98,7 @@ pub struct Path2d {
     pub join_style: JoinStyle,
     pub cap_style: CapStyle,
     pub is_closed: bool,
+    pub z_index: f32,
 }
 
 impl Path2d {

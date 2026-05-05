@@ -43,7 +43,7 @@ impl Renderer2d {
 
         let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Sprite Camera Uniform Buffer"),
-            size: std::mem::size_of::<Mat4>() as u64,
+            size: std::mem::size_of::<crate::render::types::Uniform2d>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -84,9 +84,14 @@ impl Renderer2d {
         }
     }
 
-    /// Update the Orthographic Camera Matrix
-    pub fn update_camera(&self, queue: &wgpu::Queue, proj_view: Mat4) {
-        queue.write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&proj_view));
+    /// Update the Orthographic Camera Matrix and Resolution
+    pub fn update_camera(&self, queue: &wgpu::Queue, proj_view: Mat4, resolution: glam::Vec2) {
+        let uniform = crate::render::types::Uniform2d {
+            view_proj: proj_view.to_cols_array(),
+            resolution: resolution.to_array(),
+            padding: [0.0; 2],
+        };
+        queue.write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&uniform));
     }
 
     /// Write all batched instances to the GPU Buffer (Resizes if needed)

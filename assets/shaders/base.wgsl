@@ -3,7 +3,7 @@
 
 struct VsOut {
     @builtin(position) clip_pos : vec4<f32>,
-    @location(0) color : vec3<f32>,
+    @location(0) color : vec4<f32>,
     @location(1) uv : vec2<f32>,
 };
 
@@ -53,7 +53,7 @@ struct VsIn {
     @location(0) position : vec3<f32>,
     @location(1) normal   : vec3<f32>,
     @location(2) tangent  : vec4<f32>,
-    @location(3) color    : vec3<f32>,
+    @location(3) color    : vec4<f32>,
     @location(4) uv       : vec2<f32>,
 };
 
@@ -78,8 +78,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // multiplication.
     if ((material.flags & 1u) != 0u) {
         let texel = textureSample(texture, texture_sampler, in.uv);
-        return texel; // return raw texture color
+        return texel * in.color; // return texture color multiplied by vertex color
     } else {
-        return material.base_color * vec4<f32>(in.color, 1.0);
+        return material.base_color * in.color;
     }
 }

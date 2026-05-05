@@ -14,7 +14,7 @@ pub fn circle(device: &wgpu::Device, radius: f32, segments: u32) -> Mesh {
 
     // Centre vertex
     let mut center = Vertex::new([0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.5, 0.5]);
-    center.color = [1.0, 1.0, 1.0];
+    center.color = [1.0, 1.0, 1.0, 1.0];
     vertices.push(center);
 
     for s in 0..=segments {
@@ -27,7 +27,7 @@ pub fn circle(device: &wgpu::Device, radius: f32, segments: u32) -> Mesh {
             [0.0, 1.0, 0.0],
             [cos_t * 0.5 + 0.5, sin_t * 0.5 + 0.5],
         );
-        v.color = [1.0, 1.0, 1.0];
+        v.color = [1.0, 1.0, 1.0, 1.0];
         vertices.push(v);
     }
 
@@ -88,7 +88,7 @@ pub fn ring(
                 [0.0, 1.0, 0.0],
                 [u, tv],
             );
-            v.color = [1.0, 1.0, 1.0];
+            v.color = [1.0, 1.0, 1.0, 1.0];
             vertices.push(v);
         }
     }

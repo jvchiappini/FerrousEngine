@@ -34,7 +34,7 @@ pub fn plane(
             let u = ix as f32 / width_segments as f32;
 
             let mut vert = Vertex::new([x, 0.0, z], [0.0, 1.0, 0.0], [u, v]);
-            vert.color = [1.0, 1.0, 1.0];
+            vert.color = [1.0, 1.0, 1.0, 1.0];
             vertices.push(vert);
         }
     }

@@ -26,7 +26,7 @@ pub mod types;
 pub use builder::EntityBuilder;
 pub use scene::World;
 pub use types::{
-    Element, ElementKind, Handle, MaterialComponent, PointLightComponent,
+    Element, ElementKind, Handle, MaterialComponent, PointLightComponent, ShadowCaster, Billboard, BillboardMode,
 };
 
 // ─── Tests ─────────────────────────────────────────────────────────────────

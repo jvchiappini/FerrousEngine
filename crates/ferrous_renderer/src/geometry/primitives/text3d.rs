@@ -169,7 +169,7 @@ impl Text3dBuilder {
                 let uv = Vec2::new(pos.x, pos.y);
                 let mut vert = Vertex::new(pos.to_array(), vi.norm.to_array(), uv.to_array());
                 vert.tangent = [1.0, 0.0, 0.0, 1.0];
-                vert.color = [1.0, 1.0, 1.0];
+                vert.color = [1.0, 1.0, 1.0, 1.0];
                 all_vertices.push(vert);
             }
 

@@ -1,5 +1,7 @@
 struct CameraUniform {
     view_proj: mat4x4<f32>,
+    resolution: vec2<f32>,
+    padding: vec2<f32>,   // Explicitly matching the 80-byte Rust struct
 };
 
 @group(0) @binding(0)
@@ -7,113 +9,108 @@ var<uniform> camera: CameraUniform;
 
 struct VertexInput {
     @builtin(vertex_index) vertex_index: u32,
-};
-
-struct InstanceInput {
     @location(0) transform_c0: vec4<f32>,
     @location(1) transform_c1: vec4<f32>,
     @location(2) transform_c2: vec4<f32>,
     @location(3) transform_c3: vec4<f32>,
     @location(4) color: vec4<f32>,
-    @location(5) params: vec4<f32>, // x=border_thickness, y=corner_radius, z=smoothing, w=is_filled
+    @location(5) params: vec4<f32>,
 };
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
-    @location(0) color: vec4<f32>,
-    @location(1) local_pos: vec2<f32>, // [-0.5, 0.5]
+    @location(0) local_pos: vec2<f32>,
+    @location(1) color: vec4<f32>,
     @location(2) params: vec4<f32>,
-    @location(3) scale: vec2<f32>,
+    @location(3) world_pos: vec2<f32>,
+    @location(4) local_size: vec2<f32>, 
+    @location(5) world_pixel_size: f32,
 };
 
 @vertex
-fn vs_main(
-    model: VertexInput,
-    instance: InstanceInput,
-) -> VertexOutput {
+fn vs_main(in: VertexInput) -> VertexOutput {
     let transform = mat4x4<f32>(
-        instance.transform_c0,
-        instance.transform_c1,
-        instance.transform_c2,
-        instance.transform_c3,
+        in.transform_c0,
+        in.transform_c1,
+        in.transform_c2,
+        in.transform_c3
     );
 
-    // Extract scale from transform (assuming orthogonal/uniform-ish)
-    let scale_x = length(vec3<f32>(transform[0].xyz));
-    let scale_y = length(vec3<f32>(transform[1].xyz));
-    let scale = vec2<f32>(scale_x, scale_y);
-
-    // Standard quad vertices
-    let positions = array<vec2<f32>, 4>(
-        vec2<f32>(-0.5, -0.5),
-        vec2<f32>( 0.5, -0.5),
-        vec2<f32>(-0.5,  0.5),
-        vec2<f32>( 0.5,  0.5),
+    let local_size = vec2<f32>(
+        length(transform[0].xyz),
+        length(transform[1].xyz)
     );
 
-    let pos = positions[model.vertex_index];
+    let pos_in = vec2<f32>(
+        f32(in.vertex_index & 1u),
+        f32(in.vertex_index >> 1u)
+    ) - 0.5;
+
+    // --- High-Precision Pixel Size Calculation ---
+    // view_proj[0][0] is (2.0 / width_in_world_units) in Ortho
+    let res = max(camera.resolution, vec2<f32>(1.0, 1.0));
+    let world_pixel_size = 2.0 / (abs(camera.view_proj[0][0]) * res.x);
+    let padding = world_pixel_size * 4.0;
+
+    let expansion_factor = 1.0 + (padding * 2.0 / local_size);
+    let expanded_local_pos = pos_in * expansion_factor;
     
-    // Anti-aliasing gradient padding.
-    // Clamp padding to a small world-space band to avoid ghost-lines at huge zoom-out,
-    // while still leaving enough room for the SDF transition.
-    let min_scale = max(0.0001, min(scale.x, scale.y));
-    let padding = clamp(min_scale * 0.25, 0.0025, 0.03);
-    let expand_x = select(padding / scale.x, 0.0, scale.x < 0.0001);
-    let expand_y = select(padding / scale.y, 0.0, scale.y < 0.0001);
-    let expanded_pos = pos + sign(pos) * vec2<f32>(expand_x, expand_y);
-
-    let world_pos = transform * vec4<f32>(expanded_pos, 0.0, 1.0);
+    let world_pos_4 = transform * vec4<f32>(expanded_local_pos, 0.0, 1.0);
     
     var out: VertexOutput;
-    out.clip_position = camera.view_proj * world_pos;
-    out.color = instance.color;
-    out.local_pos = expanded_pos;
-    out.params = instance.params;
-    out.scale = scale;
+    out.clip_position = camera.view_proj * world_pos_4;
+    out.local_pos = expanded_local_pos; 
+    out.color = in.color;
+    out.params = in.params;
+    out.world_pos = world_pos_4.xy;
+    out.local_size = local_size;
+    out.world_pixel_size = world_pixel_size;
+    
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let p = in.local_pos * in.scale;
-    let half_extents = in.scale * 0.5;
-
-    // Exact Signed Distance Field for a Rounded Box
-    // x = border_thickness, y = corner_radius, z = smoothing multiplier
-    let r = in.params.y;
-    let q = abs(p) - half_extents + vec2<f32>(r);
+    let local_size = in.local_size;
+    let p = in.local_pos * local_size;
     
-    // length(max) gives external distance, min(max) gives exact internal distance
-    // This exact Euclidean distance is MANDATORY for fwidth() to work correctly,
-    // otherwise the interior is flat (0.0) and fwidth becomes 0.
-    let d = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - r;
+    // Exact Euclidean Distance to rounded rectangle
+    let radius = in.params.y;
+    let q = abs(p) - (local_size * 0.5) + vec2<f32>(radius);
+    let d = min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0))) - radius;
 
-    // Anti-aliasing using fwidth for pixel-perfect smoothing.
-    // fwidth(d) is the exact variation across 1 physical pixel in clip-space.
-    // Multiplying this by the smoothing factor (e.g. 1.5) produces a guaranteed
-    // pixel-perfect anti-aliased edge that scales flawlessly with resolution and camera zoom.
-    let aa_width = fwidth(d) * in.params.z;
-    let alpha = 1.0 - smoothstep(-aa_width, aa_width, d);
-
-    // Border handling
-    let border = in.params.x;
-    var final_color = in.color;
+    // --- Anti-Aliasing (Stable Pre-calculated) ---
+    // We use the pixel size calculated in VS for stability, 
+    // especially on diagonals where dpdx fluctuates.
+    let grad_len = in.world_pixel_size;
     
-    if (border > 0.0) {
-        let interior_alpha = 1.0 - smoothstep(-aa_width, aa_width, d + border);
-        // If not filled, subtract interior
-        if (in.params.w == 0.0) {
-            final_color.a *= (alpha - interior_alpha);
-        }
-    } else {
-        final_color.a *= alpha;
+    // Pixel-scale stabilization:
+    // Ensure the line is always at least 1.5 pixels thick.
+    let target_pixel_width = 1.8; // Slightly thicker for better stability on diagonals
+    let min_world_width = grad_len * target_pixel_width;
+    let actual_width = in.params.x; 
+    
+    var final_d = d;
+    var alpha_multiplier = 1.0;
+    
+    if (actual_width < min_world_width) {
+        let expansion = (min_world_width - actual_width) * 0.5;
+        final_d -= expansion;
+        alpha_multiplier = clamp(actual_width / min_world_width, 0.2, 1.0);
     }
 
-    // Clip low alpha pixels
-    if (final_color.a < 0.001) {
+    // Smoothing range (usually 1-2 pixels)
+    let smoothing = in.params.z; 
+    let filter_width = grad_len * smoothing;
+    
+    // Main shape alpha
+    var alpha = 1.0 - smoothstep(-filter_width, filter_width, final_d);
+
+    let final_alpha = alpha * alpha_multiplier;
+
+    if (final_alpha < 0.01) {
         discard;
     }
 
-    return final_color;
+    return vec4<f32>(in.color.rgb * 2.0, in.color.a * final_alpha);
 }
-

@@ -32,6 +32,9 @@
 
 // ─── Module declarations ───────────────────────────────────────────────────
 
+/// Public API types (NodeId, etc).
+pub mod api;
+
 /// World-space transform (position, rotation, scale).
 pub mod transform;
 

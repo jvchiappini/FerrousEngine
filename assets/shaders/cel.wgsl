@@ -75,8 +75,9 @@ var<uniform> cel_params: CelParams;
 struct VertexInput {
     @location(0) position : vec3<f32>,
     @location(1) normal   : vec3<f32>,
-    @location(2) uv       : vec2<f32>,
-    @location(3) tangent  : vec4<f32>,
+    @location(2) tangent  : vec4<f32>,
+    @location(3) color    : vec4<f32>,
+    @location(4) uv       : vec2<f32>,
 };
 
 struct VertexOutput {
@@ -84,6 +85,7 @@ struct VertexOutput {
     @location(0)       world_pos : vec3<f32>,
     @location(1)       world_nrm : vec3<f32>,
     @location(2)       uv        : vec2<f32>,
+    @location(3)       color     : vec4<f32>,
 };
 
 // ── Vertex shader ─────────────────────────────────────────────────────────────
@@ -104,6 +106,7 @@ fn vs_main(
     out.world_pos = world_pos.xyz;
     out.world_nrm = world_nrm;
     out.uv        = vert.uv;
+    out.color     = vert.color;
     return out;
 }
 
@@ -119,7 +122,7 @@ fn quantise(value: f32, levels: u32) -> f32 {
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // sample albedo
     let albedo_tex = textureSampleLevel(tex_albedo, mat_sampler, in.uv, 0.0);
-    let base = material.base_color * albedo_tex;
+    let base = material.base_color * albedo_tex * in.color;
 
     // alpha discard (FLAG_ALPHA_MASK = 1)
     if (material.flags & 1u) != 0u {

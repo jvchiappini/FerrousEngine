@@ -173,8 +173,8 @@ impl FrameBuilder {
         // All-objects groups for shadow pass (no frustum culling)
         let mut shadow_groups: HashMap<MeshGroupKey, MeshGroupVal> = HashMap::new();
         
-        for (_entity, (element, transform, material)) in
-            ferrous_ecs::query::Query::<(&Element, &Transform, &MaterialComponent)>::new(&world.ecs).iter()
+        for (_entity, (element, transform, material, shadow_caster, billboard)) in
+            ferrous_ecs::query::Query::<(&Element, &Transform, &MaterialComponent, Option<&ferrous_core::scene::ShadowCaster>, Option<&ferrous_core::scene::Billboard>)>::new(&world.ecs).iter()
         {
             let is_renderable = matches!(
                 element.kind,
@@ -359,7 +359,37 @@ impl FrameBuilder {
                 _ => continue,
             };
 
-            let matrix = transform.matrix();
+            let mut matrix = transform.matrix();
+            if let Some(bb) = billboard {
+                use ferrous_core::scene::BillboardMode;
+                let rot = match bb.mode {
+                    BillboardMode::Spherical => {
+                        let dir = (camera_eye - transform.position).normalize_or_zero();
+                        if dir.length_squared() < 1e-10 {
+                            glam::Quat::IDENTITY
+                        } else {
+                            glam::Mat4::look_at_rh(transform.position, camera_eye, glam::Vec3::Y)
+                                .to_scale_rotation_translation()
+                                .1
+                                .inverse()
+                        }
+                    }
+                    BillboardMode::Cylindrical => {
+                        let mut target = camera_eye;
+                        target.y = transform.position.y; // constrain to Y axis
+                        let dir = (target - transform.position).normalize_or_zero();
+                        if dir.length_squared() < 1e-10 {
+                            glam::Quat::IDENTITY
+                        } else {
+                            glam::Mat4::look_at_rh(transform.position, target, glam::Vec3::Y)
+                                .to_scale_rotation_translation()
+                                .1
+                                .inverse()
+                        }
+                    }
+                };
+                matrix = glam::Mat4::from_scale_rotation_translation(transform.scale, rot, transform.position);
+            }
             let material_slot = material.handle.0 as usize;
 
             // Compute a quick AABB from the matrix for frustum culling
@@ -371,12 +401,14 @@ impl FrameBuilder {
                 is_double_sided,
             );
 
-            // Shadow pass — all objects
-            shadow_groups
-                .entry(key)
-                .or_insert_with(|| (mesh.clone(), material_slot, Vec::new()))
-                .2
-                .push(matrix);
+            // Shadow pass — only entities with ShadowCaster
+            if shadow_caster.is_some() {
+                shadow_groups
+                    .entry(key)
+                    .or_insert_with(|| (mesh.clone(), material_slot, Vec::new()))
+                    .2
+                    .push(matrix);
+            }
 
             // Main pass — frustum culled
             if frustum.intersects_aabb(&world_aabb) {

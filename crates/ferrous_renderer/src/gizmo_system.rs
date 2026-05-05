@@ -97,7 +97,7 @@ impl GizmoSystem {
         let mut vertices: Vec<Vertex> = Vec::new();
         let mut push_line = |pos: [f32; 3], col: [f32; 3]| {
             let mut vert = Vertex::new(pos, [0.0, 0.0, 1.0], [0.0, 0.0]);
-            vert.color = col;
+            vert.color = [col[0], col[1], col[2], 1.0];
             vertices.push(vert);
         };
 

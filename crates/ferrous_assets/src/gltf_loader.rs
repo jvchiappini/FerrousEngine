@@ -43,7 +43,7 @@ pub struct AssetMesh {
     pub normals: Vec<[f32; 3]>,
     pub tangents: Vec<[f32; 4]>,
     pub uvs: Vec<[f32; 2]>,
-    pub colors: Vec<[f32; 3]>,
+    pub colors: Vec<[f32; 4]>,
     pub indices: Vec<u32>,
     pub material_idx: Option<usize>,
 }
@@ -390,9 +390,9 @@ pub fn parse_gltf_data(
                     min_u, max_u, min_v, max_v
                 );
             }
-            let colors: Vec<[f32; 3]> = reader
+            let colors: Vec<[f32; 4]> = reader
                 .read_colors(0)
-                .map(|c| c.into_rgba_f32().map(|c| [c[0], c[1], c[2]]).collect())
+                .map(|c| c.into_rgba_f32().collect())
                 .unwrap_or_default();
             let indices: Vec<u32> = reader
                 .read_indices()
@@ -412,7 +412,7 @@ pub fn parse_gltf_data(
             let colors = if colors.len() == positions.len() {
                 colors
             } else {
-                vec![[1.0, 1.0, 1.0]; positions.len()]
+                vec![[1.0, 1.0, 1.0, 1.0]; positions.len()]
             };
 
             // Guarantee uvs has exactly one entry per vertex so the

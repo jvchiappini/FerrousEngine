@@ -198,7 +198,8 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::RedrawRequested => {
-                self.render_frame(event_loop);
+                let current_t = self.clock.peek().elapsed;
+                let _ = self.render_frame(Some(event_loop), current_t);
                 return;
             }
             _ => self.last_action_time = Instant::now(),
@@ -351,14 +352,52 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
                     }
                 }
             }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                // When the browser zoom or display density changes, we must 
+                // recalculate the physical canvas size. 
+                log::info!("[Ferrous] Scale factor changed: {}", scale_factor);
+                
+                // On WASM, we should re-query the window to ensure we have the latest DPR
+                // and then trigger a resize of the graphics context.
+                #[cfg(target_arch = "wasm32")]
+                if let Some(win) = web_sys::window() {
+                    let dpr = win.device_pixel_ratio();
+                    let css_w = win.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(self.window_size.0 as f64);
+                    let css_h = win.inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(self.window_size.1 as f64);
+                    let scale = self.config.resolution_scale;
+                    
+                    let phys_w = (css_w * dpr * scale).round() as u32;
+                    let phys_h = (css_h * dpr * scale).round() as u32;
+                    
+                    if let Some(gfx) = &mut self.graphics {
+                        gfx.resize(phys_w, phys_h);
+                    }
+                    self.window_size = (phys_w, phys_h);
+                    
+                    if let Some(doc) = win.document() {
+                        if let Ok(Some(c)) = doc.query_selector("canvas") {
+                            if let Ok(html_canvas) = wasm_bindgen::JsCast::dyn_into::<web_sys::HtmlCanvasElement>(c) {
+                                html_canvas.set_width(phys_w);
+                                html_canvas.set_height(phys_h);
+                            }
+                        }
+                    }
+                }
+            }
             WindowEvent::Resized(mut size) => {
                 #[cfg(target_arch = "wasm32")]
                 {
                     use wasm_bindgen::JsCast;
-                    size.width = (size.width as f64 * self.config.resolution_scale).round() as u32;
-                    size.height = (size.height as f64 * self.config.resolution_scale).round() as u32;
                     
+                    // On WASM, winit's Resized size is Logical, we need physical + resolution_scale.
+                    // But actually winit on web often returns logical in Resized depending on configuration.
+                    // We enforce the calculation here to be bulletproof.
                     if let Some(window) = web_sys::window() {
+                        let dpr = window.device_pixel_ratio();
+                        let scale = self.config.resolution_scale;
+                        size.width = (size.width as f64 * dpr * scale).round() as u32;
+                        size.height = (size.height as f64 * dpr * scale).round() as u32;
+
                         if let Some(doc) = window.document() {
                             if let Ok(Some(c)) = doc.query_selector("canvas") {
                                 if let Ok(html_canvas) = c.dyn_into::<web_sys::HtmlCanvasElement>() {

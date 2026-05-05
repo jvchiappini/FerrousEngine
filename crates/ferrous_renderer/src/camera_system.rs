@@ -38,12 +38,12 @@ impl CameraSystem {
             eye: glam::Vec3::new(0.0, 0.0, 5.0),
             target: glam::Vec3::ZERO,
             up: glam::Vec3::Y,
-            projection_type: ferrous_core::scene::camera::ProjectionType::Perspective,
-            fovy: 45.0f32.to_radians(),
-            aspect: width as f32 / height as f32,
-            ortho_size: 2.0,
-            znear: 0.1,
-            zfar: 10000.0,
+            projection: ferrous_core::scene::camera::Projection::Perspective {
+                fov_y_radians: 45.0f32.to_radians(),
+                aspect_ratio: width as f32 / height as f32,
+                z_near: 0.1,
+                z_far: 10000.0,
+            },
             controller: Controller::with_default_wasd(),
         };
         let gpu = GpuCamera::new(device, &camera, &layouts.camera);
@@ -93,17 +93,15 @@ impl CameraSystem {
     /// Compute the projection matrix from current camera state.
     #[inline]
     pub fn proj_matrix(&self) -> glam::Mat4 {
-        use ferrous_core::scene::camera::ProjectionType;
+        use ferrous_core::scene::camera::Projection;
         use crate::resources::camera::OPENGL_TO_WGPU_MATRIX;
         
-        let proj = match self.camera.projection_type {
-            ProjectionType::Perspective => {
-                glam::Mat4::perspective_rh(self.camera.fovy, self.camera.aspect, self.camera.znear, self.camera.zfar)
+        let proj = match self.camera.projection {
+            Projection::Perspective { fov_y_radians, aspect_ratio, z_near, z_far } => {
+                glam::Mat4::perspective_rh(fov_y_radians, aspect_ratio, z_near, z_far)
             }
-            ProjectionType::Orthographic => {
-                let h = self.camera.ortho_size;
-                let w = h * self.camera.aspect;
-                glam::Mat4::orthographic_rh(-w, w, -h, h, self.camera.znear, self.camera.zfar)
+            Projection::Orthographic { left, right, bottom, top, z_near, z_far } => {
+                glam::Mat4::orthographic_rh(left, right, bottom, top, z_near, z_far)
             }
         };
 

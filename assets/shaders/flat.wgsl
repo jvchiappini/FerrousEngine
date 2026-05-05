@@ -67,14 +67,16 @@ var<uniform> dir_light: DirectionalLight;
 struct VertexInput {
     @location(0) position : vec3<f32>,
     @location(1) normal   : vec3<f32>,
-    @location(2) uv       : vec2<f32>,
-    @location(3) tangent  : vec4<f32>,
+    @location(2) tangent  : vec4<f32>,
+    @location(3) color    : vec4<f32>,
+    @location(4) uv       : vec2<f32>,
 };
 
 struct VertexOutput {
     @builtin(position) clip_pos  : vec4<f32>,
     @location(0)       world_pos : vec3<f32>,
     @location(1)       uv        : vec2<f32>,
+    @location(2)       color     : vec4<f32>,
 };
 
 // ── Vertex shader ─────────────────────────────────────────────────────────────
@@ -91,6 +93,7 @@ fn vs_main(
     out.clip_pos  = camera.view_proj * world_pos;
     out.world_pos = world_pos.xyz;
     out.uv        = vert.uv;
+    out.color     = vert.color;
     return out;
 }
 
@@ -107,7 +110,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // sample base colour
     let albedo_tex = textureSampleLevel(tex_albedo, mat_sampler, in.uv, 0.0);
-    let base = material.base_color * albedo_tex;
+    let base = material.base_color * albedo_tex * in.color;
 
     // alpha discard (FLAG_ALPHA_MASK = 1)
     if (material.flags & 1u) != 0u {

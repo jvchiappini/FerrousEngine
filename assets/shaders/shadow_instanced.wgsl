@@ -6,7 +6,7 @@
 struct DirectionalLight {
     direction : vec3<f32>,
     _pad0 : f32,
-    color : vec3<f32>,
+    color : vec4<f32>,
     intensity : f32,
     light_view_proj : mat4x4<f32>,
 };
@@ -27,7 +27,7 @@ struct VertexInput {
     // pipeline, but they are unused here.
     @location(1) normal : vec3<f32>,
     @location(2) tangent : vec4<f32>,
-    @location(3) color : vec3<f32>,
+    @location(3) color : vec4<f32>,
     @location(4) uv : vec2<f32>,
     // built-in instance index used to lookup the correct model matrix
     @builtin(instance_index) instance_idx : u32,

@@ -14,7 +14,7 @@ pub mod world;
 pub use blueprint::SceneBlueprint;
 
 // World types
-pub use world::{Element, ElementKind, Handle, PointLightComponent, World};
+pub use world::{Element, ElementKind, Handle, PointLightComponent, ShadowCaster, Billboard, BillboardMode, World};
 pub use particles::ParticleEmitter;
 pub use skinning::{Skeleton, SkinnedMesh, BoneInfluence};
 

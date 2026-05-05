@@ -13,6 +13,7 @@ pub mod renderer_api;
 pub mod renderer_core;
 pub mod renderer_resource;
 pub mod renderer_passes;
+pub mod exporter;
 
 // Support modules located in src/
 pub mod camera;

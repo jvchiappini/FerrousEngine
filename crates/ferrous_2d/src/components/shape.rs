@@ -20,8 +20,9 @@ impl Default for Shape2d {
             border_thickness: 0.0,
 
             corner_radius: 0.0,
-            // fwidth multiplier for pixel-perfect anti-aliased edge. ~1.5 covers physical distance cleanly.
-            smoothing: 1.5,
+            // fwidth multiplier for pixel-perfect anti-aliased edge.
+            // 2.0 provides a slightly softer transition that works better on high-DPI.
+            smoothing: 2.0,
             is_filled: true,
         }
     }

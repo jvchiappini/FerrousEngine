@@ -497,9 +497,8 @@ pub fn set_scene(
     if let Some(cam) = &scene.camera {
         camera_system.camera.eye = cam.eye;
         camera_system.camera.target = cam.target;
-        camera_system.camera.fovy = cam.fov_y;
-        camera_system.camera.znear = cam.z_near;
-        camera_system.camera.zfar = cam.z_far;
+        camera_system.camera.set_fov_degrees(cam.fov_y.to_degrees());
+        camera_system.camera.set_near_far(cam.z_near, cam.z_far);
     }
 
     // 2. Apply directional light if provided

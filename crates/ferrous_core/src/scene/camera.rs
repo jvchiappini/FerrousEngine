@@ -11,9 +11,9 @@ use glam::{Mat4, Vec3};
 /// owns GPU resources such as the uniform buffer.
 /// Type of projection used by the camera.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ProjectionType {
-    Perspective,
-    Orthographic,
+pub enum Projection {
+    Perspective { fov_y_radians: f32, aspect_ratio: f32, z_near: f32, z_far: f32 },
+    Orthographic { left: f32, right: f32, bottom: f32, top: f32, z_near: f32, z_far: f32 },
 }
 
 /// Simple camera state owned by the scene.
@@ -24,16 +24,7 @@ pub struct Camera {
     pub target: Vec3,
     pub up: Vec3,
     // --- projection parameters --------------------------------------------
-    pub projection_type: ProjectionType,
-    /// Vertical field of view in radians (for Perspective).
-    pub fovy: f32,
-    /// Viewport aspect ratio (width / height).
-    pub aspect: f32,
-    /// Vertical size of the view in world units (for Orthographic).
-    /// Typically represents the distance from center to top edge.
-    pub ortho_size: f32,
-    pub znear: f32,
-    pub zfar: f32,
+    pub projection: Projection,
     // --- input controller --------------------------------------------------
     pub controller: Controller,
 }
@@ -44,12 +35,12 @@ impl Default for Camera {
             eye: Vec3::ZERO,
             target: Vec3::ZERO,
             up: Vec3::Y,
-            projection_type: ProjectionType::Perspective,
-            fovy: 45.0f32.to_radians(),
-            aspect: 1.0,
-            ortho_size: 10.0,
-            znear: 0.1,
-            zfar: 100.0,
+            projection: Projection::Perspective {
+                fov_y_radians: 45.0f32.to_radians(),
+                aspect_ratio: 1.0,
+                z_near: 0.1,
+                z_far: 100.0,
+            },
             controller: Controller::new(),
         }
     }
@@ -84,26 +75,34 @@ impl Camera {
 
     /// Set vertical field of view in degrees.
     pub fn set_fov_degrees(&mut self, deg: f32) {
-        self.fovy = deg.to_radians();
+        if let Projection::Perspective { fov_y_radians, .. } = &mut self.projection {
+            *fov_y_radians = deg.to_radians();
+        }
     }
 
     /// Set near / far clipping planes.
     pub fn set_near_far(&mut self, near: f32, far: f32) {
-        self.znear = near;
-        self.zfar = far;
+        match &mut self.projection {
+            Projection::Perspective { z_near, z_far, .. } => {
+                *z_near = near;
+                *z_far = far;
+            }
+            Projection::Orthographic { z_near, z_far, .. } => {
+                *z_near = near;
+                *z_far = far;
+            }
+        }
     }
 
     /// Build the combined view-projection matrix from the current parameters.
     pub fn build_view_projection_matrix(&self) -> Mat4 {
         let view = Mat4::look_at_rh(self.eye, self.target, self.up);
-        let proj = match self.projection_type {
-            ProjectionType::Perspective => {
-                Mat4::perspective_rh(self.fovy, self.aspect, self.znear, self.zfar)
+        let proj = match self.projection {
+            Projection::Perspective { fov_y_radians, aspect_ratio, z_near, z_far } => {
+                Mat4::perspective_rh(fov_y_radians, aspect_ratio, z_near, z_far)
             }
-            ProjectionType::Orthographic => {
-                let h = self.ortho_size;
-                let w = h * self.aspect;
-                Mat4::orthographic_rh(-w, w, -h, h, self.znear, self.zfar)
+            Projection::Orthographic { left, right, bottom, top, z_near, z_far } => {
+                Mat4::orthographic_rh(left, right, bottom, top, z_near, z_far)
             }
         };
         proj * view
@@ -111,7 +110,15 @@ impl Camera {
 
     /// Update aspect ratio and recalc projection when viewport dimensions change.
     pub fn set_aspect(&mut self, aspect: f32) {
-        self.aspect = aspect;
+        match &mut self.projection {
+            Projection::Perspective { aspect_ratio, ..} => *aspect_ratio = aspect,
+            Projection::Orthographic { left, right, top, .. } => {
+                let h = *top;
+                let w = h * aspect;
+                *left = -w;
+                *right = w;
+            }
+        }
     }
 }
 

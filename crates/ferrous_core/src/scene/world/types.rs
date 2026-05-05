@@ -19,6 +19,26 @@ pub(super) fn next_id() -> u64 {
     ID_COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Marker component for entities that cast shadows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ShadowCaster;
+
+impl Component for ShadowCaster {}
+
+/// Rendering constraint for entities that always face the camera.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum BillboardMode {
+    Spherical,
+    Cylindrical,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Billboard {
+    pub mode: BillboardMode,
+}
+
+impl Component for Billboard {}
+
 // ── Handle ───────────────────────────────────────────────────────────────────
 
 /// Opaque handle referencing an entity inside a [`super::World`].

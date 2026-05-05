@@ -52,7 +52,7 @@ pub fn torus(
             let v = i as f32 / tubular_segments as f32;
 
             let mut vert = Vertex::new([x, y, z], [nx, ny, nz], [u, v]);
-            vert.color = [1.0, 1.0, 1.0];
+            vert.color = [1.0, 1.0, 1.0, 1.0];
             vertices.push(vert);
         }
     }

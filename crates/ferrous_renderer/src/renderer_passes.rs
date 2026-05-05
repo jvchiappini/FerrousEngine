@@ -444,9 +444,8 @@ impl RendererPasses {
         if let Some(cam) = &scene.camera {
             self.camera_system.camera.eye = cam.eye;
             self.camera_system.camera.target = cam.target;
-            self.camera_system.camera.fovy = cam.fov_y;
-            self.camera_system.camera.znear = cam.z_near;
-            self.camera_system.camera.zfar = cam.z_far;
+            self.camera_system.camera.set_fov_degrees(cam.fov_y.to_degrees());
+            self.camera_system.camera.set_near_far(cam.z_near, cam.z_far);
         }
 
         // 2. Apply directional light if provided
@@ -500,9 +499,8 @@ impl RendererPasses {
             if let Some(cam3d) = cameras.first() {
                 self.camera_system.camera.eye = cam3d.eye;
                 self.camera_system.camera.target = cam3d.target;
-                self.camera_system.camera.fovy = cam3d.fov_deg.to_radians();
-                self.camera_system.camera.znear = cam3d.near;
-                self.camera_system.camera.zfar = cam3d.far;
+                self.camera_system.camera.set_fov_degrees(cam3d.fov_deg);
+                self.camera_system.camera.set_near_far(cam3d.near, cam3d.far);
             }
         }
 

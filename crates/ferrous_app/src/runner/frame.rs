@@ -21,8 +21,8 @@ use crate::traits::{DrawContext, FerrousApp};
 use super::types::Runner;
 
 impl<A: FerrousApp + 'static> Runner<A> {
-    /// Executes one full update + render cycle.
-    pub(super) fn render_frame(&mut self, event_loop: &ActiveEventLoop) {
+    /// Executes one full update + render cycle relying on external absolute time or clock elapsed time if interactive.
+    pub fn render_frame(&mut self, event_loop: Option<&ActiveEventLoop>, t: f64) -> Option<Vec<u8>> {
         // wasm32: drain async GPU init result before anything else.
         #[cfg(target_arch = "wasm32")]
         {
@@ -71,16 +71,16 @@ impl<A: FerrousApp + 'static> Runner<A> {
                             }
                         }
                     } else {
-                        return;
+                        return None;
                     }
                 } else {
-                    return;
+                    return None;
                 }
             }
         }
 
         let (Some(gfx), Some(window)) = (&mut self.graphics, &self.window) else {
-            return;
+            return None;
         };
 
         // wasm32: proactive size sync as browser layout can be delayed/asynchronous
@@ -141,12 +141,24 @@ impl<A: FerrousApp + 'static> Runner<A> {
 
         self.asset_server.tick();
 
-        // Advance ECS systems
-        self.resources.insert(self.clock);
+        // Advance ECS systems with deterministic timing
+        let dt = if let Some(last_t) = self.last_deterministic_t {
+            (t - last_t) as f32
+        } else {
+            0.016
+        };
+        self.last_deterministic_t = Some(t);
+        
+        let mut time_snapshot = self.clock.at_tick();
+        time_snapshot.delta = dt;
+        time_snapshot.elapsed = t;
+        time_snapshot.fps = if dt > 0.0 { 1.0 / dt } else { 60.0 };
+
+        self.resources.insert(time_snapshot);
         self.systems
             .run_all(&mut self.world.ecs, &mut self.resources);
-        self.clock = *self.resources.get::<ferrous_core::TimeClock>().unwrap();
-        let time = self.clock.at_tick();
+        let time = time_snapshot;
+
 
         // ── 1. UPDATE ───────────────────────────────────────────────────────
         {
@@ -170,8 +182,10 @@ impl<A: FerrousApp + 'static> Runner<A> {
 
             self.app.update(&mut ctx);
             if ctx.exit_requested {
-                event_loop.exit();
-                return;
+                if let Some(el) = event_loop {
+                    el.exit();
+                }
+                return None;
             }
 
             if self.viewport != ctx.viewport {
@@ -264,7 +278,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 Ok(f) => f,
                 Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
                     gfx.resize(self.window_size.0, self.window_size.1);
-                    return;
+                    return None;
                 }
                 Err(e) => panic!("Surface error: {e:?}"),
             };
@@ -274,15 +288,28 @@ impl<A: FerrousApp + 'static> Runner<A> {
 
             gfx.renderer
                 .render_to_view(&mut encoder, &view, Some(gui_batch));
+            
+            // Si el motor está en "Modo Exportación", inyectar la copia al readback buffer.
+            if let Some(readback) = &gfx.renderer.readback_manager {
+                readback.copy_to_buffer(&mut encoder, &frame.texture);
+            }
+
             gfx.renderer.context.queue.submit(Some(encoder.finish()));
             
             frame.present();
                
             // Important: Clear damage regions after rendering
             self.ui.clear_damage();
+
+            // Sincronizar y obtener los bytes si era una pasada de exportación.
+            if let Some(readback) = &gfx.renderer.readback_manager {
+                self.input.end_frame();
+                return pollster::block_on(readback.poll_and_map(&gfx.renderer.context.device)).ok();
+            }
         }
 
         self.input.end_frame();
+        None
     }
 
     /// Called by winit between frames to manage redraw scheduling.

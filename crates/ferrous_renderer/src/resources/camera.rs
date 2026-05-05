@@ -56,20 +56,18 @@ impl CameraUniform {
 
     /// Update the fields from a CPU-side [`Camera`] instance.
     pub fn update_view_proj(&mut self, camera: &Camera) {
-        use ferrous_core::scene::camera::ProjectionType;
+        use ferrous_core::scene::camera::Projection;
         
         let view = glam::Mat4::look_at_rh(camera.eye, camera.target, camera.up);
-        let proj = match camera.projection_type {
-            ProjectionType::Perspective => glam::Mat4::perspective_rh(
-                camera.fovy,
-                camera.aspect,
-                camera.znear,
-                camera.zfar,
+        let proj = match camera.projection {
+            Projection::Perspective { fov_y_radians, aspect_ratio, z_near, z_far } => glam::Mat4::perspective_rh(
+                fov_y_radians,
+                aspect_ratio,
+                z_near,
+                z_far,
             ),
-            ProjectionType::Orthographic => {
-                let h = camera.ortho_size;
-                let w = h * camera.aspect;
-                glam::Mat4::orthographic_rh(-w, w, -h, h, camera.znear, camera.zfar)
+            Projection::Orthographic { left, right, bottom, top, z_near, z_far } => {
+                glam::Mat4::orthographic_rh(left, right, bottom, top, z_near, z_far)
             }
         };
 

@@ -59,3 +59,13 @@ impl ShapeInstance {
         }
     }
 }
+
+/// Shared uniform data for 2D passes.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct Uniform2d {
+    pub view_proj: [f32; 16],
+    pub resolution: [f32; 2],
+    pub padding: [f32; 2], // 16-byte alignment
+}
+

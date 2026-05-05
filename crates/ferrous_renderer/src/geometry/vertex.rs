@@ -13,12 +13,10 @@ pub struct Vertex {
     /// Tangent vector plus handedness in `w` component.  The bitangent can be
     /// reconstructed in the shader via `cross(normal, tangent.xyz) * tangent.w`.
     pub tangent: [f32; 4],
-    /// Linear RGB vertex color.
-    pub color: [f32; 3],
+    /// Linear RGBA vertex color.
+    pub color: [f32; 4],
     /// UV coordinates for texture lookup.
     pub uv: [f32; 2],
-    /// Padding to force 64-byte alignment (crucial for WASM/WebGPU stability)
-    pub _pad: f32,
 }
 
 impl Vertex {
@@ -50,14 +48,14 @@ impl Vertex {
                 },
                 // @location(3) color
                 wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x3,
+                    format: wgpu::VertexFormat::Float32x4,
                     offset: 40,
                     shader_location: 3,
                 },
                 // @location(4) uv
                 wgpu::VertexAttribute {
                     format: wgpu::VertexFormat::Float32x2,
-                    offset: 52,
+                    offset: 56,
                     shader_location: 4,
                 },
             ],
@@ -71,9 +69,8 @@ impl Vertex {
             position,
             normal,
             tangent: [1.0, 0.0, 0.0, 1.0],
-            color: [1.0, 1.0, 1.0],
+            color: [1.0, 1.0, 1.0, 1.0],
             uv,
-            _pad: 0.0,
         }
     }
 }

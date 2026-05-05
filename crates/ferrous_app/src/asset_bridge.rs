@@ -153,9 +153,8 @@ pub fn spawn_gltf(
                 position: mesh.positions[j],
                 normal: *mesh.normals.get(j).unwrap_or(&[0.0, 1.0, 0.0]),
                 tangent: *mesh.tangents.get(j).unwrap_or(&[1.0, 0.0, 0.0, 1.0]),
-                color: *mesh.colors.get(j).unwrap_or(&[1.0, 1.0, 1.0]),
+                color: *mesh.colors.get(j).unwrap_or(&[1.0, 1.0, 1.0, 1.0]),
                 uv: *mesh.uvs.get(j).unwrap_or(&[0.0, 0.0]),
-                _pad: 0.0,
             });
         }
 
@@ -358,9 +357,8 @@ fn spawn_gltf_from_model(
                 position: mesh.positions[j],
                 normal: *mesh.normals.get(j).unwrap_or(&[0.0, 1.0, 0.0]),
                 tangent: *mesh.tangents.get(j).unwrap_or(&[1.0, 0.0, 0.0, 1.0]),
-                color: *mesh.colors.get(j).unwrap_or(&[1.0, 1.0, 1.0]),
+                color: *mesh.colors.get(j).unwrap_or(&[1.0, 1.0, 1.0, 1.0]),
                 uv: *mesh.uvs.get(j).unwrap_or(&[0.0, 0.0]),
-                _pad: 0.0,
             });
         }
         let gpu_mesh = renderer.create_mesh("gltf_submesh", verts, mesh.indices.clone());

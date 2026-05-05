@@ -13,7 +13,7 @@ struct Camera {
     view_proj : mat4x4<f32>,
     eye_pos   : vec3<f32>,
     exposure  : f32,
-    fog_color : vec3<f32>,
+    fog_color : vec4<f32>,
     fog_density: f32,
     ambient_color: vec3<f32>,
     ambient_intensity: f32,
@@ -66,7 +66,7 @@ var tex_ao: texture_2d<f32>;
 struct DirectionalLight {
     direction : vec3<f32>,
     _pad0 : f32,
-    color : vec3<f32>,
+    color : vec4<f32>,
     intensity : f32,
     // extra field populated by the CPU; used by the shadow pass and
     // optionally sampled by the PBR shader to compute shadow coordinates.
@@ -132,7 +132,7 @@ struct VertexInput {
     @location(0) position : vec3<f32>,
     @location(1) normal : vec3<f32>,
     @location(2) tangent : vec4<f32>, // w = handedness
-    @location(3) color : vec3<f32>,
+    @location(3) color : vec4<f32>,
     @location(4) uv : vec2<f32>,
 };
 
@@ -143,7 +143,7 @@ struct VertexOutput {
     @location(2) world_tangent : vec3<f32>,
     @location(3) world_bitangent : vec3<f32>,
     @location(4) uv : vec2<f32>,
-    @location(5) color : vec3<f32>,
+    @location(5) color : vec4<f32>,
     @location(6) shadow_pos : vec4<f32>,
 };
 
@@ -216,7 +216,7 @@ struct FragmentInput {
     @location(2) world_tangent : vec3<f32>,
     @location(3) world_bitangent : vec3<f32>,
     @location(4) uv : vec2<f32>,
-    @location(5) color : vec3<f32>,
+    @location(5) color : vec4<f32>,
     @location(6) shadow_pos : vec4<f32>,
 };
 
@@ -227,9 +227,9 @@ struct FragmentOutput {
 // fragment shader
 @fragment
 fn fs_main(frag_in: FragmentInput) -> FragmentOutput {
-    var albedo = material.base_color.xyz * frag_in.color;
+    var albedo = material.base_color.xyz * frag_in.color.xyz;
     // track alpha separately; start with material base alpha
-    var out_alpha = material.base_color.w * material.metallic_roughness.w; // w = opacity
+    var out_alpha = material.base_color.w * material.metallic_roughness.w * frag_in.color.w; // w = opacity
     if ((material.flags & 1u) != 0u) {
         let sample = textureSampleLevel(tex_albedo, mat_sampler, frag_in.uv, 0.0);
         albedo *= sample.xyz;

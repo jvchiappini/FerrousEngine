@@ -49,7 +49,7 @@ pub fn capsule(
                 [nx, ny, nz],
                 [lon as f32 / radial_segments as f32, tv],
             );
-            v.color = [1.0, 1.0, 1.0];
+            v.color = [1.0, 1.0, 1.0, 1.0];
             vertices.push(v);
         }
     }
@@ -83,7 +83,7 @@ pub fn capsule(
                 [cos_theta, 0.0, sin_theta],
                 [lon as f32 / radial_segments as f32, tv_body],
             );
-            v.color = [1.0, 1.0, 1.0];
+            v.color = [1.0, 1.0, 1.0, 1.0];
             vertices.push(v);
         }
     }
@@ -122,7 +122,7 @@ pub fn capsule(
                 [nx, ny, nz],
                 [lon as f32 / radial_segments as f32, tv],
             );
-            v.color = [1.0, 1.0, 1.0];
+            v.color = [1.0, 1.0, 1.0, 1.0];
             vertices.push(v);
         }
     }

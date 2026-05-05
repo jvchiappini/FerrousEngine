@@ -10,6 +10,7 @@ pub mod ssao;
 pub mod texture;
 pub mod texture_registry;
 pub mod camera;
+pub mod readback;
 
 #[cfg(feature = "gpu-driven")]
 pub use draw_indirect::{

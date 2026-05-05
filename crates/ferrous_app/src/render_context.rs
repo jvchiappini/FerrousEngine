@@ -256,9 +256,9 @@ impl<'r> RenderContext<'r> {
         self.inner.camera_mut().eye = eye;
     }
 
-    /// Set the camera projection type (Perspective or Orthographic).
-    pub fn set_projection_type(&mut self, proj: ferrous_core::scene::camera::ProjectionType) {
-        self.inner.set_projection_type(proj);
+    /// Set the camera projection (Perspective or Orthographic).
+    pub fn set_projection(&mut self, proj: ferrous_core::scene::camera::Projection) {
+        self.inner.set_projection(proj);
     }
 
     /// Set the vertical size for the orthographic projection.
@@ -274,6 +274,11 @@ impl<'r> RenderContext<'r> {
     /// Push a technical 2D shape for rendering this frame.
     pub fn draw_2d_shape(&mut self, instance: ferrous_renderer::render_2d::ShapeInstance) {
         self.inner.draw_2d_shape(instance);
+    }
+
+    /// Push a technical 2D path for rendering this frame.
+    pub fn draw_2d_path(&mut self, path: ferrous_2d::components::Path2d) {
+        self.inner.draw_2d_path(&path);
     }
 
 

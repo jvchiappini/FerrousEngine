@@ -13,7 +13,7 @@ pub fn cube(device: &wgpu::Device) -> Mesh {
     // overriding the color for debugging/face colouring purposes.
     let v = |pos: [f32; 3], norm: [f32; 3], col: [f32; 3], uv: [f32; 2]| {
         let mut vert = Vertex::new(pos, norm, uv);
-        vert.color = col;
+        vert.color = [col[0], col[1], col[2], 1.0];
         vert
     };
 

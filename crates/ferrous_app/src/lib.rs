@@ -41,6 +41,7 @@
 //! ```
 
 mod asset_bridge;
+pub mod api;
 pub mod builder;
 pub mod config;
 pub mod context;
@@ -76,7 +77,7 @@ pub use ferrous_renderer::{AntialiasingMode, FxaaParams};
 pub use ferrous_core::{
     Color, ElementKind, Handle, InputState, KeyCode, MouseButton, Time, TimeClock, Transform, World,
 };
-pub use ferrous_core::scene::camera::{Camera, ProjectionType};
+pub use ferrous_core::scene::camera::{Camera, Projection};
 
 // glam math types — re-exported for convenience
 pub use ferrous_core::glam::{Mat4, Quat, Vec2, Vec3, Vec4};

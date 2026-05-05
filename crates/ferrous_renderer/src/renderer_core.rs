@@ -205,6 +205,9 @@ pub struct Renderer {
     // -- Technical 2D Rendering -----------------------------------------------
     pub renderer_2d: Renderer2d,
     pub shape_batcher: ShapeBatcher,
+
+    // -- Exportacion Headless (Fase 1) ----------------------------------------
+    pub readback_manager: Option<crate::resources::readback::ReadbackFrameManager>,
 }
 
 
@@ -306,12 +309,12 @@ impl Renderer {
             eye: glam::Vec3::new(0.0, 0.0, 5.0),
             target: glam::Vec3::ZERO,
             up: glam::Vec3::Y,
-            projection_type: ferrous_core::scene::camera::ProjectionType::Perspective,
-            fovy: 45.0f32.to_radians(),
-            aspect: width as f32 / height as f32,
-            ortho_size: 2.0,
-            znear: 0.1,
-            zfar: 2000.0,
+            projection: ferrous_core::scene::camera::Projection::Perspective {
+                fov_y_radians: 45.0f32.to_radians(),
+                aspect_ratio: width as f32 / height as f32,
+                z_near: 0.1,
+                z_far: 2000.0,
+            },
             controller: {
                 let mut c = Controller::new();
                 c.speed = 0.0;
@@ -453,6 +456,7 @@ impl Renderer {
             aa_pass,
             renderer_2d,
             shape_batcher,
+            readback_manager: None,
         }
     }
 
@@ -636,13 +640,13 @@ impl Renderer {
     }
 
     /// Set the camera projection type (Perspective or Orthographic).
-    pub fn set_projection_type(&mut self, proj: ferrous_core::scene::camera::ProjectionType) {
-        self.camera_system.camera.projection_type = proj;
+    pub fn set_projection(&mut self, proj: ferrous_core::scene::camera::Projection) {
+        self.camera_system.camera.projection = proj;
     }
 
     /// Set the vertical size for the orthographic projection.
     pub fn set_ortho_size(&mut self, size: f32) {
-        self.camera_system.camera.ortho_size = size;
+        self.camera_system.camera.projection = ferrous_core::scene::camera::Projection::Orthographic { left: -size, right: size, top: size, bottom: -size, z_near: 0.1, z_far: 1000.0 };
     }
 
     /// Set the background clear color and switch to Solid sky mode.
@@ -841,9 +845,8 @@ impl Renderer {
             if let Some(cam3d) = cameras.first() {
                 self.camera_system.camera.eye = cam3d.eye;
                 self.camera_system.camera.target = cam3d.target;
-                self.camera_system.camera.fovy = cam3d.fov_deg.to_radians();
-                self.camera_system.camera.znear = cam3d.near;
-                self.camera_system.camera.zfar = cam3d.far;
+                self.camera_system.camera.set_fov_degrees(cam3d.fov_deg);
+                self.camera_system.camera.set_near_far(cam3d.near, cam3d.far);
             }
         }
 
@@ -1119,7 +1122,18 @@ impl Renderer {
         self.gizmo_system.execute(&self.context.device, encoder, scene_view, scene_rt, &self.render_target.depth.view, &self.camera_system.gpu.bind_group);
 
         // -- 6a. Technical 2D Pass (Walls, etc.) -------------------------------
-        self.renderer_2d.update_camera(&self.context.queue, self.camera_system.view_proj());
+        self.renderer_2d.update_camera(
+            &self.context.queue, 
+            self.camera_system.view_proj(),
+            glam::Vec2::new(self.width as f32, self.height as f32)
+        );
+
+        // Sync components from the world if we are in a mode that supports it
+        // (This is a bridge for newer Path2d components)
+        // Note: For now we only sync if we have a source of truth for the world.
+        // In the full game loop, this happens during sync_world, but we can do it here too
+        // if we want to support immediate-mode style draw_2d_path.
+        
         self.renderer_2d.prepare_shapes(&self.context.queue, &self.shape_batcher);
         
         {
@@ -1291,8 +1305,7 @@ impl Renderer {
         self.ssao_resources.power = power;
         
         // Sync to GPU immediately so the next frame uses new params
-        let cam = &self.camera_system.camera;
-        let proj = glam::Mat4::perspective_rh(cam.fovy, cam.aspect, cam.znear, cam.zfar);
+        let proj = self.camera_system.proj_matrix();
         self.ssao_resources.update_params(
             &self.context.queue,
             self.width,
@@ -1331,15 +1344,71 @@ impl Renderer {
         self.shape_batcher.push_shape(instance);
     }
 
+    /// Push a technical 2D path for rendering this frame. 
+    /// This is the most professional way to draw complex cad-like structures.
+    pub fn draw_2d_path(&mut self, path: &ferrous_2d::components::Path2d) {
+        // We use a temporary ecs-like query simulation or just call the logic directly
+        // But for simplicity, we can just push it to a local list or use the system logic.
+        // Actually, we can just implement a helper that does the same as prepare_paths_system 
+        // but for a single path.
+        
+        let transform = ferrous_2d::components::Transform2d::default(); // Identity for direct draw
+        let mut cursor = ferrous_core::glam::Vec2::ZERO;
+
+        for cmd in &path.commands {
+            match cmd {
+                ferrous_2d::components::PathCommand::MoveTo(pos) => {
+                    cursor = *pos;
+                }
+                ferrous_2d::components::PathCommand::LineTo(target) => {
+                    let start = cursor;
+                    let end = *target;
+                    let delta = end - start;
+                    let length = delta.length();
+                    
+                    if length > 0.0001 {
+                        let center = (start + end) * 0.5;
+                        let rotation = delta.y.atan2(delta.x);
+                        
+                        // For a capsule/line with round caps to hit the exact start/end points,
+                        // the total geometry length must be length + width.
+                        let stroke_width = path.stroke_width;
+                        let geom_length = length + stroke_width;
+                        
+                        let model = ferrous_core::glam::Mat4::from_scale_rotation_translation(
+                            ferrous_core::glam::Vec3::new(geom_length, stroke_width, 1.0),
+                            ferrous_core::glam::Quat::from_rotation_z(rotation),
+                            ferrous_core::glam::Vec3::new(center.x, center.y, path.z_index),
+                        );
+
+                        self.shape_batcher.push_shape(ferrous_2d::render::types::ShapeInstance {
+                            transform_c0: model.x_axis.into(),
+                            transform_c1: model.y_axis.into(),
+                            transform_c2: model.z_axis.into(),
+                            transform_c3: model.w_axis.into(),
+                            color: path.stroke_color,
+                            params: [
+                                stroke_width,
+                                stroke_width * 0.5, // Perfect round caps center at start/end
+                                2.0,                // Slightly smoother AA
+                                1.0,
+                            ],
+                        });
+                    }
+                    cursor = end;
+                }
+            }
+        }
+    }
+
     /// Push a fully-assembled SceneData to the renderer for this frame.
 
     pub fn set_scene(&mut self, scene: &SceneData) {
         if let Some(cam) = &scene.camera {
             self.camera_system.camera.eye = cam.eye;
             self.camera_system.camera.target = cam.target;
-            self.camera_system.camera.fovy = cam.fov_y;
-            self.camera_system.camera.znear = cam.z_near;
-            self.camera_system.camera.zfar = cam.z_far;
+            self.camera_system.camera.set_fov_degrees(cam.fov_y.to_degrees());
+            self.camera_system.camera.set_near_far(cam.z_near, cam.z_far);
         }
 
         if let Some(light) = &scene.directional_light {
@@ -1374,5 +1443,14 @@ impl Renderer {
             self.render_target.width as f32,
             self.render_target.height as f32,
         )
+    }
+
+    /// Activa el modo de exportación headless o video instanciando el readback buffer.
+    pub fn enable_export_mode(&mut self) {
+        self.readback_manager = Some(crate::resources::readback::ReadbackFrameManager::new(
+            &self.context.device,
+            self.width,
+            self.height,
+        ));
     }
 }

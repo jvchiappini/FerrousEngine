@@ -25,12 +25,12 @@ impl SpritePass {
 
 
     /// Prepares by capturing the latest Z-sorted sprites from the ECS
-    pub fn prepare_from_ecs(&mut self, ecs_world: &mut ferrous_ecs::world::World, queue: &Queue, proj_view: Mat4) {
+    pub fn prepare_from_ecs(&mut self, ecs_world: &mut ferrous_ecs::world::World, queue: &Queue, proj_view: Mat4, resolution: glam::Vec2) {
         // Here we extract entities
         let query = ferrous_ecs::prelude::Query::<(&ferrous_2d::components::Transform2d, &ferrous_2d::components::Sprite)>::new(ecs_world);
         ferrous_2d::systems::prepare_sprites_system(&mut self.batcher, query);
         
-        self.renderer_2d.update_camera(queue, proj_view);
+        self.renderer_2d.update_camera(queue, proj_view, resolution);
         self.renderer_2d.prepare(queue, &self.batcher);
     }
 }

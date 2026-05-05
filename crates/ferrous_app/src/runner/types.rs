@@ -55,6 +55,8 @@ pub(crate) struct Runner<A: FerrousApp + 'static> {
     pub(super) ctrl_held: bool,
     /// Whether a Shift modifier key is currently held (used for selection shortcuts).
     pub(super) shift_held: bool,
+    /// Tracks the last deterministic time absolute value passed to render frames
+    pub(super) last_deterministic_t: Option<f64>,
 }
 
 impl<A: FerrousApp + 'static> Runner<A> {
@@ -97,6 +99,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
             asset_server: AssetServer::new(),
             ctrl_held: false,
             shift_held: false,
+            last_deterministic_t: None,
         }
     }
 }

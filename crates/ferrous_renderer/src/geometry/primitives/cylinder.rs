@@ -53,7 +53,7 @@ pub fn cylinder(
                 [nx, ny, nz],
                 [u, 1.0 - t],
             );
-            v.color = [1.0, 1.0, 1.0];
+            v.color = [1.0, 1.0, 1.0, 1.0];
             vertices.push(v);
         }
     }
@@ -84,7 +84,7 @@ pub fn cylinder(
                 [0.0, normal_y, 0.0],
                 [0.5, 0.5],
             );
-            center.color = [1.0, 1.0, 1.0];
+            center.color = [1.0, 1.0, 1.0, 1.0];
             vertices.push(center);
 
             let rim_start = vertices.len() as u32;
@@ -98,7 +98,7 @@ pub fn cylinder(
                     [0.0, normal_y, 0.0],
                     [cos_t * 0.5 + 0.5, sin_t * 0.5 + 0.5],
                 );
-                v.color = [1.0, 1.0, 1.0];
+                v.color = [1.0, 1.0, 1.0, 1.0];
                 vertices.push(v);
             }
 

@@ -95,7 +95,7 @@ struct VsIn {
     @location(0) position : vec3<f32>,
     @location(1) normal   : vec3<f32>,
     @location(2) tangent  : vec4<f32>,
-    @location(3) color    : vec3<f32>,
+    @location(3) color    : vec4<f32>,
     @location(4) uv       : vec2<f32>,
     @builtin(instance_index) instance_idx: u32,
 };
@@ -108,6 +108,7 @@ struct VsOut {
     @location(3) world_bitangent : vec3<f32>,
     @location(4) uv : vec2<f32>,
     @location(5) shadow_pos : vec4<f32>,
+    @location(6) color : vec4<f32>,
 };
 
 @vertex
@@ -122,13 +123,14 @@ fn vs_main(input: VsIn) -> VsOut {
     out.world_tangent = normalize((model * vec4<f32>(input.tangent.xyz, 0.0)).xyz);
     out.world_bitangent = normalize(cross(out.world_normal, out.world_tangent) * input.tangent.w);
     out.uv = vec2<f32>(input.uv.x, 1.0 - input.uv.y); // Flip V for WebGPU
+    out.color = input.color;
     return out;
 }
 
 @fragment
 fn fs_main(frag_in: VsOut) -> @location(0) vec4<f32> {
-    var albedo = material.base_color.xyz;
-    var out_alpha = material.base_color.w * material.metallic_roughness.w;
+    var albedo = material.base_color.xyz * frag_in.color.xyz;
+    var out_alpha = material.base_color.w * material.metallic_roughness.w * frag_in.color.w;
     
     if ((material.flags & 1u) != 0u) {
         let sample = textureSampleLevel(tex_albedo, mat_sampler, frag_in.uv, 0.0);
