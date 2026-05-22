@@ -75,14 +75,17 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
         // â”€â”€ Desktop: synchronous blocking GPU init â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let mut gfx = pollster::block_on(GraphicsState::new(
-                &window,
-                self.config.width,
-                self.config.height,
-                self.config.vsync,
-                self.config.sample_count,
-                self.config.hdri_path.clone(),
-            ));
+            let mut gfx = {
+                use pollster::FutureExt;
+                GraphicsState::new(
+                    &window,
+                    self.config.width,
+                    self.config.height,
+                    self.config.vsync,
+                    self.config.sample_count,
+                    self.config.hdri_path.clone(),
+                ).block_on()
+            };
             gfx.renderer.set_viewport(self.viewport);
             gfx.renderer
                 .set_clear_color(self.config.background_color.to_wgpu());
@@ -207,11 +210,12 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.input.set_mouse_position(position.x, position.y);
+                let (mx, my) = (position.x, position.y);
+                self.input.set_mouse_position(mx, my);
                 self.ui.dispatch_event(
                     &mut self.app,
                     ferrous_ui_core::UiEvent::MouseMove {
-                        pos: glam::Vec2::new(position.x as f32, position.y as f32),
+                        pos: glam::Vec2::new(mx as f32, my as f32),
                     },
                 );
             }

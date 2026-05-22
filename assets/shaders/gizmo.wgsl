@@ -12,7 +12,7 @@ struct Camera {
     view_proj : mat4x4<f32>,
     eye_pos   : vec3<f32>,
     exposure  : f32,
-    fog_color : vec4<f32>,
+    fog_color : vec3<f32>,
     fog_density: f32,
     ambient_color: vec3<f32>,
     ambient_intensity: f32,

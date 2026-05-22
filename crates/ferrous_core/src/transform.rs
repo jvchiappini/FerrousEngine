@@ -62,6 +62,21 @@ impl Transform {
         }
     }
 
+    pub fn with_position(mut self, position: Vec3) -> Self {
+        self.position = position;
+        self
+    }
+
+    pub fn with_scale(mut self, scale: Vec3) -> Self {
+        self.scale = scale;
+        self
+    }
+
+    pub fn with_rotation(mut self, rotation: Quat) -> Self {
+        self.rotation = rotation;
+        self
+    }
+
     /// Construct with a position and a look-at rotation.
     ///
     /// `target` — the point to face; `up` — world-up hint (usually `Vec3::Y`).

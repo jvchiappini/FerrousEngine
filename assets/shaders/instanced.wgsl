@@ -109,21 +109,42 @@ struct VsOut {
     @location(4) uv : vec2<f32>,
     @location(5) shadow_pos : vec4<f32>,
     @location(6) color : vec4<f32>,
+    @location(7) is_screen : f32,
 };
 
 @vertex
 fn vs_main(input: VsIn) -> VsOut {
     let model = instances[input.instance_idx];
-    let world_pos4 = model * vec4<f32>(input.position, 1.0);
+    
+    // Flag is stored in col2.w (affects clip.z only, which we override for UI)
+    let is_screen_space = abs(model[2][3] - 55.5) < 0.1;
+    
+    // Rebuild matrix with col2.w cleared so it doesn't corrupt clip.z
+    let col0 = model[0];
+    let col1 = model[1];
+    let col2 = vec4<f32>(model[2].xyz, 0.0); // clear the flag from w
+    let col3 = model[3]; // w == 1.0, translation in xyz
+    
+    let model_clean = mat4x4<f32>(col0, col1, col2, col3);
+    let world_pos4 = model_clean * vec4<f32>(input.position, 1.0);
+    
     var out: VsOut;
-    out.clip_pos = camera.view_proj * world_pos4;
+    if (is_screen_space) {
+        // matrix was pre-multiplied by ortho on CPU — use directly as clip coords
+        out.clip_pos = world_pos4;
+    } else {
+        out.clip_pos = camera.view_proj * world_pos4;
+    }
+    
     out.world_pos = world_pos4.xyz;
     out.shadow_pos = dir_light.light_view_proj * world_pos4;
-    out.world_normal = normalize((model * vec4<f32>(input.normal, 0.0)).xyz);
-    out.world_tangent = normalize((model * vec4<f32>(input.tangent.xyz, 0.0)).xyz);
+    out.world_normal = normalize((model_clean * vec4<f32>(input.normal, 0.0)).xyz);
+    out.world_tangent = normalize((model_clean * vec4<f32>(input.tangent.xyz, 0.0)).xyz);
     out.world_bitangent = normalize(cross(out.world_normal, out.world_tangent) * input.tangent.w);
-    out.uv = vec2<f32>(input.uv.x, 1.0 - input.uv.y); // Flip V for WebGPU
+    out.uv = vec2<f32>(input.uv.x, 1.0 - input.uv.y);
     out.color = input.color;
+    out.is_screen = select(0.0, 1.0, is_screen_space);
+    
     return out;
 }
 
@@ -198,27 +219,38 @@ fn fs_main(frag_in: VsOut) -> @location(0) vec4<f32> {
         Lo += (kD_pl * albedo / PI + spec_pl) * pl.color_intensity.xyz * pl.color_intensity.w * point_attenuation(pl_dist, pl.position_radius.w) * NdotL_pl;
     }
 
-    // IBL
-    let irr = textureSampleLevel(tex_irradiance, env_sampler, N, 0.0).xyz;
-    let diffuse_ambient = (1.0 - fresnel_schlick(NdotV, F0)) * (1.0 - metallic) * albedo * irr;
-    
-    let R = reflect(-Vdir, N);
-    let maxMip = f32(textureNumLevels(tex_prefilter) - 1u);
-    let prefiltered = textureSampleLevel(tex_prefilter, env_sampler, R, roughness * maxMip).xyz;
-    let brdf = textureSampleLevel(tex_brdf, env_sampler, vec2<f32>(NdotV, roughness), 0.0).xy;
-    let specular_ambient = prefiltered * (fresnel_schlick(NdotV, F0) * brdf.x + brdf.y);
-
     // Sample the blurred SSAO texture using the fragment's NDC position.
     let clip_ssao = camera.view_proj * vec4<f32>(frag_in.world_pos, 1.0);
     let ndc_ssao  = clip_ssao.xyz / clip_ssao.w;
     let ssao_uv   = vec2<f32>(ndc_ssao.x * 0.5 + 0.5, -ndc_ssao.y * 0.5 + 0.5);
     let ssao_factor = textureSampleLevel(ssao_tex, ssao_sampler, ssao_uv, 0.0).r;
 
-    let global_ambient = camera.ambient_color * camera.ambient_intensity * albedo;
-    let total_ambient = (diffuse_ambient + specular_ambient + global_ambient) * material.metallic_roughness.z * ssao_factor;
-    let ambient = total_ambient * 0.9 + global_ambient * 0.1;
+    // Definitive Lighting Bypass for ScreenSpace UI
+    if (frag_in.is_screen > 0.5) {
+        return vec4<f32>(albedo, out_alpha);
+    }
 
-    var color = ambient + Lo;
+    var color = vec3<f32>(0.0);
+    
+    // Check for UNLIT flag (1 << 6 = 64)
+    if ((material.flags & 64u) != 0u) {
+        color = albedo;
+    } else {
+        let irr = textureSampleLevel(tex_irradiance, env_sampler, N, 0.0).xyz;
+        let diffuse_ambient = (1.0 - fresnel_schlick(NdotV, F0)) * (1.0 - metallic) * albedo * irr;
+        
+        let R = reflect(-Vdir, N);
+        let maxMip = f32(textureNumLevels(tex_prefilter) - 1u);
+        let prefiltered = textureSampleLevel(tex_prefilter, env_sampler, R, roughness * maxMip).xyz;
+        let brdf = textureSampleLevel(tex_brdf, env_sampler, vec2<f32>(NdotV, roughness), 0.0).xy;
+        let specular_ambient = prefiltered * (fresnel_schlick(NdotV, F0) * brdf.x + brdf.y);
+
+        let global_ambient = camera.ambient_color * camera.ambient_intensity * albedo;
+        let total_ambient = (diffuse_ambient + specular_ambient + global_ambient) * material.metallic_roughness.z * ssao_factor;
+        let ambient = total_ambient * 0.9 + global_ambient * 0.1;
+
+        color = ambient + Lo;
+    }
     
     // Emissive
     if ((material.flags & 8u) != 0u) {
@@ -226,9 +258,11 @@ fn fs_main(frag_in: VsOut) -> @location(0) vec4<f32> {
     }
 
     // Fog
-    let dist = length(camera.eye_pos - frag_in.world_pos);
-    let fog_factor = clamp(1.0 - exp(-dist * camera.fog_density), 0.0, 1.0);
-    color = mix(color, camera.fog_color, fog_factor);
+    if (frag_in.is_screen < 0.5) {
+        let dist = length(camera.eye_pos - frag_in.world_pos);
+        let fog_factor = clamp(1.0 - exp(-dist * camera.fog_density), 0.0, 1.0);
+        color = mix(color, camera.fog_color, fog_factor);
+    }
 
     return vec4<f32>(color, out_alpha);
 }

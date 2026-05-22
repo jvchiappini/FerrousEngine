@@ -14,7 +14,7 @@ use crate::entity::{Entity, EntityAllocator};
 /// # Panics
 /// Most methods panic in debug builds on bad inputs (stale entity handles, etc.)
 /// and are no-ops or return `None` in release.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct World {
     pub(crate) entities: EntityAllocator,
     pub(crate) archetypes: ArchetypeStore,

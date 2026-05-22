@@ -16,9 +16,9 @@ pub struct SpritePass {
 }
 
 impl SpritePass {
-    pub fn new(device: Arc<Device>, output_format: wgpu::TextureFormat) -> Self {
+    pub fn new(device: Arc<Device>, output_format: wgpu::TextureFormat, depth_format: Option<wgpu::TextureFormat>) -> Self {
         Self {
-            renderer_2d: Renderer2d::new(device, output_format, 1, 1024),
+            renderer_2d: Renderer2d::new(device, output_format, depth_format, 1, 1024),
             batcher: SpriteBatcher::default(),
         }
     }

@@ -304,7 +304,16 @@ impl<A: FerrousApp + 'static> Runner<A> {
             // Sincronizar y obtener los bytes si era una pasada de exportación.
             if let Some(readback) = &gfx.renderer.readback_manager {
                 self.input.end_frame();
-                return pollster::block_on(readback.poll_and_map(&gfx.renderer.context.device)).ok();
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    use pollster::FutureExt;
+                    return readback.poll_and_map(&gfx.renderer.context.device).block_on().ok();
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    log::warn!("Blocking readback not supported on wasm32");
+                    return None;
+                }
             }
         }
 

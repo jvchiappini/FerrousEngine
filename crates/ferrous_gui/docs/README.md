@@ -207,7 +207,7 @@ Para crear una herramienta gráfica compleja (como el editor principal o un viso
 Tu aplicación dictará el tipo genérico con el que se instancian los widgets (por ejemplo, `Button<FerrousBuilder>`).
 
 ```rust
-use ferrous_app::{App, AppContext, FerrousApp, DrawContext};
+use ferrous_engine::{App, AppContext, FerrousApp, DrawContext};
 use ferrous_gui::{UiTree, Button, Style, Units, NodeId};
 
 // Este es tu estado principal
@@ -300,7 +300,7 @@ En ocasiones, como en un Inspector de Materiales (`MaterialInspector`), puede se
 use ferrous_gui::{DrawContext, ToBatches, Rect};
 
 // En tu método draw_ui:
-fn draw_ui(&mut self, dc: &mut ferrous_app::DrawContext<'_, '_>) {
+fn draw_ui(&mut self, dc: &mut ferrous_engine::DrawContext<'_, '_>) {
     let font = dc.font;
     let gui = &mut *dc.gui;
     

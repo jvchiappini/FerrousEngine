@@ -7,7 +7,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use ferrous_app::{App, AppBuilder, Plugin, DefaultPlugins};
+//! use ferrous_engine::{App, AppBuilder, Plugin, DefaultPlugins};
 //!
 //! struct MyPlugin;
 //!
@@ -173,8 +173,8 @@ impl AppBuilder {
     /// # Example
     ///
     /// ```rust,ignore
-    /// use ferrous_app::AppBuilder;
-    /// use ferrous_app::plugin::DefaultPlugins;
+    /// use ferrous_engine::AppBuilder;
+    /// use ferrous_engine::plugin::DefaultPlugins;
     /// use ferrous_ecs::prelude::*;
     ///
     /// #[derive(Clone)] struct Position { x: f32, y: f32 }

@@ -192,6 +192,7 @@ pub struct PrePass {
     // Shared buffers from WorldPass (set by the renderer after construction)
     instance_bind_group: Option<Arc<wgpu::BindGroup>>,
     instanced_pipeline: Arc<RenderPipeline>,
+    instanced_pipeline_double: Arc<RenderPipeline>,
 
     // Material registry for filtering transparents (Phase 12)
     material_bind_groups: Vec<Arc<wgpu::BindGroup>>,
@@ -211,8 +212,10 @@ impl PrePass {
         let prepass_camera = PrepassCamera::new(device);
 
         // ── Instanced pipeline: group 1 = storage buffer ───────────────────────
-        let instanced_pipeline =
-            Self::build_pipeline(device, &prepass_camera.layout, &instance_layout, sample_count);
+        let instancing_pipeline =
+            Self::build_pipeline(device, &prepass_camera.layout, &instance_layout, sample_count, Some(wgpu::Face::Back));
+        let instancing_pipeline_double =
+            Self::build_pipeline(device, &prepass_camera.layout, &instance_layout, sample_count, None);
 
         // ── Dedicated depth target for the prepass ────────────────────────────
         let (depth_texture, depth_view) = Self::make_depth(device, width, height, sample_count);
@@ -224,7 +227,8 @@ impl PrePass {
             depth_texture,
             depth_view,
             instance_bind_group: None,
-            instanced_pipeline: Arc::new(instanced_pipeline),
+            instanced_pipeline: Arc::new(instancing_pipeline),
+            instanced_pipeline_double: Arc::new(instancing_pipeline_double),
             material_bind_groups: Vec::new(),
             material_registry: None,
         }
@@ -272,6 +276,7 @@ impl PrePass {
         camera_layout: &BindGroupLayout,
         group1_layout: &BindGroupLayout,
         sample_count: u32,
+        cull_mode: Option<wgpu::Face>,
     ) -> RenderPipeline {
         let shader = device.create_shader_module(wgpu::include_wgsl!(
             "../../../../assets/shaders/prepass_instanced.wgsl"
@@ -305,7 +310,7 @@ impl PrePass {
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
+                cull_mode,
                 ..Default::default()
             },
             depth_stencil: Some(wgpu::DepthStencilState {
@@ -418,20 +423,27 @@ impl RenderPass for PrePass {
             &self.instance_bind_group,
             !packet.instanced_objects.is_empty(),
         ) {
-            rpass.set_pipeline(&self.instanced_pipeline);
-            rpass.set_bind_group(0, self.prepass_camera.bind_group.as_ref(), &[]);
-            rpass.set_bind_group(1, inst_bg.as_ref(), &[]);
-            
             for cmd in &packet.instanced_objects {
+                let mut double_sided = false;
                 // If we have the registry, skip transparent meshes in the prepass.
                 // Standard professional practice for Depth/Normal prepasses.
                 if let Some(registry) = &self.material_registry {
-                    let (alpha, _) = registry.get_render_flags(ferrous_core::scene::MaterialHandle(cmd.material_slot as u32));
+                    let (alpha, dbl) = registry.get_render_flags(ferrous_core::scene::MaterialHandle(cmd.material_slot as u32));
                     if matches!(alpha, ferrous_core::scene::AlphaMode::Blend) {
                         continue;
                     }
+                    double_sided = dbl;
                 }
 
+                let pipeline = if double_sided {
+                    &self.instanced_pipeline_double
+                } else {
+                    &self.instanced_pipeline
+                };
+                rpass.set_pipeline(pipeline);
+                rpass.set_bind_group(0, self.prepass_camera.bind_group.as_ref(), &[]);
+                rpass.set_bind_group(1, inst_bg.as_ref(), &[]);
+                
                 rpass.set_vertex_buffer(0, cmd.vertex_buffer.slice(..));
                 rpass.set_index_buffer(cmd.index_buffer.slice(..), cmd.index_format);
                 rpass.draw_indexed(

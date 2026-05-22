@@ -22,12 +22,13 @@ log = "0.4"
 rand = "0.8"
 fontmesh = "0.4.1"
 ttf-parser = "0.25.1"
+lyon_tessellation = "1.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon = "1.11.0"
+pollster = "0.3"
 
 [dev-dependencies]
-pollster = "0.3"
 # image is used by tests/examples but we now also expose it as an optional
 # feature for runtime texture loading (png/jpeg).  we keep the dev-dependency
 # at 0.24 so that existing tests continue to compile when the feature flag is

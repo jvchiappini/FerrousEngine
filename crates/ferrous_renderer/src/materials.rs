@@ -264,6 +264,9 @@ impl MaterialRegistry {
             flags |= FLAG_ALPHA_MASK;
             alpha_cutoff = cutoff;
         }
+        if desc.style_override == Some(ferrous_core::scene::RenderStyle::FlatShaded) {
+            flags |= crate::resources::material::FLAG_UNLIT;
+        }
         uniform.flags = flags;
         uniform.alpha_cutoff = alpha_cutoff;
         // (rest of uniform already written above)

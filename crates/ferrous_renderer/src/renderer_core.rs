@@ -77,7 +77,14 @@ pub enum RendererMode {
     Full3D,
     /// 2-D GUI-only pipeline: the UI pass clears the surface directly.
     /// WorldPass, render-style passes, gizmos, and post-process are all skipped.
+    /// Use this ONLY for pure Dear-ImGui / GUI overlays with no geometric 2D.
     Flat2D,
+    /// Pure 2-D pipeline: shapes + sprites rendered directly to the swapchain.
+    /// WorldPass, SSAO, prepass, gizmos, particles, and post-process are all skipped.
+    /// The camera is automatically configured as orthographic pixel-perfect
+    /// (1 world-unit = 1 pixel, origin at screen center) when using `enable_pure_2d()`.
+    /// Use this for 2D games, mathematical visualizations, and animation tools.
+    Pure2D,
 }
 
 /// Top-level renderer.
@@ -116,7 +123,7 @@ pub struct Renderer {
     // -- Scene (O(1) lookup by id) --------------------------------------------
     /// CPU-side material descriptor cache for detecting changes during sync_world.
     /// Keyed by entity id (u64).
-    world_material_descs: HashMap<u64, ferrous_core::scene::MaterialDescriptor>,
+    pub world_material_descs: HashMap<u64, ferrous_core::scene::MaterialDescriptor>,
     /// Storage buffer for instanced World entities.
     instance_buf: InstanceBuffer,
     /// Layout for the instance storage buffer bind group.
@@ -138,7 +145,7 @@ pub struct Renderer {
     shadow_instance_buf: InstanceBuffer,
 
     /// Material manager handling textures and bind groups.
-    material_registry: MaterialRegistry,
+    pub material_registry: MaterialRegistry,
 
     // -- Surface info (for registering passes post-construction) --------------
     format: wgpu::TextureFormat,
@@ -203,8 +210,17 @@ pub struct Renderer {
     pub aa_pass: crate::passes::AntialiasingPass,
 
     // -- Technical 2D Rendering -----------------------------------------------
+    /// 2D renderer para overlay sobre el HDR texture en Full3D (con MSAA del mundo).
     pub renderer_2d: Renderer2d,
+    /// 2D renderer para Pure2D: sample_count=1, formato swapchain, sin overhead HDR.
+    pub renderer_2d_pure: Renderer2d,
     pub shape_batcher: ShapeBatcher,
+    /// Batcher de sprites dedicado al modo Pure2D.
+    pub sprite_batcher_2d: ferrous_2d::render::SpriteBatcher,
+
+    /// Bind groups de texturas indexados por texture_id para sprites 2D en Pure2D.
+    pub sprite_bind_groups: std::collections::HashMap<u32, std::sync::Arc<wgpu::BindGroup>>,
+    pub next_sprite_texture_id: u32,
 
     // -- Exportacion Headless (Fase 1) ----------------------------------------
     pub readback_manager: Option<crate::resources::readback::ReadbackFrameManager>,
@@ -212,6 +228,8 @@ pub struct Renderer {
 
 
 impl Renderer {
+    pub fn width(&self) -> u32 { self.width }
+    pub fn height(&self) -> u32 { self.height }
     /// Creates a `Renderer` with the default world + UI passes.
     ///
     /// `sample_count`: `1` = no MSAA, `4` = 4x MSAA (recommended).
@@ -404,7 +422,10 @@ impl Renderer {
         aa_pass.on_attach(device, hdr_format);
         aa_pass.on_resize(device, width, height);
 
-        let renderer_2d = Renderer2d::new(context.device.clone(), hdr_format, sample_count, 1024);
+        let renderer_2d = Renderer2d::new(context.device.clone(), hdr_format, Some(wgpu::TextureFormat::Depth32Float), sample_count, 1024);
+        // Pure2D renderiza directo al swapchain: usa formato de superficie (no HDR)
+        // y sample_count=1 (MSAA no es compatible con presentación directa).
+        let renderer_2d_pure = Renderer2d::new(context.device.clone(), format, None, 1, 1024);
         let shape_batcher = ShapeBatcher::default();
 
         Self {
@@ -455,7 +476,11 @@ impl Renderer {
             cull_pass: None,
             aa_pass,
             renderer_2d,
+            renderer_2d_pure,
             shape_batcher,
+            sprite_batcher_2d: ferrous_2d::render::SpriteBatcher::default(),
+            sprite_bind_groups: std::collections::HashMap::new(),
+            next_sprite_texture_id: 0,
             readback_manager: None,
         }
     }
@@ -508,11 +533,17 @@ impl Renderer {
         
         #[cfg(feature = "gui")]
         {
-            self.ui_pass.on_resize(
-                &self.context.device,
+            let (target_format, target_samples) = if self.mode == RendererMode::Pure2D || self.mode == RendererMode::Flat2D {
+                (self.format, 1)
+            } else {
+                (crate::render_target::HdrTexture::FORMAT, self.sample_count)
+            };
+            self.ui_pass.update_output_config(
                 &self.context.queue,
                 new_width,
                 new_height,
+                target_format,
+                target_samples,
             );
         }
         // User passes
@@ -526,6 +557,12 @@ impl Renderer {
         }
         // Antialiasing textures
         self.aa_pass.on_resize(&self.context.device, new_width, new_height);
+
+        // En Pure2D recalcular la ortho para mantener 1u=1px con el nuevo tamaño.
+        if self.mode == RendererMode::Pure2D {
+            self.camera_system.camera.set_mode_2d(true, Some(new_height as f32));
+            self.camera_system.camera.set_aspect(new_width as f32 / new_height as f32);
+        }
     }
 
     /// Switch between the full 3-D pipeline and the lightweight 2-D/GUI-only
@@ -548,7 +585,23 @@ impl Renderer {
                 None
             };
             self.ui_pass.set_clear_color(clear);
+
+            // Sync UI output config: Pure2D/Flat2D render to swapchain (1 sample, surface format),
+            // while Full3D renders to HDR target (MSAA sample_count, hdr format).
+            let (target_format, target_samples) = if mode == RendererMode::Pure2D || mode == RendererMode::Flat2D {
+                (self.format, 1)
+            } else {
+                (crate::render_target::HdrTexture::FORMAT, self.sample_count)
+            };
+            self.ui_pass.update_output_config(
+                &self.context.queue,
+                self.width,
+                self.height,
+                target_format,
+                target_samples,
+            );
         }
+        self.mark_dirty();
     }
 
     /// Convenience helper to switch to Flat 2D mode with a specific background color.
@@ -557,9 +610,34 @@ impl Renderer {
         self.set_clear_color(background_color);
     }
 
-    /// Convenience helper to switch back to full 3-D mode.
+    /// Activa el modo 2D puro: ortho pixel-perfect, sin pipeline 3D.
+    ///
+    /// La cámara se configura automáticamente:
+    /// - 1 world-unit = 1 pixel.
+    /// - Origen (0, 0) en el centro de la pantalla.
+    /// - Eje Y positivo hacia arriba.
+    /// - Rango X: [-width/2, +width/2], rango Y: [-height/2, +height/2].
+    ///
+    /// El `background` es el color de clear que se aplica cada frame.
+    pub fn enable_pure_2d(&mut self, background: wgpu::Color) {
+        self.set_mode(RendererMode::Pure2D);
+        // Configurar cámara ortho pixel-perfect (1u = 1px)
+        self.camera_system.camera.set_mode_2d(true, Some(self.height as f32));
+        // Recalcular aspect ratio correcto post-set_mode_2d
+        self.camera_system.camera.set_aspect(self.width as f32 / self.height as f32);
+        self.set_clear_color(background);
+        self.mark_dirty();
+    }
+
+    /// Vuelve al modo 3D completo (PBR / CelShaded / FlatShaded).
+    ///
+    /// Restaura la cámara perspectiva. El `eye` vuelve a `(0, 2, 5)`
+    /// y se rehabilita el controlador WASD.
     pub fn enable_full_3d(&mut self) {
         self.set_mode(RendererMode::Full3D);
+        self.camera_system.camera.set_mode_2d(false, None);
+        self.camera_system.set_aspect(self.width as f32 / self.height as f32);
+        self.mark_dirty();
     }
 
     /// Sets the active render style (PBR, CelShaded, or FlatShaded).
@@ -630,6 +708,7 @@ impl Renderer {
             }
         }
         self.render_style = style;
+        self.mark_dirty();
     }
 
     /// Explicitly sets the viewport rectangle and updates the camera aspect ratio.
@@ -637,27 +716,42 @@ impl Renderer {
         self.viewport = vp;
         self.camera_system
             .set_aspect(vp.width as f32 / vp.height as f32);
+        self.mark_dirty();
     }
 
     /// Set the camera projection type (Perspective or Orthographic).
     pub fn set_projection(&mut self, proj: ferrous_core::scene::camera::Projection) {
         self.camera_system.camera.projection = proj;
+        self.mark_dirty();
     }
 
     /// Set the vertical size for the orthographic projection.
     pub fn set_ortho_size(&mut self, size: f32) {
-        self.camera_system.camera.projection = ferrous_core::scene::camera::Projection::Orthographic { left: -size, right: size, top: size, bottom: -size, z_near: 0.1, z_far: 1000.0 };
+        let aspect = self.width as f32 / self.height as f32;
+        let hh = size / 2.0;
+        let hw = hh * aspect;
+        self.camera_system.camera.projection = ferrous_core::scene::camera::Projection::Orthographic { 
+            left: -hw, 
+            right: hw, 
+            top: hh, 
+            bottom: -hh, 
+            z_near: -1000.0, 
+            z_far: 1000.0 
+        };
+        self.mark_dirty();
     }
 
     /// Set the background clear color and switch to Solid sky mode.
     pub fn set_background_color(&mut self, color: wgpu::Color) {
         self.set_clear_color(color);
         self.world_pass.sky_mode = SkyMode::Solid(color);
+        self.mark_dirty();
     }
 
     /// Set the global ambient light for the scene.
     pub fn set_ambient_light(&mut self, color: [f32; 3], intensity: f32) {
         crate::renderer_api::set_ambient_light(&mut self.camera_system, &self.context.queue, color, intensity);
+        self.mark_dirty();
     }
 
     /// Configure the antialiasing mode applied after the gizmo pass.
@@ -675,6 +769,7 @@ impl Renderer {
     /// ```
     pub fn set_antialiasing(&mut self, mode: crate::passes::AntialiasingMode) {
         self.aa_pass.set_mode(mode);
+        self.mark_dirty();
     }
 
     /// Handles input events, specifically camera control input.
@@ -682,6 +777,7 @@ impl Renderer {
     /// Delegates input handling to the camera system for orbit controls.
     pub fn handle_input(&mut self, input: &mut ferrous_core::input::InputState, dt: f32) {
         self.camera_system.handle_input(input, dt);
+        self.mark_dirty();
     }
 
     pub fn begin_frame(&self) -> wgpu::CommandEncoder {
@@ -725,6 +821,7 @@ impl Renderer {
 
     pub fn queue_gizmo(&mut self, gizmo: crate::scene::GizmoDraw) {
         self.gizmo_system.queue(gizmo);
+        self.mark_dirty();
     }
 
     /// Creates a GPU mesh from a list of vertices and indices.
@@ -783,6 +880,7 @@ impl Renderer {
     /// Sets the background sky mode (Solid, Cubemap, or Procedural).
     pub fn set_sky_mode(&mut self, mode: SkyMode) {
         self.world_pass.sky_mode = mode;
+        self.mark_dirty();
     }
 
     /// Convenience helper to switch to the procedural atmospheric HDR sky.
@@ -796,6 +894,7 @@ impl Renderer {
             1, // HDR target is always single-sample
         );
         self.set_sky_mode(SkyMode::Procedural(sky));
+        self.mark_dirty();
     }
 
     pub fn sync_world(&mut self, world: &ferrous_core::scene::World) {
@@ -877,9 +976,9 @@ impl Renderer {
             }
         }
 
-        // 1. Build frustum from current camera
+        // 1. Build frustum from current camera (using WGPU-corrected matrices)
         let camera_packet = crate::graph::frame_packet::CameraPacket {
-            view_proj: self.camera_system.camera.build_view_projection_matrix(),
+            view_proj: self.camera_system.view_proj(),
             eye: self.camera_system.camera.eye,
         };
         let frustum = Frustum::from_view_proj(&camera_packet.view_proj);
@@ -888,15 +987,19 @@ impl Renderer {
         {
             let world_pass_ref = &mut self.world_pass;
             let prepass_ref = &mut self.prepass;
+            let vp = self.viewport;
+            let vp_mat = camera_packet.view_proj;
             self.frame_builder.build_world_commands(
                 world,
                 &self.context.device,
                 &frustum,
                 self.camera_system.camera.eye,
+                vp_mat,
+                vp,
                 &mut self.instance_buf,
                 &self.instance_layout,
                 &mut self.shadow_instance_buf,
-                &mut |bg, shadow_bg| {
+                &mut |bg: std::sync::Arc<wgpu::BindGroup>, shadow_bg: std::sync::Arc<wgpu::BindGroup>| {
                     world_pass_ref.set_instance_buffer(bg.clone());
                     world_pass_ref.set_shadow_instance_buffer(shadow_bg);
                     prepass_ref.set_instance_buffer(bg);
@@ -914,10 +1017,38 @@ impl Renderer {
         view: &wgpu::TextureView,
         ui_batch: Option<ferrous_gui::GuiBatch>,
     ) {
+        self.render_internal(encoder, RenderDest::View(view), ui_batch);
+    }
+
+    /// Renders the scene to its own internal [`RenderTarget`].
+    /// Useful for headless mode or off-screen composition.
+    pub fn render_to_internal_target(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        ui_batch: Option<ferrous_gui::GuiBatch>,
+    ) {
+        self.render_internal(encoder, RenderDest::Target, ui_batch);
+    }
+
+    fn render_internal(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        dest: RenderDest,
+        ui_batch: Option<ferrous_gui::GuiBatch>,
+    ) {
+        // Resolve target view. If internal, use a raw pointer to avoid conflicting
+        // borrows with &mut self used by passes later.
+        let target_view = match dest {
+            RenderDest::View(v) => v,
+            RenderDest::Target => unsafe {
+                &*(self.render_target.color_view() as *const wgpu::TextureView)
+            }
+        };
+
         self.camera_system.sync_gpu(&self.context.queue);
 
         let camera_packet = CameraPacket {
-            view_proj: self.camera_system.camera.build_view_projection_matrix(),
+            view_proj: self.camera_system.view_proj(),
             eye: self.camera_system.camera.eye,
         };
         let (mut packet, stats) = self.frame_builder.build(self.viewport, camera_packet);
@@ -955,14 +1086,98 @@ impl Renderer {
             packet.insert(b);
         }
 
+        // ── Pure2D fast path ───────────────────────────────────────────────
+        // Pipeline mínima: Clear → Shapes SDF → Sprites → UI → Extra passes.
+        // Sin Prepass, SSAO, WorldPass, Gizmos, Particles, PostFX ni tone-mapping.
+        // NOTA: camera_system.sync_gpu() ya se llamó arriba, no repetir.
+        if self.mode == RendererMode::Pure2D {
+            // Subir la cámara al renderer 2D puro
+            self.renderer_2d_pure.update_camera(
+                &self.context.queue,
+                self.camera_system.view_proj(),
+                glam::Vec2::new(self.width as f32, self.height as f32),
+            );
+
+            // Preparar shapes en el GPU buffer
+            self.renderer_2d_pure.prepare_shapes(&self.context.queue, &self.shape_batcher);
+
+            // Preparar sprites en el GPU buffer
+            self.renderer_2d_pure.prepare(&self.context.queue, &self.sprite_batcher_2d);
+
+            // Un único render pass: Clear → Shapes → Sprites
+            {
+                let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Pure2D Main Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: target_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            // Clear con el color de fondo configurado
+                            load: wgpu::LoadOp::Clear(self.world_pass.clear_color),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    // Sin depth en Pure2D: el Z-ordering es CPU-side vía z_index
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+
+                // Primero shapes (pueden ir debajo de los sprites)
+                self.renderer_2d_pure.render_shapes(&mut rpass, &self.shape_batcher);
+
+                // Luego sprites texturizados (encima de shapes)
+                let sprite_bgs = &self.sprite_bind_groups;
+                self.renderer_2d_pure.render(&mut rpass, &self.sprite_batcher_2d, |tex_id| {
+                    sprite_bgs.get(&tex_id).map(|bg| bg.as_ref())
+                });
+            }
+
+            // Limpiar el sprite batcher para el siguiente frame
+            self.sprite_batcher_2d.clear();
+
+            // UI Pass encima (texto, overlays, debug GUI)
+            #[cfg(feature = "gui")]
+            {
+                self.ui_pass.prepare(&self.context.device, &self.context.queue, &packet);
+                self.ui_pass.execute(
+                    &self.context.device,
+                    &self.context.queue,
+                    encoder,
+                    target_view,
+                    None,
+                    None,
+                    &packet,
+                );
+            }
+
+            // Extra passes del usuario
+            for pass in &mut self.extra_passes {
+                pass.prepare(&self.context.device, &self.context.queue, &packet);
+                pass.execute(
+                    &self.context.device,
+                    &self.context.queue,
+                    encoder,
+                    target_view,
+                    None,
+                    None,
+                    &packet,
+                );
+            }
+
+            self.frame_builder.reclaim(packet);
+            return;
+        }
+
         // ── Flat2D fast path ───────────────────────────────────────────────
         if self.mode == RendererMode::Flat2D {
+
             self.ui_pass.prepare(&self.context.device, &self.context.queue, &packet);
             self.ui_pass.execute(
                 &self.context.device,
                 &self.context.queue,
                 encoder,
-                view,
+                target_view,
                 None,
                 None,
                 &packet,
@@ -973,7 +1188,7 @@ impl Renderer {
                     &self.context.device,
                     &self.context.queue,
                     encoder,
-                    view,
+                    target_view,
                     None,
                     None,
                     &packet,
@@ -1089,9 +1304,18 @@ impl Renderer {
             RenderStyle::CelShaded { toon_levels, outline_width } => {
                 let toon_levels = *toon_levels;
                 let outline_width = *outline_width;
-                packet.insert(crate::passes::CelFrameData { light: self.current_dir_light, toon_levels, outline_width });
+                packet.insert(crate::passes::CelFrameData {
+                    light: self.current_dir_light,
+                    toon_levels,
+                    outline_width,
+                });
                 if outline_width > 0.0 {
-                    packet.insert(crate::passes::OutlineFrameData { light: self.current_dir_light, toon_levels, outline_width, color: [0.0, 0.0, 0.0, 1.0] });
+                    packet.insert(crate::passes::OutlineFrameData {
+                        light: self.current_dir_light,
+                        toon_levels,
+                        outline_width,
+                        color: [0.0, 0.0, 0.0, 1.0],
+                    });
                 }
                 if let Some(p) = &mut self.cel_pass {
                     p.prepare(&self.context.device, &self.context.queue, &packet);
@@ -1190,7 +1414,7 @@ impl Renderer {
                 self.post_process_pass.render(
                     &self.context.device, encoder,
                     &self.world_pass.hdr_texture,
-                    view,
+                    target_view,
                     &self.camera_system.gpu.bind_group,
                 );
             }
@@ -1210,20 +1434,17 @@ impl Renderer {
                     &self.context.device, encoder,
                     aa_view, aa_sampler,
                     &self.world_pass.hdr_texture,
-                    view,
+                    target_view,
                     &self.camera_system.gpu.bind_group,
                 );
             }
         }
 
-        // -- Clear batcher for next frame --
-
-        self.shape_batcher.clear();
 
         // -- 9. Extra Passes ---------------------------------------------------
         for pass in &mut self.extra_passes {
             pass.prepare(&self.context.device, &self.context.queue, &packet);
-            pass.execute(&self.context.device, &self.context.queue, encoder, view, None, None, &packet);
+            pass.execute(&self.context.device, &self.context.queue, encoder, target_view, None, None, &packet);
         }
 
         self.frame_builder.reclaim(packet);
@@ -1271,11 +1492,13 @@ impl Renderer {
             handle,
             desc,
         );
+        self.mark_dirty();
     }
 
     pub fn register_mesh(&mut self, key: &str, mesh: crate::geometry::Mesh) {
         // Unconditional — routes to procedural_mesh_cache (always available).
         crate::renderer_api::register_mesh(&mut self.frame_builder, key, mesh);
+        self.mark_dirty();
     }
 
     pub fn set_clear_color(&mut self, color: wgpu::Color) {
@@ -1285,15 +1508,18 @@ impl Renderer {
             self.mode,
             color,
         );
+        self.mark_dirty();
     }
 
     /// Configure global atmosphere settings (fog and exposure).
     pub fn set_exposure(&mut self, exposure: f32) {
         crate::renderer_api::set_exposure(&mut self.camera_system, &self.context.queue, exposure);
+        self.mark_dirty();
     }
 
     pub fn set_fog(&mut self, color: [f32; 3], density: f32) {
         crate::renderer_api::set_fog(&mut self.camera_system, &self.context.queue, color, density);
+        self.mark_dirty();
     }
 
 
@@ -1313,11 +1539,13 @@ impl Renderer {
             proj,
             proj.inverse(),
         );
+        self.mark_dirty();
     }
 
     pub fn set_font_atlas(&mut self, view: &wgpu::TextureView, sampler: &wgpu::Sampler) {
         #[cfg(feature = "gui")]
         crate::renderer_api::set_font_atlas(&mut self.ui_pass, view, sampler);
+        self.mark_dirty();
     }
 
     pub fn set_directional_light(&mut self, direction: [f32; 3], color: [f32; 3], intensity: f32) {
@@ -1329,13 +1557,16 @@ impl Renderer {
             color,
             intensity,
         );
+        self.mark_dirty();
     }
 
     pub fn add_pass<P: crate::graph::RenderPass + 'static>(&mut self, pass: P) {
         self.extra_passes.push(Box::new(pass));
+        self.mark_dirty();
     }
 
     pub fn camera_mut(&mut self) -> &mut Camera {
+        self.mark_dirty();
         &mut self.camera_system.camera
     }
 
@@ -1345,14 +1576,22 @@ impl Renderer {
     }
 
     /// Push a technical 2D path for rendering this frame. 
-    /// This is the most professional way to draw complex cad-like structures.
+    /// Dibuja un sprite texturizdo en Pure2D mode.
+    ///
+    /// `texture_id` debe obtenerse de `register_sprite_texture()`.
+    /// El sprite se dibujará centrado en la posición del transform.
+    ///
+    /// # Ejemplo
+    /// ```rust,ignore
+    /// let tex_id = renderer.register_sprite_texture(64, 64, &rgba_data);
+    /// renderer.draw_sprite_2d(tex_id, ferrous_2d::render::SpriteInstance { ... });
+    /// ```
+    pub fn draw_sprite_2d(&mut self, texture_id: u32, instance: ferrous_2d::render::SpriteInstance) {
+        self.sprite_batcher_2d.push_sprite(texture_id, instance);
+    }
+
+    /// Dibuja un path 2D (líneas, polígonos) para este frame.
     pub fn draw_2d_path(&mut self, path: &ferrous_2d::components::Path2d) {
-        // We use a temporary ecs-like query simulation or just call the logic directly
-        // But for simplicity, we can just push it to a local list or use the system logic.
-        // Actually, we can just implement a helper that does the same as prepare_paths_system 
-        // but for a single path.
-        
-        let transform = ferrous_2d::components::Transform2d::default(); // Identity for direct draw
         let mut cursor = ferrous_core::glam::Vec2::ZERO;
 
         for cmd in &path.commands {
@@ -1422,6 +1661,12 @@ impl Renderer {
         if !scene.instances.is_empty() {
             self.frame_builder.scene_dirty = true;
         }
+        self.mark_dirty();
+    }
+
+    /// Forces the next frame to completely rebuild from the ECS world.
+    pub fn mark_dirty(&mut self) {
+        self.frame_builder.scene_dirty = true;
     }
 }
 
@@ -1436,6 +1681,7 @@ impl Renderer {
     pub fn draw_line(&mut self, start: ferrous_core::glam::Vec3, end: ferrous_core::glam::Vec3, color: Color) {
         let [r, g, b, _] = color.to_array();
         self.debug_lines.push(DebugLine { start, end, color: [r, g, b] });
+        self.mark_dirty();
     }
 
     pub fn viewport_size(&self) -> ferrous_core::glam::Vec2 {
@@ -1452,5 +1698,94 @@ impl Renderer {
             self.width,
             self.height,
         ));
+    }
+
+    /// Registra una textura RGBA8 para uso en sprites 2D (Pure2D mode).
+    ///
+    /// Devuelve un `texture_id` (u32) que debe asignarse a `Sprite::texture_id`.
+    ///
+    /// El sampler usa `FilterMode::Nearest` por defecto para pixel-art perfecto.
+    /// Para texturas de alta resolución con suavizado, usa `register_sprite_texture_linear`.
+    pub fn register_sprite_texture(&mut self, width: u32, height: u32, data: &[u8]) -> u32 {
+        self.register_sprite_texture_inner(width, height, data, wgpu::FilterMode::Nearest)
+    }
+
+    /// Igual que `register_sprite_texture` pero con filtro bilineal (para sprites HD).
+    pub fn register_sprite_texture_linear(&mut self, width: u32, height: u32, data: &[u8]) -> u32 {
+        self.register_sprite_texture_inner(width, height, data, wgpu::FilterMode::Linear)
+    }
+
+    fn register_sprite_texture_inner(
+        &mut self,
+        width: u32,
+        height: u32,
+        data: &[u8],
+        filter: wgpu::FilterMode,
+    ) -> u32 {
+        use wgpu::util::DeviceExt;
+
+        let texture = self.context.device.create_texture_with_data(
+            &self.context.queue,
+            &wgpu::TextureDescriptor {
+                label: Some("Sprite2D Texture"),
+                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            data,
+        );
+
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = self.context.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Sprite2D Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: filter,
+            min_filter: filter,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        let bind_group = std::sync::Arc::new(self.context.device.create_bind_group(
+            &wgpu::BindGroupDescriptor {
+                label: Some("Sprite2D Bind Group"),
+                layout: &self.renderer_2d_pure.pipeline.texture_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
+                ],
+            },
+        ));
+
+        let id = self.next_sprite_texture_id;
+        self.sprite_bind_groups.insert(id, bind_group);
+        self.next_sprite_texture_id += 1;
+        id
+    }
+
+    /// Libera una textura de sprite previamente registrada.
+    ///
+    /// Las entidades `Sprite` que referencien este `texture_id` dejarán de renderizarse.
+    pub fn free_sprite_texture(&mut self, texture_id: u32) {
+        self.sprite_bind_groups.remove(&texture_id);
+    }
+
+    /// Clears 2D batchers (shapes and sprites). Call this at the start of every frame
+    /// to avoid "ghosting" (accumulation of shapes).
+    pub fn clear_2d(&mut self) {
+        self.shape_batcher.clear();
+        self.sprite_batcher_2d.clear();
     }
 }

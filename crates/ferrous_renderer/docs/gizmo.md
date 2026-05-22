@@ -9,7 +9,7 @@ and how the renderer fits into the three-crate gizmo architecture.
 The gizmo system draws editor handles (translate arrows, plane squares)
 as coloured line segments on top of the 3-D scene.  The renderer is
 responsible only for **drawing**; all interaction logic (picking, dragging,
-style customisation) lives in `ferrous_app::AppContext::update_gizmo`.
+style customisation) lives in `ferrous_engine::AppContext::update_gizmo`.
 
 ---
 
@@ -252,6 +252,6 @@ small cube cap.
 ## See also
 
 - [`ferrous_core::scene::gizmo`](../../../ferrous_core/src/scene/gizmo.rs) — `GizmoState`, `GizmoStyle`, all enums
-- [`ferrous_app::context::update_gizmo`](../../../ferrous_app/src/context.rs) — picking + drag API
+- [`ferrous_engine::context::update_gizmo`](../../../ferrous_app/src/context.rs) — picking + drag API
 - [`extending/new_pipeline.md`](extending/new_pipeline.md) — how to add a new wgpu pipeline
 - [`flowmaps/gizmo.md`](../../../../flowmaps/gizmo.md) — full system-level flow diagrams

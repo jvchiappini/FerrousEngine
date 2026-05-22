@@ -47,6 +47,18 @@ fn vs_main(
     var out: VertexOutput;
 
     let model_mat   = instances[instance_idx];
+    let is_screen_space = abs(model_mat[2][3] - 55.5) < 0.1;
+    
+    var col0 = model_mat[0];
+    var col1 = model_mat[1];
+    var col2 = model_mat[2];
+    var col3 = model_mat[3];
+
+    if (is_screen_space) {
+        col2.w = 0.0; // clear flag
+        col3.w = 1.0; // ensure correct perspective division
+    }
+    let model_clean = mat4x4<f32>(col0, col1, col2, col3);
 
     // Derive the normal matrix as the transpose of the inverse of the upper-
     // left 3×3.  For uniform-scale objects this equals the model matrix, but
@@ -56,18 +68,22 @@ fn vs_main(
         model_mat[1].xyz,
         model_mat[2].xyz,
     );
-    // Approximation: use the same mat3 for normals (correct for rigid bodies).
-    // A full inverse-transpose would require determinant; skip for performance.
     let normal_mat3 = m3;
 
-    let world_pos4  = model_mat * vec4<f32>(in.position, 1.0);
-    out.clip_pos    = camera.view_proj * world_pos4;
+    let world_pos4  = model_clean * vec4<f32>(in.position, 1.0);
+    
+    if (is_screen_space) {
+        // CULL it! ScreenSpace UI overlays should not be in the SSAO normal-depth prepass
+        // By setting Z >= 1.0 or W <= 0.0, wgpu will cull the triangle.
+        out.clip_pos    = vec4<f32>(0.0, 0.0, 2.0, 1.0);
+        out.view_pos    = vec3<f32>(0.0, 0.0, -0.01);
+    } else {
+        out.clip_pos    = camera.view_proj * world_pos4;
+        out.view_pos    = (camera.view * world_pos4).xyz;
+    }
 
     let world_normal = normalize(normal_mat3 * in.normal);
     out.view_normal  = normalize((camera.view * vec4<f32>(world_normal, 0.0)).xyz);
-
-    let view_pos4   = camera.view * world_pos4;
-    out.view_pos    = view_pos4.xyz;
 
     return out;
 }

@@ -1,6 +1,6 @@
 //! `EditorApp::run_setup` — populates the PBR test scene on app start.
 
-use ferrous_app::{AppContext, Color, DirectionalLight, OrbitCamera, Vec3};
+use ferrous_engine::{AppContext, Color, DirectionalLight, OrbitCamera, Vec3};
 use ferrous_core::scene::{AlphaMode, ElementKind, MaterialDescriptor};
 use glam::Quat;
 
@@ -124,7 +124,7 @@ impl EditorApp {
             r"C:\Users\jvchi\CARPETAS\FerrousEngine\assets\models\DamagedHelmet.glb";
         if std::path::Path::new(test_model).exists() {
             if let Ok(handles) =
-                ferrous_app::spawn_gltf(&mut ctx.world, ctx.render.renderer_mut(), test_model)
+                ferrous_engine::spawn_gltf(&mut ctx.world, ctx.render.renderer_mut(), test_model)
             {
                 log::info!("spawned {} meshes from {}", handles.len(), test_model);
                 for h in &handles {
@@ -138,7 +138,7 @@ impl EditorApp {
             for p in &["model.gltf", "model.glb"] {
                 if std::path::Path::new(p).exists() {
                     if let Ok(handles) =
-                        ferrous_app::spawn_gltf(&mut ctx.world, ctx.render.renderer_mut(), p)
+                        ferrous_engine::spawn_gltf(&mut ctx.world, ctx.render.renderer_mut(), p)
                     {
                         log::info!("spawned {} meshes from {}", handles.len(), p);
                     } else {

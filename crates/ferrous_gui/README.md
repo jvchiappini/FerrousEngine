@@ -23,7 +23,7 @@ Check out our comprehensive [Architecture and Getting Started Guide](docs/README
 ## Basic Example
 
 ```rust
-use ferrous_app::{App, AppContext, FerrousApp};
+use ferrous_engine::{App, AppContext, FerrousApp};
 use ferrous_gui::{UiTree, Button, Style, Units};
 
 struct MyBuilder {

@@ -172,6 +172,8 @@ pub const AO_TEX: u32 = 1 << 4;
 
 // non-texture flag: alpha masking
 pub const FLAG_ALPHA_MASK: u32 = 1 << 5;
+// flag for unlit / flat shaded
+pub const FLAG_UNLIT: u32 = 1 << 6;
 
 impl Default for MaterialUniformPbr {
     fn default() -> Self {
@@ -243,6 +245,10 @@ impl Material {
         if let ferrous_core::scene::AlphaMode::Mask { cutoff } = desc.alpha_mode {
             flags |= FLAG_ALPHA_MASK;
             alpha_cutoff = cutoff;
+        }
+
+        if desc.style_override == Some(ferrous_core::scene::RenderStyle::FlatShaded) {
+            flags |= FLAG_UNLIT;
         }
 
         let mut uniform = MaterialUniformPbr::default();

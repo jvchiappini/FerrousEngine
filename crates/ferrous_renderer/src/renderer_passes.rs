@@ -125,7 +125,7 @@ impl RendererPasses {
         self.camera_system.sync_gpu(&self.context.queue);
 
         let camera_packet = CameraPacket {
-            view_proj: self.camera_system.camera.build_view_projection_matrix(),
+            view_proj: self.camera_system.view_proj(),
             eye: self.camera_system.camera.eye,
         };
         let (mut packet, stats) = self.frame_builder.build(self.viewport, camera_packet);
@@ -540,7 +540,7 @@ impl RendererPasses {
 
         // 1. Build frustum from current camera
         let camera_packet = crate::graph::frame_packet::CameraPacket {
-            view_proj: self.camera_system.camera.build_view_projection_matrix(),
+            view_proj: self.camera_system.view_proj(),
             eye: self.camera_system.camera.eye,
         };
         let frustum = Frustum::from_view_proj(&camera_packet.view_proj);
@@ -549,15 +549,19 @@ impl RendererPasses {
         {
             let world_pass_ref = &mut self.world_pass;
             let prepass_ref = &mut self.prepass;
+            let vp = self.viewport;
+            let vp_mat = camera_packet.view_proj;
             self.frame_builder.build_world_commands(
                 world,
                 &self.context.device,
                 &frustum,
                 self.camera_system.camera.eye,
+                vp_mat,
+                vp,
                 &mut self.instance_buf,
                 &self.instance_layout,
                 &mut self.shadow_instance_buf,
-                &mut |bg, shadow_bg| {
+                &mut |bg: std::sync::Arc<wgpu::BindGroup>, shadow_bg: std::sync::Arc<wgpu::BindGroup>| {
                     world_pass_ref.set_instance_buffer(bg.clone());
                     world_pass_ref.set_shadow_instance_buffer(shadow_bg);
                     prepass_ref.set_instance_buffer(bg);

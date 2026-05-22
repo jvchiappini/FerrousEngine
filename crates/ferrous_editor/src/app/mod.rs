@@ -15,11 +15,11 @@ mod update;
 
 pub use types::EditorApp;
 
-use ferrous_app::{App, AppContext, Color, DrawContext, FerrousApp};
+use ferrous_engine::{App, AppContext, Color, DrawContext, FerrousApp};
 use ferrous_gui::{Button, RectOffset, Slider, Style, Units, ViewportWidget};
 
 impl FerrousApp for EditorApp {
-    fn configure_ui(&mut self, ui: &mut ferrous_gui::UiTree<Self>) {
+    fn configure_ui(&mut self, ui: &mut ferrous_gui::UiSystem<Self>) {
         use ferrous_gui::{Button, Slider, Style, Units, ViewportWidget};
 
         // Botón "Add Cube"
@@ -29,8 +29,8 @@ impl FerrousApp for EditorApp {
                 ctx.app.button_was_pressed = true;
             },
         );
-        let add_id = ui.add_node(Box::new(add_btn), None);
-        ui.set_node_style(
+        let add_id = ui.tree.add_node(Box::new(add_btn), None);
+        ui.tree.set_node_style(
             add_id,
             Style {
                 margin: RectOffset {
@@ -62,8 +62,8 @@ impl FerrousApp for EditorApp {
                 }
             },
         );
-        let bench_id = ui.add_node(Box::new(bench_btn), None);
-        ui.set_node_style(
+        let bench_id = ui.tree.add_node(Box::new(bench_btn), None);
+        ui.tree.set_node_style(
             bench_id,
             Style {
                 margin: RectOffset {
@@ -80,8 +80,8 @@ impl FerrousApp for EditorApp {
 
         // Viewport 3D
         let viewport = ViewportWidget::new();
-        let viewport_id = ui.add_node(Box::new(viewport), None);
-        ui.set_node_style(
+        let viewport_id = ui.tree.add_node(Box::new(viewport), None);
+        ui.tree.set_node_style(
             viewport_id,
             Style {
                 size: (Units::Percentage(100.0), Units::Percentage(100.0)),
@@ -97,32 +97,32 @@ impl FerrousApp for EditorApp {
                 ctx.app.cube_size.x = val;
             },
         );
-        self.slider_w = Some(ui.add_node(Box::new(slider_w), None));
+        self.slider_w = Some(ui.tree.add_node(Box::new(slider_w), None));
 
         let slider_h = Slider::new(1.0, 0.1, 5.0).on_change(
             |ctx: &mut ferrous_gui::EventContext<'_, EditorApp>, val| {
                 ctx.app.cube_size.y = val;
             },
         );
-        self.slider_h = Some(ui.add_node(Box::new(slider_h), None));
+        self.slider_h = Some(ui.tree.add_node(Box::new(slider_h), None));
 
         let slider_d = Slider::new(1.0, 0.1, 5.0).on_change(
             |ctx: &mut ferrous_gui::EventContext<'_, EditorApp>, val| {
                 ctx.app.cube_size.z = val;
             },
         );
-        self.slider_d = Some(ui.add_node(Box::new(slider_d), None));
+        self.slider_d = Some(ui.tree.add_node(Box::new(slider_d), None));
 
         // ... etc (simplificado para el ejemplo)
-        self.inspector.configure_ui(ui);
-        self.light_panel.configure_ui(ui);
+        self.inspector.configure_ui(&mut ui.tree);
+        self.light_panel.configure_ui(&mut ui.tree);
     }
 
-    fn setup(&mut self, ctx: &mut AppContext) {
+    fn setup(&mut self, ctx: &mut AppContext<'_>) {
         self.run_setup(ctx);
     }
 
-    fn update(&mut self, ctx: &mut AppContext) {
+    fn update(&mut self, ctx: &mut AppContext<'_>) {
         self.run_update(ctx);
     }
 
@@ -130,12 +130,12 @@ impl FerrousApp for EditorApp {
         self.run_draw_ui(dc);
     }
 
-    fn draw_3d(&mut self, ctx: &mut AppContext) {
+    fn draw_3d(&mut self, ctx: &mut AppContext<'_>) {
         self.run_draw_3d(ctx);
     }
 
-    fn on_resize(&mut self, new_size: (u32, u32), ctx: &mut AppContext) {
-        self.run_on_resize(new_size, ctx);
+    fn on_resize(&mut self, _new_size: (u32, u32), ctx: &mut AppContext<'_>) {
+        self.run_on_resize(_new_size, ctx);
     }
 }
 

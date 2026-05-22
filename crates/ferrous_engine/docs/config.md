@@ -45,7 +45,7 @@ preset = "high"         # "low" | "medium" | "high" | "ultra"
 The same settings are available programmatically as fields on `AppConfig`:
 
 ```rust
-use ferrous_app::{App, AppConfig, Color};
+use ferrous_engine::{App, AppConfig, Color};
 use ferrous_renderer::RenderStyle;
 
 let config = AppConfig {

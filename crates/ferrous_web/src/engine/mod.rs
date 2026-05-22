@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use js_sys::Function;
 use wasm_bindgen::prelude::*;
-use ferrous_app::{App, Color};
+use ferrous_engine::{App, Color};
 
 use crate::commands::JsCommand;
 use crate::config::{EngineConfig, EngineMetrics};
@@ -28,7 +28,10 @@ impl FerrousWebEngine {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         let version = env!("CARGO_PKG_VERSION");
+        #[cfg(target_arch = "wasm32")]
         web_sys::console::info_1(&JsValue::from_str(&format!("[FerrousWeb] engine ctor v{}", version)));
+        #[cfg(not(target_arch = "wasm32"))]
+        log::info!("[FerrousWeb] engine ctor v{}", version);
 
         use std::sync::Once;
         static SET_HOOK: Once = Once::new();
@@ -44,7 +47,10 @@ impl FerrousWebEngine {
                     location
                 );
                 
+                #[cfg(target_arch = "wasm32")]
                 web_sys::console::error_1(&wasm_bindgen::JsValue::from_str(&format!("[Ferrous-Panic] {}", error_json)));
+                #[cfg(not(target_arch = "wasm32"))]
+                log::error!("[Ferrous-Panic] {}", error_json);
             }));
         });
 
@@ -68,7 +74,10 @@ impl FerrousWebEngine {
     #[wasm_bindgen(js_name = mountAndRun)]
     pub fn mount_and_run(&self) -> Result<(), JsValue> {
         let version = env!("CARGO_PKG_VERSION");
+        #[cfg(target_arch = "wasm32")]
         web_sys::console::info_1(&JsValue::from_str(&format!("[FerrousWeb] mountAndRun 41.0 v{}", version)));
+        #[cfg(not(target_arch = "wasm32"))]
+        log::info!("[FerrousWeb] mountAndRun 41.0 v{}", version);
 
         let runtime = WebRuntime::new(
             self.command_queue.clone(),
@@ -89,7 +98,7 @@ impl FerrousWebEngine {
             .with_font_bytes(FONT_BYTES)
             .with_render_quality(ferrous_core::RenderQuality::Low)
             .with_msaa(1)
-            .with_mode(ferrous_app::AppMode::Game3D)
+            .with_mode(ferrous_engine::AppMode::Game3D)
             .run();
 
         Ok(())

@@ -205,7 +205,7 @@ impl<'a> AppContext<'a> {
     ///
     /// # Example
     /// ```rust,ignore
-    /// use ferrous_app::WindowResizeDirection;
+    /// use ferrous_engine::WindowResizeDirection;
     ///
     /// fn update(&mut self, ctx: &mut AppContext) {
     ///     let (mx, my) = ctx.input.mouse_pos_f32();

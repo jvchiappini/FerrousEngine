@@ -180,11 +180,80 @@ pub enum ElementKind {
         bevel_size: f32,
         quality: u8,
     },
-}
 
+    // ── v9: 2D Vectorial Math Geometry (XY plane, z = 0) ────────────────────
+    // These shapes are *3D objects* placed in the world — they share the
+    // Z-buffer, rotate with the camera, and can project shadows via
+    // the `ShadowCaster` marker component.  They use `RenderStyle::FlatShaded`
+    // (Unlit) by default so their color comes purely from `base_color`.
+
+    /// Filled circle disc in the XY plane.
+    /// `radius` — disc radius in world units.
+    /// `resolution` — number of tessellated segments (minimum 4).
+    Circle2D {
+        radius: f32,
+        resolution: u32,
+    },
+
+    /// Axis-aligned filled rectangle in the XY plane.
+    /// `width` — full width along X.
+    /// `height` — full height along Y.
+    Rect2D {
+        width: f32,
+        height: f32,
+    },
+
+    /// Thick line segment in the XY plane.
+    /// Endpoints are in entity-local space (offset is applied via Transform).
+    /// `thickness` — stroke width in world units.
+    Line2D {
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        thickness: f32,
+    },
+
+    /// v13: Complex vector path based on `PathData` component.
+    Path,
+}
 
 impl ferrous_ecs::prelude::Component for ElementKind {}
 
+// ── v10: Overlays ────────────────────────────────────────────────────────────
+
+/// When attached to an entity, causes it to bypass 3D perspective projection
+/// and be rendered via an orthographic screen-space overlay pass.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ScreenSpace;
+
+impl ferrous_ecs::prelude::Component for ScreenSpace {}
+
+// ── v13: Mathematical Animation & Paths ──────────────────────────────────────
+
+/// Component for 2D depth sorting (Painter's Algorithm).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ZIndex(pub i32);
+
+impl ferrous_ecs::prelude::Component for ZIndex {}
+
+/// A single instruction in a 2D Bézier path.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum PathCommand {
+    MoveTo(glam::Vec2),
+    LineTo(glam::Vec2),
+    /// Cubic Bézier curve: control1, control2, end_point.
+    CubicTo(glam::Vec2, glam::Vec2, glam::Vec2),
+    Close,
+}
+
+/// Component storing a collection of 2D path commands.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PathData {
+    pub commands: Vec<PathCommand>,
+}
+
+impl ferrous_ecs::prelude::Component for PathData {}
 
 // ── Element ──────────────────────────────────────────────────────────────────
 
@@ -196,10 +265,16 @@ pub struct Element {
     pub material: MaterialComponent,
     pub kind: ElementKind,
     pub visible: bool,
+    pub screen_space: bool, // v10: Direct flag for reliably bypassing 3D camera
     pub tags: Vec<String>,
     #[serde(skip)]
     pub render_handle: Option<usize>,
     pub point_light: Option<PointLightComponent>,
+
+    // v13: Professional 2D Styling
+    pub fill_color: Option<[f32; 4]>,
+    pub stroke_color: Option<[f32; 4]>,
+    pub stroke_thickness: f32,
 }
 
 impl Component for Element {}
@@ -213,9 +288,13 @@ impl Element {
             material: MaterialComponent::default(),
             kind: ElementKind::default(),
             visible: true,
+            screen_space: false,
             tags: Vec::new(),
             render_handle: None,
             point_light: None,
+            fill_color: Some([1.0, 1.0, 1.0, 1.0]),
+            stroke_color: None,
+            stroke_thickness: 0.0,
         }
     }
 }

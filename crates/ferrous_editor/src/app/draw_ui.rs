@@ -1,6 +1,6 @@
 //! `EditorApp::run_draw_ui` — HUD text, material inspector, light panel.
 
-use ferrous_app::DrawContext;
+use ferrous_engine::DrawContext;
 use ferrous_core::scene::{Axis, GizmoMode};
 
 use super::types::{BenchmarkState, EditorApp, BENCHMARK_BATCH, BENCHMARK_MIN_FPS};
@@ -94,7 +94,7 @@ impl EditorApp {
 
             if self.gizmo.mode == GizmoMode::Rotate {
                 let off = self.gizmo.pivot_offset;
-                let piv_str = if off == ferrous_app::Vec3::ZERO {
+                let piv_str = if off == ferrous_engine::Vec3::ZERO {
                     "Pivot: origin  [P] move".to_string()
                 } else {
                     format!("Pivot offset ({:.2},{:.2},{:.2})  [P]", off.x, off.y, off.z)

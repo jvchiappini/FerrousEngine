@@ -6,7 +6,7 @@ pattern**: chain `with_*` methods to configure the window and renderer, then
 call `.run()` to start the event loop (which blocks until the window is closed).
 
 ```rust
-use ferrous_app::{App, Color};
+use ferrous_engine::{App, Color};
 
 fn main() {
     App::new(MyApp::default())

@@ -77,7 +77,7 @@ impl EntityRecord {
 ///
 /// Free slots are stored in a LIFO stack so that recently freed indices get
 /// reused quickly, keeping the working-set small.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct EntityAllocator {
     records: Vec<EntityRecord>,
     free: Vec<u32>,

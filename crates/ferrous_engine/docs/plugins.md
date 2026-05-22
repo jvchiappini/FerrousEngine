@@ -5,7 +5,7 @@ a single `FerrousApp` struct, you compose **plugins** — each plugin registers
 systems, modifies config, or adds render passes.
 
 ```rust
-use ferrous_app::{AppBuilder, DefaultPlugins, Plugin};
+use ferrous_engine::{AppBuilder, DefaultPlugins, Plugin};
 
 fn main() {
     AppBuilder::new()
@@ -108,8 +108,8 @@ Equivalent to registering: `CorePlugin`, `WindowPlugin`, `InputPlugin`,
 ### Customising `RendererPlugin`
 
 ```rust
-use ferrous_app::{AppBuilder, RendererPlugin, DefaultPlugins};
-use ferrous_app::RenderStyle;
+use ferrous_engine::{AppBuilder, RendererPlugin, DefaultPlugins};
+use ferrous_engine::RenderStyle;
 
 AppBuilder::new()
     .add_plugin(DefaultPlugins)

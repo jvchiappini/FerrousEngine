@@ -123,7 +123,7 @@ hovering a resize edge/corner you drew with `ferrous_gui`.  The OS takes over
 the rest of the interaction — no mouse-delta tracking needed.
 
 ```rust
-use ferrous_app::WindowResizeDirection;
+use ferrous_engine::WindowResizeDirection;
 
 // Typical 8-zone hit test (8 px edge zone)
 fn resize_direction(mx: f32, my: f32, w: u32, h: u32) -> Option<WindowResizeDirection> {

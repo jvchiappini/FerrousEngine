@@ -7,7 +7,7 @@ edition = "2021"
 ferrous_core = { path = "../ferrous_core" }
 ferrous_gui = { path = "../ferrous_gui" }
 ferrous_assets = { path = "../ferrous_assets" }
-ferrous_app = { path = "../ferrous_app" }
+ferrous_engine = { path = "../ferrous_engine" }
 rand = "0.8"
 glam = "0.29"
 

@@ -52,3 +52,64 @@ impl FrameExporter for ImageFolderExporter {
         }
     }
 }
+
+/// [ENG-API-04] Direct-to-video exporter using FFmpeg.
+/// Pipes raw RGBA buffers into a spawned ffmpeg process for high-performance
+/// headless video generation.
+pub struct FFmpegExporter {
+    process: std::process::Child,
+}
+
+impl FFmpegExporter {
+    /// Spawns a new ffmpeg process configured to receive raw RGBA8 frames.
+    pub fn new<P: AsRef<std::path::Path>>(
+        output_path: P,
+        width: u32,
+        height: u32,
+        fps: u32,
+    ) -> Result<Self, String> {
+        use std::process::{Command, Stdio};
+
+        let child = Command::new("ffmpeg")
+            .args([
+                "-y",                   // Overwrite existing file
+                "-f", "rawvideo",       // Input format
+                "-pixel_format", "rgba",
+                "-video_size", &format!("{}x{}", width, height),
+                "-framerate", &fps.to_string(),
+                "-i", "-",              // Read from stdin
+                "-c:v", "libx264",      // Use H.264 codec
+                "-pix_fmt", "yuv420p",  // Compatible pixel format for most players
+                "-preset", "veryfast",  // Balance speed/compression
+                output_path.as_ref().to_str().unwrap(),
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Failed to start FFmpeg: {}. Ensure ffmpeg is in PATH.", e))?;
+
+        Ok(Self { process: child })
+    }
+
+    /// Finishes the process and waits for encoding to complete.
+    pub fn finish(mut self) -> Result<(), String> {
+        // Drop stdin to signal EOF to ffmpeg
+        drop(self.process.stdin.take());
+        let status = self.process.wait().map_err(|e| e.to_string())?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("FFmpeg failed with exit code: {:?}", status.code()))
+        }
+    }
+}
+
+impl FrameExporter for FFmpegExporter {
+    fn push_frame(&mut self, rgba_data: &[u8], _width: u32, _height: u32) -> Result<(), String> {
+        use std::io::Write;
+        let stdin = self.process.stdin.as_mut().ok_or("FFmpeg stdin not available")?;
+        stdin.write_all(rgba_data).map_err(|e| format!("Pipe error: {}", e))?;
+        Ok(())
+    }
+}

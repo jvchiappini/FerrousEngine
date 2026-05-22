@@ -28,6 +28,7 @@ Thumbs.db
 # Ignore generated documentation site (built by CI)
 /site/
 /docs/
+/brain/
 
 
 # Ignore compiled binaries

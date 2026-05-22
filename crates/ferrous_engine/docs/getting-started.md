@@ -36,7 +36,7 @@ Your application is any struct that implements
 
 ```rust
 // src/main.rs
-use ferrous_app::{App, AppContext, Color, FerrousApp, KeyCode};
+use ferrous_engine::{App, AppContext, Color, FerrousApp, KeyCode};
 use ferrous_assets::Font;
 use ferrous_gui::{Button, GuiBatch, Slider, TextBatch, Ui};
 

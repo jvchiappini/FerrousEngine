@@ -86,11 +86,20 @@ fn vs_main(
     vert: VertexInput,
     @builtin(instance_index) idx: u32,
 ) -> VertexOutput {
-    let model     = instances[idx];
+    var model = instances[idx];
+    let is_screen_space = abs(model[0][3]) > 0.5;
+    if (is_screen_space) {
+        model[0][3] = 0.0;
+    }
+    
     let world_pos = model * vec4<f32>(vert.position, 1.0);
 
     var out: VertexOutput;
-    out.clip_pos  = camera.view_proj * world_pos;
+    if (is_screen_space) {
+        out.clip_pos = world_pos;
+    } else {
+        out.clip_pos  = camera.view_proj * world_pos;
+    }
     out.world_pos = world_pos.xyz;
     out.uv        = vert.uv;
     out.color     = vert.color;
@@ -101,32 +110,10 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // Derive a face-flat normal from screen-space derivatives of world position.
-    // `dpdx` / `dpdy` give the rate of change of `world_pos` across a 2×2 pixel
-    // quad; the cross product of these two tangents is the face normal.
-    let dx = dpdx(in.world_pos);
-    let dy = dpdy(in.world_pos);
-    let face_normal = normalize(cross(dx, dy));
-
-    // sample base colour
-    let albedo_tex = textureSampleLevel(tex_albedo, mat_sampler, in.uv, 0.0);
-    let base = material.base_color * albedo_tex * in.color;
-
-    // alpha discard (FLAG_ALPHA_MASK = 1)
-    if (material.flags & 1u) != 0u {
-        if base.a < material.alpha_cutoff { discard; }
-    }
-
-    // Lambertian diffuse
-    let l       = normalize(-dir_light.direction);
-    let n_dot_l = max(dot(face_normal, l), 0.0);
-    let ambient = dir_light.color * 0.15;
-    let diffuse = dir_light.color * dir_light.intensity * n_dot_l;
-
-    let lit = base.rgb * (ambient + diffuse);
-
-    // emissive additive
+    // Standard albedo + emissive for unlit look
+    let base = material.base_color * in.color;
     let emissive = material.emissive.rgb * material.emissive.w;
-
-    return vec4<f32>(lit + emissive, base.a);
+    
+    // Final output (ignoring lighting and derivatives to ensure 2D consistency)
+    return vec4<f32>(base.rgb + emissive, base.a);
 }

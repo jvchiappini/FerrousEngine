@@ -20,6 +20,7 @@
 //! ```
 
 pub mod animation;
+pub mod animator;
 pub mod behavior;
 pub mod camera;
 pub mod hierarchy;
@@ -29,6 +30,9 @@ pub mod time;
 
 // ── Re-export stage ──────────────────────────────────────────────────────────
 pub use ferrous_ecs::system::Stage;
+
+// ── animator ─────────────────────────────────────────────────────────────────
+pub use animator::{AnimJob, Animator, AnimatorSystem, EasingType};
 
 // ── animation ────────────────────────────────────────────────────────────────
 pub use animation::{AnimationClip, AnimationPlayer, AnimationSystem, Keyframe};

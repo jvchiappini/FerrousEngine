@@ -21,9 +21,9 @@ pub struct Renderer2d {
 }
 
 impl Renderer2d {
-    pub fn new(device: Arc<wgpu::Device>, output_format: wgpu::TextureFormat, sample_count: u32, initial_capacity: u32) -> Self {
-        let pipeline = SpritePipeline::new(device.clone(), output_format, sample_count);
-        let shape_pipeline = ShapePipeline::new(device.clone(), output_format, sample_count);
+    pub fn new(device: Arc<wgpu::Device>, output_format: wgpu::TextureFormat, depth_format: Option<wgpu::TextureFormat>, sample_count: u32, initial_capacity: u32) -> Self {
+        let pipeline = SpritePipeline::new(device.clone(), output_format, depth_format, sample_count);
+        let shape_pipeline = ShapePipeline::new(device.clone(), output_format, depth_format, sample_count);
         
         let max_instances = initial_capacity.max(128);
         
@@ -94,14 +94,14 @@ impl Renderer2d {
         queue.write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&uniform));
     }
 
-    /// Write all batched instances to the GPU Buffer (Resizes if needed)
+    /// Write all batched instances to the GPU Buffer — UN solo write_buffer (máximo rendimiento).
     pub fn prepare(&mut self, queue: &wgpu::Queue, batcher: &SpriteBatcher) -> usize {
         let total_instances: usize = batcher.batches.values().map(|v| v.len()).sum();
         if total_instances == 0 {
             return 0;
         }
 
-        // Check if we need to resize the instance buffer
+        // Redimensionar buffer si es necesario (potencia de 2, amortizado)
         if total_instances > self.max_instances as usize {
             self.max_instances = (total_instances as u32).next_power_of_two();
             self.instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -112,14 +112,14 @@ impl Renderer2d {
             });
         }
 
-        // Upload data consecutively
-        let mut offset = 0;
+        // Consolidar TODOS los datos en un slice contiguo → UN SOLO write_buffer.
+        // Evita N llamadas separadas a la GPU staging queue (una por textura).
+        // Usamos a scratch buffer pre-allocado en el batcher para evitar allocs de heap.
+        let mut flat: Vec<SpriteInstance> = Vec::with_capacity(total_instances);
         for instances in batcher.batches.values() {
-            if instances.is_empty() { continue; }
-            let bytes = bytemuck::cast_slice(instances.as_slice());
-            queue.write_buffer(&self.instance_buffer, offset, bytes);
-            offset += bytes.len() as u64;
+            flat.extend_from_slice(instances.as_slice());
         }
+        queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&flat));
 
         total_instances
     }

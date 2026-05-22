@@ -1,4 +1,5 @@
-use ferrous_app::{AppContext, Color, Quat, Vec3};
+use ferrous_engine::{AppContext, Color};
+use ferrous_core::glam::{Quat, Vec2, Vec3, Vec4};
 use ferrous_core::scene::{ElementKind, SceneBlueprint};
 use crate::commands::JsCommand;
 use crate::runtime::WebRuntime;
@@ -120,16 +121,16 @@ impl CommandDispatcher {
 
             // ── Primitives ───────────────────────────────────────────────────
             JsCommand::CreateSprite2d { name, position, size, z_index, color, texture_id } => {
-                ctx.ecs.spawn((
+                ctx.world.ecs.spawn((
                     ferrous_2d::components::Transform2d {
-                        position: glam::Vec2::new(position[0], position[1]),
-                        scale: glam::Vec2::new(1.0, 1.0),
+                        position: Vec2::new(position[0], position[1]),
+                        scale: Vec2::new(1.0, 1.0),
                         rotation: 0.0,
                         z_index,
                     },
                     ferrous_2d::components::Sprite {
-                        color: glam::Vec4::new(color[0], color[1], color[2], color[3]),
-                        custom_size: Some(glam::Vec2::new(size[0], size[1])),
+                        color: Vec4::new(color[0], color[1], color[2], color[3]),
+                        custom_size: Some(Vec2::new(size[0], size[1])),
                         texture_id,
                         ..Default::default()
                     }
@@ -138,10 +139,10 @@ impl CommandDispatcher {
                 // However, ECS stands alone.
             }
             JsCommand::SetCamera2d { zoom, clear_color } => {
-                ctx.ecs.spawn((
+                ctx.world.ecs.spawn((
                     ferrous_2d::components::Camera2d {
                         zoom,
-                        clear_color: clear_color.map(|c| glam::Vec4::new(c[0], c[1], c[2], c[3])),
+                        clear_color: clear_color.map(|c| Vec4::new(c[0], c[1], c[2], c[3])),
                     },
                 ));
             }
@@ -304,7 +305,7 @@ impl CommandDispatcher {
                 runtime.camera.set_look_sensitivity(sensitivity);
             }
             JsCommand::SetCameraFov { fov_degrees } => {
-                ctx.render.renderer_mut().camera_mut().fovy = fov_degrees.to_radians();
+                ctx.render.renderer_mut().camera_mut().set_fov_degrees(fov_degrees);
             }
 
             // ── Lighting ─────────────────────────────────────────────────────
@@ -354,7 +355,7 @@ impl CommandDispatcher {
                     // Update the ECS component to prevent sync_world from overwriting this!
                     if let Some(entity) = ctx.world.ecs_mapping.get(&handle.0) {
                         if let Some(mut m) = ctx.world.ecs.get_mut::<ferrous_core::scene::Material>(*entity) {
-                            m.base_color = ferrous_app::Color::rgba(r, g, b, 1.0);
+                            m.base_color = ferrous_engine::Color::rgba(r, g, b, 1.0);
                             m.metallic = metallic;
                             m.roughness = roughness;
                             m.clearcoat = clearcoat;

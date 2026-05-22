@@ -1,4 +1,4 @@
-use ferrous_app::AppContext;
+use ferrous_engine::AppContext;
 use ferrous_core::World;
 use wasm_bindgen::prelude::*;
 use js_sys::Function;

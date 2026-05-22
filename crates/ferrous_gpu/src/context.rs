@@ -47,14 +47,27 @@ impl EngineContext {
         instance: wgpu::Instance,
         compatible_surface: Option<&wgpu::Surface<'_>>,
     ) -> anyhow::Result<Self> {
-        let adapter = instance
+        let adapter = match instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface,
                 force_fallback_adapter: false,
             })
             .await
-            .context(ContextError::AdapterUnavailable)?;
+        {
+            Some(a) => a,
+            None => {
+                // Try fallback (software rendering) if hardware is not available
+                instance
+                    .request_adapter(&wgpu::RequestAdapterOptions {
+                        power_preference: wgpu::PowerPreference::LowPower,
+                        compatible_surface,
+                        force_fallback_adapter: true,
+                    })
+                    .await
+                    .context(ContextError::AdapterUnavailable)?
+            }
+        };
 
         let info = adapter.get_info();
         #[cfg(target_arch = "wasm32")]

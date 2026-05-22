@@ -28,7 +28,7 @@ impl FerrousWebEngine {
             color: [r, g, b, a],
             texture_id,
         });
-        JsEntity::new(name, self.tx.clone())
+        JsEntity { name, command_queue: self.command_queue.clone() }
     }
 
     #[wasm_bindgen(js_name = setCamera2d)]

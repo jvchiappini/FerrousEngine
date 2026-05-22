@@ -13,7 +13,7 @@ struct Camera {
     view_proj : mat4x4<f32>,
     eye_pos   : vec3<f32>,
     exposure  : f32,
-    fog_color : vec4<f32>,
+    fog_color : vec3<f32>,
     fog_density: f32,
     ambient_color: vec3<f32>,
     ambient_intensity: f32,
@@ -66,7 +66,7 @@ var tex_ao: texture_2d<f32>;
 struct DirectionalLight {
     direction : vec3<f32>,
     _pad0 : f32,
-    color : vec4<f32>,
+    color : vec3<f32>,
     intensity : f32,
     // extra field populated by the CPU; used by the shadow pass and
     // optionally sampled by the PBR shader to compute shadow coordinates.
@@ -235,6 +235,34 @@ fn fs_main(frag_in: FragmentInput) -> FragmentOutput {
         albedo *= sample.xyz;
         out_alpha *= sample.a;
     }
+
+    // Unlit/FlatShaded bypass
+    if ((material.flags & 64u) != 0u) {
+        let emiss = material.emissive.xyz * material.emissive.w;
+        var final_color = albedo;
+        if ((material.flags & 8u) != 0u) {
+            let sample = textureSampleLevel(tex_emissive, mat_sampler, frag_in.uv, 0.0);
+            final_color += emiss * sample.xyz;
+        } else {
+            final_color += emiss;
+        }
+        
+        let fog_color = camera.fog_color;
+        let dist = length(camera.eye_pos - frag_in.world_pos);
+        let fog_factor = 1.0 - exp(-dist * camera.fog_density);
+        final_color = mix(final_color, fog_color, clamp(fog_factor, 0.0, 1.0));
+        
+        if ((material.flags & 32u) != 0u) {
+            if (out_alpha < material.alpha_cutoff) {
+                discard;
+            }
+        }
+        
+        var out: FragmentOutput;
+        out.frag_color = vec4<f32>(final_color, out_alpha);
+        return out;
+    }
+
     var ao_factor = material.metallic_roughness.z;  // ao_strength
     if ((material.flags & 16u) != 0u) {
         ao_factor = textureSampleLevel(tex_ao, mat_sampler, frag_in.uv, 0.0).x * ao_factor;
@@ -301,7 +329,7 @@ fn fs_main(frag_in: FragmentInput) -> FragmentOutput {
     // energy conservation: kD = 0 for metals (all energy goes to specular)
     let kD = (vec3<f32>(1.0) - F) * (1.0 - metallic);
 
-    let radiance = dir_light.color * dir_light.intensity;
+    let radiance = dir_light.color.xyz * dir_light.intensity;
     // shadow computation using the depth texture rendered earlier from the
     // light's point of view.  We project the world position and compare the
     // stored depth against the fragment's depth to get a visibility factor.
@@ -424,7 +452,7 @@ fn fs_main(frag_in: FragmentInput) -> FragmentOutput {
     let fog_factor = 1.0 - exp(-dist * fog_density);
     
     // Final color with fog
-    color = mix(color, fog_color, clamp(fog_factor, 0.0, 1.0));
+    color = mix(color, fog_color.xyz, clamp(fog_factor, 0.0, 1.0));
 
     // ── No tone mapping or gamma correction here ──────────────────────────
     // This pass writes to a Rgba16Float HDR texture.  Values may exceed 1.0

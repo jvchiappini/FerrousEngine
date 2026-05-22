@@ -1,6 +1,6 @@
 //! `EditorApp::run_update` — per-frame logic, input handling and gizmo hotkeys.
 
-use ferrous_app::{AppContext, Vec3, Viewport};
+use ferrous_engine::{AppContext, Vec3, Viewport};
 use ferrous_core::scene::GizmoMode;
 
 use super::types::{BenchmarkState, EditorApp, BENCHMARK_BATCH, BENCHMARK_MIN_FPS, FPS_WINDOW};
@@ -37,7 +37,7 @@ impl EditorApp {
         }
 
         // Left-click selects last spawned cube when no gizmo is dragging
-        if ctx.input.button_just_pressed(ferrous_app::MouseButton::Left)
+        if ctx.input.button_just_pressed(ferrous_engine::MouseButton::Left)
             && !self.gizmo.dragging
             && !self.pivot_gizmo.dragging
         {
@@ -49,18 +49,18 @@ impl EditorApp {
         }
 
         // Gizmo mode hotkeys
-        if ctx.input.just_pressed(ferrous_app::KeyCode::KeyT) {
+        if ctx.input.just_pressed(ferrous_engine::KeyCode::KeyT) {
             self.gizmo.mode = GizmoMode::Translate;
             self.gizmo.dragging = false;
             self.gizmo.highlighted_axis = None;
             self.show_pivot_gizmo = false;
         }
-        if ctx.input.just_pressed(ferrous_app::KeyCode::KeyR) {
+        if ctx.input.just_pressed(ferrous_engine::KeyCode::KeyR) {
             self.gizmo.mode = GizmoMode::Rotate;
             self.gizmo.dragging = false;
             self.gizmo.highlighted_axis = None;
         }
-        if ctx.input.just_pressed(ferrous_app::KeyCode::KeyP) {
+        if ctx.input.just_pressed(ferrous_engine::KeyCode::KeyP) {
             if self.gizmo.mode == GizmoMode::Rotate {
                 self.show_pivot_gizmo = !self.show_pivot_gizmo;
                 if self.show_pivot_gizmo {
@@ -75,7 +75,7 @@ impl EditorApp {
         }
 
         #[cfg(not(target_arch = "wasm32"))]
-        if ctx.input.just_pressed(ferrous_app::KeyCode::Escape) {
+        if ctx.input.just_pressed(ferrous_engine::KeyCode::Escape) {
             ctx.request_exit();
         }
     }

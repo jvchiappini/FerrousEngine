@@ -120,6 +120,54 @@ impl Camera {
             }
         }
     }
+
+    /// Set 2D orthographic mode (centered at 0,0) or revert to 3D perspective.
+    pub fn set_mode_2d(&mut self, enabled: bool, viewport_height: Option<f32>) {
+        if enabled {
+            // If viewport_height is provided, scale 1 unit = 1 pixel.
+            // Otherwise default logical height of 8.0 (Manim standard)
+            let hh = if let Some(h) = viewport_height { h / 2.0 } else { 4.0 };
+            
+            let aspect = match self.projection {
+                Projection::Perspective { aspect_ratio, .. } => aspect_ratio,
+                Projection::Orthographic { left, right, top, bottom, .. } => (right - left) / (top - bottom),
+            };
+            let hw = hh * aspect;
+
+            self.eye = Vec3::new(0.0, 0.0, 10.0);
+            self.target = Vec3::ZERO;
+            self.up = Vec3::Y;
+            self.projection = Projection::Orthographic {
+                left: -hw,
+                right: hw,
+                bottom: -hh,
+                top: hh,
+                z_near: -100.0,
+                z_far: 100.0,
+            };
+            
+            // v15: Disable controller movement in 2D mode to prevent accidental camera shifts 
+            // that move the origin away from the screen center.
+            self.controller.clear_bindings();
+            self.controller.mouse_sensitivity = 0.0;
+        } else {
+            // Revert to standard 3D perspective camera
+            self.eye = Vec3::new(0.0, 2.0, 5.0);
+            self.target = Vec3::ZERO;
+            self.up = Vec3::Y;
+            let aspect = match self.projection {
+                Projection::Orthographic { left, right, top, bottom, .. } => (right - left) / (top - bottom),
+                _ => 1.0,
+            };
+            self.projection = Projection::Perspective {
+                fov_y_radians: 45.0f32.to_radians(),
+                aspect_ratio: aspect,
+                z_near: 0.1,
+                z_far: 1000.0,
+            };
+            self.controller = Controller::with_default_wasd();
+        }
+    }
 }
 
 // NOTE: the GPU-facing uniform type has been moved to the renderer crate.

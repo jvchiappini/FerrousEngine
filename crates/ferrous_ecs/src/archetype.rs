@@ -178,6 +178,21 @@ impl ComponentColumn {
     }
 }
 
+impl Clone for ComponentColumn {
+    fn clone(&self) -> Self {
+        let mut new_col = ComponentColumn::new(self.info.clone());
+        new_col.reserve(self.len);
+        for row in 0..self.len {
+            unsafe {
+                let dst = new_col.data.add(row * self.info.size);
+                self.clone_into(row, dst);
+            }
+        }
+        new_col.len = self.len;
+        new_col
+    }
+}
+
 impl Drop for ComponentColumn {
     fn drop(&mut self) {
         if self.data.is_null() || self.info.size == 0 {
@@ -201,7 +216,7 @@ impl Drop for ComponentColumn {
 /// Stores all entities that share the same component set.
 ///
 /// Row `i` across all columns corresponds to `entities[i]`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Archetype {
     /// The unique component-set signature for this archetype.
     pub(crate) signature: ComponentSet,
@@ -342,7 +357,7 @@ impl Archetype {
 // ArchetypeStore — the set of all archetypes
 
 /// Manages all archetypes in the world.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ArchetypeStore {
     pub(crate) archetypes: Vec<Archetype>,
     /// Map from `ComponentSet` → archetype index.

@@ -1,4 +1,4 @@
-use ferrous_app::{Handle, RenderStats};
+use ferrous_engine::{AppContext, Color, DrawContext, FerrousApp, Handle, RenderStats, Time, Vec3};
 use ferrous_gui::NodeId;
 
 use crate::ui::{GlobalLightPanel, MaterialInspector};
@@ -54,7 +54,7 @@ pub struct EditorApp {
     pub(super) slider_w: Option<NodeId>,
     pub(super) slider_h: Option<NodeId>,
     pub(super) slider_d: Option<NodeId>,
-    pub(super) cube_size: ferrous_app::Vec3,
+    pub(super) cube_size: ferrous_engine::Vec3,
     /// Active GPU backend name, detected in `setup`.
     pub(super) gpu_backend: String,
     pub(super) selected: Option<Handle>,
@@ -110,7 +110,7 @@ impl Default for EditorApp {
             slider_h: None,
             slider_d: None,
             gpu_backend: String::new(),
-            cube_size: ferrous_app::Vec3::ONE,
+            cube_size: ferrous_engine::Vec3::ONE,
         }
     }
 }

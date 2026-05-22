@@ -1,4 +1,4 @@
-use ferrous_app::{AppContext, Quat, Vec3};
+use ferrous_engine::{AppContext, Quat, Vec3};
 use ferrous_core::input::{KeyCode, MouseButton};
 
 use crate::config::{CameraControlMode, EngineConfig};

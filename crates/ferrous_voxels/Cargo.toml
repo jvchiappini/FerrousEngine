@@ -25,7 +25,7 @@ ferrous_render_graph = { path = "../ferrous_render_graph", optional = true }
 
 [dev-dependencies]
 # hdda_viewer example
-ferrous_app          = { path = "../ferrous_app" }
+ferrous_engine          = { path = "../ferrous_engine" }
 ferrous_render_graph = { path = "../ferrous_render_graph" }
 wgpu                 = { workspace = true }
 log                  = "0.4"

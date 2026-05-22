@@ -38,7 +38,7 @@ to add `ferrous_core`, `ferrous_gui`, or `ferrous_renderer` as direct
 dependencies:
 
 ```rust
-// All usable as `ferrous_app::*`
+// All usable as `ferrous_engine::*`
 pub use ferrous_core::{Color, Handle, InputState, KeyCode, MouseButton,
                        Time, Transform, World, Vec2, Vec3, Vec4, Quat, Mat4,
                        RenderStats, Viewport};

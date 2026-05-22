@@ -21,6 +21,7 @@ use crate::geometry::primitives::{
     cylinder::cylinder as create_cylinder,
     plane::plane as create_plane,
     quad::quad as create_quad,
+    shapes2d::{circle_2d, rect_2d, line_2d, path_to_mesh},
     sphere::sphere as create_sphere,
     torus::torus as create_torus,
 };
@@ -62,6 +63,11 @@ pub struct FrameBuilder {
     pub disc_cache: HashMap<(u32, u32, u32, u32), crate::geometry::Mesh>,
     /// Text3D meshes keyed by (text, depth_bits, bevel_enabled, bevel_thickness_bits, bevel_size_bits, quality).
     pub text3d_cache: HashMap<(String, u32, bool, u32, u32, u8), crate::geometry::Mesh>,
+    ///   Circle2D  → (tag=0, radius, resolution, do_fill, stroke_thickness, 0)
+    ///   Rect2D    → (tag=1, width, height, do_fill, stroke_thickness, 0)
+    ///   Line2D    → (tag=2, x0, y0, x1, y1, thickness)
+    ///   Path      → (tag=3, path_hash, do_fill, stroke_thickness, 0, 0)
+    pub shapes2d_cache: HashMap<(u8, u32, u32, u32, u32, u32), crate::geometry::Mesh>,
     /// Cache of procedurally-generated meshes registered via `register_mesh`.
     /// Always available (no feature gate) so that WASM procedural terrain
     /// and other runtime-generated geometry works without the `assets` feature.
@@ -107,6 +113,7 @@ impl FrameBuilder {
             capsule_cache: HashMap::new(),
             disc_cache: HashMap::new(),
             text3d_cache: HashMap::new(),
+            shapes2d_cache: HashMap::new(),
             procedural_mesh_cache: HashMap::new(),
             #[cfg(feature = "assets")]
             mesh_cache: HashMap::new(),
@@ -140,6 +147,8 @@ impl FrameBuilder {
         device: &wgpu::Device,
         frustum: &Frustum,
         camera_eye: glam::Vec3,
+        camera_vp: glam::Mat4,
+        viewport: crate::Viewport,
         instance_buf: &mut InstanceBuffer,
         instance_layout: &wgpu::BindGroupLayout,
         shadow_instance_buf: &mut InstanceBuffer,
@@ -165,7 +174,7 @@ impl FrameBuilder {
         // Note: procedural_mesh_cache is NOT pruned automatically — caller
         // must call `free_procedural_mesh` explicitly when geometry is freed.
 
-        type MeshGroupKey = (usize, usize, bool);
+        type MeshGroupKey = (usize, usize, bool, i32); // v15: Added Z-Index to grouping key
         type MeshGroupVal = (crate::geometry::Mesh, usize, Vec<glam::Mat4>);
 
         // Visible (camera-culled) groups for main draw pass
@@ -173,9 +182,28 @@ impl FrameBuilder {
         // All-objects groups for shadow pass (no frustum culling)
         let mut shadow_groups: HashMap<MeshGroupKey, MeshGroupVal> = HashMap::new();
         
-        for (_entity, (element, transform, material, shadow_caster, billboard)) in
-            ferrous_ecs::query::Query::<(&Element, &Transform, &MaterialComponent, Option<&ferrous_core::scene::ShadowCaster>, Option<&ferrous_core::scene::Billboard>)>::new(&world.ecs).iter()
+        let mut entities_to_render = Vec::new();
+        let query = ferrous_ecs::query::Query::<(
+                &Element,
+                &Transform,
+                &MaterialComponent,
+                Option<&ferrous_core::scene::ShadowCaster>,
+                Option<&ferrous_core::scene::Billboard>,
+                Option<&ferrous_core::scene::ScreenSpace>,
+                Option<&ferrous_core::scene::world::types::ZIndex>,
+            )>::new(&world.ecs);
+            
+        for (entity, (element, transform, material, shadow_caster, billboard, screen_space, z_index)) in query.iter()
         {
+            entities_to_render.push((entity, element, transform, material, shadow_caster, billboard, screen_space, z_index));
+        }
+
+        // v13: Algorithm of the Painter (Z-Index sorting)
+        // Sort by Z-Index (None = 0)
+        entities_to_render.sort_by_key(|(_, _, _, _, _, _, _, zi)| zi.map(|z| z.0).unwrap_or(0));
+
+        for (_entity, element, transform, material, shadow_caster, billboard, screen_space, z_index) in entities_to_render {
+            // ... (keep the same match block for mesh selection)
             let is_renderable = matches!(
                 element.kind,
                 ElementKind::Cube { .. }
@@ -189,16 +217,32 @@ impl FrameBuilder {
                     | ElementKind::Circle { .. }
                     | ElementKind::Ring { .. }
                     | ElementKind::Text3D { .. }
+                    | ElementKind::Circle2D { .. }
+                    | ElementKind::Rect2D { .. }
+                    | ElementKind::Line2D { .. }
+                    | ElementKind::Path
             );
             if !is_renderable || !element.visible {
                 continue;
             }
 
-            let is_double_sided = if let ElementKind::Quad { double_sided, .. } = element.kind {
-                double_sided
-            } else {
-                false
-            };
+            // The material descriptor dictates if this mesh should be rendered double-sided.
+            // (e.g. 2D shapes, ScreenSpace UIs with inverted Y projections, etc.)
+            let is_double_sided = material.descriptor.double_sided
+                || element.screen_space
+                || screen_space.is_some()
+                || matches!(
+                    element.kind,
+                    ElementKind::Circle2D { .. }
+                        | ElementKind::Rect2D { .. }
+                        | ElementKind::Line2D { .. }
+                        | ElementKind::Path
+                )
+                || if let ElementKind::Quad { double_sided, .. } = element.kind {
+                    double_sided
+                } else {
+                    false
+                };
 
             let mesh = match &element.kind {
                 ElementKind::Cube { .. } => self
@@ -206,11 +250,9 @@ impl FrameBuilder {
                     .get_or_insert_with(|| create_cube(device))
                     .clone(),
                 ElementKind::Mesh { asset_key } => {
-                    // 1. Try unconditional procedural cache first (terrain, runtime geometry)
                     if let Some(m) = self.procedural_mesh_cache.get(asset_key.as_str()) {
                         m.clone()
                     } else {
-                        // 2. Fall back to the asset-file cache when feature is enabled
                         #[cfg(feature = "assets")]
                         {
                             if let Some(m) = self.mesh_cache.get(asset_key.as_str()) {
@@ -223,10 +265,7 @@ impl FrameBuilder {
                         }
                         #[cfg(not(feature = "assets"))]
                         {
-                            // No match in either cache — fall back to a cube placeholder
-                            self.shared_cube_mesh
-                                .get_or_insert_with(|| create_cube(device))
-                                .clone()
+                            continue;
                         }
                     }
                 }
@@ -356,67 +395,110 @@ impl FrameBuilder {
                         })
                         .clone()
                 }
+                ElementKind::Circle2D { radius, resolution } => {
+                    let do_fill = element.fill_color.is_some();
+                    let key = (0u8, radius.to_bits(), *resolution, do_fill as u32, element.stroke_thickness.to_bits(), 0);
+                    self.shapes2d_cache
+                        .entry(key)
+                        .or_insert_with(|| circle_2d(device, *radius, *resolution, do_fill, element.stroke_thickness))
+                        .clone()
+                }
+                ElementKind::Rect2D { width, height } => {
+                    let do_fill = element.fill_color.is_some();
+                    let key = (1u8, width.to_bits(), height.to_bits(), do_fill as u32, element.stroke_thickness.to_bits(), 0);
+                    self.shapes2d_cache
+                        .entry(key)
+                        .or_insert_with(|| rect_2d(device, *width, *height, do_fill, element.stroke_thickness))
+                        .clone()
+                }
+                ElementKind::Line2D { x0, y0, x1, y1, thickness } => {
+                    let key = (2u8, x0.to_bits(), y0.to_bits(), x1.to_bits(), y1.to_bits(), thickness.to_bits());
+                    self.shapes2d_cache
+                        .entry(key)
+                        .or_insert_with(|| line_2d(device, *x0, *y0, *x1, *y1, *thickness))
+                        .clone()
+                }
+                ElementKind::Path => {
+                    if let Some(path_data) = world.ecs.get::<ferrous_core::scene::world::types::PathData>(_entity) {
+                        path_to_mesh(device, path_data, element.fill_color.is_some(), element.stroke_thickness)
+                    } else {
+                        continue;
+                    }
+                }
                 _ => continue,
             };
 
             let mut matrix = transform.matrix();
+            // v15: Apply Z-Index offset to the world matrix. 
+            // This ensures that even if objects are in the same frame and overlap, 
+            // the depth buffer will correctly resolve their ordering based on world-space Z.
+            let zi = z_index.map(|z| z.0).unwrap_or(0);
+            matrix.w_axis.z += zi as f32 * 0.001;
+
             if let Some(bb) = billboard {
+                // ... (billboard logic remains same)
                 use ferrous_core::scene::BillboardMode;
                 let rot = match bb.mode {
                     BillboardMode::Spherical => {
-                        let dir = (camera_eye - transform.position).normalize_or_zero();
-                        if dir.length_squared() < 1e-10 {
+                        let forward = (camera_eye - transform.position).normalize_or_zero();
+                        if forward.length_squared() < 1e-10 {
                             glam::Quat::IDENTITY
                         } else {
-                            glam::Mat4::look_at_rh(transform.position, camera_eye, glam::Vec3::Y)
-                                .to_scale_rotation_translation()
-                                .1
-                                .inverse()
+                            let world_up = if forward.dot(glam::Vec3::Y).abs() > 0.999 { glam::Vec3::Z } else { glam::Vec3::Y };
+                            let right = world_up.cross(forward).normalize();
+                            let up    = forward.cross(right);
+                            glam::Quat::from_mat3(&glam::Mat3::from_cols(right, up, forward))
                         }
                     }
                     BillboardMode::Cylindrical => {
-                        let mut target = camera_eye;
-                        target.y = transform.position.y; // constrain to Y axis
-                        let dir = (target - transform.position).normalize_or_zero();
-                        if dir.length_squared() < 1e-10 {
+                        let mut cam_flat = camera_eye;
+                        cam_flat.y = transform.position.y;
+                        let forward_xz = (cam_flat - transform.position).normalize_or_zero();
+                        if forward_xz.length_squared() < 1e-10 {
                             glam::Quat::IDENTITY
                         } else {
-                            glam::Mat4::look_at_rh(transform.position, target, glam::Vec3::Y)
-                                .to_scale_rotation_translation()
-                                .1
-                                .inverse()
+                            let right = glam::Vec3::Y.cross(forward_xz).normalize();
+                            let up    = forward_xz.cross(right);
+                            glam::Quat::from_mat3(&glam::Mat3::from_cols(right, up, forward_xz))
                         }
                     }
                 };
-                matrix = glam::Mat4::from_scale_rotation_translation(transform.scale, rot, transform.position);
+                matrix = glam::Mat4::from_scale_rotation_translation(transform.scale, rot, transform.position + glam::Vec3::new(0.0, 0.0, zi as f32 * 0.001));
             }
             let material_slot = material.handle.0 as usize;
 
-            // Compute a quick AABB from the matrix for frustum culling
-            let world_aabb = mesh.aabb.transform(&matrix);
-
-            let key = (
-                Arc::as_ptr(&mesh.vertex_buffer) as usize,
-                material_slot,
-                is_double_sided,
-            );
-
-            // Shadow pass — only entities with ShadowCaster
-            if shadow_caster.is_some() {
-                shadow_groups
-                    .entry(key)
-                    .or_insert_with(|| (mesh.clone(), material_slot, Vec::new()))
-                    .2
-                    .push(matrix);
+            if element.screen_space || screen_space.is_some() {
+                let wf = viewport.width as f32;
+                let hf = viewport.height as f32;
+                let ortho = glam::Mat4::orthographic_rh(0.0, wf, hf, 0.0, -1.0, 1.0);
+                let screen_matrix = crate::resources::camera::OPENGL_TO_WGPU_MATRIX * ortho * matrix;
+                let mut col0 = screen_matrix.col(0);
+                let mut col1 = screen_matrix.col(1);
+                let mut col2 = screen_matrix.col(2);
+                let mut col3 = screen_matrix.col(3);
+                col0.z = 0.0; col1.z = 0.0; col2.z = 0.0; col3.z = 0.0;
+                col2.w = 55.5; col3.w = 1.0;
+                matrix = glam::Mat4::from_cols(col0, col1, col2, col3);
+                
+                let key = (Arc::as_ptr(&mesh.vertex_buffer) as usize, material_slot, is_double_sided, zi);
+                visible_groups.entry(key).or_insert_with(|| (mesh.clone(), material_slot, Vec::new())).2.push(matrix);
+                continue;
             }
 
-            // Main pass — frustum culled
-            if frustum.intersects_aabb(&world_aabb) {
-                visible_groups
-                    .entry(key)
-                    .or_insert_with(|| (mesh.clone(), material_slot, Vec::new()))
-                    .2
-                    .push(matrix);
+            let world_aabb = mesh.aabb.transform(&matrix);
+            let key = (Arc::as_ptr(&mesh.vertex_buffer) as usize, material_slot, is_double_sided, zi);
+
+            if shadow_caster.is_some() {
+                shadow_groups.entry(key).or_insert_with(|| (mesh.clone(), material_slot, Vec::new())).2.push(matrix);
+            }
+
+            // v15: For mathematical paths, wait for fill_color directly
+            let is_filled = element.fill_color.is_some();
+            let effective_thick = if element.stroke_thickness > 0.0 { element.stroke_thickness } else { 0.05 };
+            
+            let is_path = matches!(element.kind, ElementKind::Path | ElementKind::Line2D { .. } | ElementKind::Circle2D { .. } | ElementKind::Rect2D { .. });
+            if is_path || true {
+                visible_groups.entry(key).or_insert_with(|| (mesh.clone(), material_slot, Vec::new())).2.push(matrix);
             }
         }
 
@@ -424,30 +506,24 @@ impl FrameBuilder {
         self.world_instanced.clear();
         self.world_instance_matrices.clear();
 
+        let mut sorted_group_keys: Vec<_> = visible_groups.keys().cloned().collect();
+        // v15: Sort groups by Z-Index to respect Painter's Algorithm even across meshes.
+        sorted_group_keys.sort_by_key(|k| k.3);
+
         let total_visible: usize = visible_groups.values().map(|(_, _, m)| m.len()).sum();
         if total_visible > 0 {
             let prev_bg = instance_buf.bind_group.clone();
             instance_buf.reserve(device, instance_layout, total_visible);
             if !Arc::ptr_eq(&prev_bg, &instance_buf.bind_group) {
-                instance_callback(
-                    instance_buf.bind_group.clone(),
-                    shadow_instance_buf.bind_group.clone(),
-                );
+                instance_callback(instance_buf.bind_group.clone(), shadow_instance_buf.bind_group.clone());
             }
 
             let mut offset = 0u32;
-            for ((_ptr, _mat_s, double_sided), (mesh, material_slot, mats)) in &visible_groups {
+            for key in sorted_group_keys {
+                let (mesh, material_slot, mats) = &visible_groups[&key];
+                let double_sided = key.2;
                 let count = mats.len() as u32;
                 self.world_instance_matrices.extend_from_slice(mats);
-
-                let mut max_dist_sq = 0.0f32;
-                for m in mats {
-                    let pos = m.w_axis.truncate();
-                    let d = (pos - camera_eye).length_squared();
-                    if d > max_dist_sq {
-                        max_dist_sq = d;
-                    }
-                }
 
                 self.world_instanced.push(InstancedDrawCommand {
                     vertex_buffer: mesh.vertex_buffer.clone(),
@@ -457,22 +533,18 @@ impl FrameBuilder {
                     index_format: mesh.index_format,
                     first_instance: offset,
                     instance_count: count,
-                    double_sided: *double_sided,
+                    double_sided,
                     material_slot: *material_slot,
-                    distance_sq: max_dist_sq,
+                    distance_sq: 0.0, // Sort by Z-Index replaces distance sorting for 2D
                 });
                 offset += count;
             }
             instance_buf.write_slice(queue, 0, &self.world_instance_matrices);
         } else {
-            // Ensure instance buffer has space even when empty
             let prev_bg = instance_buf.bind_group.clone();
             instance_buf.reserve(device, instance_layout, 1);
             if !Arc::ptr_eq(&prev_bg, &instance_buf.bind_group) {
-                instance_callback(
-                    instance_buf.bind_group.clone(),
-                    shadow_instance_buf.bind_group.clone(),
-                );
+                instance_callback(instance_buf.bind_group.clone(), shadow_instance_buf.bind_group.clone());
             }
         }
 
@@ -492,7 +564,7 @@ impl FrameBuilder {
             }
 
             let mut offset = 0u32;
-            for ((_ptr, _mat_s, double_sided), (mesh, material_slot, mats)) in &shadow_groups {
+            for ((_ptr, _mat_s, double_sided, _zi), (mesh, material_slot, mats)) in &shadow_groups {
                 let count = mats.len() as u32;
                 self.world_shadow_matrices.extend_from_slice(mats);
                 self.world_shadow_instanced.push(InstancedDrawCommand {

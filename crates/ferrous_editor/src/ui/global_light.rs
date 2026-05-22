@@ -13,7 +13,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ferrous_app::AppContext;
+use ferrous_engine::AppContext;
 use ferrous_assets::Font;
 use ferrous_gui::{GuiBatch, Slider, UiTree, Widget, ToBatches};
 use crate::app::types::EditorApp;

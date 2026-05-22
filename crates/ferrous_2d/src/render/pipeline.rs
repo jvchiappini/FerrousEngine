@@ -9,8 +9,8 @@ pub struct SpritePipeline {
 }
 
 impl SpritePipeline {
-    pub fn new(device: Arc<wgpu::Device>, output_format: wgpu::TextureFormat, sample_count: u32) -> Self {
-        // ... (removed some for brevity in replacement chunk)
+    pub fn new(device: Arc<wgpu::Device>, output_format: wgpu::TextureFormat, depth_format: Option<wgpu::TextureFormat>, sample_count: u32) -> Self {
+        // ... (resto del código de layouts se mantiene igual)
         // 1. Camera Layout
         let camera_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Sprite Camera Bind Group Layout"),
@@ -71,7 +71,7 @@ impl SpritePipeline {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[SpriteInstance::descriptor()], // No Vertex Buffer, just Instances!
+                buffers: &[SpriteInstance::descriptor()],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -88,13 +88,13 @@ impl SpritePipeline {
                 topology: wgpu::PrimitiveTopology::TriangleStrip,
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None, // 2D sprites usually don't need culling if well formed, or use back-face culling
+                cull_mode: None,
                 polygon_mode: wgpu::PolygonMode::Fill,
                 unclipped_depth: false,
                 conservative: false,
             },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
+            depth_stencil: depth_format.map(|format| wgpu::DepthStencilState {
+                format,
                 depth_write_enabled: true,
                 depth_compare: wgpu::CompareFunction::Less,
                 stencil: wgpu::StencilState::default(),
@@ -118,7 +118,6 @@ impl SpritePipeline {
     }
 }
 
-
 pub struct ShapePipeline {
     pub device: Arc<wgpu::Device>,
     pub wgpu_pipeline: wgpu::RenderPipeline,
@@ -126,7 +125,7 @@ pub struct ShapePipeline {
 }
 
 impl ShapePipeline {
-    pub fn new(device: Arc<wgpu::Device>, output_format: wgpu::TextureFormat, sample_count: u32) -> Self {
+    pub fn new(device: Arc<wgpu::Device>, output_format: wgpu::TextureFormat, depth_format: Option<wgpu::TextureFormat>, sample_count: u32) -> Self {
         use crate::render::types::ShapeInstance;
 
         // 1. Camera Layout
@@ -188,8 +187,8 @@ impl ShapePipeline {
                 unclipped_depth: false,
                 conservative: false,
             },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
+            depth_stencil: depth_format.map(|format| wgpu::DepthStencilState {
+                format,
                 depth_write_enabled: false,
                 depth_compare: wgpu::CompareFunction::Always,
                 stencil: wgpu::StencilState::default(),

@@ -14,7 +14,7 @@ var<uniform> model : Model;
 struct DirectionalLight {
     direction : vec3<f32>,
     _pad0 : f32,
-    color : vec4<f32>,
+    color : vec3<f32>,
     intensity : f32,
     light_view_proj : mat4x4<f32>,
 };

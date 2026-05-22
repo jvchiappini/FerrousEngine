@@ -54,6 +54,9 @@ pub struct GuiRenderer {
     pub id_texture: wgpu::Texture,
     pub id_view: wgpu::TextureView,
     pub id_staging_buffer: wgpu::Buffer,
+
+    pub format: wgpu::TextureFormat,
+    pub sample_count: u32,
 }
 
 impl GuiRenderer {
@@ -255,21 +258,48 @@ impl GuiRenderer {
             id_texture,
             id_view,
             id_staging_buffer,
+            format,
+            sample_count,
         }
     }
 
     pub fn resize(&mut self, queue: &wgpu::Queue, width: u32, height: u32) {
+        self.update_output_config(queue, width, height, self.format, self.sample_count);
+    }
+
+    pub fn update_output_config(
+        &mut self,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+        sample_count: u32,
+    ) {
         let width = width.max(1);
         let height = height.max(1);
         self.resolution = [width as f32, height as f32];
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&self.resolution));
+
+        let state_changed = format != self.format || sample_count != self.sample_count;
+        
+        if state_changed {
+            self.format = format;
+            self.sample_count = sample_count;
+            
+            // Rebuild pipelines for new sample_count/format
+            println!("[GuiRenderer] Rebuilding pipelines for format={:?}, sample_count={}", format, sample_count);
+            self.opaque_pipeline = create_quad_pipeline(&self.device, format, &self.layouts.quad_pipeline_layout, sample_count, true);
+            self.transparent_pipeline = create_quad_pipeline(&self.device, format, &self.layouts.quad_pipeline_layout, sample_count, false);
+            self.text_pipeline = create_text_pipeline(&self.device, format, &self.layouts.text_pipeline_layout, sample_count, false);
+            self.svg_pipeline = crate::pipelines::svg::create_svg_pipeline(&self.device, format, &self.layouts.quad_pipeline_layout, sample_count);
+        }
 
         // Resize Depth
         self.depth_texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("GUI Depth Texture Resized"),
             size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
             mip_level_count: 1,
-            sample_count: self.depth_texture.sample_count(),
+            sample_count,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Depth32Float,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,

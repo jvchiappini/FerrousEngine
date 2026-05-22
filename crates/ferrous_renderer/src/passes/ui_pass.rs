@@ -40,6 +40,18 @@ impl UiPass {
     pub fn set_clear_color(&mut self, color: Option<wgpu::Color>) {
         self.clear_color = color;
     }
+
+    pub fn update_output_config(
+        &mut self,
+        queue: &Queue,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+        sample_count: u32,
+    ) {
+        self.renderer
+            .update_output_config(queue, width, height, format, sample_count);
+    }
 }
 
 impl RenderPass for UiPass {

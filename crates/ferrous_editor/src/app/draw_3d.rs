@@ -1,6 +1,6 @@
 //! `EditorApp::run_draw_3d` — gizmo interaction, cube spawning, resize handler.
 
-use ferrous_app::{AppContext, Color, Vec3, Viewport};
+use ferrous_engine::{AppContext, Color, Vec3, Viewport};
 use ferrous_core::scene::{GizmoMode, MaterialDescriptor};
 use rand::Rng;
 

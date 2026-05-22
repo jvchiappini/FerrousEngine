@@ -14,7 +14,7 @@ pub mod world;
 pub use blueprint::SceneBlueprint;
 
 // World types
-pub use world::{Element, ElementKind, Handle, PointLightComponent, ShadowCaster, Billboard, BillboardMode, World};
+pub use world::{Element, ElementKind, Handle, PointLightComponent, ShadowCaster, Billboard, BillboardMode, ScreenSpace, World, MaterialComponent};
 pub use particles::ParticleEmitter;
 pub use skinning::{Skeleton, SkinnedMesh, BoneInfluence};
 
@@ -23,6 +23,7 @@ pub use systems::{
     AnimationClip, AnimationPlayer, AnimationSystem, Behavior, BehaviorComponent, BehaviorSystem,
     Camera3D, Camera3DBuilder, Children, DirectionalLight, GlobalTransform, Keyframe, OrbitCamera,
     OrbitCameraSystem, Parent, Stage, SkinningSystem, TimeSystem, TransformSystem, Velocity, VelocitySystem,
+    AnimatorSystem, AnimJob, Animator, EasingType,
 };
 
 // Camera

@@ -1,5 +1,5 @@
 [package]
-name = "ferrous_app"
+name = "ferrous_engine"
 version = "0.1.0"
 edition = "2021"
 
@@ -13,7 +13,7 @@ assets = ["ferrous_ui_render/assets"]
 [dependencies]
 ferrous_renderer = { path = "../ferrous_renderer", features = ["assets"] }
 ferrous_2d = { path = "../ferrous_2d" }
-ferrous_core = { path = "../ferrous_core", features = ["input"] }
+ferrous_core = { path = "../ferrous_core", features = ["input", "ecs", "gpu"] }
 ferrous_ecs = { path = "../ferrous_ecs" }
 ferrous_gpu = { path = "../ferrous_gpu" }
 ferrous_font = { path = "../ferrous_font" }
@@ -29,6 +29,7 @@ anyhow = "1.0"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+thiserror = "1"
 
 # ── desktop-only ────────────────────────────────────────────────────────────
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

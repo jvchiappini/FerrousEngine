@@ -24,8 +24,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use ferrous_app::traits::FerrousApp;
-use ferrous_app::{App, AppContext, AppMode, KeyCode};
+use ferrous_engine::traits::FerrousApp;
+use ferrous_engine::{App, AppContext, AppMode, KeyCode};
 use ferrous_render_graph::{FramePacket, RenderPass};
 use ferrous_voxels::{buffers::PersistentBuffers, HddaPrimaryPass, VoxelGpuUploadPass, VoxelWorld};
 use wgpu::{
@@ -80,10 +80,10 @@ impl FerrousApp for HddaViewer {
             .add_pass(VoxelHddaBundle::new(Arc::clone(&self.world)));
         log::info!("hdda_viewer: passes registered");
 
-        use ferrous_app::Vec3;
+        use ferrous_engine::Vec3;
 
         ctx.world.ecs.spawn((
-            ferrous_app::Camera3D::looking_at(Vec3::ZERO)
+            ferrous_engine::Camera3D::looking_at(Vec3::ZERO)
                 .from(Vec3::new(80.0, 40.0, 80.0))
                 .build(),
             // Remove OrbitCamera so WASD default controller does not snap back!
@@ -96,8 +96,8 @@ impl FerrousApp for HddaViewer {
         }
     }
 
-    fn draw_ui(&mut self, dc: &mut ferrous_app::traits::DrawContext<'_, '_>) {
-        use ferrous_app::Color;
+    fn draw_ui(&mut self, dc: &mut ferrous_engine::traits::DrawContext<'_, '_>) {
+        use ferrous_engine::Color;
         let fps = dc.ctx.time.fps;
         dc.gui.draw_text(
             dc.font,

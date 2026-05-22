@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU32, Ordering};
 use once_cell::sync::Lazy;
 
-use ferrous_app::{AppContext, Color, DrawContext, FerrousApp, Quat, Vec3};
+use ferrous_engine::{AppContext, Color, DrawContext, FerrousApp, Quat, Vec3};
 use ferrous_core::scene::ElementKind;
 use ferrous_renderer::Vertex;
 

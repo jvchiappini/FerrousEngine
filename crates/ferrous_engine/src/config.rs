@@ -203,7 +203,7 @@ impl EngineConfig {
 ///
 /// # Example
 /// ```rust,ignore
-/// use ferrous_app::config::load_config;
+/// use ferrous_engine::config::load_config;
 ///
 /// let cfg = load_config("ferrous.toml").unwrap_or_default();
 /// ```

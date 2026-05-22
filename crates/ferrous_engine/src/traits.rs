@@ -124,14 +124,14 @@ pub trait FerrousApp {
     ///
     /// Use this to spawn initial entities, load assets, or configure the
     /// camera.
-    fn setup(&mut self, ctx: &mut AppContext) {}
+    fn setup(&mut self, ctx: &mut AppContext<'_>) {}
 
     /// Called every frame before rendering.
     ///
     /// This is where game logic and scene mutations go.  The `world` on `ctx`
     /// is already populated and will be synced to the renderer automatically
     /// after this call returns.
-    fn update(&mut self, ctx: &mut AppContext) {}
+    fn update(&mut self, ctx: &mut AppContext<'_>) {}
 
     /// Register persistent GUI widgets (called once, during `resumed`).
     ///
@@ -151,7 +151,7 @@ pub trait FerrousApp {
     ///
     /// `ctx.render_stats` contains statistics from the previous frame.
     /// `ctx.camera_eye` contains the world-space camera position this frame.
-    fn draw_3d(&mut self, ctx: &mut AppContext) {}
+    fn draw_3d(&mut self, ctx: &mut AppContext<'_>) {}
 
     /// Called right before the ECS world is synced to the renderer.
     ///
@@ -163,12 +163,12 @@ pub trait FerrousApp {
     ///
     /// The new physical pixel dimensions are in `new_size`.  The runner
     /// already updates the swap-chain and camera aspect before calling this.
-    fn on_resize(&mut self, new_size: (u32, u32), ctx: &mut AppContext) {}
+    fn on_resize(&mut self, new_size: (u32, u32), ctx: &mut AppContext<'_>) {}
 
     /// Called for every raw winit `WindowEvent` (after it has been processed
     /// by the GUI system).
     ///
     /// Use this for drag-and-drop, IME, or any event not covered by the
     /// helpers on `AppContext`.
-    fn on_window_event(&mut self, event: &winit::event::WindowEvent, ctx: &mut AppContext) {}
+    fn on_window_event(&mut self, event: &winit::event::WindowEvent, ctx: &mut AppContext<'_>) {}
 }

@@ -6,7 +6,7 @@
 struct DirectionalLight {
     direction : vec3<f32>,
     _pad0 : f32,
-    color : vec4<f32>,
+    color : vec3<f32>,
     intensity : f32,
     light_view_proj : mat4x4<f32>,
 };
@@ -35,7 +35,27 @@ struct VertexInput {
 
 @vertex
 fn vs_main(in: VertexInput) -> @builtin(position) vec4<f32> {
-    let idx = in.instance_idx;
-    let world_pos = models[idx] * vec4<f32>(in.position, 1.0);
+    let model = models[in.instance_idx];
+    let is_screen_space = abs(model[2][3] - 55.5) < 0.1;
+    
+    // Explicitly reconstruct the matrix to bypass typical DXC/Naga mutation bugs
+    var col0 = model[0];
+    var col1 = model[1];
+    var col2 = model[2];
+    var col3 = model[3];
+    
+    if (is_screen_space) {
+        col2.w = 0.0;
+        col3.w = 1.0;
+    }
+    
+    let model_clean = mat4x4<f32>(col0, col1, col2, col3);
+    let world_pos = model_clean * vec4<f32>(in.position, 1.0);
+    
+    if (is_screen_space) {
+        // Cull UI from shadow maps
+        return vec4<f32>(0.0, 0.0, 2.0, 1.0);
+    }
+    
     return dir_light.light_view_proj * world_pos;
 }

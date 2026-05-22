@@ -28,7 +28,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::app::types::EditorApp;
-use ferrous_app::AppContext;
+use ferrous_engine::AppContext;
 use ferrous_assets::Font;
 use ferrous_core::scene::{AlphaMode, MaterialDescriptor};
 use ferrous_core::Handle;
@@ -427,7 +427,7 @@ impl MaterialInspector {
             let (mx, my) = ctx.input.mouse_pos_f32();
             if ctx
                 .input
-                .button_just_pressed(ferrous_app::MouseButton::Left)
+                .button_just_pressed(ferrous_engine::MouseButton::Left)
             {
                 if mx >= slider_x && mx <= slider_x + cb_size && my >= cb_y && my <= cb_y + cb_size
                 {
@@ -476,7 +476,7 @@ impl MaterialInspector {
             let (mx, my) = ctx.input.mouse_pos_f32();
             if ctx
                 .input
-                .button_just_pressed(ferrous_app::MouseButton::Left)
+                .button_just_pressed(ferrous_engine::MouseButton::Left)
             {
                 let dx = mx - rx;
                 let dy = my - ry;
