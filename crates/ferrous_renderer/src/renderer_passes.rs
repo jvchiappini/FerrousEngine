@@ -653,7 +653,24 @@ impl RendererPasses {
         }
         for element in world.iter() {
             let id = element.id;
-            let desc = &element.material.descriptor;
+            // For 2D elements (Path, Circle2D, Rect2D, Line2D) we ALWAYS force FlatShaded/UNLIT
+            // so that set_fill/set_stroke color changes don't accidentally remove the
+            // style_override. Without this, PBR lighting would tint or darken the flat colors.
+            let is_2d_element = matches!(
+                element.kind,
+                ferrous_core::scene::world::ElementKind::Path
+                | ferrous_core::scene::world::ElementKind::Circle2D { .. }
+                | ferrous_core::scene::world::ElementKind::Rect2D { .. }
+                | ferrous_core::scene::world::ElementKind::Line2D { .. }
+            );
+            let mut owned_desc;
+            let desc: &ferrous_core::scene::MaterialDescriptor = if is_2d_element {
+                owned_desc = element.material.descriptor.clone();
+                owned_desc.style_override = Some(ferrous_core::scene::RenderStyle::FlatShaded);
+                &owned_desc
+            } else {
+                &element.material.descriptor
+            };
             let needs_update = self
                 .world_material_descs
                 .get(&id)

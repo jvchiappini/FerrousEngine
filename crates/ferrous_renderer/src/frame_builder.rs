@@ -397,30 +397,43 @@ impl FrameBuilder {
                 }
                 ElementKind::Circle2D { radius, resolution } => {
                     let do_fill = element.fill_color.is_some();
-                    let key = (0u8, radius.to_bits(), *resolution, do_fill as u32, element.stroke_thickness.to_bits(), 0);
+                    let f_c = element.fill_color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
+                    let s_c = element.stroke_color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
+                    let f_c_bits = f_c[0].to_bits() ^ f_c[1].to_bits() ^ f_c[2].to_bits() ^ f_c[3].to_bits();
+                    let s_c_bits = s_c[0].to_bits() ^ s_c[1].to_bits() ^ s_c[2].to_bits() ^ s_c[3].to_bits();
+                    let key = (0u8, radius.to_bits(), *resolution, do_fill as u32, element.stroke_thickness.to_bits(), f_c_bits ^ s_c_bits);
                     self.shapes2d_cache
                         .entry(key)
-                        .or_insert_with(|| circle_2d(device, *radius, *resolution, do_fill, element.stroke_thickness))
+                        .or_insert_with(|| circle_2d(device, *radius, *resolution, do_fill, element.stroke_thickness, f_c, s_c))
                         .clone()
                 }
                 ElementKind::Rect2D { width, height } => {
                     let do_fill = element.fill_color.is_some();
-                    let key = (1u8, width.to_bits(), height.to_bits(), do_fill as u32, element.stroke_thickness.to_bits(), 0);
+                    let f_c = element.fill_color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
+                    let s_c = element.stroke_color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
+                    let f_c_bits = f_c[0].to_bits() ^ f_c[1].to_bits() ^ f_c[2].to_bits() ^ f_c[3].to_bits();
+                    let s_c_bits = s_c[0].to_bits() ^ s_c[1].to_bits() ^ s_c[2].to_bits() ^ s_c[3].to_bits();
+                    let key = (1u8, width.to_bits(), height.to_bits(), do_fill as u32, element.stroke_thickness.to_bits(), f_c_bits ^ s_c_bits);
                     self.shapes2d_cache
                         .entry(key)
-                        .or_insert_with(|| rect_2d(device, *width, *height, do_fill, element.stroke_thickness))
+                        .or_insert_with(|| rect_2d(device, *width, *height, do_fill, element.stroke_thickness, f_c, s_c))
                         .clone()
                 }
-                ElementKind::Line2D { x0, y0, x1, y1, thickness } => {
-                    let key = (2u8, x0.to_bits(), y0.to_bits(), x1.to_bits(), y1.to_bits(), thickness.to_bits());
+                ElementKind::Line2D { x0, y0, x1, y1, .. } => {
+                    let s_c = element.stroke_color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
+                    let s_c_bits = s_c[0].to_bits() ^ s_c[1].to_bits() ^ s_c[2].to_bits() ^ s_c[3].to_bits();
+                    let t = element.stroke_thickness;
+                    let key = (2u8, x0.to_bits(), y0.to_bits(), x1.to_bits(), y1.to_bits(), t.to_bits() ^ s_c_bits);
                     self.shapes2d_cache
                         .entry(key)
-                        .or_insert_with(|| line_2d(device, *x0, *y0, *x1, *y1, *thickness))
+                        .or_insert_with(|| line_2d(device, *x0, *y0, *x1, *y1, t, s_c))
                         .clone()
                 }
                 ElementKind::Path => {
                     if let Some(path_data) = world.ecs.get::<ferrous_core::scene::world::types::PathData>(_entity) {
-                        path_to_mesh(device, path_data, element.fill_color.is_some(), element.stroke_thickness)
+                        let fill_c = element.fill_color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
+                        let stroke_c = element.stroke_color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
+                        path_to_mesh(device, path_data, element.fill_color.is_some(), element.stroke_thickness, fill_c, stroke_c)
                     } else {
                         continue;
                     }
@@ -433,7 +446,11 @@ impl FrameBuilder {
             // This ensures that even if objects are in the same frame and overlap, 
             // the depth buffer will correctly resolve their ordering based on world-space Z.
             let zi = z_index.map(|z| z.0).unwrap_or(0);
-            matrix.w_axis.z += zi as f32 * 0.001;
+            // v16: Añadimos un minúsculo offset basado en el orden de creación (id) 
+            // paramitigar el Z-fighting cuando todas las formas tienen z_index=0 por defecto,
+            // forzando el Painter's Algorithm automático de Manim.
+            let sub_offset = (element.id as f32) * 0.00001;
+            matrix.w_axis.z += zi as f32 * 0.001 + sub_offset;
 
             if let Some(bb) = billboard {
                 // ... (billboard logic remains same)
@@ -463,7 +480,7 @@ impl FrameBuilder {
                         }
                     }
                 };
-                matrix = glam::Mat4::from_scale_rotation_translation(transform.scale, rot, transform.position + glam::Vec3::new(0.0, 0.0, zi as f32 * 0.001));
+                matrix = glam::Mat4::from_scale_rotation_translation(transform.scale, rot, transform.position + glam::Vec3::new(0.0, 0.0, zi as f32 * 0.001 + sub_offset));
             }
             let material_slot = material.handle.0 as usize;
 

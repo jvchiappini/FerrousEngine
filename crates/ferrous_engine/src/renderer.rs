@@ -4,10 +4,13 @@ use ferrous_core::api::types::NodeId;
 use ferrous_ecs::prelude::Entity;
 use ferrous_ecs::system::System;
 use ferrous_gpu::EngineContext;
-use ferrous_renderer::{Renderer as GpuRenderer};
+use ferrous_renderer::{Renderer as GpuRenderer, RendererMode};
 use ferrous_core::scene::{Material, Billboard, BillboardMode, ShadowCaster, Element, ElementKind, AnimatorSystem};
 use ferrous_core::scene::world::MaterialComponent;
+use ferrous_core::scene::world::types::PathData;
+use ferrous_core::scene::world::types::PathCommand;
 use ferrous_core::glam;
+use ferrous_2d::render::types::ShapeInstance;
 
 /// Error type for the Engine SDK.
 #[derive(Debug, thiserror::Error)]
@@ -453,6 +456,144 @@ impl Renderer {
         Err(())
     }
 
+    /// Sync ECS 2D entities to the shape batcher for Pure2D rendering.
+    /// Called every frame before rendering when in Pure2D mode.
+    pub fn sync_ecs_to_shape_batcher(&mut self) {
+        self.gpu.shape_batcher.clear();
+
+        // Collect (entity, element_clone, pos) tuples to avoid borrow conflicts
+        // between self.node_map/self.world (immutable) and self.gpu (mutable).
+        let mut batch: Vec<(Entity, Element, glam::Vec3)> = Vec::new();
+        for (_node_id, entity) in &self.node_map {
+            if let Some(el) = self.world.ecs.get::<Element>(*entity) {
+                if el.visible {
+                    if let Some(t) = self.world.ecs.get::<Transform>(*entity) {
+                        batch.push((*entity, el.clone(), t.position));
+                    }
+                }
+            }
+        }
+
+        for (entity, element, pos) in &batch {
+            match &element.kind {
+                ElementKind::Line2D { x0, y0, x1, y1, thickness } => {
+                    let color = element.stroke_color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
+                    self.gpu.draw_2d_shape(ShapeInstance::line(
+                        glam::Vec2::new(pos.x + x0, pos.y + y0),
+                        glam::Vec2::new(pos.x + x1, pos.y + y1),
+                        *thickness,
+                        color,
+                    ));
+                }
+                ElementKind::Circle2D { radius, .. } => {
+                    if let Some(fill) = element.fill_color {
+                        self.gpu.draw_2d_shape(ShapeInstance::circle_z(
+                            glam::Vec2::new(pos.x, pos.y), pos.z, *radius, fill,
+                        ));
+                    }
+                }
+                ElementKind::Rect2D { width, height } => {
+                    if let Some(fill) = element.fill_color {
+                        self.gpu.draw_2d_shape(ShapeInstance::rect_z(
+                            glam::Vec2::new(pos.x, pos.y), pos.z,
+                            glam::Vec2::new(*width, *height), fill,
+                        ));
+                    }
+                }
+                ElementKind::Path => {
+                    self.sync_path_to_batcher(*entity, element, *pos);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn sync_path_to_batcher(&mut self, entity: Entity, element: &Element, pos: glam::Vec3) {
+        let path_data = match self.world.ecs.get::<PathData>(entity) {
+            Some(p) => p,
+            None => return,
+        };
+        let cmds = &path_data.commands;
+
+        // Try to classify as circle (4 CubicTo arcs + Close)
+        if let Some(radius) = classify_circle_path(cmds) {
+            if let Some(fill) = element.fill_color {
+                self.gpu.draw_2d_shape(ShapeInstance::circle_z(
+                    glam::Vec2::new(pos.x, pos.y), pos.z, radius, fill,
+                ));
+            }
+            if let Some(stroke) = element.stroke_color {
+                let segments = 48;
+                let center = glam::Vec2::new(pos.x, pos.y);
+                for i in 0..segments {
+                    let t0 = (i as f32 / segments as f32) * std::f32::consts::TAU;
+                    let t1 = ((i + 1) as f32 / segments as f32) * std::f32::consts::TAU;
+                    let from = center + glam::Vec2::new(t0.cos() * radius, t0.sin() * radius);
+                    let to = center + glam::Vec2::new(t1.cos() * radius, t1.sin() * radius);
+                    self.gpu.draw_2d_shape(ShapeInstance::line(from, to, 2.0, stroke));
+                }
+            }
+            return;
+        }
+
+        // Try to classify as rect (4 degenerate CubicTo + Close)
+        if let Some((width, height)) = classify_rect_path(cmds) {
+            if let Some(fill) = element.fill_color {
+                self.gpu.draw_2d_shape(ShapeInstance::rect_z(
+                    glam::Vec2::new(pos.x, pos.y), pos.z,
+                    glam::Vec2::new(width, height), fill,
+                ));
+            }
+            if let Some(stroke) = element.stroke_color {
+                let hw = width * 0.5;
+                let hh = height * 0.5;
+                let pts = [
+                    glam::Vec2::new(pos.x - hw, pos.y - hh),
+                    glam::Vec2::new(pos.x + hw, pos.y - hh),
+                    glam::Vec2::new(pos.x + hw, pos.y + hh),
+                    glam::Vec2::new(pos.x - hw, pos.y + hh),
+                    glam::Vec2::new(pos.x - hw, pos.y - hh),
+                ];
+                for i in 0..4 {
+                    self.gpu.draw_2d_shape(ShapeInstance::line(pts[i], pts[i + 1], 2.0, stroke));
+                }
+            }
+            return;
+        }
+
+        // Fallback: render stroke as line segments (for Plots, Arrows, etc.)
+        if let Some(stroke) = element.stroke_color {
+            let thickness = element.stroke_thickness.max(1.0);
+            let mut prev: Option<glam::Vec2> = None;
+            for cmd in cmds {
+                match cmd {
+                    PathCommand::MoveTo(p) => { prev = None; }
+                    PathCommand::LineTo(p) => {
+                        if let Some(start) = prev {
+                            self.gpu.draw_2d_shape(ShapeInstance::line(
+                                glam::Vec2::new(pos.x + start.x, pos.y + start.y),
+                                glam::Vec2::new(pos.x + p.x, pos.y + p.y),
+                                thickness, stroke,
+                            ));
+                        }
+                        prev = Some(*p);
+                    }
+                    PathCommand::CubicTo(_, _, end) => {
+                        if let Some(start) = prev {
+                            self.gpu.draw_2d_shape(ShapeInstance::line(
+                                glam::Vec2::new(pos.x + start.x, pos.y + start.y),
+                                glam::Vec2::new(pos.x + end.x, pos.y + end.y),
+                                thickness, stroke,
+                            ));
+                        }
+                        prev = Some(*end);
+                    }
+                    PathCommand::Close => { prev = None; }
+                }
+            }
+        }
+    }
+
     /// Executes a single render pass and returns the raw RGBA8 pixels.
     /// Only works if the renderer was initialized in headless mode.
     pub fn render_frame(&mut self, t: f64) -> Option<Vec<u8>> {
@@ -467,8 +608,13 @@ impl Renderer {
         
         self.animator_system.run(&mut self.world.ecs, &mut resources);
 
-        // 1. Sync ECS world to GPU
-        self.gpu.sync_world(&self.world);
+        // 1. Sync ECS world to GPU (skip in Pure2D — 2D entities use shape batcher instead)
+        if self.gpu.mode != RendererMode::Pure2D {
+            self.gpu.sync_world(&self.world);
+        }
+
+        // 1b. Sync ECS 2D entities to shape batcher (used by Pure2D mode)
+        self.sync_ecs_to_shape_batcher();
 
         // 2. Begin encoding
         let mut encoder = self.gpu.begin_frame();
@@ -499,13 +645,17 @@ impl Renderer {
             if let Some(mut elem) = self.world.ecs.get_mut::<Element>(*entity) {
                 elem.stroke_color = Some(color);
                 elem.stroke_thickness = thickness;
+                let is_path = matches!(elem.kind, ElementKind::Path);
                 if let ElementKind::Line2D { thickness: ref mut t, .. } = elem.kind {
                     *t = thickness;
                 }
                 // v15: Sync with material for proper rendering
-                elem.material.descriptor.base_color = color;
-                if let Some(mut m) = self.world.ecs.get_mut::<MaterialComponent>(*entity) {
-                    m.descriptor.base_color = color;
+                // Only sync if not a Path, since Paths embed color in geometry.
+                if !is_path {
+                    elem.material.descriptor.base_color = color;
+                    if let Some(mut m) = self.world.ecs.get_mut::<MaterialComponent>(*entity) {
+                        m.descriptor.base_color = color;
+                    }
                 }
                 self.gpu.mark_dirty();
                 return Ok(());
@@ -529,12 +679,16 @@ impl Renderer {
     /// Sets the fill color for a 2D entity.
     pub fn set_fill(&mut self, node: NodeId, color: [f32; 4]) -> Result<(), ()> {
         if let Some(entity) = self.node_map.get(&node) {
-            if let Some(elem) = self.world.ecs.get_mut::<Element>(*entity) {
+            if let Some(mut elem) = self.world.ecs.get_mut::<Element>(*entity) {
                 elem.fill_color = Some(color);
+                let is_path = matches!(elem.kind, ElementKind::Path);
                 // v15: Sync with material for proper rendering
-                elem.material.descriptor.base_color = color;
-                if let Some(mut m) = self.world.ecs.get_mut::<MaterialComponent>(*entity) {
-                    m.descriptor.base_color = color;
+                // Only sync if not a Path, since Paths embed color in geometry.
+                if !is_path {
+                    elem.material.descriptor.base_color = color;
+                    if let Some(mut m) = self.world.ecs.get_mut::<MaterialComponent>(*entity) {
+                        m.descriptor.base_color = color;
+                    }
                 }
                 self.gpu.mark_dirty();
                 return Ok(());
@@ -590,4 +744,69 @@ impl Renderer {
 
     pub fn width(&self) -> u32 { self.gpu.width() }
     pub fn height(&self) -> u32 { self.gpu.height() }
+}
+
+// ── Path classification helpers ───────────────────────────────────────────
+
+/// Detects a circle approximation path: MoveTo(r,0) + 4 CubicTo + Close.
+/// Returns the radius if the path matches.
+fn classify_circle_path(cmds: &[PathCommand]) -> Option<f32> {
+    if cmds.len() != 6 { return None; }
+    let PathCommand::MoveTo(start) = &cmds[0] else { return None };
+    let PathCommand::Close = &cmds[5] else { return None };
+
+    let r = start.x.abs();
+    if r < 0.001 { return None; }
+    if start.y.abs() > 0.001 { return None; }
+
+    let expected_ends = [
+        glam::Vec2::new(0.0, r),
+        glam::Vec2::new(-r, 0.0),
+        glam::Vec2::new(0.0, -r),
+        glam::Vec2::new(r, 0.0),
+    ];
+
+    for (i, expected) in expected_ends.iter().enumerate() {
+        if let PathCommand::CubicTo(_, _, end) = &cmds[i + 1] {
+            if (end - expected).length() > 0.01 {
+                return None;
+            }
+        } else {
+            return None;
+        }
+    }
+
+    Some(r)
+}
+
+/// Detects a rectangle approximation path: MoveTo(-hw,-hh) + 4 degenerate
+/// CubicTo (where start==end for each edge) + Close.
+/// Returns (width, height) if the path matches.
+fn classify_rect_path(cmds: &[PathCommand]) -> Option<(f32, f32)> {
+    if cmds.len() != 6 { return None; }
+    let PathCommand::MoveTo(start) = &cmds[0] else { return None };
+    let PathCommand::Close = &cmds[5] else { return None };
+
+    let hw = -start.x;
+    let hh = -start.y;
+    if hw <= 0.001 || hh <= 0.001 { return None; }
+
+    let expected_ends = [
+        glam::Vec2::new(hw, -hh),
+        glam::Vec2::new(hw, hh),
+        glam::Vec2::new(-hw, hh),
+        glam::Vec2::new(-hw, -hh),
+    ];
+
+    for (i, expected) in expected_ends.iter().enumerate() {
+        if let PathCommand::CubicTo(_, _, end) = &cmds[i + 1] {
+            if (end - expected).length() > 0.01 {
+                return None;
+            }
+        } else {
+            return None;
+        }
+    }
+
+    Some((hw * 2.0, hh * 2.0))
 }

@@ -558,6 +558,15 @@ impl Renderer {
         // Antialiasing textures
         self.aa_pass.on_resize(&self.context.device, new_width, new_height);
 
+        // Headless readback buffer must match the new resolution
+        if let Some(ref mut rb) = self.readback_manager {
+            if rb.width != new_width || rb.height != new_height {
+                *rb = crate::resources::readback::ReadbackFrameManager::new(
+                    &self.context.device, new_width, new_height,
+                );
+            }
+        }
+
         // En Pure2D recalcular la ortho para mantener 1u=1px con el nuevo tamaño.
         if self.mode == RendererMode::Pure2D {
             self.camera_system.camera.set_mode_2d(true, Some(new_height as f32));

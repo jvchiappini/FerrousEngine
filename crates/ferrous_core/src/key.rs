@@ -95,6 +95,7 @@ pub enum KeyCode {
     Numpad8,
     Numpad9,
     NumpadDecimal,
+    NumpadSubtract,
     NumpadEnter,
 }
 
@@ -188,6 +189,7 @@ impl From<winit::keyboard::KeyCode> for KeyCode {
             winit::keyboard::KeyCode::Numpad8 => KeyCode::Numpad8,
             winit::keyboard::KeyCode::Numpad9 => KeyCode::Numpad9,
             winit::keyboard::KeyCode::NumpadDecimal => KeyCode::NumpadDecimal,
+            winit::keyboard::KeyCode::NumpadSubtract => KeyCode::NumpadSubtract,
             winit::keyboard::KeyCode::NumpadEnter => KeyCode::NumpadEnter,
 
             // catch‑all for keys we don't explicitly handle

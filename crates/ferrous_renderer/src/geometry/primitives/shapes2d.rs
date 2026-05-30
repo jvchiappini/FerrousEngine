@@ -25,7 +25,7 @@ use crate::resources::buffer;
 // ── Internal vertices ──────────────────────────────────────────────────────
 
 /// Adapter: maps a lyon fill vertex to our `Vertex` type.
-struct FillCtor;
+struct FillCtor { color: [f32; 4] }
 
 impl lyon_tessellation::FillVertexConstructor<Vertex> for FillCtor {
     fn new_vertex(&mut self, v: FillVertex) -> Vertex {
@@ -34,14 +34,14 @@ impl lyon_tessellation::FillVertexConstructor<Vertex> for FillCtor {
             position: [p.x, p.y, 0.0],
             normal: [0.0, 0.0, 1.0],
             tangent: [1.0, 0.0, 0.0, 1.0],
-            color: [1.0, 1.0, 1.0, 1.0],
+            color: self.color,
             uv: [(p.x + 1.0) * 0.5, (p.y + 1.0) * 0.5],
         }
     }
 }
 
 /// Adapter: maps a lyon stroke vertex to our `Vertex` type.
-struct StrokeCtor;
+struct StrokeCtor { color: [f32; 4] }
 
 impl lyon_tessellation::StrokeVertexConstructor<Vertex> for StrokeCtor {
     fn new_vertex(&mut self, v: StrokeVertex) -> Vertex {
@@ -50,7 +50,7 @@ impl lyon_tessellation::StrokeVertexConstructor<Vertex> for StrokeCtor {
             position: [p.x, p.y, 0.0],
             normal: [0.0, 0.0, 1.0],
             tangent: [1.0, 0.0, 0.0, 1.0],
-            color: [1.0, 1.0, 1.0, 1.0],
+            color: self.color,
             uv: [p.x, p.y],
         }
     }
@@ -136,6 +136,8 @@ pub fn path_to_mesh(
     path_data: &PathData,
     do_fill: bool,
     stroke_thickness: f32,
+    fill_color: [f32; 4],
+    stroke_color: [f32; 4],
 ) -> Mesh {
     let path = build_lyon_path(path_data);
     let mut buffers: VertexBuffers<Vertex, u32> = VertexBuffers::new();
@@ -147,7 +149,7 @@ pub fn path_to_mesh(
             .tessellate_path(
                 &path,
                 &options,
-                &mut BuffersBuilder::new(&mut buffers, FillCtor),
+                &mut BuffersBuilder::new(&mut buffers, FillCtor { color: fill_color }),
             )
             .ok();
     }
@@ -172,7 +174,7 @@ pub fn path_to_mesh(
             .tessellate_path(
                 &path,
                 &options,
-                &mut BuffersBuilder::new(&mut buffers, StrokeCtor),
+                &mut BuffersBuilder::new(&mut buffers, StrokeCtor { color: stroke_color }),
             )
             .ok();
     }
@@ -183,7 +185,7 @@ pub fn path_to_mesh(
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /// Filled circle disc in the XY plane (z = 0), centred at the origin.
-pub fn circle_2d(device: &wgpu::Device, radius: f32, resolution: u32, do_fill: bool, stroke_thickness: f32) -> Mesh {
+pub fn circle_2d(device: &wgpu::Device, radius: f32, resolution: u32, do_fill: bool, stroke_thickness: f32, fill_c: [f32;4], stroke_c: [f32;4]) -> Mesh {
     use lyon_tessellation::path::Winding;
     let mut builder = lyon_tessellation::path::Builder::new();
     builder.add_circle(point(0.0, 0.0), radius, Winding::Positive);
@@ -193,7 +195,7 @@ pub fn circle_2d(device: &wgpu::Device, radius: f32, resolution: u32, do_fill: b
     
     if do_fill {
         let mut tessellator = FillTessellator::new();
-        tessellator.tessellate_path(&path, &FillOptions::tolerance(0.001), &mut BuffersBuilder::new(&mut buffers, FillCtor)).ok();
+        tessellator.tessellate_path(&path, &FillOptions::tolerance(0.001), &mut BuffersBuilder::new(&mut buffers, FillCtor { color: fill_c })).ok();
     }
     
     if stroke_thickness > 0.0 {
@@ -202,14 +204,14 @@ pub fn circle_2d(device: &wgpu::Device, radius: f32, resolution: u32, do_fill: b
             .with_line_width(stroke_thickness)
             .with_line_cap(lyon_tessellation::LineCap::Round)
             .with_line_join(lyon_tessellation::LineJoin::Round);
-        tessellator.tessellate_path(&path, &opts, &mut BuffersBuilder::new(&mut buffers, StrokeCtor)).ok();
+        tessellator.tessellate_path(&path, &opts, &mut BuffersBuilder::new(&mut buffers, StrokeCtor { color: stroke_c })).ok();
     }
 
     buffers_to_mesh(device, "Circle2D", buffers)
 }
 
 /// Filled axis-aligned rectangle in the XY plane (z = 0), centred at the origin.
-pub fn rect_2d(device: &wgpu::Device, width: f32, height: f32, do_fill: bool, stroke_thickness: f32) -> Mesh {
+pub fn rect_2d(device: &wgpu::Device, width: f32, height: f32, do_fill: bool, stroke_thickness: f32, fill_c: [f32;4], stroke_c: [f32;4]) -> Mesh {
     let hw = width * 0.5;
     let hh = height * 0.5;
     
@@ -222,7 +224,7 @@ pub fn rect_2d(device: &wgpu::Device, width: f32, height: f32, do_fill: bool, st
 
     if do_fill {
         let mut tessellator = FillTessellator::new();
-        tessellator.tessellate_path(&path, &FillOptions::tolerance(0.001), &mut BuffersBuilder::new(&mut buffers, FillCtor)).ok();
+        tessellator.tessellate_path(&path, &FillOptions::tolerance(0.001), &mut BuffersBuilder::new(&mut buffers, FillCtor { color: fill_c })).ok();
     }
 
     if stroke_thickness > 0.0 {
@@ -231,14 +233,14 @@ pub fn rect_2d(device: &wgpu::Device, width: f32, height: f32, do_fill: bool, st
             .with_line_width(stroke_thickness)
             .with_line_cap(lyon_tessellation::LineCap::Round)
             .with_line_join(lyon_tessellation::LineJoin::Round);
-        tessellator.tessellate_path(&path, &opts, &mut BuffersBuilder::new(&mut buffers, StrokeCtor)).ok();
+        tessellator.tessellate_path(&path, &opts, &mut BuffersBuilder::new(&mut buffers, StrokeCtor { color: stroke_c })).ok();
     }
 
     buffers_to_mesh(device, "Rect2D", buffers)
 }
 
 /// Thick line segment in the XY plane (z = 0).
-pub fn line_2d(device: &wgpu::Device, x0: f32, y0: f32, x1: f32, y1: f32, thickness: f32) -> Mesh {
+pub fn line_2d(device: &wgpu::Device, x0: f32, y0: f32, x1: f32, y1: f32, thickness: f32, color: [f32;4]) -> Mesh {
     let thickness = thickness.max(1e-4);
 
     let mut builder = lyon_tessellation::path::Path::builder();
@@ -259,7 +261,7 @@ pub fn line_2d(device: &wgpu::Device, x0: f32, y0: f32, x1: f32, y1: f32, thickn
         .tessellate_path(
             &path,
             &opts,
-            &mut BuffersBuilder::new(&mut buffers, StrokeCtor),
+            &mut BuffersBuilder::new(&mut buffers, StrokeCtor { color }),
         )
         .expect("line_2d: stroke tessellation failed");
 
