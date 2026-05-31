@@ -69,4 +69,9 @@ impl GpuCamera {
         self.uniform.ambient_intensity = intensity;
         buffer::update_uniform(queue, &self.buffer, &self.uniform);
     }
+
+    pub fn set_tonemapping_enabled(&mut self, queue: &wgpu::Queue, enabled: bool) {
+        self.uniform.enable_tonemapping = if enabled { 1.0 } else { 0.0 };
+        buffer::update_uniform(queue, &self.buffer, &self.uniform);
+    }
 }

@@ -17,7 +17,9 @@ struct Camera {
     fog_density: f32,
     ambient_color: vec3<f32>,
     ambient_intensity: f32,
-    _padding: array<vec4<f32>, 17>,
+    enable_tonemapping: f32,
+    _pad1: vec2<f32>,
+    _padding: array<vec4<f32>, 16>,
 };
 @group(1) @binding(0) var<uniform> camera: Camera;
 
@@ -43,18 +45,25 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Use camera exposure from uniform (now synchronized with 512-byte layout)
     let exposure = camera.exposure; 
-    var color = (hdr_color + bloom_color * 0.15) * exposure;
+    let enable_tonemapping = camera.enable_tonemapping > 0.5;
 
-    // ACES Filmic Tone Mapping
-    let a = 2.51;
-    let b = 0.03;
-    let c = 2.43;
-    let d = 0.59;
-    let e = 0.14;
-    color = saturate((color * (a * color + b)) / (color * (c * color + d) + e));
+    var color = (hdr_color + bloom_color * 0.15);
+    
+    if enable_tonemapping {
+        color = color * exposure;
+        // ACES Filmic Tone Mapping
+        let a = 2.51;
+        let b = 0.03;
+        let c = 2.43;
+        let d = 0.59;
+        let e = 0.14;
+        color = saturate((color * (a * color + b)) / (color * (c * color + d) + e));
 
-    // Gamma Correction
-    color = pow(color, vec3<f32>(1.0 / 2.2));
+        // Gamma Correction
+        color = pow(color, vec3<f32>(1.0 / 2.2));
+    } else {
+        color = saturate(color);
+    }
 
     // Return final RGBA color. WGPU handles the mapping to the target surface format (e.g., BGRA) automatically.
     return vec4<f32>(color, 1.0);

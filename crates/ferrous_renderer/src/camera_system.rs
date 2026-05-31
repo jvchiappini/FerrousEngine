@@ -79,6 +79,10 @@ impl CameraSystem {
         self.gpu.set_ambient_light(queue, color, intensity);
     }
 
+    pub fn set_tonemapping_enabled(&mut self, queue: &wgpu::Queue, enabled: bool) {
+        self.gpu.set_tonemapping_enabled(queue, enabled);
+    }
+
     /// Set the camera aspect ratio (called on resize).
     pub fn set_aspect(&mut self, aspect: f32) {
         self.camera.set_aspect(aspect);

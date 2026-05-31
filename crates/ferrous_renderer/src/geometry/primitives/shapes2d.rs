@@ -144,7 +144,9 @@ pub fn path_to_mesh(
 
     if do_fill {
         let mut tessellator = FillTessellator::new();
-        let options = FillOptions::tolerance(0.001);
+        // Use NonZero fill rule (required for TTF composite paths) and a safe 0.01 tolerance 
+        // to avoid LYON subdivision budget exhausts that cause straight paths or silent failures.
+        let options = FillOptions::tolerance(0.01).with_fill_rule(lyon_tessellation::FillRule::NonZero);
         tessellator
             .tessellate_path(
                 &path,

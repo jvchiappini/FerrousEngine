@@ -121,7 +121,7 @@ impl RendererBuilder {
             self.config.width,
             self.config.height,
             wgpu::TextureFormat::Rgba8Unorm, // Use RGBA8 for headless readback compatibility
-            1,
+            4,
             None,
         );
 
@@ -505,7 +505,13 @@ impl Renderer {
                     }
                 }
                 ElementKind::Path => {
-                    self.sync_path_to_batcher(*entity, element, *pos);
+                    // Only use the shape batcher for Paths in Pure2D mode.
+                    // In all other modes, Paths are rendered via lyon tessellation
+                    // in sync_world / frame_builder (path_to_mesh). Using the batcher
+                    // fallback here would over-draw with broken straight-line strokes.
+                    if self.gpu.mode == RendererMode::Pure2D {
+                        self.sync_path_to_batcher(*entity, element, *pos);
+                    }
                 }
                 _ => {}
             }

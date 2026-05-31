@@ -24,9 +24,10 @@ pub struct CameraUniform {
     pub fog_density: f32,
     pub ambient_color: [f32; 3],
     pub ambient_intensity: f32,
+    pub enable_tonemapping: f32,
+    pub _pad1: [f32; 3],
     /// Reserved space to reach 512-byte alignment (more future-proof)
-    /// 512 - 240 = 272 bytes = 17 vec4s.
-    pub _alignment_padding: [[f32; 4]; 17],
+    pub _alignment_padding: [[f32; 4]; 16],
 }
 
 #[rustfmt::skip]
@@ -50,7 +51,9 @@ impl CameraUniform {
             fog_density: 0.0,
             ambient_color: [0.1, 0.1, 0.1],
             ambient_intensity: 1.0,
-            _alignment_padding: [[0.0; 4]; 17],
+            enable_tonemapping: 1.0,
+            _pad1: [0.0; 3],
+            _alignment_padding: [[0.0; 4]; 16],
         }
     }
 
