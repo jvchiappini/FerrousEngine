@@ -64,6 +64,13 @@ impl ReadbackFrameManager {
     /// Maps the buffer asynchronously and polls `wgpu` to force the transaction right now blocking.
     /// Emits the unwrapped packed RGBA buffer ready to be streamed or saved as an image.
     pub async fn poll_and_map(&self, device: &Device) -> Result<Vec<u8>, ()> {
+        let mut result = Vec::new();
+        self.poll_and_map_into(device, &mut result).await?;
+        Ok(result)
+    }
+
+    /// Like `poll_and_map` but reuses an existing `Vec<u8>` buffer to avoid per-frame allocation.
+    pub async fn poll_and_map_into(&self, device: &Device, out: &mut Vec<u8>) -> Result<(), ()> {
         let slice = self.buffer.slice(..);
         
         let (tx, rx) = std::sync::mpsc::channel();
@@ -71,31 +78,30 @@ impl ReadbackFrameManager {
             if result.is_ok() {
                 let _ = tx.send(());
             } else {
-                let _ = tx.send(()); // Despertarlo incluso si hay error 
+                let _ = tx.send(());
             }
         });
 
-        // Ensure we force sync to effectively map instantly in a headless export mode scenarios
         device.poll(Maintain::Wait);
 
         if rx.recv().is_ok() {
             let data = slice.get_mapped_range();
-            let mut result = Vec::with_capacity((self.width * self.height * 4) as usize);
-            
-            // To be robust against wgpu padding constraints:
             let align_size = 256;
             let unpadded_bytes = self.width * 4;
             let padded_bytes = ((unpadded_bytes + align_size - 1) / align_size) * align_size;
+
+            out.clear();
+            out.reserve((self.width * self.height * 4) as usize);
             
             for row in 0..self.height {
                 let start = (row * padded_bytes) as usize;
                 let end = start + unpadded_bytes as usize;
-                result.extend_from_slice(&data[start..end]);
+                out.extend_from_slice(&data[start..end]);
             }
             
             drop(data);
             self.buffer.unmap();
-            Ok(result)
+            Ok(())
         } else {
             Err(())
         }

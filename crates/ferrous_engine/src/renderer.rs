@@ -191,6 +191,7 @@ impl Renderer {
             fill_color: None,
             stroke_color: None,
             stroke_thickness: 0.0,
+            line_cap_style: 0,
         };
 
         let entity = self.world.ecs.spawn((transform, element, material));
@@ -225,6 +226,7 @@ impl Renderer {
             fill_color: Some([1.0, 1.0, 1.0, 1.0]),
             stroke_color: Some([1.0, 1.0, 1.0, 1.0]),
             stroke_thickness: 0.1,
+            line_cap_style: 0,
         };
 
         // v15: 2D objects use FlatShaded (unlit) style by default so they work without lights
@@ -330,6 +332,7 @@ impl Renderer {
             fill_color: Some([1.0, 1.0, 1.0, 1.0]),
             stroke_color: None,
             stroke_thickness: 0.0,
+            line_cap_style: 0,
         };
 
         let entity = self.world.ecs.spawn((transform, element, material));
@@ -478,11 +481,12 @@ impl Renderer {
             match &element.kind {
                 ElementKind::Line2D { x0, y0, x1, y1, thickness } => {
                     let color = element.stroke_color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
-                    self.gpu.draw_2d_shape(ShapeInstance::line(
+                    self.gpu.draw_2d_shape(ShapeInstance::line_with_cap(
                         glam::Vec2::new(pos.x + x0, pos.y + y0),
                         glam::Vec2::new(pos.x + x1, pos.y + y1),
                         *thickness,
                         color,
+                        element.line_cap_style,
                     ));
                 }
                 ElementKind::Circle2D { radius, .. } => {
@@ -637,6 +641,71 @@ impl Renderer {
         }
 
         None
+    }
+
+    /// Like `render_frame`, but writes pixels into a reusable buffer instead of allocating a new `Vec`.
+    /// The buffer is cleared and reused; callers should pre-allocate sufficient capacity.
+    /// Returns `true` on success.
+    pub fn render_frame_into(&mut self, t: f64, out: &mut Vec<u8>) -> bool {
+        let mut resources = ferrous_ecs::prelude::ResourceMap::new();
+        resources.insert(ferrous_core::Time {
+            delta: 0.0,
+            elapsed: t,
+            frame_count: 0,
+            fps: 0.0,
+        });
+        self.animator_system.run(&mut self.world.ecs, &mut resources);
+
+        if self.gpu.mode != RendererMode::Pure2D {
+            self.gpu.sync_world(&self.world);
+        }
+        self.sync_ecs_to_shape_batcher();
+
+        let mut encoder = self.gpu.begin_frame();
+        self.gpu.render_to_internal_target(&mut encoder, None);
+
+        if let Some(readback) = &self.gpu.readback_manager {
+            readback.copy_to_buffer(&mut encoder, self.gpu.render_target.color_texture());
+            self.gpu.context.queue.submit(Some(encoder.finish()));
+
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                use pollster::FutureExt;
+                return readback.poll_and_map_into(&self.gpu.context.device, out).block_on().is_ok();
+            }
+        }
+        false
+    }
+
+    /// Updates the endpoints of an existing 2D line without removing/re-spawning it.
+    /// Useful for line-progress animations where the line grows from start to end.
+    pub fn update_line_endpoints(&mut self, node: NodeId, ax: f32, ay: f32, bx: f32, by: f32) -> Result<(), ()> {
+        if let Some(entity) = self.node_map.get(&node) {
+            if let Some(mut elem) = self.world.ecs.get_mut::<Element>(*entity) {
+                if let ElementKind::Line2D { x0, y0, x1, y1, .. } = &mut elem.kind {
+                    *x0 = ax;
+                    *y0 = ay;
+                    *x1 = bx;
+                    *y1 = by;
+                    self.gpu.mark_dirty();
+                    return Ok(());
+                }
+            }
+        }
+        Err(())
+    }
+
+    /// Sets the line cap style for a 2D Line2D entity.
+    /// cap: 0 = Flat, 1 = Round, 2 = Square.
+    pub fn set_line_cap(&mut self, node: NodeId, cap: u8) -> Result<(), ()> {
+        if let Some(entity) = self.node_map.get(&node) {
+            if let Some(mut elem) = self.world.ecs.get_mut::<Element>(*entity) {
+                elem.line_cap_style = cap.min(2);
+                self.gpu.mark_dirty();
+                return Ok(());
+            }
+        }
+        Err(())
     }
 
     /// Sets the stroke style for a 2D entity.

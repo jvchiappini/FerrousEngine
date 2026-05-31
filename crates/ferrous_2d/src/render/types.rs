@@ -126,8 +126,18 @@ impl ShapeInstance {
         Self::from_model(model, color, [thickness, 0.0, 2.0, 0.0])
     }
 
-    /// Línea entre dos puntos 2D con grosor `width` y caps redondeados.
+    /// Línea entre dos puntos 2D con grosor `width` y caps redondeados (por defecto).
     pub fn line(from: glam::Vec2, to: glam::Vec2, width: f32, color: [f32; 4]) -> Self {
+        Self::line_with_cap(from, to, width, color, 1) // 1 = Round
+    }
+
+    /// Línea entre dos puntos 2D con estilo de punta configurable.
+    ///
+    /// `cap_style`:
+    /// - `0` = Flat (extremos rectos exactamente en los endpoints)
+    /// - `1` = Round (extremos redondeados, radio = width/2)
+    /// - `2` = Square (extremos rectos que sobresalen width/2 más allá de los endpoints)
+    pub fn line_with_cap(from: glam::Vec2, to: glam::Vec2, width: f32, color: [f32; 4], cap_style: u8) -> Self {
         let delta = to - from;
         let length = delta.length();
         if length < 0.0001 {
@@ -135,15 +145,21 @@ impl ShapeInstance {
         }
         let center = (from + to) * 0.5;
         let rotation = delta.y.atan2(delta.x);
-        // Añadir `width` a la longitud para que los caps redondeados lleguen
-        // exactamente al punto de inicio y fin (radio = width/2).
+
+        let (geom_length, radius) = match cap_style {
+            0 => (length, 0.0),                 // Flat
+            1 => (length + width, width * 0.5), // Round
+            2 => (length + width, 0.0),         // Square
+            _ => (length + width, width * 0.5), // Default a Round
+        };
+
         let model = glam::Mat4::from_scale_rotation_translation(
-            glam::Vec3::new(length + width, width, 1.0),
+            glam::Vec3::new(geom_length, width, 1.0),
             glam::Quat::from_rotation_z(rotation),
             glam::Vec3::new(center.x, center.y, 0.0),
         );
-        // params: border=width (grosor), corner_radius=width/2 (caps redondos), smooth=2, filled=1
-        Self::from_model(model, color, [width, width * 0.5, 2.0, 1.0])
+        // params: border=width, corner_radius=radius, smooth=2, filled=1
+        Self::from_model(model, color, [width, radius, 2.0, 1.0])
     }
 
     /// Rectángulo rotado, centrado en `center`, con ángulo en radianes.

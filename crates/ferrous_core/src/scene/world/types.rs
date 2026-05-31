@@ -275,6 +275,10 @@ pub struct Element {
     pub fill_color: Option<[f32; 4]>,
     pub stroke_color: Option<[f32; 4]>,
     pub stroke_thickness: f32,
+
+    /// Line cap style for 2D Line2D entities.
+    /// 0 = Flat (default), 1 = Round, 2 = Square.
+    pub line_cap_style: u8,
 }
 
 impl Component for Element {}
@@ -295,6 +299,7 @@ impl Element {
             fill_color: Some([1.0, 1.0, 1.0, 1.0]),
             stroke_color: None,
             stroke_thickness: 0.0,
+            line_cap_style: 0,
         }
     }
 }
