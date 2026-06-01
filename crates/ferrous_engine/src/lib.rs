@@ -61,6 +61,7 @@ pub use ferrous_core::scene::camera::Projection as ProjectionType;
 pub use ferrous_core::glam;
 pub use ferrous_core::glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 pub use ferrous_core::{Time, TimeClock, Handle, InputState, KeyCode, MouseButton, RenderQuality, RenderStats, Viewport};
+pub use ferrous_core::scene::world::types::{PathData, PathCommand};
 pub use ferrous_ecs::prelude::Entity;
 
 // --- Estilos de Renderizado ---

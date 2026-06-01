@@ -813,6 +813,25 @@ impl Renderer {
         Err(())
     }
 
+    /// Replaces the `PathData` commands on an existing node.
+    ///
+    /// This enables morphing / path animation: the node's geometry is updated
+    /// on the next frame (paths are re-tessellated every frame — no caching).
+    ///
+    /// # Arguments
+    /// * `node` — The target node's NodeId
+    /// * `path_data` — New path commands
+    pub fn set_path_data(&mut self, node: NodeId, path_data: PathData) -> Result<(), ()> {
+        let entity = self.node_map.get(&node).ok_or(())?;
+        if let Some(mut pd) = self.world.ecs.get_mut::<PathData>(*entity) {
+            *pd = path_data;
+            self.gpu.mark_dirty();
+            Ok(())
+        } else {
+            Err(())
+        }
+    }
+
     pub fn on_resize(&mut self, width: u32, height: u32) {
         self.gpu.resize(width, height);
     }
