@@ -35,6 +35,10 @@ pollster = "0.3"
 # Rust -- one of the hardware-independent metrics this audit requires.
 divan = "0.1.21"
 
+[[bench]]
+name = "pure2d_headless"
+harness = false
+
 [features]
 default = ["gui"]
 gui = ["dep:ferrous_gui", "dep:ferrous_ui_render"]
