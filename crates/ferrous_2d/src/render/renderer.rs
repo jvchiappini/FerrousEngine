@@ -1,6 +1,31 @@
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
-use crate::render::{SpriteBatcher, SpritePipeline, SpriteInstance, ShapePipeline, ShapeBatcher};
+use crate::render::{SpriteBatcher, SpritePipeline, SpriteInstance, ShapePipeline};
 use glam::Mat4;
+
+/// Hardware-independent per-frame counters for the 2D render path.
+///
+/// These exist so that the headless benchmarking harness (and integration
+/// tests) can report *what the renderer did this frame* without relying on
+/// wall-clock timings, which are meaningless on a software rasteriser.  They
+/// are reset by [`Renderer2d::reset_frame_counters`] at the start of a frame
+/// and accumulated by the `prepare_*` / `render_*` methods.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Frame2dCounters {
+    /// Total `draw*` calls issued (`shape_draw_calls + sprite_draw_calls`).
+    pub draw_calls: u32,
+    /// Draw calls issued through the shape (SDF) pipeline.
+    pub shape_draw_calls: u32,
+    /// Draw calls issued through the sprite pipeline.
+    pub sprite_draw_calls: u32,
+    /// Bytes actually written to GPU instance buffers this frame.
+    pub bytes_uploaded: u64,
+    /// Instances uploaded this frame (shapes + sprites).
+    pub instances_uploaded: u32,
+    /// Instance buffers reallocated because the frame outgrew the current
+    /// capacity.  A steady-state frame is expected to report `0`.
+    pub buffer_reallocations: u32,
+}
 
 pub struct Renderer2d {
     device: Arc<wgpu::Device>,
@@ -18,6 +43,15 @@ pub struct Renderer2d {
     // Capacity
     max_instances: u32,
     max_shape_instances: u32,
+
+    // Per-frame instrumentation.  Atomics (not `Cell`) so `Renderer2d` stays
+    // `Send + Sync` as required by `ferrous_render_graph::RenderPass`.
+    counters_draw_calls: AtomicU32,
+    counters_shape_draw_calls: AtomicU32,
+    counters_sprite_draw_calls: AtomicU32,
+    counters_bytes_uploaded: AtomicU64,
+    counters_instances_uploaded: AtomicU32,
+    counters_buffer_reallocations: AtomicU32,
 }
 
 impl Renderer2d {
@@ -81,7 +115,49 @@ impl Renderer2d {
             shape_camera_bind_group,
             max_instances,
             max_shape_instances: max_instances,
+            counters_draw_calls: AtomicU32::new(0),
+            counters_shape_draw_calls: AtomicU32::new(0),
+            counters_sprite_draw_calls: AtomicU32::new(0),
+            counters_bytes_uploaded: AtomicU64::new(0),
+            counters_instances_uploaded: AtomicU32::new(0),
+            counters_buffer_reallocations: AtomicU32::new(0),
         }
+    }
+
+    /// Resets the per-frame instrumentation.  Call once at the start of every
+    /// frame (before `prepare_*` / `render_*`) when collecting metrics.
+    pub fn reset_frame_counters(&self) {
+        self.counters_draw_calls.store(0, Ordering::Relaxed);
+        self.counters_shape_draw_calls.store(0, Ordering::Relaxed);
+        self.counters_sprite_draw_calls.store(0, Ordering::Relaxed);
+        self.counters_bytes_uploaded.store(0, Ordering::Relaxed);
+        self.counters_instances_uploaded.store(0, Ordering::Relaxed);
+        self.counters_buffer_reallocations.store(0, Ordering::Relaxed);
+    }
+
+    /// Snapshot of the per-frame instrumentation accumulated since the last
+    /// [`Renderer2d::reset_frame_counters`].
+    pub fn frame_counters(&self) -> Frame2dCounters {
+        Frame2dCounters {
+            draw_calls: self.counters_draw_calls.load(Ordering::Relaxed),
+            shape_draw_calls: self.counters_shape_draw_calls.load(Ordering::Relaxed),
+            sprite_draw_calls: self.counters_sprite_draw_calls.load(Ordering::Relaxed),
+            bytes_uploaded: self.counters_bytes_uploaded.load(Ordering::Relaxed),
+            instances_uploaded: self.counters_instances_uploaded.load(Ordering::Relaxed),
+            buffer_reallocations: self.counters_buffer_reallocations.load(Ordering::Relaxed),
+        }
+    }
+
+    #[inline]
+    fn record_shape_draw(&self) {
+        self.counters_draw_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters_shape_draw_calls.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline]
+    fn record_sprite_draw(&self) {
+        self.counters_draw_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters_sprite_draw_calls.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Update the Orthographic Camera Matrix and Resolution
@@ -110,6 +186,8 @@ impl Renderer2d {
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
+            self.counters_buffer_reallocations
+                .fetch_add(1, Ordering::Relaxed);
         }
 
         // Consolidar TODOS los datos en un slice contiguo → UN SOLO write_buffer.
@@ -119,7 +197,12 @@ impl Renderer2d {
         for instances in batcher.batches.values() {
             flat.extend_from_slice(instances.as_slice());
         }
-        queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&flat));
+        let uploaded = bytemuck::cast_slice(&flat);
+        queue.write_buffer(&self.instance_buffer, 0, uploaded);
+        self.counters_bytes_uploaded
+            .fetch_add(uploaded.len() as u64, Ordering::Relaxed);
+        self.counters_instances_uploaded
+            .fetch_add(total_instances as u32, Ordering::Relaxed);
 
         total_instances
     }
@@ -136,9 +219,16 @@ impl Renderer2d {
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
+            self.counters_buffer_reallocations
+                .fetch_add(1, Ordering::Relaxed);
         }
 
-        queue.write_buffer(&self.shape_instance_buffer, 0, bytemuck::cast_slice(&batcher.instances));
+        let uploaded = bytemuck::cast_slice(&batcher.instances);
+        queue.write_buffer(&self.shape_instance_buffer, 0, uploaded);
+        self.counters_bytes_uploaded
+            .fetch_add(uploaded.len() as u64, Ordering::Relaxed);
+        self.counters_instances_uploaded
+            .fetch_add(total as u32, Ordering::Relaxed);
         total
     }
 
@@ -165,6 +255,7 @@ impl Renderer2d {
                 render_pass.set_bind_group(1, bg, &[]);
                 // We draw 4 vertices (quad) per instance
                 render_pass.draw(0..4, current_offset..(current_offset + count));
+                self.record_sprite_draw();
             }
             
             current_offset += count;
@@ -181,6 +272,7 @@ impl Renderer2d {
         render_pass.set_bind_group(0, &self.shape_camera_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.shape_instance_buffer.slice(..));
         render_pass.draw(0..4, 0..batcher.instances.len() as u32);
+        self.record_shape_draw();
     }
 
     /// Renders a contiguous range `[offset, offset + count)` of shape instances
@@ -197,6 +289,7 @@ impl Renderer2d {
         render_pass.set_bind_group(0, &self.shape_camera_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.shape_instance_buffer.slice(..));
         render_pass.draw(0..4, offset..(offset + count));
+        self.record_shape_draw();
     }
 
     /// Renders a contiguous range `[offset, offset + count)` of sprite instances
@@ -217,5 +310,6 @@ impl Renderer2d {
         render_pass.set_bind_group(1, bg, &[]);
         render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
         render_pass.draw(0..4, offset..(offset + count));
+        self.record_sprite_draw();
     }
 }
