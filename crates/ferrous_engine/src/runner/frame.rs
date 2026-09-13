@@ -32,15 +32,30 @@ impl<A: FerrousApp + 'static> Runner<A> {
                         self.graphics = slot.borrow_mut().take();
                         self.gfx_pending = None;
                         if let (Some(gfx), Some(window)) = (&mut self.graphics, &self.window) {
-                            let size = window.inner_size();
-                            self.window_size = (size.width, size.height);
+                            #[cfg(target_arch = "wasm32")]
+                            let (w, h) = if let Some(win) = web_sys::window() {
+                                let dpr = win.device_pixel_ratio();
+                                let scale = self.config.resolution_scale;
+                                let css_w = win.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(self.window_size.0 as f64);
+                                let css_h = win.inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(self.window_size.1 as f64);
+                                ((css_w * dpr * scale).round() as u32, (css_h * dpr * scale).round() as u32)
+                            } else {
+                                let size = window.inner_size();
+                                (size.width, size.height)
+                            };
+                            #[cfg(not(target_arch = "wasm32"))]
+                            let (w, h) = {
+                                let size = window.inner_size();
+                                (size.width, size.height)
+                            };
+                            self.window_size = (w.max(1), h.max(1));
                             self.viewport = ferrous_core::Viewport {
                                 x: 0,
                                 y: 0,
-                                width: size.width,
-                                height: size.height,
+                                width: self.window_size.0,
+                                height: self.window_size.1,
                             };
-                            gfx.resize(size.width, size.height);
+                            gfx.resize(self.window_size.0, self.window_size.1);
                             gfx.renderer.set_viewport(self.viewport);
                             let time = self.clock.peek();
                             let mut ctx = AppContext {
@@ -86,17 +101,36 @@ impl<A: FerrousApp + 'static> Runner<A> {
         // wasm32: proactive size sync as browser layout can be delayed/asynchronous
         #[cfg(target_arch = "wasm32")]
         {
-            let size = window.inner_size();
-            if size.width > 0 && size.height > 0 && (size.width != self.window_size.0 || size.height != self.window_size.1) {
-                self.window_size = (size.width, size.height);
-                self.viewport = ferrous_core::Viewport {
-                    x: 0,
-                    y: 0,
-                    width: size.width,
-                    height: size.height,
-                };
-                gfx.resize(size.width, size.height);
-                gfx.renderer.set_viewport(self.viewport);
+            if let Some(win) = web_sys::window() {
+                let dpr = win.device_pixel_ratio();
+                let scale = self.config.resolution_scale;
+                let css_w = win.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(self.window_size.0 as f64);
+                let css_h = win.inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(self.window_size.1 as f64);
+                let phys_w = (css_w * dpr * scale).round() as u32;
+                let phys_h = (css_h * dpr * scale).round() as u32;
+                if phys_w > 0 && phys_h > 0 && (phys_w != self.window_size.0 || phys_h != self.window_size.1) {
+                    self.window_size = (phys_w, phys_h);
+                    self.viewport = ferrous_core::Viewport {
+                        x: 0,
+                        y: 0,
+                        width: phys_w,
+                        height: phys_h,
+                    };
+                    gfx.resize(phys_w, phys_h);
+                    gfx.renderer.set_viewport(self.viewport);
+                    if let Some(doc) = win.document() {
+                        if let Ok(Some(c)) = doc.query_selector("canvas") {
+                            if let Ok(html_canvas) = wasm_bindgen::JsCast::dyn_into::<web_sys::HtmlCanvasElement>(c) {
+                                if html_canvas.width() != phys_w {
+                                    html_canvas.set_width(phys_w);
+                                }
+                                if html_canvas.height() != phys_h {
+                                    html_canvas.set_height(phys_h);
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 

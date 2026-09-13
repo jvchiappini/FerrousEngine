@@ -49,7 +49,7 @@ use crate::resources::SsaoResources;
 use camera::controller::OrbitState;
 pub use pipeline::InstancingPipeline;
 
-use ferrous_2d::render::{Renderer2d, ShapeBatcher};
+use ferrous_2d::render::{Renderer2d, ShapeBatcher, DrawCommand2d};
 
 
 use ferrous_core::context::EngineContext;
@@ -1132,14 +1132,89 @@ impl Renderer {
                     occlusion_query_set: None,
                 });
 
-                // Primero shapes (pueden ir debajo de los sprites)
-                self.renderer_2d_pure.render_shapes(&mut rpass, &self.shape_batcher);
-
-                // Luego sprites texturizados (encima de shapes)
-                let sprite_bgs = &self.sprite_bind_groups;
-                self.renderer_2d_pure.render(&mut rpass, &self.sprite_batcher_2d, |tex_id| {
-                    sprite_bgs.get(&tex_id).map(|bg| bg.as_ref())
+                // Z-ordering unificado shapes+sprites: construimos una lista de
+                // draw commands ordenada por z ascendente (la lógica de
+                // ShapeBatcher::sort_by_z queda integrada aquí: el Z se lee de
+                // transform_c3[2] de cada instancia), y emitimos un draw por run
+                // contiguo del mismo pipeline/función de textura.
+                let mut draw_list: Vec<(f32, DrawCommand2d)> = Vec::with_capacity(
+                    self.shape_batcher.instances.len() + self.sprite_batcher_2d.total_instances(),
+                );
+                for (i, shape) in self.shape_batcher.instances.iter().enumerate() {
+                    draw_list.push((shape.transform_c3[2], DrawCommand2d::Shape(i)));
+                }
+                let mut sprite_offset = 0usize;
+                for (&tex_id, instances) in &self.sprite_batcher_2d.batches {
+                    for (k, inst) in instances.iter().enumerate() {
+                        draw_list.push((
+                            inst.transform_c3[2],
+                            DrawCommand2d::Sprite(tex_id, sprite_offset + k),
+                        ));
+                    }
+                    sprite_offset += instances.len();
+                }
+                draw_list.sort_unstable_by(|a, b| {
+                    a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
                 });
+
+                // Nota: en esta fase primamos corrección sobre nº de draw calls.
+                // El orden de dibujado respeta z_index sin importar el tipo de
+                // primitiva (shapes y sprites se intercalan correctamente).
+                let sprite_bgs = &self.sprite_bind_groups;
+                let mut i = 0usize;
+                while i < draw_list.len() {
+                    // Fn para resolver la bind group de una textura de sprite.
+                    let sprite_bg_fn = |tex_id: u32| -> Option<&wgpu::BindGroup> {
+                        sprite_bgs.get(&tex_id).map(|bg| bg.as_ref())
+                    };
+                    match draw_list[i].1 {
+                        DrawCommand2d::Shape(_) => {
+                            let idx = match draw_list[i].1 { DrawCommand2d::Shape(idx) => idx, _ => 0 };
+                            let mut j = i;
+                            let mut expected = idx + 1;
+                            let mut count = 1usize;
+                            while j + 1 < draw_list.len()
+                                && draw_list[j + 1].0 == draw_list[i].0
+                                && matches!(draw_list[j + 1].1, DrawCommand2d::Shape(e) if e == expected)
+                            {
+                                j += 1;
+                                expected += 1;
+                                count += 1;
+                            }
+                            self.renderer_2d_pure.render_shapes_range(
+                                &mut rpass,
+                                idx as u32,
+                                count as u32,
+                            );
+                            i = j + 1;
+                        }
+                        DrawCommand2d::Sprite(tex_id, idx) => {
+                            let mut j = i;
+                            let mut expected = idx + 1;
+                            let mut count = 1usize;
+                            while j + 1 < draw_list.len()
+                                && draw_list[j + 1].0 == draw_list[i].0
+                            {
+                                match draw_list[j + 1].1 {
+                                    DrawCommand2d::Sprite(t, e) if t == tex_id && e == expected => {
+                                        j += 1;
+                                        expected += 1;
+                                        count += 1;
+                                    }
+                                    _ => break,
+                                }
+                            }
+                            self.renderer_2d_pure.render_sprites_range(
+                                &mut rpass,
+                                tex_id,
+                                idx as u32,
+                                count as u32,
+                                sprite_bg_fn,
+                            );
+                            i = j + 1;
+                        }
+                    }
+                }
             }
 
             // Limpiar el sprite batcher para el siguiente frame
@@ -1355,9 +1430,17 @@ impl Renderer {
         self.gizmo_system.execute(&self.context.device, encoder, scene_view, scene_rt, &self.render_target.depth.view, &self.camera_system.gpu.bind_group);
 
         // -- 6a. Technical 2D Pass (Walls, etc.) -------------------------------
+        // The 2D overlay is a screen-space pass: it must receive an independent
+        // orthographic projection (origin centred, 1 world-unit = 1 pixel, y up),
+        // identical to the one `set_mode_2d` produces in Pure2D.  Feeding the 3D
+        // perspective view-proj here produces a wrong `world_pixel_size` in
+        // shape_2d.wgsl (world_pixel_size = 2 / |view_proj[0][0]| * res.x, only
+        // valid for ortho) which breaks the anti-aliasing width.
+        // TODO(overlay-camera): support dedicated 2D pan/zoom on the overlay by
+        // pre-multiplying a 2D camera transform; for now the projection is fixed.
         self.renderer_2d.update_camera(
-            &self.context.queue, 
-            self.camera_system.view_proj(),
+            &self.context.queue,
+            self.overlay_2d_view_proj(),
             glam::Vec2::new(self.width as f32, self.height as f32)
         );
 
@@ -1698,6 +1781,32 @@ impl Renderer {
             self.render_target.width as f32,
             self.render_target.height as f32,
         )
+    }
+
+    /// Builds the screen-space view-projection used by the 2D overlay pass in
+    /// Full3D.  It mirrors the ortho configured by `Camera::set_mode_2d(true,
+    /// Some(height))` + `set_aspect(width/height)` in Pure2D, including the
+    /// OpenGL→WGPU depth correction, so the overlay renders with the exact same
+    /// pixel mapping as Pure2D (origin centred, 1 world-unit = 1 pixel, y up).
+    ///
+    /// This is kept independent from `camera_system` on purpose: in Full3D the
+    /// camera holds a perspective projection which the 2D shader cannot use to
+    /// derive `world_pixel_size`.
+    fn overlay_2d_view_proj(&self) -> ferrous_core::glam::Mat4 {
+        use ferrous_core::glam::{Mat4, Vec3};
+
+        let hw = self.width as f32 * 0.5;
+        let hh = self.height as f32 * 0.5;
+
+        // Same eye/target/up as `set_mode_2d(true, ...)`.
+        let view = Mat4::look_at_rh(
+            Vec3::new(0.0, 0.0, 10.0),
+            Vec3::ZERO,
+            Vec3::Y,
+        );
+        let proj = Mat4::orthographic_rh(-hw, hw, -hh, hh, -100.0, 100.0);
+        let corrected = crate::resources::camera::OPENGL_TO_WGPU_MATRIX * proj;
+        corrected * view
     }
 
     /// Activa el modo de exportación headless o video instanciando el readback buffer.

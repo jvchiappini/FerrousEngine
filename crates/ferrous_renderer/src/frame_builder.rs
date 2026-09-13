@@ -21,7 +21,7 @@ use crate::geometry::primitives::{
     cylinder::cylinder as create_cylinder,
     plane::plane as create_plane,
     quad::quad as create_quad,
-    shapes2d::{circle_2d, rect_2d, line_2d, path_to_mesh},
+    shapes2d::{circle_2d, rect_2d, line_2d, path_to_mesh, into_line_cap, into_line_join},
     sphere::sphere as create_sphere,
     torus::torus as create_torus,
 };
@@ -423,17 +423,19 @@ impl FrameBuilder {
                     let s_c = element.stroke_color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
                     let s_c_bits = s_c[0].to_bits() ^ s_c[1].to_bits() ^ s_c[2].to_bits() ^ s_c[3].to_bits();
                     let t = element.stroke_thickness;
-                    let key = (2u8, x0.to_bits(), y0.to_bits(), x1.to_bits(), y1.to_bits(), t.to_bits() ^ s_c_bits);
+                    let cap = element.line_cap_style;
+                    let join = element.line_join_style;
+                    let key = (2u8, x0.to_bits(), y0.to_bits(), x1.to_bits(), y1.to_bits(), t.to_bits() ^ s_c_bits ^ (cap as u32) ^ ((join as u32) << 8));
                     self.shapes2d_cache
                         .entry(key)
-                        .or_insert_with(|| line_2d(device, *x0, *y0, *x1, *y1, t, s_c))
+                        .or_insert_with(|| line_2d(device, *x0, *y0, *x1, *y1, t, s_c, into_line_cap(cap), into_line_join(join)))
                         .clone()
                 }
                 ElementKind::Path => {
                     if let Some(path_data) = world.ecs.get::<ferrous_core::scene::world::types::PathData>(_entity) {
                         let fill_c = element.fill_color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
                         let stroke_c = element.stroke_color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
-                        path_to_mesh(device, path_data, element.fill_color.is_some(), element.stroke_thickness, fill_c, stroke_c)
+                        path_to_mesh(device, path_data, element.fill_color.is_some(), element.stroke_thickness, fill_c, stroke_c, into_line_cap(element.line_cap_style), into_line_join(element.line_join_style))
                     } else {
                         continue;
                     }

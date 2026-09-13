@@ -192,6 +192,7 @@ impl Renderer {
             stroke_color: None,
             stroke_thickness: 0.0,
             line_cap_style: 0,
+            line_join_style: 0,
         };
 
         let entity = self.world.ecs.spawn((transform, element, material));
@@ -227,6 +228,7 @@ impl Renderer {
             stroke_color: Some([1.0, 1.0, 1.0, 1.0]),
             stroke_thickness: 0.1,
             line_cap_style: 0,
+            line_join_style: 0,
         };
 
         // v15: 2D objects use FlatShaded (unlit) style by default so they work without lights
@@ -333,6 +335,7 @@ impl Renderer {
             stroke_color: None,
             stroke_thickness: 0.0,
             line_cap_style: 0,
+            line_join_style: 0,
         };
 
         let entity = self.world.ecs.spawn((transform, element, material));
@@ -707,6 +710,19 @@ impl Renderer {
         if let Some(entity) = self.node_map.get(&node) {
             if let Some(mut elem) = self.world.ecs.get_mut::<Element>(*entity) {
                 elem.line_cap_style = cap.min(2);
+                self.gpu.mark_dirty();
+                return Ok(());
+            }
+        }
+        Err(())
+    }
+
+    /// Sets the line join style for a stroked 2D entity (Line2D / Path).
+    /// join: 0 = Miter, 1 = Bevel, 2 = Round.
+    pub fn set_line_join(&mut self, node: NodeId, join: u8) -> Result<(), ()> {
+        if let Some(entity) = self.node_map.get(&node) {
+            if let Some(mut elem) = self.world.ecs.get_mut::<Element>(*entity) {
+                elem.line_join_style = join.min(2);
                 self.gpu.mark_dirty();
                 return Ok(());
             }

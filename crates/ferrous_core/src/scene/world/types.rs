@@ -279,6 +279,11 @@ pub struct Element {
     /// Line cap style for 2D Line2D entities.
     /// 0 = Flat (default), 1 = Round, 2 = Square.
     pub line_cap_style: u8,
+
+    /// Line join style for stroked Path entities (0 = Miter default,
+    /// 1 = Bevel, 2 = Round). Consumed by `path_to_mesh` via `into_line_join`.
+    #[serde(default)]
+    pub line_join_style: u8,
 }
 
 impl Component for Element {}
@@ -300,6 +305,7 @@ impl Element {
             stroke_color: None,
             stroke_thickness: 0.0,
             line_cap_style: 0,
+            line_join_style: 0,
         }
     }
 }

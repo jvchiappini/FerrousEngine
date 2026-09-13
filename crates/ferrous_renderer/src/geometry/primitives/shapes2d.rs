@@ -58,6 +58,24 @@ impl lyon_tessellation::StrokeVertexConstructor<Vertex> for StrokeCtor {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+/// Engine numeric line cap (0 = Flat/Butt, 1 = Round, 2 = Square) → lyon `LineCap`.
+pub fn into_line_cap(style: u8) -> lyon_tessellation::LineCap {
+    match style {
+        1 => lyon_tessellation::LineCap::Round,
+        2 => lyon_tessellation::LineCap::Square,
+        _ => lyon_tessellation::LineCap::Butt,
+    }
+}
+
+/// Engine numeric line join (0 = Miter, 1 = Bevel, 2 = Round) → lyon `LineJoin`.
+pub fn into_line_join(style: u8) -> lyon_tessellation::LineJoin {
+    match style {
+        1 => lyon_tessellation::LineJoin::Bevel,
+        2 => lyon_tessellation::LineJoin::Round,
+        _ => lyon_tessellation::LineJoin::Miter,
+    }
+}
+
 /// Convert a `VertexBuffers<Vertex, u32>` to a GPU `Mesh`.
 fn buffers_to_mesh(
     device: &wgpu::Device,
@@ -138,6 +156,8 @@ pub fn path_to_mesh(
     stroke_thickness: f32,
     fill_color: [f32; 4],
     stroke_color: [f32; 4],
+    cap: lyon_tessellation::LineCap,
+    join: lyon_tessellation::LineJoin,
 ) -> Mesh {
     let path = build_lyon_path(path_data);
     let mut buffers: VertexBuffers<Vertex, u32> = VertexBuffers::new();
@@ -169,8 +189,8 @@ pub fn path_to_mesh(
         let mut tessellator = StrokeTessellator::new();
         let options = StrokeOptions::default()
             .with_line_width(effective_thickness)
-            .with_line_cap(lyon_tessellation::LineCap::Butt)
-            .with_line_join(lyon_tessellation::LineJoin::Miter)
+            .with_line_cap(cap)
+            .with_line_join(join)
             .with_tolerance(0.01);
         tessellator
             .tessellate_path(
@@ -242,7 +262,17 @@ pub fn rect_2d(device: &wgpu::Device, width: f32, height: f32, do_fill: bool, st
 }
 
 /// Thick line segment in the XY plane (z = 0).
-pub fn line_2d(device: &wgpu::Device, x0: f32, y0: f32, x1: f32, y1: f32, thickness: f32, color: [f32;4]) -> Mesh {
+pub fn line_2d(
+    device: &wgpu::Device,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    thickness: f32,
+    color: [f32; 4],
+    cap: lyon_tessellation::LineCap,
+    join: lyon_tessellation::LineJoin,
+) -> Mesh {
     let thickness = thickness.max(1e-4);
 
     let mut builder = lyon_tessellation::path::Path::builder();
@@ -253,8 +283,8 @@ pub fn line_2d(device: &wgpu::Device, x0: f32, y0: f32, x1: f32, y1: f32, thickn
 
     let opts = StrokeOptions::default()
         .with_line_width(thickness)
-        .with_line_cap(lyon_tessellation::LineCap::Butt)
-        .with_line_join(lyon_tessellation::LineJoin::Miter)
+        .with_line_cap(cap)
+        .with_line_join(join)
         .with_tolerance(0.01);
 
     let mut buffers: VertexBuffers<Vertex, u32> = VertexBuffers::new();

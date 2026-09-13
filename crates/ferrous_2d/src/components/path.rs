@@ -95,6 +95,10 @@ pub struct Path2d {
     pub is_filled: bool,
     pub fill_color: [f32; 4],
     
+    /// Join style for corners shared between segments. Read by
+    /// `prepare_paths_system`: `Round`/`Bevel` use a true round-join disc
+    /// (`stroke_width/2`), `Miter` grows the disc with the miter ratio on
+    /// sharp corners. Exact miter/bevel tessellation is a future improvement.
     pub join_style: JoinStyle,
     pub cap_style: CapStyle,
     pub is_closed: bool,

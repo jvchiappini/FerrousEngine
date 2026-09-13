@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::collections::HashMap;
 use ferrous_render_graph::{FramePacket, RenderPass};
 use wgpu::{CommandEncoder, Device, Queue, TextureView};
 
@@ -9,10 +10,11 @@ use glam::Mat4;
 pub struct SpritePass {
     pub renderer_2d: Renderer2d,
     pub batcher: SpriteBatcher,
-    
-    // Bind group cache or lookup function could be passed from the main Renderer
-    // For now we just keep a list or map of known BindGroups if we were managing them directly,
-    // but typically textures are stored in the asset server or RenderResource map.
+
+    /// Per-texture bind groups keyed by `texture_id`, synced from the main
+    /// `Renderer::sprite_bind_groups` via [`SpritePass::set_texture_bind_groups`].
+    /// When empty, sprites are skipped (no texture bound).
+    texture_bind_groups: HashMap<u32, Arc<wgpu::BindGroup>>,
 }
 
 impl SpritePass {
@@ -20,7 +22,15 @@ impl SpritePass {
         Self {
             renderer_2d: Renderer2d::new(device, output_format, depth_format, 1, 1024),
             batcher: SpriteBatcher::default(),
+            texture_bind_groups: HashMap::new(),
         }
+    }
+
+    /// Sets (or replaces) the texture bind-group map used to resolve sprite
+    /// textures at render time. Call with `renderer.sprite_bind_groups.clone()`
+    /// and re-sync whenever a texture is registered.
+    pub fn set_texture_bind_groups(&mut self, groups: HashMap<u32, Arc<wgpu::BindGroup>>) {
+        self.texture_bind_groups = groups;
     }
 
 
@@ -77,12 +87,11 @@ impl RenderPass for SpritePass {
             occlusion_query_set: None,
         });
 
-        // We get the texture BindGroups from the FramePacket/Renderer ctx.
-        // For now, assume packet can supply a closure or mapping.
-        // This is a placeholder for texture binding fetching.
-        self.renderer_2d.render(&mut render_pass, &self.batcher, |_tex_id| {
-            // TODO: Get actual BindGroup for texture from Asset/Resource Manager
-            None
+        // Snapshot of the bind groups (Arc clones — cheap, no borrow of self
+        // while `renderer_2d` is borrowed by `render`).
+        let bgs = self.texture_bind_groups.clone();
+        self.renderer_2d.render(&mut render_pass, &self.batcher, |tex_id| {
+            bgs.get(&tex_id).map(|bg| bg.as_ref())
         });
     }
 }

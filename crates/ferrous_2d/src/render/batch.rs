@@ -69,3 +69,24 @@ impl ShapeBatcher {
         });
     }
 }
+
+/// A single draw command in the unified 2D command stream, sorted by ascending z
+/// so shapes and sprites interleave correctly regardless of pipeline.
+///
+/// Indices refer to the *flat GPU upload layouts* produced each frame by
+/// `Renderer2d::prepare_shapes` / `Renderer2d::prepare`:
+/// - `Shape(i)` → `ShapeBatcher.instances[i]`.
+/// - `Sprite(tex_id, i)` → i-th instance of the flattened sprite upload, which
+///   is `SpriteBatcher` iterated in `BTreeMap` (ascending `texture_id`) order.
+///
+/// The z value used for sorting is read from the instance's own transform
+/// (`transform_c3[2]`), which is how `sort_by_z`, `prepare_shapes_system`,
+/// `prepare_sprites_system` and `prepare_paths_system` all encode depth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrawCommand2d {
+    /// Draw `ShapeBatcher.instances[index]` with the shape (SDF) pipeline.
+    Shape(usize),
+    /// Draw the sprite after `SpriteBatcher` flattening: `texture_id` selects
+    /// the texture bind group, `index` is the offset in the flattened upload.
+    Sprite(u32, usize),
+}

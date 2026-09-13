@@ -50,9 +50,15 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     // view_proj[0][0] is (2.0 / width_in_world_units) in Ortho
     let res = max(camera.resolution, vec2<f32>(1.0, 1.0));
     let world_pixel_size = 2.0 / (abs(camera.view_proj[0][0]) * res.x);
-    let padding = world_pixel_size * 4.0;
-
-    let expansion_factor = 1.0 + (padding * 2.0 / local_size);
+    // Guard against degenerate instances: a zero axis in local_size would
+    // divide by zero below.
+    let safe_local_size = max(local_size, vec2<f32>(0.001));
+    // Cap the expansion so the quad never grows more than 100% per axis.
+    // Previously a 1px line expanded 9x in height, smearing AA into
+    // neighboring geometry and creating halos on adjacent lines.
+    let max_padding = safe_local_size * 0.5;
+    let padding = min(vec2<f32>(world_pixel_size * 4.0), max_padding);
+    let expansion_factor = 1.0 + (padding * 2.0 / safe_local_size);
     let expanded_local_pos = pos_in * expansion_factor;
     
     let world_pos_4 = transform * vec4<f32>(expanded_local_pos, 0.0, 1.0);
@@ -93,7 +99,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var final_d = d;
     var alpha_multiplier = 1.0;
     
-    if (actual_width < min_world_width) {
+    // Only run the thin-line stabilization for stroked/bordered primitives
+    // (actual_width > 0). Filled shapes have params.x == 0; without this guard
+    // they hit the branch below and get alpha_multiplier = 0.2 → rendered at
+    // 20% opacity.
+    if (actual_width > 0.0 && actual_width < min_world_width) {
         let expansion = (min_world_width - actual_width) * 0.5;
         final_d -= expansion;
         alpha_multiplier = clamp(actual_width / min_world_width, 0.2, 1.0);
@@ -112,5 +122,5 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         discard;
     }
 
-    return vec4<f32>(in.color.rgb * 2.0, in.color.a * final_alpha);
+    return vec4<f32>(in.color.rgb, in.color.a * final_alpha);
 }

@@ -76,7 +76,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let out_color = tex_color * in.color;
     
     // Discard transparent pixels to preserve Z-buffer ordering properly!
-    if out_color.a < 0.05 {
+    // Threshold ~1/255: avoids hard "jagged" edges on soft-fade sprites,
+    // while still skipping nearly-invisible fragments for fill-rate.
+    if out_color.a < 0.004 {
         discard;
     }
 

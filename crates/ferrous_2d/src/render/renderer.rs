@@ -182,4 +182,40 @@ impl Renderer2d {
         render_pass.set_vertex_buffer(0, self.shape_instance_buffer.slice(..));
         render_pass.draw(0..4, 0..batcher.instances.len() as u32);
     }
+
+    /// Renders a contiguous range `[offset, offset + count)` of shape instances
+    /// (indices in the flat upload produced by `prepare_shapes`).  Used by the
+    /// unified z-sorted command stream so shapes can interleave with sprites.
+    pub fn render_shapes_range(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        offset: u32,
+        count: u32,
+    ) {
+        if count == 0 { return; }
+        render_pass.set_pipeline(&self.shape_pipeline.wgpu_pipeline);
+        render_pass.set_bind_group(0, &self.shape_camera_bind_group, &[]);
+        render_pass.set_vertex_buffer(0, self.shape_instance_buffer.slice(..));
+        render_pass.draw(0..4, offset..(offset + count));
+    }
+
+    /// Renders a contiguous range `[offset, offset + count)` of sprite instances
+    /// for a single `texture_id`, binding its texture bind group first.  Same
+    /// usage as `render` but scoped to an arbitrary slice of the flat upload.
+    pub fn render_sprites_range<'a>(
+        &'a self,
+        render_pass: &mut wgpu::RenderPass<'a>,
+        tex_id: u32,
+        offset: u32,
+        count: u32,
+        get_texture_bind_group: impl Fn(u32) -> Option<&'a wgpu::BindGroup>,
+    ) {
+        if count == 0 { return; }
+        let Some(bg) = get_texture_bind_group(tex_id) else { return; };
+        render_pass.set_pipeline(&self.pipeline.wgpu_pipeline);
+        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+        render_pass.set_bind_group(1, bg, &[]);
+        render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
+        render_pass.draw(0..4, offset..(offset + count));
+    }
 }
