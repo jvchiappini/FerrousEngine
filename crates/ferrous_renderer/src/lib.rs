@@ -15,6 +15,11 @@ pub mod renderer_resource;
 pub mod renderer_passes;
 pub mod exporter;
 
+// Headless (windowless) benchmark + integration-test harness.  Native-only
+// because device creation blocks on wgpu's async requests via `pollster`.
+#[cfg(all(not(target_arch = "wasm32"), feature = "gui"))]
+pub mod headless;
+
 // Support modules located in src/
 pub mod camera;
 pub mod camera_system;

@@ -29,11 +29,12 @@ rayon = "1.11.0"
 pollster = "0.3"
 
 [dev-dependencies]
-# image is used by tests/examples but we now also expose it as an optional
-# feature for runtime texture loading (png/jpeg).  we keep the dev-dependency
-# at 0.24 so that existing tests continue to compile when the feature flag is
-# disabled; the optional dependency below is the one that will be used by
-# consumers when they enable `--features image`.
+# `divan` is the benchmark framework for the headless Pure2D harness.  It was
+# chosen over `criterion` because it is lighter, has no group/main boilerplate,
+# and its `AllocProfiler` reports allocations + bytes per iteration on stable
+# Rust -- one of the hardware-independent metrics this audit requires.
+divan = "0.1.21"
+
 [features]
 default = ["gui"]
 gui = ["dep:ferrous_gui", "dep:ferrous_ui_render"]
