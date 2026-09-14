@@ -194,6 +194,9 @@ pub struct FrameReport {
     pub bytes_uploaded: u64,
     /// Shape + sprite instances uploaded this frame.
     pub instances_uploaded: u32,
+    /// Instances discarded by CPU-side viewport culling this frame (shapes +
+    /// sprites).  `0` when `Render2dConfig::cull_2d` is disabled.
+    pub culled_instances: u32,
     /// Instance buffers reallocated because the frame outgrew capacity.
     /// Steady-state frames report `0`.
     pub buffer_reallocations: u32,
@@ -339,6 +342,7 @@ impl Pure2dHarness {
             sprite_draw_calls: counters.sprite_draw_calls,
             bytes_uploaded: counters.bytes_uploaded,
             instances_uploaded: counters.instances_uploaded,
+            culled_instances: counters.culled_instances,
             buffer_reallocations: counters.buffer_reallocations,
             bind_groups_created: created,
             bind_groups_total,

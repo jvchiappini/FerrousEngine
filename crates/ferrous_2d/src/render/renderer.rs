@@ -25,6 +25,10 @@ pub struct Frame2dCounters {
     /// Instance buffers reallocated because the frame outgrew the current
     /// capacity.  A steady-state frame is expected to report `0`.
     pub buffer_reallocations: u32,
+    /// Instance instances discarded by CPU-side 2D culling because their world
+    /// AABB did not intersect the visible camera rect (shapes + sprites).
+    /// `0` when culling is disabled (`Render2dConfig::cull_2d == false`).
+    pub culled_instances: u32,
 }
 
 /// Owns the 2D instance/camera buffers and pipelines and issues 2D draw calls.
@@ -60,6 +64,7 @@ pub struct Renderer2d {
     counters_bytes_uploaded: AtomicU64,
     counters_instances_uploaded: AtomicU32,
     counters_buffer_reallocations: AtomicU32,
+    counters_culled_instances: AtomicU32,
 
     /// Reusable staging buffer for the flattened sprite upload.  Reusing it
     /// turns the per-frame `Vec::with_capacity` + `extend` (one heap alloc and
@@ -157,6 +162,7 @@ impl Renderer2d {
             counters_bytes_uploaded: AtomicU64::new(0),
             counters_instances_uploaded: AtomicU32::new(0),
             counters_buffer_reallocations: AtomicU32::new(0),
+            counters_culled_instances: AtomicU32::new(0),
             scratch_sprites: Vec::new(),
             scratch_reuse: true,
         }
@@ -185,6 +191,18 @@ impl Renderer2d {
         self.counters_bytes_uploaded.store(0, Ordering::Relaxed);
         self.counters_instances_uploaded.store(0, Ordering::Relaxed);
         self.counters_buffer_reallocations.store(0, Ordering::Relaxed);
+        self.counters_culled_instances.store(0, Ordering::Relaxed);
+    }
+
+    /// Adds `n` instances to the per-frame culled counter.  Called by the
+    /// engine's Pure2D culling pass (see `renderer_core`); exposed here so the
+    /// counter is reset with the rest of the frame instrumentation and reported
+    /// by [`Self::frame_counters`].
+    #[inline]
+    pub fn add_culled_instances(&self, n: u32) {
+        if n != 0 {
+            self.counters_culled_instances.fetch_add(n, Ordering::Relaxed);
+        }
     }
 
     /// Snapshot of the per-frame instrumentation accumulated since the last
@@ -197,6 +215,7 @@ impl Renderer2d {
             bytes_uploaded: self.counters_bytes_uploaded.load(Ordering::Relaxed),
             instances_uploaded: self.counters_instances_uploaded.load(Ordering::Relaxed),
             buffer_reallocations: self.counters_buffer_reallocations.load(Ordering::Relaxed),
+            culled_instances: self.counters_culled_instances.load(Ordering::Relaxed),
         }
     }
 
