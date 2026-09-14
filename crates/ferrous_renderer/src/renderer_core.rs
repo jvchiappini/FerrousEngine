@@ -1153,7 +1153,11 @@ impl Renderer {
                     }
                     sprite_offset += instances.len();
                 }
-                draw_list.sort_unstable_by(|a, b| {
+                // Stable sort: equal-z commands keep their insertion order, so
+                // both the painter's order and the contiguous-run coalescing
+                // below are contractual instead of depending on the sort
+                // implementation happening to preserve equal keys.
+                draw_list.sort_by(|a, b| {
                     a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
                 });
 
