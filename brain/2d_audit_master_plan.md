@@ -54,12 +54,12 @@ Ordering: severity → measured impact → risk to Koncreta/GUIMaker → effort.
 |---|---|---|---|---|---|---|
 | **H1** | #12 colour-space policy: swapchain non-sRGB vs sRGB textures vs raw shape colours (0.5 → 128 native vs 187 sRGB) | A (+C inventory) | `graphics.rs:143-150`, `renderer_core.rs:1853`, `texture.rs:42` | Systematic ~59-level darkening on native; consumer palettes need re-validation | — | S/M |
 | **H2** | #10 two uncoordinated 2D paths: overlay ignores z, drops all sprites, duplicates ortho camera | A | `renderer_core.rs:1432-1478,1795-1810` | Wrong draw order + invisible sprites in Full3D; ~200 duplicated lines | — | L |
-| **H3** | Batching coalescing collapses to 1 draw call/primitive when z differs (measured 4096→4096, 2048 sprites→2048) | A | `renderer_core.rs:1140-1217`, `ferrous_2d/render/batch.rs` | O(primitives) draws + state changes once per-element z is used | — | M |
+| **H3** ✅ | Batching coalescing collapses to 1 draw call/primitive when z differs (measured 4096→4096, 2048 sprites→2048) — **DONE** (`perf/2d-optimize`): painter-order runs coalesce across `z`; 4096 shapes → 1 draw. Cross-texture sprite interleaving intentionally still 1 draw/sprite (needs H5 atlas). See `brain/2d_perf_optimizations.md` | A | `renderer_core.rs:1140-1217`, `ferrous_2d/render/batch.rs` | O(primitives) draws + state changes once per-element z is used | — | M |
 | **H4** | Sprite texture churn: monotonic IDs never reused; `free_sprite_texture` leaves orphan `SpriteBatcher` keys (measured 2000 stale keys) | C | `renderer_core.rs:1890-1901`, `batch.rs:16-27` | Unbounded CPU iteration + GPU leak on plan reloads | — | S |
 | **H5** | No sprite atlas: 1 texture = 1 bind group = 1 draw call (measured 2048→2048, 64 bind groups); `uv_rect` already supports it | C | `batch.rs`, `sprite_2d.wgsl:11`, `renderer.rs:249-262` | Up to N→1 draws / T→1 bind groups | **H3** | L |
 | **H6** | `Query` resolves its column with `binary_search` **per row** (~800k u128 compares/frame @100k entities) | B | `ferrous_ecs/src/query.rs:111-157`, `archetype.rs:265-267` | Hot loop of any large ECS scene | — | S/M |
 | **H7** | `draw_2d_path` ignores cap/join/fill/close; `PathBuilder::close()` is a no-op; path logic triplicated | A (impl) / D (API) | `renderer_core.rs:1686-1733`, `path.rs:92-112` | CAD Flat joints render Round; API trap | **H2** (unify emission) | M |
-| **H8** | Per-frame UI `image_bind_group` rebuild + batcher scratch realloc (measured 56–92 allocs/frame, 450–650 KB/frame sprites) | C | `gui_renderer.rs:375-420`, `ferrous_2d/render/renderer.rs:181-233` | Allocator pressure / staging copies every frame (Koncreta's immediate UI) | — | M |
+| **H8** ✅ | Per-frame UI `image_bind_group` rebuild + batcher scratch realloc (measured 56–92 allocs/frame, 450–650 KB/frame sprites) — **DONE** (`perf/2d-optimize`): texture-keyed bind-group cache + reusable Pure2D/`Renderer2d` scratch; 4096 shapes 760 KB→7 KB/frame. See `brain/2d_perf_optimizations.md` | C | `gui_renderer.rs:375-420`, `ferrous_2d/render/renderer.rs:181-233` | Allocator pressure / staging copies every frame (Koncreta's immediate UI) | — | M |
 | **H9** | `FrameBuilder::mark_dirty` is a no-op: `sync_world` re-marks `scene_dirty=true` every frame | B | `renderer_core.rs:995-1019`, `frame_builder.rs:616-664` | 3D "zero CPU work" fast path never taken | — | S |
 | **H10** | Overlay + `Flat2D` + `draw_2d_path` + polygon case have no harness coverage; harness `DEFAULT_FORMAT` (sRGB) ≠ production (non-sRGB) | D | `headless.rs:57` | Pixel assertions don't reflect Koncreta; regressions invisible | H1/H2 | S/M |
 | **H11** | No polygon/triangle primitive; `ShapeInstance::from_model` is private; shader is rounded-rect SDF only — Koncreta's ear-clipping case has no direct path | D | `shape_2d.wgsl:79-126`, `types.rs:84` | First-class CAD/BIM feature gap | — | S (expose) / M-L (primitive) |
@@ -74,7 +74,7 @@ Ordering: severity → measured impact → risk to Koncreta/GUIMaker → effort.
 | M1 | `cargo test -p ferrous_ecs` doesn't compile (duplicate `mod tests`, missing derive import) — blocks all ECS tests | D (dev-experience) / B | `ferrous_ecs/src/component.rs:172,244` | S |
 | M2 | `ferrous_assets --features gpu` fails without `text` (feature gate bug) | C | `font_importer.rs:63-71`, `Cargo.toml` | S |
 | M3 | Only `from_svg_bytes` test doesn't compile; feature `svg` enabled nowhere → zero coverage | C | `texture.rs:249-270` | S |
-| M4 | AA redundancy: default FXAA over linear HDR on top of SDF AA (Pure2D has no post-AA) | A | `antialiasing_pass.rs:48-52`, `renderer_core.rs:1496-1533` | S/M |
+| M4 ✅ | AA redundancy: default FXAA over linear HDR on top of SDF AA (Pure2D has no post-AA) — **DONE** (`perf/2d-optimize`): default now `Antialiasing2d::Off`, wired through `Render2dConfig`; `with_msaa` unaffected. See `brain/2d_perf_optimizations.md` | A | `antialiasing_pass.rs:48-52`, `renderer_core.rs:1496-1533` | S/M |
 | M5 | Unstable `sort_unstable_by` for z-order; equal-z order only works by luck | A | `renderer_core.rs:1156-1158` | S |
 | M6 | `Flat2D` renders no shapes/sprites; docs describe a full 2D mode | A/D | `renderer_core.rs:1256-1283` | S/M |
 | M7 | README/getting-started examples don't compile against `DrawContext`/`UiSystem` | D | `README.md:37-101` | S |
@@ -88,7 +88,7 @@ Ordering: severity → measured impact → risk to Koncreta/GUIMaker → effort.
 | M15 | `ferrous_svg::SvgMesh::from_str` is a placeholder (draws hardcoded geometry) | C | `ferrous_svg/src/lib.rs:33-86` | M/L |
 | M16 | Error-policy inconsistency (`Result` vs `assert_eq!` vs slice panic); `register_sprite_texture` doesn't validate `data.len()` | D | `renderer_core.rs:1827-1859`, `texture.rs:24-31` | S |
 | M17 | mkdocs structural: 16 residual cross-crate link warnings from copy-flatten | D | `scripts/build_docs.sh:16-37` | S/M |
-| M18 | Pipeline `cache: None` everywhere; mode switches recompile pipelines | A | `ferrous_gpu/src/context.rs:12-19` | S/M |
+| M18 ✅ | Pipeline `cache: None` everywhere; mode switches recompile pipelines — **DONE remainder** (`perf/2d-optimize`): shared `Arc<PipelineCache>` threaded into UI + AA pipelines. See `brain/2d_perf_optimizations.md` | A | `ferrous_gpu/src/context.rs:12-19` | S/M |
 
 ### Tier 3 — BAJO
 
@@ -120,3 +120,22 @@ Only once Tier-0 items are approved and implemented:
 - wasm32 runtime behaviour (8 slots, `fetch` asset loading) — not compiled/run on this VPS.
 - Whether external (non-workspace) consumers reference `RendererPasses`/`SpritePass` — must be checked before removal.
 - 3D implementation/unification itself — design constraint only, per Apéndice B.
+
+## 6. Performance + configurability pass (branch `perf/2d-optimize`)
+
+Implemented on branch `perf/2d-optimize`, not merged to `main`:
+
+- **Part 1 instrumentation:** `Renderer::frame_2d_stats()` / `frame_ms()` /
+  `frame_ms_avg()` / `backend_name()` + `RenderContext` equivalents.
+- **Part 2 config:** `Render2dConfig { antialiasing, ui_bind_group_cache,
+  scratch_reuse }` + get/set on `Renderer`/`RenderContext`.
+- **Part 3.1** UI bind-group cache (H8), **3.2** scratch reuse (H8/H3),
+  **3.3** AA default fix (M4), **3.4** pipeline cache remainder (M18),
+  **3.5** batching coalescing (H3).
+- **Part 4** verification: `cargo check/build --workspace` green; 9/9 headless
+  tests; before/after draw-call and allocation deltas recorded.
+- **Part 5** full details, exact API signatures and migration notes:
+  **`brain/2d_perf_optimizations.md`**.
+
+Still open from this cluster: H2 (overlay unification) and H5 (sprite atlas);
+H3 cross-texture sprite interleaving depends on H5.
