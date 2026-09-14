@@ -3,6 +3,10 @@ use glam::{Mat4, Vec3};
 use crate::components::{Sprite, Transform2d};
 use crate::render::{SpriteBatcher, SpriteInstance};
 
+/// Clears the sprite batcher and re-fills it from every `(&Transform2d, &Sprite)`
+/// entity, sorted by ascending [`Transform2d::z_index`](crate::components::Transform2d::z_index).
+///
+/// Not registered in the engine scheduler; the live path is immediate-mode.
 pub fn prepare_sprites_system(
     batcher: &mut SpriteBatcher,
     query: Query<(&Transform2d, &Sprite)>,
@@ -41,6 +45,10 @@ pub fn prepare_sprites_system(
     }
 }
 
+/// Clears the shape batcher and re-fills it from every `(&Transform2d, &Shape2d)`
+/// entity, sorted by ascending [`Transform2d::z_index`](crate::components::Transform2d::z_index).
+///
+/// Not registered in the engine scheduler; the live path is immediate-mode.
 pub fn prepare_shapes_system(
     batcher: &mut crate::render::ShapeBatcher,
     query: Query<(&Transform2d, &crate::components::Shape2d)>,

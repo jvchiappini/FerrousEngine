@@ -1,14 +1,21 @@
 use std::sync::Arc;
 use crate::render::types::SpriteInstance;
 
+/// Render pipeline and bind-group layouts for textured 2D sprites.
 pub struct SpritePipeline {
+    /// GPU device the pipeline was created on.
     pub device: Arc<wgpu::Device>,
+    /// The compiled wgpu render pipeline.
     pub wgpu_pipeline: wgpu::RenderPipeline,
+    /// Bind group 0: the shared 2D camera uniform.
     pub camera_bind_group_layout: wgpu::BindGroupLayout,
+    /// Bind group 1: the per-texture view + sampler.
     pub texture_bind_group_layout: wgpu::BindGroupLayout,
 }
 
 impl SpritePipeline {
+    /// Build the sprite pipeline for the given output `format` and
+    /// `sample_count` (pass `depth_format: None` for the depth-less Pure2D path).
     pub fn new(device: Arc<wgpu::Device>, output_format: wgpu::TextureFormat, depth_format: Option<wgpu::TextureFormat>, sample_count: u32) -> Self {
         // ... (resto del código de layouts se mantiene igual)
         // 1. Camera Layout
@@ -118,13 +125,19 @@ impl SpritePipeline {
     }
 }
 
+/// Render pipeline and bind-group layout for untextured SDF shapes.
 pub struct ShapePipeline {
+    /// GPU device the pipeline was created on.
     pub device: Arc<wgpu::Device>,
+    /// The compiled wgpu render pipeline.
     pub wgpu_pipeline: wgpu::RenderPipeline,
+    /// Bind group 0: the shared 2D camera uniform.
     pub camera_bind_group_layout: wgpu::BindGroupLayout,
 }
 
 impl ShapePipeline {
+    /// Build the shape pipeline for the given output `format` and
+    /// `sample_count` (pass `depth_format: None` for the depth-less Pure2D path).
     pub fn new(device: Arc<wgpu::Device>, output_format: wgpu::TextureFormat, depth_format: Option<wgpu::TextureFormat>, sample_count: u32) -> Self {
         use crate::render::types::ShapeInstance;
 

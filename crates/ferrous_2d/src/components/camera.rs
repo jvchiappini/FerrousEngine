@@ -4,7 +4,9 @@ use ferrous_ecs::component::Component;
 /// A 2D Orthographic camera component.
 #[derive(Debug, Clone)]
 pub struct Camera2d {
+    /// Zoom factor; larger values zoom in.
     pub zoom: f32,
+    /// Optional background clear colour; `None` keeps the renderer's clear colour.
     pub clear_color: Option<Vec4>,
 }
 impl Component for Camera2d {}
