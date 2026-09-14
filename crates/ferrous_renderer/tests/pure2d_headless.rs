@@ -684,3 +684,185 @@ fn triangulated_quad_has_no_internal_seam() {
     );
 }
 
+/// `line_with_cap_style_aa(..., true, true)` must be pixel-identical to
+/// `line_with_cap_style(...)` (which now delegates with both caps AA).
+#[test]
+fn line_cap_aa_full_flags_match_line_with_cap_style() {
+    let _guard = GPU_LOCK.lock().unwrap();
+    let mut h = Pure2dHarness::new(256, 256, TextureFormat::Rgba8Unorm).expect("headless gpu");
+    let (from, to, width) = (Vec2::new(-80.0, 10.0), Vec2::new(70.0, -30.0), 12.0);
+
+    h.begin_frame();
+    h.draw_shape(ShapeInstance::line_with_cap_style(
+        from,
+        to,
+        width,
+        RED,
+        ferrous_2d::CapStyle::Round,
+    ));
+    h.render_frame();
+    let base = h.read_pixels();
+
+    h.begin_frame();
+    h.draw_shape(ShapeInstance::line_with_cap_style_aa(
+        from,
+        to,
+        width,
+        RED,
+        ferrous_2d::CapStyle::Round,
+        true,
+        true,
+    ));
+    h.render_frame();
+    let with_flags = h.read_pixels();
+
+    assert_eq!(
+        base, with_flags,
+        "full-AA line_with_cap_style_aa must match line_with_cap_style"
+    );
+}
+
+/// Wall-chain seam regression: two collinear flat-capped segments share the
+/// endpoint `(0,0)`. With that shared cap marked hard (`aa_* = false`) the
+/// union must be a continuous fill across `x = 0`; with both caps AA the same
+/// scene shows the characteristic seam (witness).
+#[test]
+fn collinear_segments_with_hard_joint_have_no_seam() {
+    let _guard = GPU_LOCK.lock().unwrap();
+    let width = 20.0;
+    let a_from = Vec2::new(-80.0, 0.0);
+    let joint = Vec2::new(0.0, 0.0);
+    let b_to = Vec2::new(80.0, 0.0);
+    let mut h = Pure2dHarness::new(256, 256, TextureFormat::Rgba8Unorm).expect("headless gpu");
+
+    let at = |pixels: &[u8], x: u32, y: u32| -> [u8; 4] {
+        let idx = ((y * 256 + x) * 4) as usize;
+        [pixels[idx], pixels[idx + 1], pixels[idx + 2], pixels[idx + 3]]
+    };
+
+    // Shared cap hard on both sides: left wall AA at its free end, right wall
+    // AA at its free end.
+    h.begin_frame();
+    h.draw_shape(ShapeInstance::line_with_cap_style_aa(
+        a_from,
+        joint,
+        width,
+        RED,
+        ferrous_2d::CapStyle::Flat,
+        true,
+        false,
+    ));
+    h.draw_shape(ShapeInstance::line_with_cap_style_aa(
+        joint,
+        b_to,
+        width,
+        RED,
+        ferrous_2d::CapStyle::Flat,
+        false,
+        true,
+    ));
+    let report = h.render_frame();
+    assert_eq!(report.instances_uploaded, 2);
+    assert_eq!(report.draw_calls, 1, "same-pipeline shapes coalesce");
+    let pixels = h.read_pixels();
+
+    // Scan the joint column on both sides of x = 0.  Pixel (i, j) samples world
+    // (i + 0.5 - 128, 127.5 - j); i = 127 -> x = -0.5, i = 128 -> x = +0.5.
+    for &i in &[127u32, 128] {
+        for j in 120u32..=135 {
+            let px = at(&pixels, i, j);
+            if px[0] < 235 {
+                println!("[line-seam] hard joint ({i},{j}) = {px:?}");
+            }
+            assert!(
+                px[0] >= 235,
+                "hard joint pixel ({i},{j}) must be full red, got {px:?}"
+            );
+        }
+    }
+    // The free left cap must still be anti-aliased: x = -80 -> i = 47 samples
+    // x = -80.5, just outside the segment.
+    let free = at(&pixels, 47, 127);
+    println!("[line-seam] free left cap (47,127) = {free:?}");
+    assert!(
+        free[0] > 40 && free[0] < 230,
+        "free cap must be partial AA, got {free:?}"
+    );
+
+    // Witness: the same chain with both caps AA shows the seam at x = 0.
+    h.begin_frame();
+    h.draw_shape(ShapeInstance::line_with_cap_style(
+        a_from,
+        joint,
+        width,
+        RED,
+        ferrous_2d::CapStyle::Flat,
+    ));
+    h.draw_shape(ShapeInstance::line_with_cap_style(
+        joint,
+        b_to,
+        width,
+        RED,
+        ferrous_2d::CapStyle::Flat,
+    ));
+    h.render_frame();
+    let seam = h.read_pixel(128, 127);
+    println!("[line-seam] all-AA joint (128,127) = {seam:?}");
+    assert!(
+        seam[0] < 235,
+        "all-AA collinear segments should show the joint seam, got {seam:?}"
+    );
+}
+
+/// T-junction: a horizontal wall with a hard end butts into the middle of a
+/// vertical wall.  The union must have no background gap at the overlap.
+#[test]
+fn hard_end_against_side_of_another_segment_has_no_gap() {
+    let _guard = GPU_LOCK.lock().unwrap();
+    let width = 20.0;
+    let mut h = Pure2dHarness::new(256, 256, TextureFormat::Rgba8Unorm).expect("headless gpu");
+
+    // Vertical through-wall (both caps free/AA), then horizontal wall whose
+    // right end is hard and butts into the vertical wall at (0,0).
+    h.begin_frame();
+    h.draw_shape(ShapeInstance::line_with_cap_style_aa(
+        Vec2::new(0.0, -60.0),
+        Vec2::new(0.0, 60.0),
+        width,
+        RED,
+        ferrous_2d::CapStyle::Flat,
+        true,
+        true,
+    ));
+    h.draw_shape(ShapeInstance::line_with_cap_style_aa(
+        Vec2::new(-80.0, 0.0),
+        Vec2::new(0.0, 0.0),
+        width,
+        RED,
+        ferrous_2d::CapStyle::Flat,
+        true,
+        false,
+    ));
+    h.render_frame();
+    let pixels = h.read_pixels();
+
+    let at = |x: u32, y: u32| -> [u8; 4] {
+        let idx = ((y * 256 + x) * 4) as usize;
+        [pixels[idx], pixels[idx + 1], pixels[idx + 2], pixels[idx + 3]]
+    };
+
+    // World box around the junction x in [-6,6], y in [-6,6]; must be all red.
+    for i in 122u32..=134 {
+        for j in 122u32..=134 {
+            let px = at(i, j);
+            if px[0] < 235 {
+                println!("[line-tee] gap at ({i},{j}) = {px:?}");
+            }
+            assert!(
+                px[0] >= 235,
+                "T-junction pixel ({i},{j}) must be full red, got {px:?}"
+            );
+        }
+    }
+}
+
