@@ -67,6 +67,7 @@ Ordering: severity → measured impact → risk to Koncreta/GUIMaker → effort.
 | **H13** | UI texture-array slots: native 16 vs web 8; validation uses 16 on both; web silently drops textures 9–16, native panics >16 | C/D | `ui_render/pipelines/layout.rs:51-100`, `gui_batch.rs:226-231` | Cross-platform correctness + native panic | — | S/M |
 | **H14** | `draw_2d_path`/caps unify + `#9` remaining lyon cap/join hardcode in `circle_2d`/`rect_2d` | A | `shapes2d.rs:227-257` | Contractual; no measured impact | H7 | S |
 | **H15** ✅ | Pure2D uploads/draws **every** instance even when off-camera — no CPU-side viewport culling on large plans (wasted instances/bytes/draws). **DONE** (`perf/2d-culling`): automatic world-AABB vs camera-rect culling, `cull_2d`/`cull_margin` knobs, `culled_instances` telemetry. See `brain/2d_culling.md` | A | `renderer_core.rs` Pure2D emit path | M | — |
+| **H16** ✅ | Pure2D re-uploads/re-transforms **all** shape instances every frame, including static plan geometry (walls/slabs) → wasted `write_buffer` bandwidth + CPU. **DONE** (`perf/2d-retained`): persistent `Static2dBatchId` batches, 1 draw/batch, 0 upload/frame, generation-safe handles, `static_batches` config + telemetry. See `brain/2d_static_batch.md` | A | `renderer_core.rs` Pure2D path, `ferrous_2d::Renderer2d` | M | — |
 
 ### Tier 2 — MEDIO
 
@@ -157,3 +158,17 @@ Implemented on branch `perf/2d-culling`, not merged to `main`:
   `RenderContext::frame_2d_stats()`.
 - Full details, AABB assumptions and measured deltas:
   **`brain/2d_culling.md`**.
+
+## 8. Retained (static) 2D batch pass (branch `perf/2d-retained`)
+
+Implemented on branch `perf/2d-retained`, not merged to `main`:
+
+- **H16:** persistent GPU instance buffers for static shape geometry.
+  `create/update/destroy_static_2d_batch` + `Static2dBatchId` (generation-safe).
+  Drawn automatically in the Pure2D pass (one instanced draw per batch, **no
+  per-frame upload**) before the immediate stream.
+- **Config:** `Render2dConfig::static_batches` (default `true`).
+- **Telemetry:** `Frame2dCounters::{static_batches_drawn, static_instances_drawn}`.
+- **Chosen trade-off:** static batches are not CPU-culled (option a: draw the
+  whole batch); CPU copy + culled index buffer documented as follow-up (option b).
+- Full details and deltas: **`brain/2d_static_batch.md`**.
