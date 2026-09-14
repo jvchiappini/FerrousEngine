@@ -239,33 +239,39 @@ impl Texture2d {
     }
 }
 
-#[cfg(all(test, feature = "svg"))]
+#[cfg(all(test, feature = "svg", feature = "gpu"))]
 mod tests {
-    use super::*;
     use crate::Texture2d;
-    use std::sync::Arc;
+
+    /// Ask for a normal adapter first and fall back to a software adapter
+    /// (lavapipe / llvmpipe on the CI/VPS box) so the test runs headless.
+    fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+        let request = |fallback: bool| {
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: fallback,
+            }))
+        };
+        let adapter = request(false).or_else(|| request(true))?;
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None)).ok()
+    }
 
     #[test]
     fn svg_rasterization_roundtrip() {
         // a tiny red circle svg
         let svg = r#"<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10'>
             <circle cx='5' cy='5' r='4' fill='red' /></svg>"#;
-        // create a headless wgpu device for the test
-        let instance = wgpu::Instance::new(wgpu::Backends::all());
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: None,
-            force_fallback_adapter: false,
-        }))
-        .expect("no adapter");
-        let (device, queue) = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor::default(),
-            None,
-        ))
-        .expect("device");
+        let Some((device, queue)) = headless_device() else {
+            eprintln!("no wgpu adapter available; skipping svg rasterisation test");
+            return;
+        };
         let tex = Texture2d::from_svg_bytes(&device, &queue, svg.as_bytes(), 16, 16)
             .expect("svg rasterize");
-        assert_eq!(tex.view.dimension(), wgpu::TextureViewDimension::D2);
+        assert_eq!(tex.texture.dimension(), wgpu::TextureDimension::D2);
+        assert_eq!(tex.texture.width(), 16);
+        assert_eq!(tex.texture.height(), 16);
     }
 }
 
