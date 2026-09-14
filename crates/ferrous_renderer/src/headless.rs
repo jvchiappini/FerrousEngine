@@ -54,6 +54,11 @@ use crate::renderer_core::Renderer;
 /// Default off-screen colour format. Mirrors the sRGB swapchain format used by
 /// native consumers (Koncreta) so the 2D shader/AA maths runs in the same
 /// colour space as production.
+///
+/// Verified against the engine after the colour-space fix (#12): the native
+/// swapchain now prefers an `*Srgb` format (`crates/ferrous_engine/src/
+/// graphics.rs`) and the 2D pipeline renders linear light into it, so
+/// `Rgba8UnormSrgb` is the format the harness must use to reproduce production.
 pub const DEFAULT_FORMAT: TextureFormat = TextureFormat::Rgba8UnormSrgb;
 
 /// An off-screen RGBA8 render target that can be read back on the CPU.
@@ -324,7 +329,7 @@ impl Pure2dHarness {
         let cpu_ms = start.elapsed().as_secs_f64() * 1000.0;
         let counters = self.renderer.renderer_2d_pure.frame_counters();
 
-        let bind_groups_total = self.renderer.next_sprite_texture_id;
+        let bind_groups_total = self.renderer.sprite_bind_groups.len() as u32;
         let created = bind_groups_total.saturating_sub(self.last_bind_group_count);
         self.last_bind_group_count = bind_groups_total;
 
