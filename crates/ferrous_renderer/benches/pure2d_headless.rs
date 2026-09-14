@@ -130,11 +130,11 @@ fn print_baseline(label: &str, report: &ferrous_renderer::headless::FrameReport)
 
 /// Shape (SDF) throughput: `n` non-overlapping rects.
 ///
-/// Each shape gets a **distinct** z, which is guaranteed to be a total order
-/// and therefore makes the CPU z-sort deterministic.  Note that the current
-/// engine's unified Pure2D loop only merges *equal-z* contiguous runs, so this
-/// scene deliberately reports `n` draw calls (worst case).  When the batching
-/// logic changes, the `[baseline]` line below is the before/after signal.
+/// Each shape gets a **distinct** z, which is a total order and makes the CPU
+/// painter-order sort deterministic.  Since the H3 coalescing pass uploads the
+/// shapes in painter order and merges *consecutive same-pipeline* runs, this
+/// scene now collapses to **1** shape draw call regardless of `n` (it used to
+/// report `n`).  The `[baseline]` line below is the before/after signal.
 #[divan::bench(args = [16, 256, 4096])]
 fn pure2d_shapes(bencher: divan::Bencher, n: usize) {
     let mut scene = Scene::new(n, 0, 0);
@@ -151,9 +151,10 @@ fn pure2d_shapes(bencher: divan::Bencher, n: usize) {
 }
 
 /// Sprite path: `n` sprites spread across `t` textures, each with a distinct
-/// ascending z (deterministic).  The current engine issues one draw call per
-/// sprite in this configuration because contiguous-run merging requires equal
-/// z; `t` only affects bind-group lookups, not draw calls.
+/// ascending z (deterministic).  The H3 coalescing pass uploads each texture's
+/// sprites in painter order and merges consecutive same-texture runs, so this
+/// scene collapses to **`t`** draw calls (one per texture) instead of `n`.
+/// `t` therefore now directly bounds the draw-call count.
 #[divan::bench(args = [(64, 1), (512, 8), (2048, 64)])]
 fn pure2d_sprites(bencher: divan::Bencher, (n, t): (usize, usize)) {
     let mut scene = Scene::new(0, n, t);

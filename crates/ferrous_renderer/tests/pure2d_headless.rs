@@ -18,6 +18,7 @@ use std::sync::Mutex;
 
 use ferrous_2d::render::{ShapeInstance, SpriteInstance};
 use ferrous_renderer::headless::{Pure2dHarness, DEFAULT_FORMAT};
+use ferrous_renderer::Render2dConfig;
 use glam::{Mat4, Quat, Vec2, Vec3};
 use wgpu::TextureFormat;
 
@@ -168,22 +169,123 @@ fn z_order_is_deterministic_for_equal_and_interleaved_z() {
     }
 
     // Interleaved/differing z: z is the primary key, so a shape pushed *first*
-    // with a higher z must still be painted last. Two distinct z values cannot
-    // coalesce.
+    // with a higher z must still be painted last. Since the H3 coalescing pass
+    // groups by (pipeline, texture) and reorders the upload into painter order,
+    // distinct-z shapes now share **one** draw call while preserving order.
     h.begin_frame();
     h.draw_shape(ShapeInstance::rect_z(Vec2::ZERO, 0.5, Vec2::splat(64.0), GREEN));
     h.draw_shape(ShapeInstance::rect_z(Vec2::ZERO, 0.0, Vec2::splat(64.0), RED));
     let report = h.render_frame();
 
     assert_eq!(
-        report.shape_draw_calls, 2,
-        "different z values must never share a coalesced draw"
+        report.shape_draw_calls, 1,
+        "distinct-z shapes must coalesce into a single draw (H3)"
     );
     assert_rgb_near(
         h.read_pixel(64, 128),
         [0, 255, 0],
         4,
         "higher z must be painted last regardless of insertion order",
+    );
+}
+
+/// H3 for sprites: a run of consecutive sprites that share a texture but have
+/// distinct z must coalesce into **one** draw call, while the interleaving with
+/// a second texture is preserved (one draw per contiguous same-texture span).
+#[test]
+fn distinct_z_same_texture_sprites_coalesce() {
+    let _guard = GPU_LOCK.lock().unwrap();
+    let mut h = Pure2dHarness::new(128, 128, DEFAULT_FORMAT).expect("headless gpu");
+    let t0 = h.register_texture_rgba8(2, 2, &[255, 0, 0, 255].repeat(4));
+    let t1 = h.register_texture_rgba8(2, 2, &[0, 255, 0, 255].repeat(4));
+
+    // Three t0 sprites with distinct z, then one t1 sprite, then two more t0.
+    h.begin_frame();
+    h.draw_sprite(t0, sprite(Vec2::new(-24.0, 0.0), Vec2::splat(8.0), 0.0));
+    h.draw_sprite(t0, sprite(Vec2::new(-8.0, 0.0), Vec2::splat(8.0), 1.0));
+    h.draw_sprite(t0, sprite(Vec2::new(8.0, 0.0), Vec2::splat(8.0), 2.0));
+    h.draw_sprite(t1, sprite(Vec2::new(0.0, 16.0), Vec2::splat(8.0), 3.0));
+    h.draw_sprite(t0, sprite(Vec2::new(24.0, 0.0), Vec2::splat(8.0), 4.0));
+    h.draw_sprite(t0, sprite(Vec2::new(40.0, 0.0), Vec2::splat(8.0), 5.0));
+    let report = h.render_frame();
+
+    assert_eq!(
+        report.sprite_draw_calls, 3,
+        "runs: [t0 x3], [t1], [t0 x2] => 3 draws (not 6, not 2)"
+    );
+    assert_eq!(report.instances_uploaded, 6);
+}
+
+/// Runtime config A/B: the `scratch_reuse` knob must be settable/gettable and
+/// both branches must render identically.  This guards the non-reuse path that
+/// consumers use for benchmarking.
+#[test]
+fn scratch_reuse_config_toggles_and_both_paths_render() {
+    let _guard = GPU_LOCK.lock().unwrap();
+    let mut h = Pure2dHarness::new(64, 64, TextureFormat::Rgba8Unorm).expect("headless gpu");
+
+    assert!(h.renderer().render_2d_config().scratch_reuse, "default is reuse");
+
+    h.renderer_mut().set_render_2d_config(Render2dConfig {
+        scratch_reuse: false,
+        ..Default::default()
+    });
+    assert!(!h.renderer().render_2d_config().scratch_reuse);
+
+    h.begin_frame();
+    h.draw_shape(ShapeInstance::rect(Vec2::ZERO, Vec2::splat(32.0), RED));
+    let report = h.render_frame();
+    assert_eq!(report.draw_calls, 1);
+    assert_rgb_near(h.read_pixel(32, 32), [255, 0, 0], 4, "rect centre (no reuse)");
+
+    // Switch back on and confirm the path still coalesces.
+    h.renderer_mut().set_render_2d_config(Render2dConfig {
+        scratch_reuse: true,
+        ..Default::default()
+    });
+    h.begin_frame();
+    h.draw_shape(ShapeInstance::rect_z(Vec2::ZERO, 0.0, Vec2::splat(32.0), GREEN));
+    h.draw_shape(ShapeInstance::rect_z(Vec2::ZERO, 1.0, Vec2::splat(16.0), BLUE));
+    let report = h.render_frame();
+    assert_eq!(report.draw_calls, 1, "distinct-z shapes still coalesce after re-enable");
+}
+
+/// New public metrics API: `Renderer::frame_2d_stats()` must report the live
+/// Pure2D counters of the last frame, and reset them at frame start.
+#[test]
+fn frame_2d_stats_reports_live_pure2d_counters() {
+    let _guard = GPU_LOCK.lock().unwrap();
+    let mut h = Pure2dHarness::new(64, 64, DEFAULT_FORMAT).expect("headless gpu");
+
+    // Before any 2D work the counters are zero.
+    assert_eq!(h.renderer().frame_2d_stats().draw_calls, 0);
+
+    h.begin_frame();
+    h.draw_shape(ShapeInstance::rect(Vec2::ZERO, Vec2::splat(16.0), RED));
+    h.draw_shape(ShapeInstance::rect(
+        Vec2::new(16.0, 0.0),
+        Vec2::splat(16.0),
+        BLUE,
+    ));
+    let _ = h.render_frame();
+
+    let stats = h.renderer().frame_2d_stats();
+    assert!(
+        stats.draw_calls > 0,
+        "frame_2d_stats must be populated on the live Pure2D path"
+    );
+    assert_eq!(stats.draw_calls, 1, "two equal-z shapes coalesce");
+    assert_eq!(stats.shape_draw_calls, 1);
+    assert_eq!(stats.instances_uploaded, 2);
+    assert!(stats.bytes_uploaded >= 2 * std::mem::size_of::<ShapeInstance>() as u64);
+
+    // Next frame with no geometry: the counters must have been reset.
+    h.begin_frame();
+    let _ = h.render_frame();
+    assert_eq!(
+        h.renderer().frame_2d_stats(),
+        ferrous_2d::render::Frame2dCounters::default(),
+        "counters must reset at frame start"
     );
 }
 
