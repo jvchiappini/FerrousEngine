@@ -177,3 +177,46 @@ These are findings; the note was **not** silently patched.
 - GUIMaker: `git revert 53b612e` (debt fix) and `git revert 6f06b7c` (WIP
   checkpoint), or reset to `main`.
 - Engine H1 evidence: `git revert 2648757`.
+
+## 7. Deployment (Koncreta live on the public gateway)
+
+The migrated `core_viewer` WASM was built and deployed so the changes are
+visible at the public URL:
+
+**http://194.238.25.16:8888/app/**
+
+Deployment steps (the project's own script):
+
+```
+cd /opt/softwaremaker/workspaces/8af62d16-b60c-4e7a-95d6-74deb2d46c2e
+./scripts/rebuild-rust-app.sh
+```
+
+which does: `wasm-pack build --target web --out-dir pkg --no-opt` in
+`packages/core_viewer` → `docker compose build app-editor` →
+`docker compose up -d app-editor` → HTTP checks against `/app/`.
+
+Evidence that the new build is actually served:
+
+| Asset | Value |
+|---|---|
+| App entry | `/app/assets/index-B4MnJUwr.js` |
+| core_viewer glue chunk | `/app/assets/core_viewer-2sAWKK38.js` |
+| WASM asset (served) | `/app/assets/core_viewer_bg-CC3Gv0y3.wasm` — **6,893,303 B** |
+| WASM asset (previous) | 6,850,029 B |
+| WASM local build | 6,893,303 B (exact match) |
+| Container | `8af62d16-...-app-editor-1` recreated from the new image |
+| Public response | `HTTP 200`, JS `Content-Type: application/javascript`, wasm `application/wasm` |
+
+Caveats for reviewers:
+- **H1 is a visual change**: on the migrated engine the 2D output is sRGB-encoded,
+  so colours render brighter (mid-grey 0.5 → 187 instead of 128). Koncreta's
+  palette was authored against the old (darker) output, so this deployment is
+  exactly the "how does it look" check; palette recalibration may follow.
+- The browser may cache the previous WASM; the asset filename is content-hashed
+  (`core_viewer_bg-CC3Gv0y3.wasm`), so a normal reload should pick up the new
+  one. A hard refresh is recommended.
+- This VPS has no display/WebGPU browser, so the deployment is verified by HTTP
+  and asset bytes only; runtime rendering was not visually confirmed server-side.
+- Rollback of the deployment = rebuild from `master` with the same script.
+
