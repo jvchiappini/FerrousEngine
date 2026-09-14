@@ -141,14 +141,97 @@ fn sd_triangle(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, c: vec2<f32>) -> f32 {
     return -sqrt(d.x) * sign(d.y);
 }
 
+// Winding sign of a triangle: +1 for CCW geometry, -1 for CW.  Used to
+// normalise the per-edge inside tests / signed distances so the selective-AA
+// path stays two-sided regardless of vertex winding.
+fn tri_winding(a: vec2<f32>, b: vec2<f32>, c: vec2<f32>) -> f32 {
+    return sign((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x));
+}
+
+// Signed distance to the clamped segment `u -> v`: negative inside the
+// triangle, positive outside.  The clamp to the segment endpoints gives
+// correct rounding where two marked edges meet at a vertex.
+fn sd_edge_segment(p: vec2<f32>, u: vec2<f32>, v: vec2<f32>, w: f32) -> f32 {
+    let e = v - u;
+    let t = clamp(dot(p - u, e) / max(dot(e, e), 1e-8), 0.0, 1.0);
+    let dist = length(p - (u + t * e));
+    // `w * cross(e, p - u) > 0` on the inside side for both windings.
+    let inside = w * (e.x * (p.y - u.y) - e.y * (p.x - u.x));
+    return select(dist, -dist, inside > 0.0);
+}
+
+// Half-plane inside test for a hard (non-AA) edge.  `>= 0` includes a point
+// that lands exactly on a shared internal edge so neighbouring triangles do
+// not both discard it (a one-pixel crack).  At the seam both triangles then
+// emit full coverage; that overlap is invisible for opaque fills and is the
+// standard tessellation trade-off.
+fn edge_inside(p: vec2<f32>, u: vec2<f32>, v: vec2<f32>, w: f32) -> bool {
+    let e = v - u;
+    return (w * (e.x * (p.y - u.y) - e.y * (p.x - u.x))) >= 0.0;
+}
+
+// Selective-AA triangle coverage: hard-clip every unmarked edge, then fade
+// only near the marked edges.  The nearest marked feature wins, so two marked
+// edges meeting at a vertex round the corner correctly.
+fn triangle_masked_alpha(
+    p: vec2<f32>,
+    a: vec2<f32>,
+    b: vec2<f32>,
+    c: vec2<f32>,
+    mask: u32,
+    filter_width: f32,
+) -> f32 {
+    let w = tri_winding(a, b, c);
+    if (w == 0.0) {
+        return 0.0;
+    }
+    // Hard clipping against internal (bit-clear) edges.
+    if ((mask & 1u) == 0u && !edge_inside(p, a, b, w)) { return 0.0; }
+    if ((mask & 2u) == 0u && !edge_inside(p, b, c, w)) { return 0.0; }
+    if ((mask & 4u) == 0u && !edge_inside(p, c, a, w)) { return 0.0; }
+
+    // Nearest marked edge governs the AA band.
+    var best_abs = -1.0;
+    var best = 0.0;
+    if ((mask & 1u) != 0u) {
+        best = sd_edge_segment(p, a, b, w);
+        best_abs = abs(best);
+    }
+    if ((mask & 2u) != 0u) {
+        let s = sd_edge_segment(p, b, c, w);
+        if (best_abs < 0.0 || abs(s) < best_abs) { best = s; best_abs = abs(s); }
+    }
+    if ((mask & 4u) != 0u) {
+        let s = sd_edge_segment(p, c, a, w);
+        if (best_abs < 0.0 || abs(s) < best_abs) { best = s; best_abs = abs(s); }
+    }
+    if (best_abs < 0.0) {
+        // No marked edges: hard fill (fully covered inside the triangle).
+        return 1.0;
+    }
+    return 1.0 - smoothstep(-filter_width, filter_width, best);
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // --- Triangle path (additive; selected only by params.w == 2.0) ---
     if (in.params.w > 1.5) {
-        let d = sd_triangle(in.world_pos, in.tri_a, in.tri_b, in.tri_c);
         let smoothing = max(in.params.z, 0.5);
         let filter_width = max(in.world_pixel_size * smoothing, 1e-6);
-        let alpha = 1.0 - smoothstep(-filter_width, filter_width, d);
+        // params.x carries the per-edge AA mask (see ShapeInstance::
+        // polygon_triangle).  0b111 uses the exact Euclidean triangle SDF
+        // (unchanged from the original primitive); any other mask uses the
+        // selective per-edge path so shared internal edges stay hard.
+        let mask = u32(in.params.x + 0.5);
+        var alpha: f32;
+        if (mask >= 7u) {
+            let d = sd_triangle(in.world_pos, in.tri_a, in.tri_b, in.tri_c);
+            alpha = 1.0 - smoothstep(-filter_width, filter_width, d);
+        } else {
+            alpha = triangle_masked_alpha(
+                in.world_pos, in.tri_a, in.tri_b, in.tri_c, mask, filter_width,
+            );
+        }
         if (alpha < 0.01) {
             discard;
         }

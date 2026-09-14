@@ -72,6 +72,20 @@ impl SpriteInstance {
 /// instance.  No consumer-facing field or constructor changed shape.
 pub const SHAPE_KIND_TRIANGLE: f32 = 2.0;
 
+/// Triangle edge-AA mask bit for the `a → b` edge (bit 0).
+///
+/// Set the bit to anti-alias that edge; clear it (hard edge) for an internal
+/// edge shared with a neighbouring triangle, so the two triangles tile exactly
+/// and no seam appears.  See [`ShapeInstance::polygon_triangle`].
+pub const TRIANGLE_EDGE_AB: u8 = 1 << 0;
+/// Triangle edge-AA mask bit for the `b → c` edge (bit 1).
+pub const TRIANGLE_EDGE_BC: u8 = 1 << 1;
+/// Triangle edge-AA mask bit for the `c → a` edge (bit 2).
+pub const TRIANGLE_EDGE_CA: u8 = 1 << 2;
+/// All three triangle edges anti-aliased (`0b111`); the default of
+/// [`ShapeInstance::triangle`].
+pub const TRIANGLE_EDGES_ALL: u8 = TRIANGLE_EDGE_AB | TRIANGLE_EDGE_BC | TRIANGLE_EDGE_CA;
+
 /// Instance data for non-textured 2D shapes (technical drawing).
 ///
 /// The four transform columns encode a full model matrix. The shader supports
@@ -99,6 +113,11 @@ pub struct ShapeInstance {
     /// AA smoothing). `w` is the shape-kind flag: `0.0`/`1.0` are the legacy
     /// `is_filled` values for the rounded-rect/circle family (ignored by the
     /// shader) and [`SHAPE_KIND_TRIANGLE`] selects the triangle SDF.
+    ///
+    /// For the triangle kind, `x` is repurposed as the **edge-AA bitmask**
+    /// (bits [`TRIANGLE_EDGE_AB`] / [`TRIANGLE_EDGE_BC`] / [`TRIANGLE_EDGE_CA`]);
+    /// see [`ShapeInstance::polygon_triangle`]. The rounded-rect/circle path
+    /// never sees a triangle instance, so there is no collision.
     pub params: [f32; 4],
 }
 
@@ -294,18 +313,60 @@ impl ShapeInstance {
     /// evalúa un SDF de triángulo en espacio de mundo, por lo que el relleno
     /// es **two-sided**: el resultado es el mismo sin importar el winding.
     ///
-    /// `params` emitido: `[0, 0, smoothing=2, SHAPE_KIND_TRIANGLE]`. Usar
+    /// `params` emitido: `[edge_aa_mask=0b111, 0, smoothing=2,
+    /// SHAPE_KIND_TRIANGLE]`. Equivalente a
+    /// [`ShapeInstance::polygon_triangle`] con [`TRIANGLE_EDGES_ALL`]. Usar
     /// triángulos en abanico (fan) desde el centroide es la forma directa de
     /// rellenar un polígono convexo con un vértice por lado, en vez de
     /// aproximarlo con muchas instancias de rect.
     pub fn triangle(a: glam::Vec2, b: glam::Vec2, c: glam::Vec2, color: [f32; 4]) -> Self {
+        Self::polygon_triangle(a, b, c, color, TRIANGLE_EDGES_ALL)
+    }
+
+    /// Triángulo **relleno** con anti-aliasing **selectivo por arista**, pensado
+    /// para triangulaciones que deben verse como un relleno continuo.
+    ///
+    /// `edge_aa_mask` bits (ver [`TRIANGLE_EDGE_AB`], [`TRIANGLE_EDGE_BC`],
+    /// [`TRIANGLE_EDGE_CA`]):
+    /// - bit 0 = arista `a → b`
+    /// - bit 1 = arista `b → c`
+    /// - bit 2 = arista `c → a`
+    ///
+    /// Bit en 1 = esa arista recibe AA (silueta exterior). Bit en 0 = arista
+    /// dura: el fragment shader recorta exactamente en la línea de la arista
+    /// sin atenuar cobertura. Para un borde **interno** compartido por dos
+    /// triángulos, ambos lo marcan en 0, de modo que cada uno rellena hasta la
+    /// línea a cobertura plena; los dos triángulos teselan sin dejar la costura
+    /// clara que produce el AA duplicado.
+    ///
+    /// El AA de los bordes marcados usa la distancia firmada al segmento
+    /// (con clamp a los vértices), de modo que dos bordes marcados concurrentes
+    /// redondean la esquina y el resultado sigue siendo winding-agnostic
+    /// (two-sided). `edge_aa_mask = 0` produce un triángulo de bordes duros
+    /// (sin AA); `edge_aa_mask = 0b111` es idéntico a
+    /// [`ShapeInstance::triangle`].
+    ///
+    /// # Cómo marcar una triangulación (p.ej. Koncreta)
+    ///
+    /// Una arista es **externa** si pertenece a un único triángulo de la
+    /// triangulación; es **interna** si dos triángulos la comparten. Marcá en 1
+    /// solo las aristas externas y en 0 las internas. El borde exterior queda
+    /// suavizado y las diagonales internas duras.
+    pub fn polygon_triangle(
+        a: glam::Vec2,
+        b: glam::Vec2,
+        c: glam::Vec2,
+        color: [f32; 4],
+        edge_aa_mask: u8,
+    ) -> Self {
         let model = glam::Mat4::from_cols(
             glam::Vec4::new(b.x - a.x, b.y - a.y, 0.0, 0.0),
             glam::Vec4::new(c.x - a.x, c.y - a.y, 0.0, 0.0),
             glam::Vec4::new(0.0, 0.0, 1.0, 0.0),
             glam::Vec4::new(a.x, a.y, 0.0, 1.0),
         );
-        Self::from_model(model, color, [0.0, 0.0, 2.0, SHAPE_KIND_TRIANGLE])
+        let mask = (edge_aa_mask & TRIANGLE_EDGES_ALL) as f32;
+        Self::from_model(model, color, [mask, 0.0, 2.0, SHAPE_KIND_TRIANGLE])
     }
 }
 
