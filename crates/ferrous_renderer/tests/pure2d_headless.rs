@@ -384,3 +384,192 @@ fn per_frame_clear_prevents_shape_accumulation() {
         "begin_frame()/clear_2d() resets the 2D batchers"
     );
 }
+
+/// The triangle primitive must fill its interior, leave the exterior empty,
+/// and anti-alias its edges (a pixel exactly on the hypotenuse is neither fully
+/// covered nor fully transparent).
+///
+/// Pixel↔world mapping in Pure2D: texel `(i, j)` samples world
+/// `(i + 0.5 - W/2, H/2 - (j + 0.5))`.  With `W = H = 256` and the triangle
+/// `a=(0,0)`, `b=(80,0)`, `c=(0,80)` (region `x >= 0, y >= 0, x + y <= 80`):
+/// `(154,101) -> (26.5, 26.5)` is interior, `(207,47) -> (79.5, 80.5)` is
+/// exterior and `(168,88) -> (40.5, 39.5)` lies exactly on `x + y = 80`.
+#[test]
+fn triangle_fills_centroid_with_aa_edges() {
+    let _guard = GPU_LOCK.lock().unwrap();
+    let mut h = Pure2dHarness::new(256, 256, TextureFormat::Rgba8Unorm).expect("headless gpu");
+
+    h.begin_frame();
+    h.draw_shape(ShapeInstance::triangle(
+        Vec2::new(0.0, 0.0),
+        Vec2::new(80.0, 0.0),
+        Vec2::new(0.0, 80.0),
+        RED,
+    ));
+    let report = h.render_frame();
+
+    assert_eq!(report.instances_uploaded, 1, "one triangle instance");
+    assert_eq!(report.draw_calls, 1);
+
+    let inside = h.read_pixel(154, 101);
+    let outside = h.read_pixel(207, 47);
+    let edge = h.read_pixel(168, 88);
+
+    assert_rgb_near(inside, [255, 0, 0], 8, "triangle interior must be filled");
+    assert_rgb_near(outside, [0, 0, 0], 8, "exterior must stay empty");
+    assert!(
+        edge[0] > 60 && edge[0] < 200,
+        "pixel on the hypotenuse must be partial AA coverage, got {edge:?}"
+    );
+
+    // Two-sided: the same triangle with reversed winding must render
+    // identically (the SDF sign derives from the winding, so no face culling
+    // nor inside/outside flip).
+    h.begin_frame();
+    h.draw_shape(ShapeInstance::triangle(
+        Vec2::new(0.0, 0.0),
+        Vec2::new(0.0, 80.0),
+        Vec2::new(80.0, 0.0),
+        RED,
+    ));
+    h.render_frame();
+    assert_rgb_near(
+        h.read_pixel(154, 101),
+        [255, 0, 0],
+        8,
+        "reversed winding must still fill the interior",
+    );
+}
+
+/// `Renderer::draw_2d_shapes` must be exactly equivalent to calling
+/// `draw_2d_shape` once per element: same counters, same H3 coalescing, same
+/// pixels.
+#[test]
+fn bulk_draw_2d_shapes_matches_individual_calls() {
+    let _guard = GPU_LOCK.lock().unwrap();
+    let shapes = [
+        ShapeInstance::rect(Vec2::new(-24.0, 0.0), Vec2::splat(12.0), RED),
+        ShapeInstance::circle(Vec2::ZERO, 8.0, GREEN),
+        ShapeInstance::triangle(
+            Vec2::new(0.0, 20.0),
+            Vec2::new(20.0, 20.0),
+            Vec2::new(0.0, 40.0),
+            BLUE,
+        ),
+    ];
+    let mut h = Pure2dHarness::new(128, 128, TextureFormat::Rgba8Unorm).expect("headless gpu");
+
+    h.begin_frame();
+    for s in &shapes {
+        h.draw_shape(*s);
+    }
+    let per_call = h.render_frame();
+    let per_call_pixels = h.read_pixels();
+
+    h.begin_frame();
+    h.renderer_mut().draw_2d_shapes(&shapes);
+    let bulk = h.render_frame();
+    let bulk_pixels = h.read_pixels();
+
+    assert_eq!(per_call.draw_calls, bulk.draw_calls);
+    assert_eq!(per_call.shape_draw_calls, bulk.shape_draw_calls);
+    assert_eq!(per_call.instances_uploaded, bulk.instances_uploaded);
+    assert_eq!(per_call.bytes_uploaded, bulk.bytes_uploaded);
+    assert_eq!(
+        per_call_pixels, bulk_pixels,
+        "bulk draw must produce pixel-identical output"
+    );
+}
+
+fn regular_polygon(n: usize, radius: f32) -> Vec<Vec2> {
+    (0..n)
+        .map(|k| {
+            let a = std::f32::consts::TAU * (k as f32) / (n as f32);
+            Vec2::new(radius * a.cos(), radius * a.sin())
+        })
+        .collect()
+}
+
+/// Approximates a convex polygon fill with one `rect` instance per world unit
+/// of height — the pre-triangle "scan-fill style" workaround.
+fn scanline_rect_fill(poly: &[Vec2], color: [f32; 4]) -> Vec<ShapeInstance> {
+    let min_y = poly.iter().fold(f32::INFINITY, |m, p| m.min(p.y));
+    let max_y = poly.iter().fold(f32::NEG_INFINITY, |m, p| m.max(p.y));
+    let mut out = Vec::new();
+    let mut y = min_y.ceil();
+    while y <= max_y {
+        let mut xs = Vec::new();
+        for i in 0..poly.len() {
+            let p0 = poly[i];
+            let p1 = poly[(i + 1) % poly.len()];
+            let dy = p1.y - p0.y;
+            if (p0.y - y) * (p1.y - y) <= 0.0 && dy.abs() > 1e-6 {
+                let t = (y - p0.y) / dy;
+                xs.push(p0.x + t * (p1.x - p0.x));
+            }
+        }
+        if let Some(min) = xs.iter().copied().reduce(f32::min) {
+            let max = xs.iter().copied().reduce(f32::max).unwrap();
+            if max > min {
+                out.push(ShapeInstance::rect(
+                    Vec2::new((min + max) * 0.5, y),
+                    Vec2::new(max - min, 1.0),
+                    color,
+                ));
+            }
+        }
+        y += 1.0;
+    }
+    out
+}
+
+/// Convex polygon fill: old scan-line approximation (N rect instances) versus
+/// the new triangle fan (one triangle per side).  Reports the
+/// hardware-independent counters for a 64-gon; no wall-clock claim is made.
+#[test]
+fn polygon_fill_triangle_fan_vs_scanline_rects_64gon() {
+    let _guard = GPU_LOCK.lock().unwrap();
+    let n = 64usize;
+    let poly = regular_polygon(n, 100.0);
+    let rects = scanline_rect_fill(&poly, RED);
+    let tris: Vec<ShapeInstance> = (0..n)
+        .map(|i| ShapeInstance::triangle(Vec2::ZERO, poly[i], poly[(i + 1) % n], GREEN))
+        .collect();
+
+    let mut h = Pure2dHarness::new(256, 256, TextureFormat::Rgba8Unorm).expect("headless gpu");
+
+    h.begin_frame();
+    h.renderer_mut().draw_2d_shapes(&rects);
+    let old = h.render_frame();
+
+    h.begin_frame();
+    h.renderer_mut().draw_2d_shapes(&tris);
+    let new = h.render_frame();
+
+    println!(
+        "[polygon 64-gon] scanline_rects: instances={} draw_calls={} bytes={} | triangle_fan: instances={} draw_calls={} bytes={}",
+        old.instances_uploaded, old.draw_calls, old.bytes_uploaded,
+        new.instances_uploaded, new.draw_calls, new.bytes_uploaded,
+    );
+
+    assert_eq!(old.instances_uploaded, rects.len() as u32);
+    assert_eq!(new.instances_uploaded, n as u32, "one triangle per 64-gon side");
+    assert!(
+        rects.len() > n,
+        "scan-line fill needs more instances than the fan ({} vs {n})",
+        rects.len()
+    );
+    assert_eq!(old.draw_calls, 1, "H3 coalesces same-pipeline shapes to one draw");
+    assert_eq!(new.draw_calls, 1);
+    assert!(
+        new.bytes_uploaded < old.bytes_uploaded,
+        "triangle fan must upload fewer bytes than the rect approximation"
+    );
+    assert_rgb_near(
+        h.read_pixel(128, 128),
+        [0, 255, 0],
+        8,
+        "triangle fan must fill the polygon centre",
+    );
+}
+
