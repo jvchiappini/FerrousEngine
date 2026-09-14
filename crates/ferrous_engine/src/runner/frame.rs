@@ -107,6 +107,11 @@ impl<A: FerrousApp + 'static> Runner<A> {
         // unaffected; it can remove its manual call.
         gfx.renderer.clear_2d();
 
+        // Wall-clock timing for the whole frame (update + draw + present).
+        // Recorded on every return path below; `RenderContext::frame_ms()` and
+        // `frame_ms_avg()` expose the result to consumers for logging/telemetry.
+        let frame_start = Instant::now();
+
         // wasm32: proactive size sync as browser layout can be delayed/asynchronous
         #[cfg(target_arch = "wasm32")]
         {
@@ -225,6 +230,9 @@ impl<A: FerrousApp + 'static> Runner<A> {
 
             self.app.update(&mut ctx);
             if ctx.exit_requested {
+                drop(ctx);
+                gfx.renderer
+                    .record_frame_time(frame_start.elapsed().as_secs_f32() * 1000.0);
                 if let Some(el) = event_loop {
                     el.exit();
                 }
@@ -321,6 +329,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 Ok(f) => f,
                 Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
                     gfx.resize(self.window_size.0, self.window_size.1);
+                    gfx.renderer
+                        .record_frame_time(frame_start.elapsed().as_secs_f32() * 1000.0);
                     return None;
                 }
                 Err(e) => panic!("Surface error: {e:?}"),
@@ -340,6 +350,12 @@ impl<A: FerrousApp + 'static> Runner<A> {
             gfx.renderer.context.queue.submit(Some(encoder.finish()));
             
             frame.present();
+
+            // Frame complete (present done): publish the wall-clock duration.
+            // Placement here also covers the export/readback path below, which
+            // returns the mapped bytes directly.
+            gfx.renderer
+                .record_frame_time(frame_start.elapsed().as_secs_f32() * 1000.0);
                
             // Important: Clear damage regions after rendering
             self.ui.clear_damage();

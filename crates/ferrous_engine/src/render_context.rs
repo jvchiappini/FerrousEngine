@@ -25,6 +25,10 @@
 //! | `draw_sprite_2d(texture_id, instance)` | Push a textured sprite for this frame |
 //! | `register_sprite_texture(width, height, data)` | Upload an RGBA8 sprite texture |
 //! | `stats()` | Per-frame render statistics |
+//! | `frame_2d_stats()` | Hardware-independent Pure2D counters (draw calls, bytes, instances) |
+//! | `frame_ms()` / `frame_ms_avg()` | Wall-clock last-frame / rolling-average duration |
+//! | `backend_name()` | Active wgpu backend (`"vulkan"`, `"webgpu"`, `"gl"`, …) |
+//! | `render_2d_config()` / `set_render_2d_config(cfg)` | Runtime perf/AA knobs for A/B comparison |
 //! | `camera_eye()` | World-space camera eye position |
 //! | `camera_target()` | World-space camera look-at target |
 //! | `camera_orbit_distance()` | Orbit radius from the built-in camera controller |
@@ -252,6 +256,63 @@ impl<'r> RenderContext<'r> {
     /// the first frame completes.
     pub fn stats(&self) -> RenderStats {
         self.inner.render_stats
+    }
+
+    /// Hardware-independent per-frame counters for the **live Pure2D path**.
+    ///
+    /// Populated by `draw_2d_shape` / `draw_sprite_2d` / `draw_2d_path` and
+    /// reset at the start of every frame.  Returns zeroes before the first
+    /// frame.  Cheap and allocation-free; safe to call every frame.
+    ///
+    /// ```rust,ignore
+    /// let s = ctx.render.frame_2d_stats();
+    /// log::info!("2D draws={} shapes={} sprites={} bytes={} instances={}",
+    ///     s.draw_calls, s.shape_draw_calls, s.sprite_draw_calls,
+    ///     s.bytes_uploaded, s.instances_uploaded);
+    /// ```
+    pub fn frame_2d_stats(&self) -> ferrous_renderer::Frame2dCounters {
+        self.inner.frame_2d_stats()
+    }
+
+    /// Wall-clock duration of the last frame in milliseconds, measured by the
+    /// engine runner around the per-frame work.
+    ///
+    /// Same-machine relative delta only — never an absolute fps claim.
+    /// Returns `0.0` when the renderer is driven manually.
+    pub fn frame_ms(&self) -> f32 {
+        self.inner.frame_ms()
+    }
+
+    /// Rolling (EMA, 60-frame) average of [`Self::frame_ms`], in milliseconds.
+    pub fn frame_ms_avg(&self) -> f32 {
+        self.inner.frame_ms_avg()
+    }
+
+    /// Name of the active wgpu backend: `"vulkan"`, `"webgpu"`, `"gl"`,
+    /// `"metal"`, `"dx12"` or `"unknown"`.
+    pub fn backend_name(&self) -> &'static str {
+        self.inner.backend_name()
+    }
+
+    /// Returns the current runtime render/performance configuration.
+    ///
+    /// See [`ferrous_renderer::Render2dConfig`].  Copy it, mutate it, and pass
+    /// it back to [`Self::set_render_2d_config`] to A/B compare optimizations
+    /// (antialiasing policy, UI bind-group cache, scratch reuse) at runtime.
+    pub fn render_2d_config(&self) -> ferrous_renderer::Render2dConfig {
+        self.inner.render_2d_config()
+    }
+
+    /// Applies a runtime render/performance configuration.  Takes effect on the
+    /// next frame; no pipelines are rebuilt.
+    ///
+    /// ```rust,ignore
+    /// let mut cfg = ctx.render.render_2d_config();
+    /// cfg.scratch_reuse = !cfg.scratch_reuse; // A/B compare
+    /// ctx.render.set_render_2d_config(cfg);
+    /// ```
+    pub fn set_render_2d_config(&mut self, config: ferrous_renderer::Render2dConfig) {
+        self.inner.set_render_2d_config(config);
     }
 
     /// World-space position of the camera eye this frame.

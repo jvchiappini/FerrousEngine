@@ -33,6 +33,12 @@ impl UiPass {
         self.renderer.set_font_atlas(view, sampler);
     }
 
+    /// Toggle the UI image bind-group cache (audit H8).  Forwarded to the
+    /// underlying [`GuiRenderer`].
+    pub fn set_bind_group_cache(&mut self, enabled: bool) {
+        self.renderer.set_image_bind_group_cache(enabled);
+    }
+
     /// Override the `LoadOp` for the next frame(s).  Pass `Some(color)` to
     /// clear the target before drawing (use in `Flat2D` mode); pass `None`
     /// to restore the default `LoadOp::Load` behaviour (composite on top of

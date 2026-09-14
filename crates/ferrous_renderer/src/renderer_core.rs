@@ -51,6 +51,8 @@ pub use pipeline::InstancingPipeline;
 
 use ferrous_2d::render::{Renderer2d, ShapeBatcher, DrawCommand2d};
 
+use crate::render_config::Render2dConfig;
+
 
 use ferrous_core::context::EngineContext;
 use crate::graph::frame_packet::CameraPacket;
@@ -64,6 +66,22 @@ use crate::scene::scene_data::SceneData;
 enum RenderDest<'a> {
     Target,
     View(&'a wgpu::TextureView),
+}
+
+/// A maximal run of consecutive same-key commands in the Pure2D painter-order
+/// command stream.  `start`/`count` index the coalesced painter-order uploads
+/// produced by the Pure2D path, not the batchers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Coalesced2dDraw {
+    /// `ShapeBatcher` SDF pipeline, `[start, start+count)` in the shape upload.
+    Shapes { start: u32, count: u32 },
+    /// Sprite pipeline bound to `texture_id`, `[start, start+count)` in the
+    /// sprite upload.
+    Sprites {
+        texture_id: u32,
+        start: u32,
+        count: u32,
+    },
 }
 
 /// | `Full3D` | ✓ | ✓ |
@@ -166,6 +184,22 @@ pub struct Renderer {
     /// draw calls).  Updated by `build_base_packet` every frame.
     pub render_stats: RenderStats,
 
+    // -- Runtime render/performance configuration (audit M4/H8/H3) ------------
+    /// Runtime-settable config knobs.  See [`Render2dConfig`].
+    pub render_2d_config: Render2dConfig,
+
+    // -- Wall-clock frame timing ---------------------------------------------
+    /// Wall-clock duration of the last frame in milliseconds.  Written by the
+    /// engine runner around the per-frame work; `0.0` when no runner is used
+    /// (e.g. the headless harness).  Only meaningful as a same-machine
+    /// relative delta — never an absolute fps claim.
+    pub frame_ms: f32,
+    /// Exponential moving average of [`Self::frame_ms`] (smoothing factor
+    /// `1/60`).  Cheap to update, no allocation.
+    pub frame_ms_avg: f32,
+    /// Number of frames observed by [`Self::record_frame_time`].
+    pub frame_count: u64,
+
     // -- SSAO -----------------------------------------------------------------
     /// Depth-normal prepass (runs before WorldPass).
     pub prepass: PrePass,
@@ -217,6 +251,21 @@ pub struct Renderer {
     pub shape_batcher: ShapeBatcher,
     /// Batcher de sprites dedicado al modo Pure2D.
     pub sprite_batcher_2d: ferrous_2d::render::SpriteBatcher,
+    /// Reusable scratch buffer for the per-frame, z-sorted unified 2D draw
+    /// list (`(z, DrawCommand2d)`).  Reused when
+    /// [`Render2dConfig::scratch_reuse`] is set (default), avoiding one heap
+    /// allocation + grow per frame (audit H8/H3).
+    draw_list_scratch: Vec<(f32, DrawCommand2d)>,
+    /// Reusable bucket-order flat copy of the sprite instances, used to resolve
+    /// the flat indices stored in `DrawCommand2d::Sprite` while the coalesced
+    /// painter-order upload is built.
+    sprite_flat_scratch: Vec<ferrous_2d::render::SpriteInstance>,
+    /// Reusable painter-ordered shape upload for the coalesced Pure2D path.
+    shape_upload_scratch: Vec<ferrous_2d::render::ShapeInstance>,
+    /// Reusable painter-ordered sprite upload for the coalesced Pure2D path.
+    sprite_upload_scratch: Vec<ferrous_2d::render::SpriteInstance>,
+    /// Reusable list of coalesced draw runs, emitted in painter order.
+    coalesced_2d_scratch: Vec<Coalesced2dDraw>,
 
     /// Bind groups de texturas indexados por texture_id para sprites 2D en Pure2D.
     pub sprite_bind_groups: std::collections::HashMap<u32, std::sync::Arc<wgpu::BindGroup>>,
@@ -390,6 +439,7 @@ impl Renderer {
             width,
             height,
             sample_count, // Use hardware MSAA
+            context.pipeline_cache.clone(),
         );
 
         // now that we have a GUI renderer instance, create the corresponding
@@ -423,14 +473,19 @@ impl Renderer {
         let particle_system = ParticleSystem::new(device, &layouts.camera, 1_000_000, sample_count);
 
         // -- Antialiasing pass -----------------------------------------------
+        let render_2d_config = Render2dConfig::default();
         let mut aa_pass = crate::passes::AntialiasingPass::new(device);
-        aa_pass.on_attach(device, hdr_format);
+        aa_pass.on_attach(device, hdr_format, context.pipeline_cache.as_deref());
         aa_pass.on_resize(device, width, height);
+        // Default policy: no redundant post-AA on top of the SDF analytic AA
+        // (audit M4).  Consumers opt back in via `set_antialiasing` or
+        // `set_render_2d_config`.
+        aa_pass.set_mode(render_2d_config.antialiasing.to_mode());
 
-        let renderer_2d = Renderer2d::new_with_cache(context.device.clone(), hdr_format, Some(wgpu::TextureFormat::Depth32Float), sample_count, 1024, context.pipeline_cache.as_ref());
+        let renderer_2d = Renderer2d::new_with_cache(context.device.clone(), hdr_format, Some(wgpu::TextureFormat::Depth32Float), sample_count, 1024, context.pipeline_cache.as_deref());
         // Pure2D renderiza directo al swapchain: usa formato de superficie (no HDR)
         // y sample_count=1 (MSAA no es compatible con presentación directa).
-        let renderer_2d_pure = Renderer2d::new_with_cache(context.device.clone(), format, None, 1, 1024, context.pipeline_cache.as_ref());
+        let renderer_2d_pure = Renderer2d::new_with_cache(context.device.clone(), format, None, 1, 1024, context.pipeline_cache.as_deref());
         let shape_batcher = ShapeBatcher::default();
 
         Self {
@@ -463,6 +518,10 @@ impl Renderer {
             height,
             mode: RendererMode::Full3D,
             render_stats: RenderStats::default(),
+            render_2d_config,
+            frame_ms: 0.0,
+            frame_ms_avg: 0.0,
+            frame_count: 0,
             prepass,
             ssao_pass,
             ssao_blur_pass,
@@ -484,6 +543,11 @@ impl Renderer {
             renderer_2d_pure,
             shape_batcher,
             sprite_batcher_2d: ferrous_2d::render::SpriteBatcher::default(),
+            draw_list_scratch: Vec::new(),
+            sprite_flat_scratch: Vec::new(),
+            shape_upload_scratch: Vec::new(),
+            sprite_upload_scratch: Vec::new(),
+            coalesced_2d_scratch: Vec::new(),
             sprite_bind_groups: std::collections::HashMap::new(),
             next_sprite_texture_id: 0,
             freed_sprite_texture_ids: Vec::new(),
@@ -784,7 +848,87 @@ impl Renderer {
     /// ```
     pub fn set_antialiasing(&mut self, mode: crate::passes::AntialiasingMode) {
         self.aa_pass.set_mode(mode);
+        self.render_2d_config.antialiasing =
+            crate::render_config::Antialiasing2d::from_mode(mode);
         self.mark_dirty();
+    }
+
+    /// Returns the current runtime render/performance configuration.
+    ///
+    /// See [`Render2dConfig`].  Copy it, mutate it, and hand it back to
+    /// [`Self::set_render_2d_config`] to A/B compare knobs at runtime.
+    pub fn render_2d_config(&self) -> Render2dConfig {
+        self.render_2d_config
+    }
+
+    /// Applies a runtime render/performance configuration.
+    ///
+    /// All knobs take effect on the next frame without rebuilding pipelines.
+    /// The antialiasing selector is mirrored into the internal
+    /// [`AntialiasingPass`](crate::passes::AntialiasingPass); the UI bind-group
+    /// cache and scratch-reuse flags are forwarded to the UI pass and the two
+    /// `Renderer2d` instances.
+    pub fn set_render_2d_config(&mut self, config: Render2dConfig) {
+        self.render_2d_config = config;
+        self.aa_pass.set_mode(config.antialiasing.to_mode());
+        self.renderer_2d.set_scratch_reuse(config.scratch_reuse);
+        self.renderer_2d_pure.set_scratch_reuse(config.scratch_reuse);
+        #[cfg(feature = "gui")]
+        self.ui_pass
+            .set_bind_group_cache(config.ui_bind_group_cache);
+        self.mark_dirty();
+    }
+
+    /// Snapshot of the hardware-independent per-frame 2D counters for the
+    /// **live Pure2D path** (`renderer_2d_pure`).
+    ///
+    /// Counters are reset at the start of every frame and accumulated by the
+    /// 2D `prepare`/`render` methods.  Safe and cheap to call every frame; no
+    /// allocation.  Returns zeroes before the first 2D frame.
+    pub fn frame_2d_stats(&self) -> ferrous_2d::render::Frame2dCounters {
+        self.renderer_2d_pure.frame_counters()
+    }
+
+    /// Wall-clock duration of the last frame in milliseconds (engine runner
+    /// only; `0.0` for a manually-driven renderer / headless harness).
+    ///
+    /// Same-machine relative delta only — never an absolute fps claim.
+    pub fn frame_ms(&self) -> f32 {
+        self.frame_ms
+    }
+
+    /// Rolling (EMA) average of [`Self::frame_ms`] in milliseconds.
+    pub fn frame_ms_avg(&self) -> f32 {
+        self.frame_ms_avg
+    }
+
+    /// Records the wall-clock duration of a frame, updating the rolling
+    /// average.  Called by `ferrous_engine`'s runner; cheap and allocation-free.
+    pub fn record_frame_time(&mut self, ms: f32) {
+        self.frame_ms = ms;
+        // EMA with a 60-frame time constant.  `alpha = 1/60`.
+        const ALPHA: f32 = 1.0 / 60.0;
+        if self.frame_count == 0 {
+            self.frame_ms_avg = ms;
+        } else {
+            self.frame_ms_avg += (ms - self.frame_ms_avg) * ALPHA;
+        }
+        self.frame_count = self.frame_count.wrapping_add(1);
+    }
+
+    /// Human-readable name of the active wgpu backend: `"vulkan"`,
+    /// `"webgpu"`, `"gl"`, `"metal"`, `"dx12"` or `"unknown"`.
+    ///
+    /// Useful for logging which backend a consumer is running on.
+    pub fn backend_name(&self) -> &'static str {
+        match self.context.backend {
+            wgpu::Backend::Vulkan => "vulkan",
+            wgpu::Backend::BrowserWebGpu => "webgpu",
+            wgpu::Backend::Gl => "gl",
+            wgpu::Backend::Metal => "metal",
+            wgpu::Backend::Dx12 => "dx12",
+            _ => "unknown",
+        }
     }
 
     /// Handles input events, specifically camera control input.
@@ -1051,6 +1195,12 @@ impl Renderer {
         dest: RenderDest,
         ui_batch: Option<ferrous_gui::GuiBatch>,
     ) {
+        // Frame start: reset the 2D counters so `frame_2d_stats()` reports the
+        // counters accumulated by this frame's `prepare_*`/`render_*` calls
+        // only.  Cheap (six relaxed atomic stores); done unconditionally so the
+        // stats are consistent even when the mode changes between frames.
+        self.renderer_2d_pure.reset_frame_counters();
+
         // Resolve target view. If internal, use a raw pointer to avoid conflicting
         // borrows with &mut self used by passes later.
         let target_view = match dest {
@@ -1113,11 +1263,138 @@ impl Renderer {
                 glam::Vec2::new(self.width as f32, self.height as f32),
             );
 
-            // Preparar shapes en el GPU buffer
-            self.renderer_2d_pure.prepare_shapes(&self.context.queue, &self.shape_batcher);
+            // ── Pure2D painter-order batcher (audit H3) ─────────────────────
+            // Build a painter-order command list **without mutating** the
+            // batchers, then reorder the instances into reusable scratch
+            // uploads so every (pipeline, texture) run is a contiguous GPU
+            // range.  A run is merely a span of consecutive same-key commands
+            // — their z may differ — so N distinct-z shapes collapse to one
+            // draw call and a texture's sprites collapse to one draw per
+            // contiguous span.  Global painter order is preserved exactly.
+            //
+            // This keeps the path allocation-free once the scratch buffers are
+            // warm: `sort_unstable_by` on the total-order `(z, command)` key
+            // allocates nothing (the command is a unique tie-break, so
+            // stability is not needed), and every `Vec` below is reused across
+            // frames when `render_2d_config.scratch_reuse` (default).  With it
+            // disabled, fresh `Vec`s reproduce the pre-optimization behaviour
+            // for A/B comparison.
+            let n_shapes = self.shape_batcher.instances.len();
+            let n_sprites = self.sprite_batcher_2d.total_instances();
+            let total = n_shapes + n_sprites;
+            let scratch_reuse = self.render_2d_config.scratch_reuse;
 
-            // Preparar sprites en el GPU buffer
-            self.renderer_2d_pure.prepare(&self.context.queue, &self.sprite_batcher_2d);
+            let mut draw_list: Vec<(f32, DrawCommand2d)> = if scratch_reuse {
+                let mut v = std::mem::take(&mut self.draw_list_scratch);
+                v.clear();
+                v.reserve(total);
+                v
+            } else {
+                Vec::with_capacity(total)
+            };
+            // Bucket-order flat copy, used to resolve `Sprite(tex, flat_idx)`.
+            let mut sprite_flat: Vec<ferrous_2d::render::SpriteInstance> = if scratch_reuse {
+                let mut v = std::mem::take(&mut self.sprite_flat_scratch);
+                v.clear();
+                v.reserve(n_sprites);
+                v
+            } else {
+                Vec::with_capacity(n_sprites)
+            };
+
+            for (i, shape) in self.shape_batcher.instances.iter().enumerate() {
+                draw_list.push((shape.transform_c3[2], DrawCommand2d::Shape(i)));
+            }
+            for (&tex_id, instances) in &self.sprite_batcher_2d.batches {
+                for inst in instances {
+                    sprite_flat.push(*inst);
+                    draw_list.push((
+                        inst.transform_c3[2],
+                        DrawCommand2d::Sprite(tex_id, sprite_flat.len() - 1),
+                    ));
+                }
+            }
+            // Deterministic total order: primary key z; equal-z commands are
+            // tie-broken by the command itself (shape index ascending, then
+            // sprite texture id / flat offset ascending), which reproduces the
+            // insertion order (audit M5) without a stable sort.
+            draw_list.sort_unstable_by(|a, b| {
+                a.0.partial_cmp(&b.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.1.cmp(&b.1))
+            });
+
+            // Split the painter-order stream into maximal same-key runs and
+            // copy their instances into painter-ordered uploads.
+            let mut shape_upload: Vec<ferrous_2d::render::ShapeInstance> = if scratch_reuse {
+                let mut v = std::mem::take(&mut self.shape_upload_scratch);
+                v.clear();
+                v.reserve(n_shapes);
+                v
+            } else {
+                Vec::with_capacity(n_shapes)
+            };
+            let mut sprite_upload: Vec<ferrous_2d::render::SpriteInstance> = if scratch_reuse {
+                let mut v = std::mem::take(&mut self.sprite_upload_scratch);
+                v.clear();
+                v.reserve(n_sprites);
+                v
+            } else {
+                Vec::with_capacity(n_sprites)
+            };
+            let mut coalesced: Vec<Coalesced2dDraw> = if scratch_reuse {
+                let mut v = std::mem::take(&mut self.coalesced_2d_scratch);
+                v.clear();
+                v.reserve(draw_list.len());
+                v
+            } else {
+                Vec::with_capacity(draw_list.len())
+            };
+
+            let mut i = 0usize;
+            while i < draw_list.len() {
+                match draw_list[i].1 {
+                    DrawCommand2d::Shape(_) => {
+                        let run_start = shape_upload.len() as u32;
+                        while i < draw_list.len() {
+                            match draw_list[i].1 {
+                                DrawCommand2d::Shape(idx) => {
+                                    shape_upload.push(self.shape_batcher.instances[idx]);
+                                    i += 1;
+                                }
+                                _ => break,
+                            }
+                        }
+                        coalesced.push(Coalesced2dDraw::Shapes {
+                            start: run_start,
+                            count: shape_upload.len() as u32 - run_start,
+                        });
+                    }
+                    DrawCommand2d::Sprite(tex_id, _) => {
+                        let run_start = sprite_upload.len() as u32;
+                        while i < draw_list.len() {
+                            match draw_list[i].1 {
+                                DrawCommand2d::Sprite(t, idx) if t == tex_id => {
+                                    sprite_upload.push(sprite_flat[idx]);
+                                    i += 1;
+                                }
+                                _ => break,
+                            }
+                        }
+                        coalesced.push(Coalesced2dDraw::Sprites {
+                            texture_id: tex_id,
+                            start: run_start,
+                            count: sprite_upload.len() as u32 - run_start,
+                        });
+                    }
+                }
+            }
+
+            // Upload the painter-ordered coalesced buffers (one write_buffer each).
+            self.renderer_2d_pure
+                .prepare_shape_slice(&self.context.queue, &shape_upload);
+            self.renderer_2d_pure
+                .prepare_sprite_slice(&self.context.queue, &sprite_upload);
 
             // Un único render pass: Clear → Shapes → Sprites
             {
@@ -1138,97 +1415,42 @@ impl Renderer {
                     occlusion_query_set: None,
                 });
 
-                // Z-ordering unificado shapes+sprites: construimos una lista de
-                // draw commands ordenada por z ascendente (la lógica de
-                // ShapeBatcher::sort_by_z queda integrada aquí: el Z se lee de
-                // transform_c3[2] de cada instancia), y emitimos un draw por run
-                // contiguo del mismo pipeline/función de textura.
-                let mut draw_list: Vec<(f32, DrawCommand2d)> = Vec::with_capacity(
-                    self.shape_batcher.instances.len() + self.sprite_batcher_2d.total_instances(),
-                );
-                for (i, shape) in self.shape_batcher.instances.iter().enumerate() {
-                    draw_list.push((shape.transform_c3[2], DrawCommand2d::Shape(i)));
-                }
-                let mut sprite_offset = 0usize;
-                for (&tex_id, instances) in &self.sprite_batcher_2d.batches {
-                    for (k, inst) in instances.iter().enumerate() {
-                        draw_list.push((
-                            inst.transform_c3[2],
-                            DrawCommand2d::Sprite(tex_id, sprite_offset + k),
-                        ));
-                    }
-                    sprite_offset += instances.len();
-                }
-                // Deterministic total order: primary key is z, and equal-z
-                // commands are tie-broken by the command itself, whose derived
-                // ordering reproduces the build/insertion order (shape index
-                // ascending, then sprite texture id / offset ascending). This
-                // makes the painter's order and the contiguous-run coalescing
-                // below contractual without a stable sort's scratch allocation.
-                draw_list.sort_unstable_by(|a, b| {
-                    a.0.partial_cmp(&b.0)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                        .then_with(|| a.1.cmp(&b.1))
-                });
-
-                // Nota: en esta fase primamos corrección sobre nº de draw calls.
-                // El orden de dibujado respeta z_index sin importar el tipo de
-                // primitiva (shapes y sprites se intercalan correctamente).
+                // Emit the runs in painter order.  Texture bind groups are
+                // resolved per sprite run.
                 let sprite_bgs = &self.sprite_bind_groups;
-                let mut i = 0usize;
-                while i < draw_list.len() {
-                    // Fn para resolver la bind group de una textura de sprite.
-                    let sprite_bg_fn = |tex_id: u32| -> Option<&wgpu::BindGroup> {
-                        sprite_bgs.get(&tex_id).map(|bg| bg.as_ref())
-                    };
-                    match draw_list[i].1 {
-                        DrawCommand2d::Shape(_) => {
-                            let idx = match draw_list[i].1 { DrawCommand2d::Shape(idx) => idx, _ => 0 };
-                            let mut j = i;
-                            let mut expected = idx + 1;
-                            let mut count = 1usize;
-                            while j + 1 < draw_list.len()
-                                && draw_list[j + 1].0 == draw_list[i].0
-                                && matches!(draw_list[j + 1].1, DrawCommand2d::Shape(e) if e == expected)
-                            {
-                                j += 1;
-                                expected += 1;
-                                count += 1;
-                            }
-                            self.renderer_2d_pure.render_shapes_range(
-                                &mut rpass,
-                                idx as u32,
-                                count as u32,
-                            );
-                            i = j + 1;
+                for draw in &coalesced {
+                    match *draw {
+                        Coalesced2dDraw::Shapes { start, count } => {
+                            self.renderer_2d_pure
+                                .render_shapes_range(&mut rpass, start, count);
                         }
-                        DrawCommand2d::Sprite(tex_id, idx) => {
-                            let mut j = i;
-                            let mut expected = idx + 1;
-                            let mut count = 1usize;
-                            while j + 1 < draw_list.len()
-                                && draw_list[j + 1].0 == draw_list[i].0
-                            {
-                                match draw_list[j + 1].1 {
-                                    DrawCommand2d::Sprite(t, e) if t == tex_id && e == expected => {
-                                        j += 1;
-                                        expected += 1;
-                                        count += 1;
-                                    }
-                                    _ => break,
-                                }
-                            }
+                        Coalesced2dDraw::Sprites {
+                            texture_id,
+                            start,
+                            count,
+                        } => {
+                            let bg_fn = |id: u32| -> Option<&wgpu::BindGroup> {
+                                sprite_bgs.get(&id).map(|bg| bg.as_ref())
+                            };
                             self.renderer_2d_pure.render_sprites_range(
                                 &mut rpass,
-                                tex_id,
-                                idx as u32,
-                                count as u32,
-                                sprite_bg_fn,
+                                texture_id,
+                                start,
+                                count,
+                                bg_fn,
                             );
-                            i = j + 1;
                         }
                     }
                 }
+            }
+
+            // Hand the scratch buffers back for reuse next frame.
+            if scratch_reuse {
+                self.draw_list_scratch = draw_list;
+                self.sprite_flat_scratch = sprite_flat;
+                self.shape_upload_scratch = shape_upload;
+                self.sprite_upload_scratch = sprite_upload;
+                self.coalesced_2d_scratch = coalesced;
             }
 
             // Limpiar el sprite batcher para el siguiente frame

@@ -4,6 +4,7 @@ use crate::gpu_types::GuiQuad;
 pub fn create_id_pipeline(
     device: &wgpu::Device,
     pipeline_layout: &wgpu::PipelineLayout,
+    cache: Option<&wgpu::PipelineCache>,
 ) -> RenderPipeline {
     let id_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("GUI ID Buffer Shader"),
@@ -65,6 +66,6 @@ pub fn create_id_pipeline(
         depth_stencil: None,
         multisample: wgpu::MultisampleState { count: 1, ..Default::default() },
         multiview: None,
-        cache: None,
+        cache,
     })
 }

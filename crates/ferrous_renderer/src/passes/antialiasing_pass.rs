@@ -222,9 +222,18 @@ impl AntialiasingPass {
     // -- Lifecycle -------------------------------------------------------------
 
     /// Compile GPU pipelines.  Must be called once before the first frame.
-    pub fn on_attach(&mut self, device: &Device, hdr_format: TextureFormat) {
+    ///
+    /// `cache` is the engine's shared [`wgpu::PipelineCache`] (Vulkan-only;
+    /// `None` elsewhere) so the AA shaders participate in driver-level shader
+    /// reuse (audit M18).
+    pub fn on_attach(
+        &mut self,
+        device: &Device,
+        hdr_format: TextureFormat,
+        cache: Option<&wgpu::PipelineCache>,
+    ) {
         self.hdr_format = hdr_format;
-        self.build_all_pipelines(device);
+        self.build_all_pipelines(device, cache);
     }
 
     /// Reallocate intermediate textures after a window resize.
@@ -389,7 +398,7 @@ impl AntialiasingPass {
         rpass.draw(0..3, 0..1);
     }
 
-    fn build_all_pipelines(&mut self, device: &Device) {
+    fn build_all_pipelines(&mut self, device: &Device, cache: Option<&wgpu::PipelineCache>) {
         let shader = device.create_shader_module(wgpu::include_wgsl!(
             "../../../../assets/shaders/antialiasing.wgsl"
         ));
@@ -426,7 +435,7 @@ impl AntialiasingPass {
                 depth_stencil: None,
                 multisample:  MultisampleState::default(),
                 multiview:    None,
-                cache:        None,
+                cache,
             })
         };
 

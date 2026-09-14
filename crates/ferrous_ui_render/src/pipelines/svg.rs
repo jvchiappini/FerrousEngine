@@ -6,6 +6,7 @@ pub fn create_svg_pipeline(
     format: wgpu::TextureFormat,
     pipeline_layout: &wgpu::PipelineLayout,
     sample_count: u32,
+    cache: Option<&wgpu::PipelineCache>,
 ) -> RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("GUI SVG Shader"),
@@ -65,6 +66,6 @@ pub fn create_svg_pipeline(
         }),
         multisample: wgpu::MultisampleState { count: sample_count, ..Default::default() },
         multiview: None,
-        cache: None,
+        cache,
     })
 }

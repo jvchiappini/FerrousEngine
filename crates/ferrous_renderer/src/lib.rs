@@ -31,6 +31,7 @@ pub mod graph;
 pub mod materials;
 pub mod passes;
 pub mod pipeline;
+pub mod render_config;
 pub mod render_stats;
 pub mod render_target;
 pub mod resources;
@@ -66,6 +67,15 @@ pub use renderer_core::{
 };
 // Antialiasing
 pub use passes::{AntialiasingMode, AntialiasingPass, FxaaParams};
+
+// Runtime render/performance configuration (Part 1/2 of the 2D performance pass)
+pub use render_config::{Antialiasing2d, Render2dConfig};
+
+// Hardware-independent per-frame 2D counters, surfaced through
+// `Renderer::frame_2d_stats()` and `ferrous_engine::RenderContext`.
+pub use ferrous_2d::render::Frame2dCounters;
+/// Consumer-facing alias for [`Frame2dCounters`].
+pub type Frame2dStats = Frame2dCounters;
 
 // Re-export geometry types
 pub use geometry::{Mesh, Vertex};

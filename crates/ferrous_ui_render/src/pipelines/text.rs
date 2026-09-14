@@ -7,6 +7,7 @@ pub fn create_text_pipeline(
     pipeline_layout: &wgpu::PipelineLayout,
     sample_count: u32,
     depth_write_enabled: bool,
+    cache: Option<&wgpu::PipelineCache>,
 ) -> RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("GUI Text Shader"),
@@ -69,6 +70,6 @@ pub fn create_text_pipeline(
         }),
         multisample: wgpu::MultisampleState { count: sample_count, ..Default::default() },
         multiview: None,
-        cache: None,
+        cache,
     })
 }

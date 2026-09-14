@@ -39,6 +39,16 @@ pub struct GuiRenderer {
     pub font_bind_group: Option<wgpu::BindGroup>,
     pub icon_bind_group: Option<wgpu::BindGroup>,
 
+    /// Identity of the texture set that `image_bind_group` was built from,
+    /// stored as `[view_ptr, sampler_ptr, arc_ptr]` per texture.  `prepare`
+    /// rebuilds the bind group only when this key no longer matches the batch
+    /// (audit H8: it used to rebuild it every frame with textures).
+    #[cfg(feature = "assets")]
+    image_bind_group_key: Vec<usize>,
+    /// When `false`, the bind group is rebuilt on every `prepare` with textures
+    /// (the pre-optimization behaviour), for A/B comparison.  Default `true`.
+    image_bind_group_cache: bool,
+
     pub max_instances: u32,
     pub text_max_instances: u32,
     pub icon_max_instances: u32,
@@ -57,6 +67,12 @@ pub struct GuiRenderer {
 
     pub format: wgpu::TextureFormat,
     pub sample_count: u32,
+
+    /// Shared pipeline cache (Vulkan-only).  Threaded into every UI pipeline so
+    /// a `format`/`sample_count` change reuses compiled shaders instead of
+    /// recompiling (audit M18).  `None` on backends without
+    /// `wgpu::Features::PIPELINE_CACHE`.
+    pipeline_cache: Option<Arc<wgpu::PipelineCache>>,
 }
 
 impl GuiRenderer {
@@ -67,6 +83,7 @@ impl GuiRenderer {
         width: u32,
         height: u32,
         sample_count: u32,
+        pipeline_cache: Option<Arc<wgpu::PipelineCache>>,
     ) -> Self {
         let layouts = Layouts::new(&device);
 
@@ -175,11 +192,12 @@ impl GuiRenderer {
         };
 
         // Pipelines
-        let opaque_pipeline = create_quad_pipeline(&device, format, &layouts.quad_pipeline_layout, sample_count, true);
-        let transparent_pipeline = create_quad_pipeline(&device, format, &layouts.quad_pipeline_layout, sample_count, false);
-        let text_pipeline = create_text_pipeline(&device, format, &layouts.text_pipeline_layout, sample_count, false);
-        let svg_pipeline = crate::pipelines::svg::create_svg_pipeline(&device, format, &layouts.quad_pipeline_layout, sample_count);
-        let id_pipeline = create_id_pipeline(&device, &layouts.quad_pipeline_layout);
+        let cache = pipeline_cache.as_deref();
+        let opaque_pipeline = create_quad_pipeline(&device, format, &layouts.quad_pipeline_layout, sample_count, true, cache);
+        let transparent_pipeline = create_quad_pipeline(&device, format, &layouts.quad_pipeline_layout, sample_count, false, cache);
+        let text_pipeline = create_text_pipeline(&device, format, &layouts.text_pipeline_layout, sample_count, false, cache);
+        let svg_pipeline = crate::pipelines::svg::create_svg_pipeline(&device, format, &layouts.quad_pipeline_layout, sample_count, cache);
+        let id_pipeline = create_id_pipeline(&device, &layouts.quad_pipeline_layout, cache);
 
         // Depth Buffer for Early-Z
         let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -247,6 +265,9 @@ impl GuiRenderer {
             image_bind_group,
             font_bind_group: None,
             icon_bind_group: None,
+            #[cfg(feature = "assets")]
+            image_bind_group_key: Vec::new(),
+            image_bind_group_cache: true,
             max_instances,
             text_max_instances: max_instances,
             icon_max_instances: max_instances,
@@ -260,6 +281,7 @@ impl GuiRenderer {
             id_staging_buffer,
             format,
             sample_count,
+            pipeline_cache,
         }
     }
 
@@ -286,12 +308,16 @@ impl GuiRenderer {
             self.format = format;
             self.sample_count = sample_count;
             
-            // Rebuild pipelines for new sample_count/format
+            // Rebuild pipelines for new sample_count/format.  The shared
+            // pipeline cache lets the driver reuse previously compiled shaders
+            // across backends/formats instead of recompiling from scratch
+            // (audit M18).
             println!("[GuiRenderer] Rebuilding pipelines for format={:?}, sample_count={}", format, sample_count);
-            self.opaque_pipeline = create_quad_pipeline(&self.device, format, &self.layouts.quad_pipeline_layout, sample_count, true);
-            self.transparent_pipeline = create_quad_pipeline(&self.device, format, &self.layouts.quad_pipeline_layout, sample_count, false);
-            self.text_pipeline = create_text_pipeline(&self.device, format, &self.layouts.text_pipeline_layout, sample_count, false);
-            self.svg_pipeline = crate::pipelines::svg::create_svg_pipeline(&self.device, format, &self.layouts.quad_pipeline_layout, sample_count);
+            let cache = self.pipeline_cache.as_deref();
+            self.opaque_pipeline = create_quad_pipeline(&self.device, format, &self.layouts.quad_pipeline_layout, sample_count, true, cache);
+            self.transparent_pipeline = create_quad_pipeline(&self.device, format, &self.layouts.quad_pipeline_layout, sample_count, false, cache);
+            self.text_pipeline = create_text_pipeline(&self.device, format, &self.layouts.text_pipeline_layout, sample_count, false, cache);
+            self.svg_pipeline = crate::pipelines::svg::create_svg_pipeline(&self.device, format, &self.layouts.quad_pipeline_layout, sample_count, cache);
         }
 
         // Resize Depth
@@ -319,6 +345,49 @@ impl GuiRenderer {
             view_formats: &[],
         });
         self.id_view = self.id_texture.create_view(&wgpu::TextureViewDescriptor::default());
+    }
+
+    /// Enable/disable the UI image bind-group cache (audit H8).
+    ///
+    /// Defaults to `true`: the image bind group is rebuilt only when the
+    /// texture set changes, instead of on every `prepare` that has textures.
+    /// Set to `false` to restore the per-frame rebuild for A/B comparison.
+    pub fn set_image_bind_group_cache(&mut self, enabled: bool) {
+        self.image_bind_group_cache = enabled;
+    }
+
+    /// Whether the image bind-group cache is enabled.
+    pub fn image_bind_group_cache(&self) -> bool {
+        self.image_bind_group_cache
+    }
+
+    /// True when the stored key describes exactly `textures` (same views,
+    /// samplers and `Arc` identities, in the same order).
+    #[cfg(feature = "assets")]
+    fn texture_key_matches(&self, textures: &[Arc<ferrous_assets::Texture2d>]) -> bool {
+        if self.image_bind_group_key.len() != textures.len() * 3 {
+            return false;
+        }
+        textures.iter().enumerate().all(|(i, tex)| {
+            let base = i * 3;
+            self.image_bind_group_key[base] == (&tex.view as *const wgpu::TextureView as usize)
+                && self.image_bind_group_key[base + 1]
+                    == (&tex.sampler as *const wgpu::Sampler as usize)
+                && self.image_bind_group_key[base + 2] == (Arc::as_ptr(tex) as usize)
+        })
+    }
+
+    #[cfg(feature = "assets")]
+    fn store_texture_key(&mut self, textures: &[Arc<ferrous_assets::Texture2d>]) {
+        self.image_bind_group_key.clear();
+        self.image_bind_group_key.reserve(textures.len() * 3);
+        for tex in textures {
+            self.image_bind_group_key
+                .push(&tex.view as *const wgpu::TextureView as usize);
+            self.image_bind_group_key
+                .push(&tex.sampler as *const wgpu::Sampler as usize);
+            self.image_bind_group_key.push(Arc::as_ptr(tex) as usize);
+        }
     }
 
     /// PREPARE phase: Uploads quad data to GPU buffers.
@@ -372,9 +441,17 @@ impl GuiRenderer {
             queue.write_buffer(&self.icon_instance_buffer, 0, bytes);
         }
 
-        // Update image bind group if textures changed
+        // Update the image bind group only when the texture set actually
+        // changed.  Historically this rebuilt the group (plus two scratch
+        // `Vec`s and a GPU object) on every `prepare` that had textures, i.e.
+        // every frame of an immediate-mode UI (audit H8).  The cache is keyed
+        // on the view/sampler/`Arc` identities, so it is invalidated whenever a
+        // texture is added, removed, reordered or replaced.  `image_bind_group_cache`
+        // toggles the optimization for A/B comparison.
         #[cfg(feature = "assets")]
-        if !batch.textures.is_empty() {
+        if !batch.textures.is_empty()
+            && (!self.image_bind_group_cache || !self.texture_key_matches(&batch.textures))
+        {
             let mut views = Vec::with_capacity(batch.textures.len());
             let mut samplers = Vec::with_capacity(batch.textures.len());
             for tex in &batch.textures {
@@ -417,6 +494,8 @@ impl GuiRenderer {
                     entries: &entries,
                 });
             }
+
+            self.store_texture_key(&batch.textures);
         }
 
         if !batch.svg_commands.is_empty() {

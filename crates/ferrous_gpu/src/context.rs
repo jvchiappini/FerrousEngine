@@ -21,7 +21,11 @@ pub struct EngineContext {
     /// between pipelines and between program runs. `None` when the device does
     /// not support [`wgpu::Features::PIPELINE_CACHE`] (only Vulkan implements it
     /// in wgpu 23, so this is `None` on Metal/DX12/WebGPU/GL).
-    pub pipeline_cache: Option<wgpu::PipelineCache>,
+    ///
+    /// Wrapped in `Arc` so sub-renderers (the 2D and UI renderers) can hold a
+    /// clone and thread it into their own pipeline creation without borrowing
+    /// the whole context for their lifetime.
+    pub pipeline_cache: Option<Arc<wgpu::PipelineCache>>,
 }
 
 #[derive(Debug, Error)]
@@ -153,13 +157,13 @@ impl EngineContext {
             .features()
             .contains(wgpu::Features::PIPELINE_CACHE)
         {
-            Some(unsafe {
+            Some(Arc::new(unsafe {
                 device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
                     label: Some("Engine Pipeline Cache"),
                     data: None,
                     fallback: true,
                 })
-            })
+            }))
         } else {
             None
         };

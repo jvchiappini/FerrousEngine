@@ -60,6 +60,17 @@ pub struct Renderer2d {
     counters_bytes_uploaded: AtomicU64,
     counters_instances_uploaded: AtomicU32,
     counters_buffer_reallocations: AtomicU32,
+
+    /// Reusable staging buffer for the flattened sprite upload.  Reusing it
+    /// turns the per-frame `Vec::with_capacity` + `extend` (one heap alloc and
+    /// one grow per dynamic frame, measured as part of the 56-92 allocs/frame
+    /// in the audit) into an in-place `clear()` + `extend_from_slice` that
+    /// keeps the previous frame's capacity.  Gated by [`Self::scratch_reuse`]
+    /// so a consumer can A/B compare against the allocating path.
+    scratch_sprites: Vec<SpriteInstance>,
+    /// When `false`, [`Self::prepare`] allocates a fresh `Vec` per frame
+    /// instead of reusing [`Self::scratch_sprites`].  Defaults to `true`.
+    scratch_reuse: bool,
 }
 
 impl Renderer2d {
@@ -146,7 +157,23 @@ impl Renderer2d {
             counters_bytes_uploaded: AtomicU64::new(0),
             counters_instances_uploaded: AtomicU32::new(0),
             counters_buffer_reallocations: AtomicU32::new(0),
+            scratch_sprites: Vec::new(),
+            scratch_reuse: true,
         }
+    }
+
+    /// Enable/disable reuse of the internal sprite-staging scratch buffer.
+    ///
+    /// Defaults to `true`.  When disabled, [`Self::prepare`] allocates a fresh
+    /// `Vec` every frame (the pre-optimization behaviour) so the scratch-reuse
+    /// optimization can be A/B compared at runtime.
+    pub fn set_scratch_reuse(&mut self, enabled: bool) {
+        self.scratch_reuse = enabled;
+    }
+
+    /// Whether the internal scratch buffers are being reused across frames.
+    pub fn scratch_reuse(&self) -> bool {
+        self.scratch_reuse
     }
 
     /// Resets the per-frame instrumentation.  Call once at the start of every
@@ -217,15 +244,31 @@ impl Renderer2d {
 
         // Consolidar TODOS los datos en un slice contiguo → UN SOLO write_buffer.
         // Evita N llamadas separadas a la GPU staging queue (una por textura).
-        // Usamos a scratch buffer pre-allocado en el batcher para evitar allocs de heap.
-        let mut flat: Vec<SpriteInstance> = Vec::with_capacity(total_instances);
-        for instances in batcher.batches.values() {
-            flat.extend_from_slice(instances.as_slice());
-        }
-        let uploaded = bytemuck::cast_slice(&flat);
-        queue.write_buffer(&self.instance_buffer, 0, uploaded);
+        // Con `scratch_reuse` (default) el buffer de staging se reutiliza entre
+        // frames: `clear()` conserva la capacidad y evita la alloc/grow que
+        // medía la auditoría (H8).  Con `scratch_reuse = false` se reproduce el
+        // comportamiento antiguo (un `Vec::with_capacity` por frame) para poder
+        // comparar A/B en runtime.
+        let bytes_written = if self.scratch_reuse {
+            let scratch = &mut self.scratch_sprites;
+            scratch.clear();
+            for instances in batcher.batches.values() {
+                scratch.extend_from_slice(instances.as_slice());
+            }
+            let uploaded = bytemuck::cast_slice(scratch.as_slice());
+            queue.write_buffer(&self.instance_buffer, 0, uploaded);
+            uploaded.len() as u64
+        } else {
+            let mut flat: Vec<SpriteInstance> = Vec::with_capacity(total_instances);
+            for instances in batcher.batches.values() {
+                flat.extend_from_slice(instances.as_slice());
+            }
+            let uploaded = bytemuck::cast_slice(&flat);
+            queue.write_buffer(&self.instance_buffer, 0, uploaded);
+            uploaded.len() as u64
+        };
         self.counters_bytes_uploaded
-            .fetch_add(uploaded.len() as u64, Ordering::Relaxed);
+            .fetch_add(bytes_written, Ordering::Relaxed);
         self.counters_instances_uploaded
             .fetch_add(total_instances as u32, Ordering::Relaxed);
 
@@ -235,7 +278,20 @@ impl Renderer2d {
     /// Upload all shape instances as one contiguous `write_buffer`, growing the
     /// GPU buffer first if needed. Returns the number of instances uploaded.
     pub fn prepare_shapes(&mut self, queue: &wgpu::Queue, batcher: &crate::render::ShapeBatcher) -> usize {
-        let total = batcher.instances.len();
+        self.prepare_shape_slice(queue, &batcher.instances)
+    }
+
+    /// Upload an arbitrary, caller-ordered slice of shape instances.
+    ///
+    /// The Pure2D path uses this to upload a **painter-ordered** coalesced
+    /// buffer without mutating the caller's `ShapeBatcher`.  Same single
+    /// `write_buffer` and counters as [`Self::prepare_shapes`].
+    pub fn prepare_shape_slice(
+        &mut self,
+        queue: &wgpu::Queue,
+        data: &[crate::render::types::ShapeInstance],
+    ) -> usize {
+        let total = data.len();
         if total == 0 { return 0; }
 
         if total > self.max_shape_instances as usize {
@@ -250,8 +306,41 @@ impl Renderer2d {
                 .fetch_add(1, Ordering::Relaxed);
         }
 
-        let uploaded = bytemuck::cast_slice(&batcher.instances);
+        let uploaded = bytemuck::cast_slice(data);
         queue.write_buffer(&self.shape_instance_buffer, 0, uploaded);
+        self.counters_bytes_uploaded
+            .fetch_add(uploaded.len() as u64, Ordering::Relaxed);
+        self.counters_instances_uploaded
+            .fetch_add(total as u32, Ordering::Relaxed);
+        total
+    }
+
+    /// Upload an arbitrary, caller-ordered slice of sprite instances.
+    ///
+    /// Companion to [`Self::prepare_shape_slice`] for the painter-ordered
+    /// coalesced Pure2D upload.
+    pub fn prepare_sprite_slice(
+        &mut self,
+        queue: &wgpu::Queue,
+        data: &[SpriteInstance],
+    ) -> usize {
+        let total = data.len();
+        if total == 0 { return 0; }
+
+        if total > self.max_instances as usize {
+            self.max_instances = (total as u32).next_power_of_two();
+            self.instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Sprite Instance Buffer (Resized)"),
+                size: (self.max_instances as usize * std::mem::size_of::<SpriteInstance>()) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.counters_buffer_reallocations
+                .fetch_add(1, Ordering::Relaxed);
+        }
+
+        let uploaded = bytemuck::cast_slice(data);
+        queue.write_buffer(&self.instance_buffer, 0, uploaded);
         self.counters_bytes_uploaded
             .fetch_add(uploaded.len() as u64, Ordering::Relaxed);
         self.counters_instances_uploaded
