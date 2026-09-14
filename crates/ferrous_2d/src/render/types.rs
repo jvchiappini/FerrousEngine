@@ -52,12 +52,34 @@ impl SpriteInstance {
     }
 }
 
+/// Shape-kind sentinel stored in `ShapeInstance::params[3]` (`params.w`).
+///
+/// # Flag encoding (additive)
+///
+/// `params.w` used to be documented as `is_filled` but was **never read** by
+/// `shape_2d.wgsl`, so the slot is free.  To stay source-compatible the
+/// existing constructors keep emitting the historical values and the shader
+/// keeps ignoring them:
+///
+/// | `params.w` | producer | shader branch |
+/// |---|---|---|
+/// | `0.0` | `rect_outline` (legacy "is_filled = 0") | rounded-rect/circle SDF |
+/// | `1.0` | `rect*` / `circle*` / `line*` (legacy "is_filled = 1") | rounded-rect/circle SDF |
+/// | `2.0` | **only** [`ShapeInstance::triangle`] | triangle SDF |
+///
+/// The shader selects the triangle branch with the test `params.w > 1.5`, so
+/// the rounded-rect/circle path is byte-for-byte unchanged for every existing
+/// instance.  No consumer-facing field or constructor changed shape.
+pub const SHAPE_KIND_TRIANGLE: f32 = 2.0;
+
 /// Instance data for non-textured 2D shapes (technical drawing).
 ///
-/// The four transform columns encode a full model matrix; the shader only
-/// supports the rounded-rectangle SDF family (rectangle, circle, stroked
-/// segment), not arbitrary polygons. Prefer the ergonomic constructors below
-/// over building the matrix by hand.
+/// The four transform columns encode a full model matrix. The shader supports
+/// the rounded-rectangle SDF family (rectangle, circle, stroked segment) and,
+/// since the polygon primitive landed, a filled anti-aliased triangle
+/// ([`ShapeInstance::triangle`], selected by [`SHAPE_KIND_TRIANGLE`] in
+/// `params.w`). Prefer the ergonomic constructors below over building the
+/// matrix by hand.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct ShapeInstance {
@@ -71,8 +93,13 @@ pub struct ShapeInstance {
     pub transform_c3: [f32; 4],
     /// Linear RGBA colour (see the module colour-space contract).
     pub color: [f32; 4],
-    /// `[border_thickness, corner_radius, smoothing, is_filled]`.
-    pub params: [f32; 4],         // x=border_thickness, y=corner_radius, z=smoothing, w=is_filled
+    /// `[border_thickness, corner_radius, smoothing, shape_kind]`.
+    ///
+    /// `x`/`y`/`z` keep their historical meaning (border, corner radius,
+    /// AA smoothing). `w` is the shape-kind flag: `0.0`/`1.0` are the legacy
+    /// `is_filled` values for the rounded-rect/circle family (ignored by the
+    /// shader) and [`SHAPE_KIND_TRIANGLE`] selects the triangle SDF.
+    pub params: [f32; 4],
 }
 
 impl ShapeInstance {
@@ -242,6 +269,43 @@ impl ShapeInstance {
             glam::Vec3::new(center.x, center.y, 0.0),
         );
         Self::from_model(model, color, [0.0, 0.0, 2.0, 1.0])
+    }
+
+    /// Triángulo **relleno y anti-aliaseado** con vértices `a`, `b`, `c` en
+    /// unidades de mundo (píxeles en Pure2D, origen en el centro de pantalla,
+    /// Y hacia arriba).
+    ///
+    /// # Encoding
+    ///
+    /// Todo triángulo es la imagen afín del triángulo canónico de esquina
+    /// `(0,0)`, `(1,0)`, `(0,1)`, así que cabe en las cuatro columnas `Mat4`
+    /// existentes:
+    ///
+    /// ```text
+    /// c0 = b - a
+    /// c1 = c - a
+    /// c2 = (0, 0, 1, 0)
+    /// c3 = a
+    /// ```
+    ///
+    /// El vertex shader de triángulos usa las esquinas del quad en `uv ∈
+    /// {0,1}²` (a diferencia del path rect, que las centra en `[-0.5, 0.5]²`),
+    /// de modo que `(0,0) → a`, `(1,0) → b`, `(0,1) → c`. El fragment shader
+    /// evalúa un SDF de triángulo en espacio de mundo, por lo que el relleno
+    /// es **two-sided**: el resultado es el mismo sin importar el winding.
+    ///
+    /// `params` emitido: `[0, 0, smoothing=2, SHAPE_KIND_TRIANGLE]`. Usar
+    /// triángulos en abanico (fan) desde el centroide es la forma directa de
+    /// rellenar un polígono convexo con un vértice por lado, en vez de
+    /// aproximarlo con muchas instancias de rect.
+    pub fn triangle(a: glam::Vec2, b: glam::Vec2, c: glam::Vec2, color: [f32; 4]) -> Self {
+        let model = glam::Mat4::from_cols(
+            glam::Vec4::new(b.x - a.x, b.y - a.y, 0.0, 0.0),
+            glam::Vec4::new(c.x - a.x, c.y - a.y, 0.0, 0.0),
+            glam::Vec4::new(0.0, 0.0, 1.0, 0.0),
+            glam::Vec4::new(a.x, a.y, 0.0, 1.0),
+        );
+        Self::from_model(model, color, [0.0, 0.0, 2.0, SHAPE_KIND_TRIANGLE])
     }
 }
 
