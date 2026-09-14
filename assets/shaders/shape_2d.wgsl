@@ -32,6 +32,10 @@ struct VertexOutput {
     @location(6) @interpolate(flat) tri_a: vec2<f32>,
     @location(7) @interpolate(flat) tri_b: vec2<f32>,
     @location(8) @interpolate(flat) tri_c: vec2<f32>,
+    // Per-cap hard flags for the rounded-rect/line path, sourced from
+    // `transform_c2.xy` (unused geometrically).  x = start/from cap hard,
+    // y = end/to cap hard.  0.0 for every constructor except line_with_cap_aa.
+    @location(9) @interpolate(flat) cap_hard: vec2<f32>,
 };
 
 // Shape-kind flag lives in `params.w` (see ferrous_2d::render::types).
@@ -112,6 +116,8 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.tri_a = transform[3].xy;
     out.tri_b = transform[3].xy + transform[0].xy;
     out.tri_c = transform[3].xy + transform[1].xy;
+    // Per-cap hard flags live in the spare `transform_c2.xy` channel.
+    out.cap_hard = in.transform_c2.xy;
     
     return out;
 }
@@ -238,20 +244,36 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(in.color.rgb, in.color.a * alpha);
     }
 
-    // --- Rounded-rectangle / circle path (unchanged) ---
+    // --- Rounded-rectangle / circle path (unchanged for all default shapes) ---
     let local_size = in.local_size;
     let p = in.local_pos * local_size;
-    
-    // Exact Euclidean Distance to rounded rectangle
+    let grad_len = in.world_pixel_size;
     let radius = in.params.y;
-    let q = abs(p) - (local_size * 0.5) + vec2<f32>(radius);
+    let smoothing = in.params.z;
+    let filter_width = max(grad_len * smoothing, 1e-6);
+
+    // Per-cap AA control (ShapeInstance::line_with_cap_aa): a hard cap
+    // (`cap_hard` flag 1) must not fade.  Push that side of the analysis box
+    // out by `cap_push` so the SDF is saturated near the true cap plane, then
+    // hard-clip at the true plane at the end.  With both flags 0 (every other
+    // constructor) e_left = e_right = 0 and this reduces bit-for-bit to the
+    // original symmetric rounded-box SDF below.
+    let hard_start = in.cap_hard.x > 0.5;
+    let hard_end = in.cap_hard.y > 0.5;
+    let cap_push = filter_width * 4.0 + 1.0;
+    let e_left = select(0.0, cap_push, hard_start);
+    let e_right = select(0.0, cap_push, hard_end);
+    let half = local_size * 0.5;
+    let center_shift = (e_right - e_left) * 0.5;
+    let half_x = half.x + (e_left + e_right) * 0.5;
+
+    // Exact Euclidean Distance to rounded rectangle
+    let q = vec2<f32>(abs(p.x - center_shift), abs(p.y)) - vec2<f32>(half_x, half.y) + vec2<f32>(radius);
     let d = min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0))) - radius;
 
     // --- Anti-Aliasing (Stable Pre-calculated) ---
     // We use the pixel size calculated in VS for stability, 
     // especially on diagonals where dpdx fluctuates.
-    let grad_len = in.world_pixel_size;
-    
     // Pixel-scale stabilization:
     // Ensure the line is always at least 1.5 pixels thick.
     let target_pixel_width = 1.8; // Slightly thicker for better stability on diagonals
@@ -271,14 +293,20 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         alpha_multiplier = clamp(actual_width / min_world_width, 0.2, 1.0);
     }
 
-    // Smoothing range (usually 1-2 pixels)
-    let smoothing = in.params.z; 
-    let filter_width = grad_len * smoothing;
-    
     // Main shape alpha
     var alpha = 1.0 - smoothstep(-filter_width, filter_width, final_d);
 
-    let final_alpha = alpha * alpha_multiplier;
+    var final_alpha = alpha * alpha_multiplier;
+
+    // Hard cap clip at the true cap plane.  `>=`/`<=` inclusiveness keeps a
+    // point exactly on a shared endpoint covered by both segments, so a chain
+    // of collinear segments leaves neither a gap nor a double-blend seam.
+    if (hard_start && p.x < -half.x) {
+        final_alpha = 0.0;
+    }
+    if (hard_end && p.x > half.x) {
+        final_alpha = 0.0;
+    }
 
     if (final_alpha < 0.01) {
         discard;

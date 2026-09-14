@@ -102,6 +102,12 @@ pub struct ShapeInstance {
     /// Second column of the model matrix (y basis; its length is the local height).
     pub transform_c1: [f32; 4],
     /// Third column of the model matrix (z basis).
+    ///
+    /// `xy` is unused by the 2D shader because the canonical quad always has
+    /// `local z = 0`, so only the line constructors write flags there: `x` and
+    /// `y` are the **per-cap hard flags** (`1.0` = that cap is hard / no AA,
+    /// `0.0` = normal AA) for [`ShapeInstance::line_with_cap_aa`]. Every other
+    /// constructor leaves both at `0.0`, so the shader path is unchanged.
     pub transform_c2: [f32; 4],
     /// Fourth column of the model matrix (translation; `.z` carries depth).
     pub transform_c3: [f32; 4],
@@ -220,6 +226,42 @@ impl ShapeInstance {
     /// Prefer the typed [`ShapeInstance::line_with_cap_style`] in new code: an
     /// out-of-range `u8` here is not rejected and silently falls back to `Round`.
     pub fn line_with_cap(from: glam::Vec2, to: glam::Vec2, width: f32, color: [f32; 4], cap_style: u8) -> Self {
+        Self::line_with_cap_aa(from, to, width, color, cap_style, true, true)
+    }
+
+    /// Línea con control de AA **por extremo**, para teselar muros conectados
+    /// sin costura.
+    ///
+    /// Es idéntica a [`ShapeInstance::line_with_cap`] salvo que `aa_start` /
+    /// `aa_end` desactivan el anti-aliasing del cap `from` / `to`
+    /// respectivamente:
+    ///
+    /// - `true` (default): el cap recibe AA normal (extremo libre).
+    /// - `false`: el cap es **duro** — el shader recorta exactamente en el
+    ///   plano del extremo, sin fade, y satura la cobertura hacia adentro. Dos
+    ///   segmentos contiguos que comparten un extremo, ambos con ese extremo en
+    ///   `false`, teselan borde con borde sin dejar hueco ni doble-blend.
+    ///
+    /// `cap_style` usa el mismo `u8` que [`ShapeInstance::line_with_cap`]
+    /// (`0` = Flat, `1` = Round, `2` = Square).
+    ///
+    /// # Cómo marcar muros conectados (p.ej. Koncreta)
+    ///
+    /// Al construir una cadena/miter/T de segmentos, marcá `aa_start`/`aa_end`
+    /// en `false` para los extremos que se unen con otro segmento y en `true`
+    /// para los extremos libres (esquinas exteriores). La codificación de los
+    /// flags vive en `transform_c2.xy` (slot no usado por el shader 2D); el
+    /// resto de constructores lo dejan en `0`. Las funciones puramente
+    /// geométricas no cambian.
+    pub fn line_with_cap_aa(
+        from: glam::Vec2,
+        to: glam::Vec2,
+        width: f32,
+        color: [f32; 4],
+        cap_style: u8,
+        aa_start: bool,
+        aa_end: bool,
+    ) -> Self {
         let delta = to - from;
         let length = delta.length();
         if length < 0.0001 {
@@ -235,11 +277,15 @@ impl ShapeInstance {
             _ => (length + width, width * 0.5), // Default a Round
         };
 
-        let model = glam::Mat4::from_scale_rotation_translation(
+        let mut model = glam::Mat4::from_scale_rotation_translation(
             glam::Vec3::new(geom_length, width, 1.0),
             glam::Quat::from_rotation_z(rotation),
             glam::Vec3::new(center.x, center.y, 0.0),
         );
+        // transform_c2.xy is unused by the 2D shader (local z is always 0), so
+        // it carries the per-cap hard flags: 1.0 = disable AA on that cap.
+        model.z_axis.x = if aa_start { 0.0 } else { 1.0 };
+        model.z_axis.y = if aa_end { 0.0 } else { 1.0 };
         // params: border=width, corner_radius=radius, smooth=2, filled=1
         Self::from_model(model, color, [width, radius, 2.0, 1.0])
     }
@@ -272,12 +318,46 @@ impl ShapeInstance {
         color: [f32; 4],
         cap_style: crate::components::CapStyle,
     ) -> Self {
+        Self::line_with_cap_style_aa(from, to, width, color, cap_style, true, true)
+    }
+
+    /// Tipada de [`ShapeInstance::line_with_cap_aa`]: igual que
+    /// [`ShapeInstance::line_with_cap_style`] pero con `aa_start` / `aa_end`
+    /// para desactivar el AA de caps conectados (ver esa función para el
+    /// detalle y para cómo marcar cadenas de muros).
+    ///
+    /// ```rust
+    /// use ferrous_2d::components::CapStyle;
+    /// use ferrous_2d::render::ShapeInstance;
+    /// use glam::Vec2;
+    ///
+    /// // Cadena horizontal: el extremo derecho se une a otro muro (duro),
+    /// // el izquierdo queda libre (AA).
+    /// let wall = ShapeInstance::line_with_cap_style_aa(
+    ///     Vec2::ZERO,
+    ///     Vec2::new(10.0, 0.0),
+    ///     2.0,
+    ///     [1.0, 1.0, 1.0, 1.0],
+    ///     CapStyle::Flat,
+    ///     true,
+    ///     false,
+    /// );
+    /// ```
+    pub fn line_with_cap_style_aa(
+        from: glam::Vec2,
+        to: glam::Vec2,
+        width: f32,
+        color: [f32; 4],
+        cap_style: crate::components::CapStyle,
+        aa_start: bool,
+        aa_end: bool,
+    ) -> Self {
         let raw = match cap_style {
             crate::components::CapStyle::Flat => 0,
             crate::components::CapStyle::Round => 1,
             crate::components::CapStyle::Square => 2,
         };
-        Self::line_with_cap(from, to, width, color, raw)
+        Self::line_with_cap_aa(from, to, width, color, raw, aa_start, aa_end)
     }
 
     /// Rectángulo rotado, centrado en `center`, con ángulo en radianes.
