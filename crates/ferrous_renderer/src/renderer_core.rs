@@ -1903,6 +1903,20 @@ impl Renderer {
         self.shape_batcher.push_shape(instance);
     }
 
+    /// Push a slice of technical 2D shapes for rendering this frame.
+    ///
+    /// Equivalent to calling [`Self::draw_2d_shape`] once per element, but
+    /// appends with a single `extend_from_slice` instead of N method calls and
+    /// N capacity checks. Order and therefore painter order are identical, and
+    /// the Pure2D H3 coalescing pass sees the same flat `ShapeBatcher` it
+    /// already consumes, so the resulting draw calls/pixels are unchanged.
+    ///
+    /// This is the fast path for consumers that approximate a filled polygon
+    /// with many instances (e.g. a triangle fan or a scan-line fill).
+    pub fn draw_2d_shapes(&mut self, shapes: &[ferrous_2d::render::types::ShapeInstance]) {
+        self.shape_batcher.instances.extend_from_slice(shapes);
+    }
+
     /// Push a technical 2D path for rendering this frame. 
     /// Dibuja un sprite texturizdo en Pure2D mode.
     ///

@@ -360,6 +360,16 @@ impl<'r> RenderContext<'r> {
         self.inner.draw_2d_shape(instance);
     }
 
+    /// Push a slice of technical 2D shapes for rendering this frame.
+    ///
+    /// Same result as calling [`Self::draw_2d_shape`] per element — identical
+    /// painter order, pixels and H3-coalesced draw calls — with less per-call
+    /// overhead. Intended for bulk polygon fills (triangle fans, scan-line
+    /// rect fills).
+    pub fn draw_2d_shapes(&mut self, shapes: &[ferrous_renderer::render_2d::ShapeInstance]) {
+        self.inner.draw_2d_shapes(shapes);
+    }
+
     /// Push a textured 2D sprite for rendering this frame.
     ///
     /// `texture_id` must come from [`register_sprite_texture`](Self::register_sprite_texture).
