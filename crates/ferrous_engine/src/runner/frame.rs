@@ -98,6 +98,15 @@ impl<A: FerrousApp + 'static> Runner<A> {
             return None;
         };
 
+        // Immediate-mode 2D geometry is per-frame. The runner owns that
+        // lifecycle and clears both 2D batchers once here, before
+        // `update`/`draw_3d`/`draw_ui` push new geometry. Previously nothing
+        // cleared them, so `draw_2d_shape`/`draw_2d_path` output accumulated
+        // across frames ("ghosting"). `clear_2d()` is idempotent, so an
+        // application that also clears at the start of its own frame is
+        // unaffected; it can remove its manual call.
+        gfx.renderer.clear_2d();
+
         // wasm32: proactive size sync as browser layout can be delayed/asynchronous
         #[cfg(target_arch = "wasm32")]
         {

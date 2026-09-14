@@ -19,6 +19,11 @@
 //! | `create_material(desc)` | Register a GPU material, get a stable handle |
 //! | `update_material(handle, desc)` | Update scalar params of a material |
 //! | `set_directional_light(dir, color, intensity)` | Override the global directional light |
+//! | `enable_pure_2d(background)` | Switch to pixel-perfect orthographic Pure2D mode |
+//! | `clear_2d()` | Clear the immediate-mode 2D shape/sprite batchers |
+//! | `draw_2d_shape(instance)` | Push a technical 2D shape for this frame |
+//! | `draw_sprite_2d(texture_id, instance)` | Push a textured sprite for this frame |
+//! | `register_sprite_texture(width, height, data)` | Upload an RGBA8 sprite texture |
 //! | `stats()` | Per-frame render statistics |
 //! | `camera_eye()` | World-space camera eye position |
 //! | `camera_target()` | World-space camera look-at target |
@@ -105,6 +110,24 @@ impl<'r> RenderContext<'r> {
     /// This is the recommended mode for UI-only applications or 2D viewers.
     pub fn enable_flat_2d(&mut self, background_color: Color) {
         self.inner.enable_flat_2d(background_color.to_wgpu());
+    }
+
+    /// Switch to **Pure2D** mode: a pixel-perfect orthographic 2D pipeline with
+    /// no 3-D passes.
+    ///
+    /// The camera is configured automatically: 1 world-unit = 1 pixel, the
+    /// origin is the centre of the screen with +Y up, so X spans
+    /// `[-width/2, +width/2]` and Y spans `[-height/2, +height/2]`.  The
+    /// `background_color` is used as the per-frame clear colour.
+    ///
+    /// This is the canonical entrypoint for immediate-mode 2D rendering and is
+    /// equivalent to `renderer_mut().enable_pure_2d(...)`.
+    ///
+    /// ```rust,ignore
+    /// ctx.render.enable_pure_2d(Color::BLACK);
+    /// ```
+    pub fn enable_pure_2d(&mut self, background_color: Color) {
+        self.inner.enable_pure_2d(background_color.to_wgpu());
     }
 
     /// Convenience helper to switch back to full 3-D rendering and world-sync.
@@ -276,9 +299,39 @@ impl<'r> RenderContext<'r> {
         self.inner.draw_2d_shape(instance);
     }
 
+    /// Push a textured 2D sprite for rendering this frame.
+    ///
+    /// `texture_id` must come from [`register_sprite_texture`](Self::register_sprite_texture).
+    /// The sprite is centred on its instance transform; see
+    /// [`ferrous_2d::render::SpriteInstance`] for the transform and UV
+    /// conventions.
+    pub fn draw_sprite_2d(&mut self, texture_id: u32, instance: ferrous_2d::render::SpriteInstance) {
+        self.inner.draw_sprite_2d(texture_id, instance);
+    }
+
+    /// Upload a raw RGBA8 texture for use with
+    /// [`draw_sprite_2d`](Self::draw_sprite_2d) and return its `texture_id`.
+    ///
+    /// Equivalent to `renderer_mut().register_sprite_texture(...)`. The sampler
+    /// uses nearest filtering; `Renderer::register_sprite_texture_linear` is
+    /// available through `renderer_mut()` for smooth (HD) sprites.
+    pub fn register_sprite_texture(&mut self, width: u32, height: u32, data: &[u8]) -> u32 {
+        self.inner.register_sprite_texture(width, height, data)
+    }
+
     /// Push a technical 2D path for rendering this frame.
     pub fn draw_2d_path(&mut self, path: ferrous_2d::components::Path2d) {
         self.inner.draw_2d_path(&path);
+    }
+
+    /// Clear the immediate-mode 2D shape and sprite batchers.
+    ///
+    /// The engine runner already clears both batchers once at the start of
+    /// every frame, so calling this from application code is only needed to
+    /// discard geometry mid-frame. It is idempotent and safe to call at any
+    /// time; a redundant start-of-frame call is harmless.
+    pub fn clear_2d(&mut self) {
+        self.inner.clear_2d();
     }
 
 
