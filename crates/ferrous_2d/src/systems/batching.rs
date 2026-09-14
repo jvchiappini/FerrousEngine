@@ -6,7 +6,18 @@ use crate::render::{SpriteBatcher, SpriteInstance};
 /// Clears the sprite batcher and re-fills it from every `(&Transform2d, &Sprite)`
 /// entity, sorted by ascending [`Transform2d::z_index`](crate::components::Transform2d::z_index).
 ///
-/// Not registered in the engine scheduler; the live path is immediate-mode.
+/// **Deprecated / dead code.** This function is not registered in the engine's
+/// `StagedScheduler` (nor in any other scheduler), so spawning `Sprite`
+/// components renders nothing. The live 2D path is immediate-mode
+/// (`ferrous_renderer::Renderer::draw_sprite_2d`). It is kept only for API
+/// compatibility and will be removed in a future release; do not adopt it.
+///
+/// Migration: replace `ferrous_2d::prepare_sprites_system(&mut batcher, query)`
+/// with `Renderer::draw_sprite_2d(...)` calls in your draw pass.
+#[deprecated(
+    since = "0.1.0",
+    note = "not registered in any scheduler; use the immediate-mode Renderer::draw_sprite_2d path instead"
+)]
 pub fn prepare_sprites_system(
     batcher: &mut SpriteBatcher,
     query: Query<(&Transform2d, &Sprite)>,
@@ -48,7 +59,18 @@ pub fn prepare_sprites_system(
 /// Clears the shape batcher and re-fills it from every `(&Transform2d, &Shape2d)`
 /// entity, sorted by ascending [`Transform2d::z_index`](crate::components::Transform2d::z_index).
 ///
-/// Not registered in the engine scheduler; the live path is immediate-mode.
+/// **Deprecated / dead code.** This function is not registered in the engine's
+/// `StagedScheduler` (nor in any other scheduler), so spawning `Shape2d`
+/// components renders nothing. The live 2D path is immediate-mode
+/// (`ferrous_renderer::Renderer::draw_2d_shape`). It is kept only for API
+/// compatibility and will be removed in a future release; do not adopt it.
+///
+/// Migration: replace `ferrous_2d::prepare_shapes_system(&mut batcher, query)`
+/// with `Renderer::draw_2d_shape(...)` calls in your draw pass.
+#[deprecated(
+    since = "0.1.0",
+    note = "not registered in any scheduler; use the immediate-mode Renderer::draw_2d_shape path instead"
+)]
 pub fn prepare_shapes_system(
     batcher: &mut crate::render::ShapeBatcher,
     query: Query<(&Transform2d, &crate::components::Shape2d)>,
@@ -104,6 +126,19 @@ pub fn prepare_shapes_system(
 /// vertex.  The old fixed +10% overlap is gone: corners are filled by the join
 /// discs, not by overlapping the quads, so acute zigzags no longer show gaps.
 /// Exact miter/bevel tessellation is left for a future phase (Issue #2/#10).
+///
+/// **Deprecated / dead code.** This function is not registered in the engine's
+/// `StagedScheduler` (nor in any other scheduler), so spawning `Path2d`
+/// components renders nothing. The live 2D path is immediate-mode
+/// (`ferrous_renderer::Renderer::draw_2d_path`). It is kept only for API
+/// compatibility and will be removed in a future release; do not adopt it.
+///
+/// Migration: replace `ferrous_2d::prepare_paths_system(&mut batcher, query)`
+/// with `Renderer::draw_2d_path(...)` calls in your draw pass.
+#[deprecated(
+    since = "0.1.0",
+    note = "not registered in any scheduler; use the immediate-mode Renderer::draw_2d_path path instead"
+)]
 pub fn prepare_paths_system(
     batcher: &mut crate::render::ShapeBatcher,
     query: Query<(&Transform2d, &crate::components::Path2d)>,

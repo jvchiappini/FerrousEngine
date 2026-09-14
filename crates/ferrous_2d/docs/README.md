@@ -24,7 +24,7 @@ today:
 | Mode | Entry point | Status |
 |------|-------------|--------|
 | Immediate | `Renderer::draw_2d_shape` / `draw_sprite_2d` / `draw_2d_path`, called from `draw_ui` or `update` | Live — used by Koncreta |
-| ECS | `ferrous_2d::systems::{prepare_shapes_system, prepare_sprites_system, prepare_paths_system}` | **Not registered** — no scheduler calls these |
+| ECS | `ferrous_2d::systems::{prepare_shapes_system, prepare_sprites_system, prepare_paths_system}` | **Deprecated / dead** — no scheduler calls these; will be removed |
 
 If you spawn `Shape2d` / `Sprite` / `Path2d` components on a `World`, nothing
 renders: the `ferrous_2d` systems are not part of the engine's

@@ -83,8 +83,9 @@ impl ShapeBatcher {
 ///   is `SpriteBatcher` iterated in `BTreeMap` (ascending `texture_id`) order.
 ///
 /// The z value used for sorting is read from the instance's own transform
-/// (`transform_c3[2]`), which is how `sort_by_z`, `prepare_shapes_system`,
-/// `prepare_sprites_system` and `prepare_paths_system` all encode depth.
+/// (`transform_c3[2]`), which is how `sort_by_z` and the immediate-mode
+/// renderer encode depth. (The ECS `prepare_*_system` helpers are deprecated
+/// dead code: nothing registers them.)
 ///
 /// `Ord`/`PartialOrd` are derived so the command itself can act as the
 /// deterministic tie-break for equal `z` (variant order = insertion order:
