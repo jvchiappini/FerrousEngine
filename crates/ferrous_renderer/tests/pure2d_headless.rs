@@ -573,3 +573,114 @@ fn polygon_fill_triangle_fan_vs_scanline_rects_64gon() {
     );
 }
 
+/// `polygon_triangle(..., 0b111)` must be byte-for-byte identical to
+/// `triangle(...)` (which now delegates to it with the full mask).
+#[test]
+fn polygon_triangle_full_mask_equals_triangle() {
+    let _guard = GPU_LOCK.lock().unwrap();
+    let a = Vec2::new(0.0, 0.0);
+    let b = Vec2::new(80.0, 0.0);
+    let c = Vec2::new(0.0, 80.0);
+    let mut h = Pure2dHarness::new(128, 128, TextureFormat::Rgba8Unorm).expect("headless gpu");
+
+    h.begin_frame();
+    h.draw_shape(ShapeInstance::triangle(a, b, c, RED));
+    h.render_frame();
+    let triangle_pixels = h.read_pixels();
+
+    h.begin_frame();
+    h.draw_shape(ShapeInstance::polygon_triangle(a, b, c, RED, 0b111));
+    let report = h.render_frame();
+    let polygon_pixels = h.read_pixels();
+
+    assert_eq!(report.instances_uploaded, 1);
+    assert_eq!(
+        triangle_pixels, polygon_pixels,
+        "full-mask polygon_triangle must match triangle()"
+    );
+}
+
+/// The seam regression: a quad split along its diagonal into two triangles must
+/// render as a continuous fill when the shared diagonal is marked internal
+/// (hard) and only the outer edges are AA.  The same quad with the all-AA
+/// `triangle()` is sampled as a witness that the diagonal seam is what the
+/// mask removes.
+///
+/// Quad `(0,0)-(100,0)-(100,100)-(0,100)`, diagonal `p0-p2`.  Pure2D maps
+/// texel `(i,j)` to world `(i + 0.5 - 128, 127.5 - j)`, so `x == y` on the
+/// diagonal is exactly `i + j == 255`.
+#[test]
+fn triangulated_quad_has_no_internal_seam() {
+    let _guard = GPU_LOCK.lock().unwrap();
+    let p0 = Vec2::new(0.0, 0.0);
+    let p1 = Vec2::new(100.0, 0.0);
+    let p2 = Vec2::new(100.0, 100.0);
+    let p3 = Vec2::new(0.0, 100.0);
+    let mut h = Pure2dHarness::new(256, 256, TextureFormat::Rgba8Unorm).expect("headless gpu");
+
+    // Tri A = p0,p1,p2: bottom (bit0) and right (bit1) external, diagonal
+    // p2->p0 (bit2) internal -> 0b011.  Tri B = p0,p2,p3: diagonal p0->p2
+    // (bit0) internal, top (bit1) and left (bit2) external -> 0b110.
+    h.begin_frame();
+    h.draw_shape(ShapeInstance::polygon_triangle(p0, p1, p2, RED, 0b011));
+    h.draw_shape(ShapeInstance::polygon_triangle(p0, p2, p3, RED, 0b110));
+    let masked = h.render_frame();
+    assert_eq!(masked.instances_uploaded, 2);
+    assert_eq!(masked.draw_calls, 1, "same-pipeline shapes coalesce");
+
+    let pixels = h.read_pixels();
+    let at = |x: u32, y: u32| -> [u8; 4] {
+        let idx = ((y * 256 + x) * 4) as usize;
+        [pixels[idx], pixels[idx + 1], pixels[idx + 2], pixels[idx + 3]]
+    };
+
+    // Scan the whole diagonal interior (away from the two corners p0/p2, whose
+    // AA is legitimately partial): every pixel must be full red.
+    for i in 140u32..=215 {
+        let (x, y) = (i, 255 - i);
+        let px = at(x, y);
+        if px[0] < 235 {
+            println!("[seam] masked diagonal ({x},{y}) = {px:?}");
+        }
+        assert!(
+            px[0] >= 235,
+            "masked diagonal pixel ({x},{y}) must be full red, got {px:?}"
+        );
+    }
+    // Both sides of the diagonal plus an interior point must also be full red.
+    for &(x, y) in &[(158u32, 108u32), (148, 98), (178, 108)] {
+        let px = at(x, y);
+        println!("[seam] masked interior ({x},{y}) = {px:?}");
+        assert!(
+            px[0] >= 235,
+            "interior pixel ({x},{y}) must be full red, got {px:?}"
+        );
+    }
+
+    // Outer contour must still be anti-aliased: left edge x=0 (i=127 samples
+    // x=-0.5) and bottom edge y=0 (j=127 samples y=0.5) are partial.
+    let left = at(127, 77);
+    let bottom = at(177, 127);
+    println!("[seam] masked left-edge AA = {left:?}, bottom-edge AA = {bottom:?}");
+    assert!(
+        left[0] > 40 && left[0] < 230,
+        "left edge must be partial AA, got {left:?}"
+    );
+    assert!(
+        bottom[0] > 40 && bottom[0] < 230,
+        "bottom edge must be partial AA, got {bottom:?}"
+    );
+
+    // Witness: the all-AA quad shows the seam on the diagonal.
+    h.begin_frame();
+    h.draw_shape(ShapeInstance::triangle(p0, p1, p2, RED));
+    h.draw_shape(ShapeInstance::triangle(p0, p2, p3, RED));
+    h.render_frame();
+    let seam = h.read_pixel(150, 105);
+    println!("[seam] all-AA diagonal (150,105) = {seam:?}");
+    assert!(
+        seam[0] < 235,
+        "all-AA triangles are expected to show the diagonal seam, got {seam:?}"
+    );
+}
+
