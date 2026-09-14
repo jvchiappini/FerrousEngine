@@ -32,32 +32,64 @@ markdown_extensions:
 
 nav:
   - Home: index.md
-  - Getting Started: ferrous_app/getting-started.md
-  - ferrous_app — Application Shell:
-    - Overview: ferrous_app/README.md
-    - App Builder (App<T>): ferrous_app/app-builder.md
-    - AppBuilder & Plugins: ferrous_app/plugins.md
-    - FerrousApp Trait: ferrous_app/ferrous-app-trait.md
-    - AppContext Reference: ferrous_app/app-context.md
-    - RenderContext Reference: ferrous_app/render-context.md
-    - Configuration (ferrous.toml): ferrous_app/config.md
-  - ferrous_gui — GUI System:
+  - Getting Started: ferrous_engine/getting-started.md
+  - ferrous_engine — Application Shell:
+    - Overview: ferrous_engine/README.md
+    - App Builder (App<T>): ferrous_engine/app-builder.md
+    - AppBuilder & Plugins: ferrous_engine/plugins.md
+    - FerrousApp Trait: ferrous_engine/ferrous-app-trait.md
+    - AppContext Reference: ferrous_engine/app-context.md
+    - RenderContext Reference: ferrous_engine/render-context.md
+    - Configuration (ferrous.toml): ferrous_engine/config.md
+  - ferrous_2d — 2D Rendering:
+    - Overview: ferrous_2d/README.md
+  - ferrous_ui_core — UI Core:
+    - Overview: ferrous_ui_core/README.md
+    - Core API (Ui / Canvas / Widget): ferrous_ui_core/CORE.md
+    - Creating Widgets: ferrous_ui_core/creating-widgets.md
+    - Widgets:
+      - Accordion: ferrous_ui_core/widgets/accordion.md
+      - Aspect Ratio: ferrous_ui_core/widgets/aspect_ratio.md
+      - Button: ferrous_ui_core/widgets/button.md
+      - Checkbox: ferrous_ui_core/widgets/checkbox.md
+      - Color Picker: ferrous_ui_core/widgets/color_picker.md
+      - Data Table: ferrous_ui_core/widgets/data_table.md
+      - Dock Layout: ferrous_ui_core/widgets/dock_layout.md
+      - Drop Down: ferrous_ui_core/widgets/drop_down.md
+      - Image: ferrous_ui_core/widgets/image.md
+      - Label: ferrous_ui_core/widgets/label.md
+      - Modal: ferrous_ui_core/widgets/modal.md
+      - Number Input: ferrous_ui_core/widgets/number_input.md
+      - Panel: ferrous_ui_core/widgets/panel.md
+      - Placeholder: ferrous_ui_core/widgets/placeholder.md
+      - Progress Bar: ferrous_ui_core/widgets/progress_bar.md
+      - Scroll View: ferrous_ui_core/widgets/scroll_view.md
+      - Separator: ferrous_ui_core/widgets/separator.md
+      - Slider: ferrous_ui_core/widgets/slider.md
+      - Spacer: ferrous_ui_core/widgets/spacer.md
+      - Split Pane: ferrous_ui_core/widgets/split_pane.md
+      - SVG: ferrous_ui_core/widgets/svg.md
+      - Tabs: ferrous_ui_core/widgets/tabs.md
+      - Text Input: ferrous_ui_core/widgets/text_input.md
+      - Toast: ferrous_ui_core/widgets/toast.md
+      - Toggle Switch: ferrous_ui_core/widgets/toggle_switch.md
+      - Tooltip: ferrous_ui_core/widgets/tooltip.md
+      - Tree View: ferrous_ui_core/widgets/tree_view.md
+      - Virtual Grid: ferrous_ui_core/widgets/virtual_grid.md
+      - Virtual List: ferrous_ui_core/widgets/virtual_list.md
+  - ferrous_gui — GUI Framework:
     - Overview: ferrous_gui/README.md
     - Core API (Ui / Canvas / Widget): ferrous_gui/api/core.md
-    - Layout System: ferrous_gui/layout.md
-    - Widgets:
-      - Button: ferrous_gui/widgets/button.md
-      - Slider: ferrous_gui/widgets/slider.md
-      - TextInput: ferrous_gui/widgets/textinput.md
-      - ColorPicker: ferrous_gui/widgets/color_picker.md
-      - Container: ferrous_gui/widgets/container.md
-      - Image: ferrous_gui/widgets/image.md
+  - ferrous_layout — Layout System:
+    - Overview: ferrous_layout/README.md
+    - Layout Reference: ferrous_layout/LAYOUT.md
   - ferrous_renderer — GPU Renderer:
     - Overview: ferrous_renderer/README.md
     - Architecture: ferrous_renderer/architecture.md
     - Camera: ferrous_renderer/camera.md
     - Geometry & Meshes: ferrous_renderer/geometry.md
     - Materials & Textures: ferrous_renderer/materials.md
+    - Render Pass: ferrous_renderer/render_pass.md
     - Render Target: ferrous_renderer/render_target.md
     - Gizmos: ferrous_renderer/gizmo.md
     - Extending:
@@ -65,4 +97,24 @@ nav:
       - New Pipeline: ferrous_renderer/extending/new_pipeline.md
       - Compute Pipeline: ferrous_renderer/extending/compute_pipeline.md
       - World Sync: ferrous_renderer/extending/world_sync.md
+  - Other crates:
+    - ferrous_assets: ferrous_assets/README.md
+    - ferrous_asset_types: ferrous_asset_types/README.md
+    - ferrous_core: ferrous_core/README.md
+    - ferrous_ecs: ferrous_ecs/README.md
+    - ferrous_ecs_macros: ferrous_ecs_macros/README.md
+    - ferrous_editor: ferrous_editor/README.md
+    - ferrous_events: ferrous_events/README.md
+    - ferrous_events — Events: ferrous_events/EVENTS.md
+    - ferrous_font: ferrous_font/README.md
+    - ferrous_gpu: ferrous_gpu/README.md
+    - ferrous_reflection: ferrous_reflection/README.md
+    - ferrous_render_graph: ferrous_render_graph/README.md
+    - ferrous_state: ferrous_state/README.md
+    - ferrous_svg: ferrous_svg/README.md
+    - ferrous_ui_macros: ferrous_ui_macros/README.md
+    - ferrous_ui_render: ferrous_ui_render/README.md
+    - ferrous_ui_render — Internals: ferrous_ui_render/RENDER.md
+    - ferrous_voxels: ferrous_voxels/README.md
+    - ferrous_web: ferrous_web/README.md
 
