@@ -25,7 +25,6 @@ ttf-parser = "0.25.1"
 lyon_tessellation = "1.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-rayon = "1.11.0"
 pollster = "0.3"
 
 [dev-dependencies]
