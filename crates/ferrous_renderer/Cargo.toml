@@ -33,6 +33,10 @@ pollster = "0.3"
 # and its `AllocProfiler` reports allocations + bytes per iteration on stable
 # Rust -- one of the hardware-independent metrics this audit requires.
 divan = "0.1.21"
+# `png` is used only by `examples/cad_capture.rs` to write before/after colour
+# evidence for the sRGB audit (H1) to `brain/`. It is already in the workspace
+# lock via `image`/`resvg`, so this adds no new transitive build.
+png = "0.17"
 
 [[bench]]
 name = "pure2d_headless"
