@@ -154,12 +154,14 @@ impl Scene {
 
 fn print_baseline(label: &str, report: &ferrous_renderer::headless::FrameReport) {
     eprintln!(
-        "[baseline] {label}: draw_calls={} (shapes={} sprites={}) instances={} culled={} bytes_uploaded={} buffer_reallocations={} bind_groups_total={} cpu_ms={:.3}",
+        "[baseline] {label}: draw_calls={} (shapes={} sprites={}) instances={} culled={} static={}/{} bytes_uploaded={} buffer_reallocations={} bind_groups_total={} cpu_ms={:.3}",
         report.draw_calls,
         report.shape_draw_calls,
         report.sprite_draw_calls,
         report.instances_uploaded,
         report.culled_instances,
+        report.static_batches_drawn,
+        report.static_instances_drawn,
         report.bytes_uploaded,
         report.buffer_reallocations,
         report.bind_groups_total,
@@ -251,5 +253,42 @@ fn pure2d_culling_off(bencher: divan::Bencher, n_off: usize) {
         .bench_local(|| {
             scene.fill_culling(512, n_off);
             divan::black_box(scene.render())
+        });
+}
+
+/// Retained static batch: `n` shapes are uploaded **once** at creation and then
+/// re-drawn every frame with `bytes_uploaded = 0` / `instances_uploaded = 0`
+/// and one draw call.  Compare against [`pure2d_shapes`], which re-uploads the
+/// same `n * size_of::<ShapeInstance>()` bytes on every frame.
+#[divan::bench(args = [256, 4096])]
+fn pure2d_static_batch(bencher: divan::Bencher, n: usize) {
+    let mut harness = Pure2dHarness::new(512, 512, DEFAULT_FORMAT).expect("headless gpu");
+    let colors = [RED, GREEN, BLUE];
+    // Slice order is ascending z, so the batch draws in painter order.
+    let shapes: Vec<ShapeInstance> = (0..n)
+        .map(|i| {
+            let x = (i % 32) as f32 * 12.0 - 176.0;
+            let y = (i / 32) as f32 * 12.0 - 176.0;
+            ShapeInstance::rect_z(
+                Vec2::new(x, y),
+                i as f32,
+                Vec2::splat(6.0),
+                colors[i % colors.len()],
+            )
+        })
+        .collect();
+    let _id = harness.renderer_mut().create_static_2d_batch(&shapes);
+
+    harness.begin_frame();
+    print_baseline(
+        &format!("pure2d_static_batch n={n}"),
+        &harness.render_frame(),
+    );
+    bencher
+        // No per-iteration upload: the retained buffer is already on the GPU.
+        .counter(BytesCount::from(0u64))
+        .bench_local(|| {
+            harness.begin_frame();
+            divan::black_box(harness.render_frame())
         });
 }

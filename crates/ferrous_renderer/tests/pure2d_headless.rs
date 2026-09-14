@@ -965,3 +965,232 @@ fn hard_end_against_side_of_another_segment_has_no_gap() {
     }
 }
 
+// ── Retained static 2D batches ───────────────────────────────────────────────
+
+/// Three overlapping shapes with equal `z`, so both the retained and the
+/// immediate path preserve insertion order (painter order).
+fn static_test_shapes() -> Vec<ShapeInstance> {
+    vec![
+        ShapeInstance::rect(Vec2::ZERO, Vec2::splat(40.0), RED),
+        ShapeInstance::circle(Vec2::new(40.0, 40.0), 12.0, BLUE),
+        ShapeInstance::rect_rotated(Vec2::new(-40.0, 20.0), Vec2::new(30.0, 10.0), 0.4, GREEN),
+    ]
+}
+
+/// (a) A retained batch must render **byte-identical** pixels to drawing the
+/// same shapes through the immediate path, while uploading nothing per frame.
+#[test]
+fn static_batch_matches_immediate_pixels_and_uploads_once() {
+    let _guard = GPU_LOCK.lock().unwrap();
+    let mut h = Pure2dHarness::new(128, 128, TextureFormat::Rgba8Unorm).expect("headless gpu");
+    let shapes = static_test_shapes();
+
+    let id = h.renderer_mut().create_static_2d_batch(&shapes);
+
+    h.begin_frame();
+    let static_report = h.render_frame();
+    let static_pixels = h.read_pixels();
+
+    assert_eq!(static_report.static_batches_drawn, 1, "one batch drawn");
+    assert_eq!(static_report.static_instances_drawn, shapes.len() as u32);
+    assert_eq!(
+        static_report.shape_draw_calls, 1,
+        "one instanced draw call per batch"
+    );
+    assert_eq!(
+        static_report.bytes_uploaded, 0,
+        "a retained batch must not upload per frame"
+    );
+    assert_eq!(static_report.instances_uploaded, 0);
+    assert_eq!(static_report.buffer_reallocations, 0);
+
+    // Same geometry through the immediate path (disable the retained draw).
+    h.renderer_mut().set_render_2d_config(Render2dConfig {
+        static_batches: false,
+        ..Default::default()
+    });
+    h.begin_frame();
+    for s in &shapes {
+        h.draw_shape(*s);
+    }
+    let immediate_report = h.render_frame();
+    let immediate_pixels = h.read_pixels();
+
+    assert_eq!(
+        immediate_pixels, static_pixels,
+        "retained and immediate draws must be pixel-identical"
+    );
+    assert_eq!(immediate_report.static_batches_drawn, 0);
+    assert_eq!(immediate_report.instances_uploaded, shapes.len() as u32);
+    assert_eq!(
+        immediate_report.bytes_uploaded,
+        (shapes.len() * std::mem::size_of::<ShapeInstance>()) as u64
+    );
+
+    h.renderer_mut().destroy_static_2d_batch(id);
+}
+
+/// (b) `update` replaces the content in place without a per-frame upload, and
+/// grows the buffer when the new slice exceeds the current capacity.
+#[test]
+fn static_batch_update_replaces_content_in_place() {
+    let _guard = GPU_LOCK.lock().unwrap();
+    let mut h = Pure2dHarness::new(128, 128, TextureFormat::Rgba8Unorm).expect("headless gpu");
+
+    let id = h.renderer_mut().create_static_2d_batch(&[ShapeInstance::rect(
+        Vec2::ZERO,
+        Vec2::splat(40.0),
+        RED,
+    )]);
+    h.begin_frame();
+    let _ = h.render_frame();
+    assert_rgb_near(h.read_pixel(64, 64), [255, 0, 0], 4, "red after create");
+
+    h.renderer_mut().update_static_2d_batch(
+        id,
+        &[ShapeInstance::rect(Vec2::ZERO, Vec2::splat(40.0), GREEN)],
+    );
+    h.begin_frame();
+    let updated = h.render_frame();
+    assert_rgb_near(h.read_pixel(64, 64), [0, 255, 0], 4, "green after update");
+    assert_eq!(updated.static_instances_drawn, 1);
+    assert_eq!(updated.bytes_uploaded, 0, "update is not a per-frame upload");
+
+    // Grow past the 128-instance minimum: buffer is recreated, still 0 upload.
+    let many: Vec<ShapeInstance> = (0..300)
+        .map(|i| {
+            ShapeInstance::rect(
+                Vec2::new((i % 20) as f32 * 4.0 - 38.0, (i / 20) as f32 * 4.0 - 30.0),
+                Vec2::splat(3.0),
+                BLUE,
+            )
+        })
+        .collect();
+    h.renderer_mut().update_static_2d_batch(id, &many);
+    h.begin_frame();
+    let grown = h.render_frame();
+    assert_eq!(grown.static_instances_drawn, 300);
+    assert_eq!(grown.bytes_uploaded, 0);
+
+    // Shrink back: reuse the (larger) buffer, still 0 upload.
+    h.renderer_mut().update_static_2d_batch(id, &many[..5]);
+    h.begin_frame();
+    let shrunk = h.render_frame();
+    assert_eq!(shrunk.static_instances_drawn, 5);
+    assert_eq!(shrunk.bytes_uploaded, 0);
+
+    h.renderer_mut().destroy_static_2d_batch(id);
+}
+
+/// (c) `destroy` frees the batch, stops drawing it and invalidates the handle;
+/// a stale handle is a safe no-op even after the slot is recycled.
+#[test]
+fn static_batch_destroy_stops_drawing_and_invalidates_id() {
+    let _guard = GPU_LOCK.lock().unwrap();
+    let mut h = Pure2dHarness::new(128, 128, TextureFormat::Rgba8Unorm).expect("headless gpu");
+
+    let id = h.renderer_mut().create_static_2d_batch(&static_test_shapes());
+    h.begin_frame();
+    let first = h.render_frame();
+    assert_eq!(first.static_batches_drawn, 1);
+
+    h.renderer_mut().destroy_static_2d_batch(id);
+    h.begin_frame();
+    let after = h.render_frame();
+    assert_eq!(after.static_batches_drawn, 0);
+    assert_eq!(after.draw_calls, 0, "destroyed batch must not draw");
+    assert_rgb_near(h.read_pixel(64, 64), [0, 0, 0], 4, "background after destroy");
+
+    // Stale handle: update/destroy are no-ops and must not panic/draw.
+    h.renderer_mut().update_static_2d_batch(
+        id,
+        &[ShapeInstance::rect(Vec2::ZERO, Vec2::splat(40.0), RED)],
+    );
+    h.renderer_mut().destroy_static_2d_batch(id);
+    h.begin_frame();
+    let still = h.render_frame();
+    assert_eq!(still.draw_calls, 0, "stale id must not draw");
+
+    // Reusing the slot issues a new generation; the old id addresses nothing.
+    let new_id = h.renderer_mut().create_static_2d_batch(&[ShapeInstance::rect(
+        Vec2::ZERO,
+        Vec2::splat(20.0),
+        BLUE,
+    )]);
+    assert_eq!(new_id.index(), id.index());
+    assert_ne!(new_id.generation(), id.generation());
+    assert_eq!(h.renderer().static_2d_batch_count(), 1);
+
+    // A stale update must not overwrite the live batch.
+    h.renderer_mut().update_static_2d_batch(
+        id,
+        &[ShapeInstance::rect(Vec2::ZERO, Vec2::splat(40.0), RED)],
+    );
+    h.begin_frame();
+    let recycled = h.render_frame();
+    assert_eq!(recycled.static_instances_drawn, 1);
+    assert_rgb_near(h.read_pixel(64, 64), [0, 0, 255], 4, "live blue batch");
+
+    h.renderer_mut().destroy_static_2d_batch(new_id);
+}
+
+/// (d) A retained batch must not upload anything across steady-state frames.
+#[test]
+fn static_batch_has_no_per_frame_upload() {
+    let _guard = GPU_LOCK.lock().unwrap();
+    let mut h = Pure2dHarness::new(128, 128, TextureFormat::Rgba8Unorm).expect("headless gpu");
+    let id = h.renderer_mut().create_static_2d_batch(&static_test_shapes());
+
+    for frame in 0..3 {
+        h.begin_frame();
+        let r = h.render_frame();
+        assert_eq!(r.bytes_uploaded, 0, "frame {frame}: no upload");
+        assert_eq!(r.instances_uploaded, 0, "frame {frame}: no instance upload");
+        assert_eq!(r.buffer_reallocations, 0, "frame {frame}: no realloc");
+        assert_eq!(r.static_batches_drawn, 1);
+        assert_eq!(r.static_instances_drawn, 3);
+    }
+
+    h.renderer_mut().destroy_static_2d_batch(id);
+}
+
+/// Multiple batches each cost exactly one draw call and zero uploads, and the
+/// `static_batches` config flag gates them for A/B comparison.
+#[test]
+fn multiple_static_batches_draw_one_call_each() {
+    let _guard = GPU_LOCK.lock().unwrap();
+    let mut h = Pure2dHarness::new(128, 128, TextureFormat::Rgba8Unorm).expect("headless gpu");
+
+    let a = h.renderer_mut().create_static_2d_batch(&[ShapeInstance::rect(
+        Vec2::new(-20.0, 0.0),
+        Vec2::splat(20.0),
+        RED,
+    )]);
+    let b = h.renderer_mut().create_static_2d_batch(&[ShapeInstance::rect(
+        Vec2::new(20.0, 0.0),
+        Vec2::splat(20.0),
+        GREEN,
+    )]);
+    assert_eq!(h.renderer().static_2d_batch_count(), 2);
+
+    h.begin_frame();
+    let r = h.render_frame();
+    assert_eq!(r.static_batches_drawn, 2);
+    assert_eq!(r.shape_draw_calls, 2, "one draw per batch");
+    assert_eq!(r.draw_calls, 2);
+    assert_eq!(r.bytes_uploaded, 0);
+
+    // Disabling the flag skips both without destroying them.
+    h.renderer_mut().set_render_2d_config(Render2dConfig {
+        static_batches: false,
+        ..Default::default()
+    });
+    h.begin_frame();
+    let gated = h.render_frame();
+    assert_eq!(gated.draw_calls, 0);
+    assert_eq!(h.renderer().static_2d_batch_count(), 2);
+
+    h.renderer_mut().destroy_static_2d_batch(a);
+    h.renderer_mut().destroy_static_2d_batch(b);
+}
+
