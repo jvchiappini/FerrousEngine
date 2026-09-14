@@ -66,18 +66,36 @@ pub unsafe trait WorldQuery: Sized {
     /// Cached per-query state: archetype indices that match this query.
     type State;
 
+    /// Per-archetype fetch state.
+    ///
+    /// Holds the column locations resolved for one specific archetype so that
+    /// [`WorldQuery::fetch`] does not have to re-discover them for every row.
+    /// Built once by [`WorldQuery::init_fetch`] before iterating an archetype.
+    type Fetch<'w>;
+
     /// Build state by scanning `world`'s archetypes.
     fn init(world: &World) -> Self::State;
 
     /// Returns `true` if `arch` contains all required components.
     fn matches(arch: &Archetype) -> bool;
 
-    /// Fetch the item at `row` from `arch`.
+    /// Resolve the column locations for `arch` once.
+    ///
+    /// Called once per archetype when an iterator is built, *not* per row, so
+    /// the `binary_search` over the archetype signature happens O(archetypes)
+    /// times instead of O(rows).
     ///
     /// # Safety
-    /// `row < arch.len()`, and all columns referenced by this query exist in
-    /// `arch` (i.e. `matches(arch)` returned `true`).
-    unsafe fn fetch<'w>(arch: &'w Archetype, row: usize) -> Self::Item<'w>;
+    /// `matches(arch)` must have returned `true` for this archetype (optional
+    /// fetches may still resolve to an absent column).
+    unsafe fn init_fetch<'w>(arch: &'w Archetype) -> Self::Fetch<'w>;
+
+    /// Fetch the item at `row` using pre-resolved [`WorldQuery::Fetch`] state.
+    ///
+    /// # Safety
+    /// `row < arch.len()`, and `fetch` was produced by
+    /// [`WorldQuery::init_fetch`] from the same archetype this row belongs to.
+    unsafe fn fetch<'w>(fetch: &Self::Fetch<'w>, row: usize) -> Self::Item<'w>;
 
     /// Component types this query reads (for scheduler conflict detection).
     fn reads() -> Vec<TypeId> {
@@ -96,6 +114,7 @@ pub unsafe trait WorldQuery: Sized {
 unsafe impl<T: Component> WorldQuery for &T {
     type Item<'w> = &'w T;
     type State = Vec<usize>;
+    type Fetch<'w> = &'w ComponentColumn;
 
     fn init(world: &World) -> Self::State {
         world
@@ -114,9 +133,15 @@ unsafe impl<T: Component> WorldQuery for &T {
     }
 
     #[inline]
-    unsafe fn fetch(arch: &Archetype, row: usize) -> &T {
-        // SAFETY: matches() was true so column exists; row is in bounds
-        arch.column::<T>().unwrap_unchecked().get::<T>(row)
+    unsafe fn init_fetch<'w>(arch: &'w Archetype) -> Self::Fetch<'w> {
+        // SAFETY: the caller guarantees `matches(arch)` was true.
+        arch.column::<T>().unwrap_unchecked()
+    }
+
+    #[inline]
+    unsafe fn fetch<'w>(fetch: &Self::Fetch<'w>, row: usize) -> Self::Item<'w> {
+        // SAFETY: `fetch` points at a column that stores `T`; row is in bounds.
+        fetch.get::<T>(row)
     }
 
     fn reads() -> Vec<TypeId> {
@@ -130,6 +155,7 @@ unsafe impl<T: Component> WorldQuery for &T {
 unsafe impl<T: Component> WorldQuery for &mut T {
     type Item<'w> = &'w mut T;
     type State = Vec<usize>;
+    type Fetch<'w> = *mut ComponentColumn;
 
     fn init(world: &World) -> Self::State {
         world
@@ -148,11 +174,18 @@ unsafe impl<T: Component> WorldQuery for &mut T {
     }
 
     #[inline]
-    unsafe fn fetch(arch: &Archetype, row: usize) -> &mut T {
-        // SAFETY: caller guarantees no aliasing mutable fetches for the same T;
-        // we cast away the shared reference to get a mutable one.
-        let col =
-            arch.column::<T>().unwrap_unchecked() as *const ComponentColumn as *mut ComponentColumn;
+    unsafe fn init_fetch<'w>(arch: &'w Archetype) -> Self::Fetch<'w> {
+        // SAFETY: the caller guarantees `matches(arch)` was true.  The pointer
+        // is only ever dereferenced mutably through `fetch`, and the query
+        // contract forbids two aliasing mutable fetches of the same `T`.
+        arch.column::<T>().unwrap_unchecked() as *const ComponentColumn as *mut ComponentColumn
+    }
+
+    #[inline]
+    unsafe fn fetch<'w>(fetch: &Self::Fetch<'w>, row: usize) -> Self::Item<'w> {
+        // SAFETY: `fetch` points at a column that stores `T`; row is in bounds,
+        // and the caller upholds the no-aliasing rule for `&mut T`.
+        let col = *fetch;
         (*col).get_mut::<T>(row)
     }
 
@@ -167,6 +200,7 @@ unsafe impl<T: Component> WorldQuery for &mut T {
 unsafe impl<T: Component> WorldQuery for Option<&T> {
     type Item<'w> = Option<&'w T>;
     type State = Vec<usize>;
+    type Fetch<'w> = Option<&'w ComponentColumn>;
 
     fn init(world: &World) -> Self::State {
         // Optional components match *all* archetypes (they return None when absent).
@@ -179,8 +213,14 @@ unsafe impl<T: Component> WorldQuery for Option<&T> {
     }
 
     #[inline]
-    unsafe fn fetch(arch: &Archetype, row: usize) -> Option<&T> {
-        arch.column::<T>().map(|col| col.get::<T>(row))
+    unsafe fn init_fetch<'w>(arch: &'w Archetype) -> Self::Fetch<'w> {
+        arch.column::<T>()
+    }
+
+    #[inline]
+    unsafe fn fetch<'w>(fetch: &Self::Fetch<'w>, row: usize) -> Self::Item<'w> {
+        // SAFETY: when present, `fetch` points at a column that stores `T`.
+        fetch.map(|col| col.get::<T>(row))
     }
 
     fn reads() -> Vec<TypeId> {
@@ -196,6 +236,7 @@ macro_rules! impl_world_query_tuple {
         unsafe impl< $($name: WorldQuery),+ > WorldQuery for ( $($name,)+ ) {
             type Item<'w> = ( $($name::Item<'w>,)+ );
             type State = Vec<usize>;
+            type Fetch<'w> = ( $($name::Fetch<'w>,)+ );
 
             fn init(world: &World) -> Self::State {
                 world
@@ -214,8 +255,17 @@ macro_rules! impl_world_query_tuple {
             }
 
             #[inline]
-            unsafe fn fetch<'w>(arch: &'w Archetype, row: usize) -> Self::Item<'w> {
-                ( $( $name::fetch(arch, row), )+ )
+            unsafe fn init_fetch<'w>(arch: &'w Archetype) -> Self::Fetch<'w> {
+                ( $( $name::init_fetch(arch), )+ )
+            }
+
+            #[inline]
+            #[allow(non_snake_case)]
+            unsafe fn fetch<'w>(fetch: &Self::Fetch<'w>, row: usize) -> Self::Item<'w> {
+                // Bind each per-archetype fetch state to a local named after the
+                // element type; types and values live in separate namespaces.
+                let ( $( ref $name, )+ ) = *fetch;
+                ( $( $name::fetch($name, row), )+ )
             }
 
             fn reads() -> Vec<TypeId> {
@@ -306,10 +356,14 @@ impl<'w, Q: WorldQuery<State = Vec<usize>>> Query<'w, Q> {
         self.state.iter().flat_map(move |&arch_id| {
             let arch = &self.world.archetypes.archetypes[arch_id];
             let count = arch.entities.len();
+            // Resolve the column locations once for this archetype instead of
+            // re-running `binary_search` for every row (H6).
+            // SAFETY: arch matched Q::matches at init time.
+            let fetch = unsafe { Q::init_fetch(arch) };
             (0..count).map(move |row| {
                 let entity = arch.entities[row];
-                // SAFETY: row < count; arch matched Q at init time.
-                let item = unsafe { Q::fetch(arch, row) };
+                // SAFETY: row < count; `fetch` was built from this archetype.
+                let item = unsafe { Q::fetch(&fetch, row) };
                 (entity, item)
             })
         })
@@ -523,6 +577,64 @@ mod tests {
         let mut vals: Vec<f32> = q.iter().map(|(_, p)| p.0).collect();
         vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
         assert_eq!(vals, vec![1.0, 6.0]);
+    }
+
+    // -----------------------------------------------------------------------
+    // H6: column resolution is per-archetype, not per-row
+
+    #[test]
+    fn iter_resolves_columns_once_per_archetype() {
+        use crate::archetype::{column_index_lookups, reset_column_index_lookups};
+
+        let mut world = World::new();
+        for i in 0..64 {
+            world.spawn((Pos(i as f32), Vel(1.0)));
+        }
+
+        let q = Query::<(&Pos, &Vel)>::new(&world);
+
+        // Count only the lookups performed while iterating rows.
+        reset_column_index_lookups();
+        let mut seen: Vec<f32> = Vec::new();
+        for (_, (p, v)) in q.iter() {
+            seen.push(p.0 + v.0);
+        }
+
+        assert_eq!(seen.len(), 64);
+        let lookups = column_index_lookups();
+        // Two components × one archetype = 2 lookups.  The old per-row path
+        // performed 2 × 64 = 128.  Allow a small constant margin.
+        assert!(
+            lookups <= 8,
+            "expected per-archetype resolution (<= 8 lookups), got {lookups}"
+        );
+    }
+
+    #[test]
+    fn iter_matches_len_across_archetypes() {
+        use crate::archetype::{column_index_lookups, reset_column_index_lookups};
+
+        let mut world = World::new();
+        world.spawn((Pos(0.0), Vel(1.0)));
+        world.spawn((Pos(2.0),));
+        world.spawn((Pos(3.0), Vel(4.0), Health(9.0)));
+
+        let q = Query::<(&Pos, Option<&Vel>)>::new(&world);
+        assert_eq!(q.len(), 3);
+
+        reset_column_index_lookups();
+        let mut rows: Vec<(f32, Option<f32>)> =
+            q.iter().map(|(_, (p, v))| (p.0, v.map(|v| v.0))).collect();
+        rows.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+        assert_eq!(rows, vec![(0.0, Some(1.0)), (2.0, None), (3.0, Some(4.0))]);
+        // Three archetypes × two fetches = 6 lookups (plus margin), never one
+        // per row.
+        let lookups = column_index_lookups();
+        assert!(
+            lookups <= 16,
+            "expected per-archetype resolution (<= 16 lookups), got {lookups}"
+        );
     }
 
     // -----------------------------------------------------------------------

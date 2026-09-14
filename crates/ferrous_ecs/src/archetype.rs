@@ -13,6 +13,26 @@ use std::any::TypeId;
 use crate::component::{ComponentInfo, ComponentSet};
 use crate::entity::Entity;
 
+// Test-only instrumentation: counts how many times `Archetype::column_index`
+// performs a signature lookup.  Thread-local so parallel tests do not interfere.
+#[cfg(test)]
+thread_local! {
+    static COLUMN_INDEX_LOOKUPS: std::cell::Cell<usize> = std::cell::Cell::new(0);
+}
+
+/// Reset the per-thread column-lookup counter (tests only).
+#[cfg(test)]
+pub(crate) fn reset_column_index_lookups() {
+    COLUMN_INDEX_LOOKUPS.with(|count| count.set(0));
+}
+
+/// Column-lookup count observed on the current thread since the last reset
+/// (tests only).
+#[cfg(test)]
+pub(crate) fn column_index_lookups() -> usize {
+    COLUMN_INDEX_LOOKUPS.with(|count| count.get())
+}
+
 // ---------------------------------------------------------------------------
 // ComponentColumn — type-erased Vec<T>
 
@@ -263,6 +283,8 @@ impl Archetype {
 
     /// Find the column index for `type_id`, or `None` if not present.
     pub fn column_index(&self, type_id: TypeId) -> Option<usize> {
+        #[cfg(test)]
+        COLUMN_INDEX_LOOKUPS.with(|count| count.set(count.get() + 1));
         self.signature.0.binary_search(&type_id).ok()
     }
 
