@@ -5,8 +5,8 @@ editors, and tools. Documentation lives at
 [jvchiappini.github.io/FerrousEngine](https://jvchiappini.github.io/FerrousEngine/).
 
 > To build a **UI/GUI desktop application** start with
-> [Getting Started](ferrous_app/getting-started.md) and the
-> [ferrous_gui widget reference](ferrous_gui/README.md).
+> [Getting Started](ferrous_engine/getting-started.md) and the
+> [ferrous_ui_core widget reference](ferrous_ui_core/README.md).
 
 ---
 
@@ -18,11 +18,14 @@ application lifecycle, rendering, UI, and asset management fully decoupled.
 
 | Crate | Purpose | Key types |
 |-------|---------|-----------|
-| `ferrous_app` | **Application shell** — window, event loop, frame callbacks | `App<T>`, `AppBuilder`, `FerrousApp`, `AppContext` |
-| `ferrous_gui` | **2D GUI widget toolkit** | `Ui`, `Button`, `Slider`, `TextInput`, `ColorPicker`, `Container`, `Row`, `Column` |
+| `ferrous_engine` | **Application shell** — window, event loop, frame callbacks | `App<T>`, `FerrousApp`, `AppContext`, `RenderContext` |
+| `ferrous_2d` | 2D shapes, sprites and 2D ECS components | `ShapeInstance`, `SpriteInstance`, `Transform2d` |
+| `ferrous_ui_core` | UI widget toolkit and layout primitives | `Widget`, `Button`, `Slider`, `UiTree` |
+| `ferrous_gui` | UI facade (widgets + layout + rendering) | `UiSystem`, `GuiBatch` |
+| `ferrous_layout` | Layout engine | `Style`, `Node` |
 | `ferrous_renderer` | GPU rendering (wgpu) | `Renderer`, `RenderPass`, `RenderStyle`, `MaterialDescriptor` |
 | `ferrous_core` | Headless math/ECS primitives | `World`, `Transform`, `Color`, `InputState`, `KeyCode` |
-| `ferrous_assets` | Asset loading & caching | `AssetServer`, `Font`, `GltfModel` |
+| `ferrous_assets` | Asset loading & caching | `AssetServer`, `Font`, `GltfModel`, `Texture2d` |
 | `ferrous_ecs` | Entity-Component-System | `Entity`, `Stage`, `StagedScheduler`, `System` |
 
 ## Building a UI application — minimum viable recipe
@@ -30,12 +33,12 @@ application lifecycle, rendering, UI, and asset management fully decoupled.
 ```toml
 # Cargo.toml
 [dependencies]
-ferrous_app = { path = "path/to/FerrousEngine/crates/ferrous_app" }
-ferrous_gui  = { path = "path/to/FerrousEngine/crates/ferrous_gui"  }
+ferrous_engine = { path = "path/to/FerrousEngine/crates/ferrous_engine" }
+ferrous_gui    = { path = "path/to/FerrousEngine/crates/ferrous_gui"    }
 ```
 
 ```rust
-use ferrous_app::{App, AppContext, Color, FerrousApp, KeyCode};
+use ferrous_engine::{App, AppContext, Color, FerrousApp, KeyCode};
 use ferrous_assets::Font;
 use ferrous_gui::{Button, GuiBatch, Slider, TextBatch, Ui};
 
@@ -102,13 +105,14 @@ fn main() {
 
 ## Documentation sections
 
-- **[Getting Started](ferrous_app/getting-started.md)** — step-by-step from zero to running app
-- **[App Builder](ferrous_app/app-builder.md)** — `App<T>` fluent API, all `with_*` options
-- **[FerrousApp Trait](ferrous_app/ferrous-app-trait.md)** — the six frame callbacks
-- **[AppContext](ferrous_app/app-context.md)** — everything inside `ctx`
-- **[GUI Overview](ferrous_gui/README.md)** — `Ui`, `Canvas`, `Widget`, input routing
-- **[Widgets](ferrous_gui/widgets/button.md)** — Button, Slider, TextInput, ColorPicker, Container
-- **[Layout](ferrous_gui/layout.md)** — `Row`, `Column`, `Node`, `Style`
+- **[Getting Started](ferrous_engine/getting-started.md)** — step-by-step from zero to running app
+- **[App Builder](ferrous_engine/app-builder.md)** — `App<T>` fluent API, all `with_*` options
+- **[FerrousApp Trait](ferrous_engine/ferrous-app-trait.md)** — the frame callbacks
+- **[AppContext](ferrous_engine/app-context.md)** — everything inside `ctx`
+- **[UI Overview](ferrous_ui_core/README.md)** — widgets and the UI tree
+- **[Widgets](ferrous_ui_core/widgets/button.md)** — Button, Slider, TextInput, ColorPicker, Panel
+- **[Layout](ferrous_layout/LAYOUT.md)** — layout system reference
+- **[2D Rendering](ferrous_2d/README.md)** — shapes, sprites and 2D components
 - **[Renderer](ferrous_renderer/README.md)** — materials, camera, custom passes
 
 ## How the documentation site is built

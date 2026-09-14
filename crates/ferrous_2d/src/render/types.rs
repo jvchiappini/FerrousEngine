@@ -4,16 +4,24 @@ use bytemuck::{Pod, Zeroable};
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct SpriteInstance {
+    /// First column of the model matrix (x basis).
     pub transform_c0: [f32; 4],
+    /// Second column of the model matrix (y basis).
     pub transform_c1: [f32; 4],
+    /// Third column of the model matrix (z basis).
     pub transform_c2: [f32; 4],
+    /// Fourth column of the model matrix (translation; `.z` carries depth).
     pub transform_c3: [f32; 4],
+    /// RGBA tint multiplied with the sampled texel.
     pub color: [f32; 4],
+    /// Source region in UV space `[x, y, width, height]` (for atlas/spritesheet).
     pub uv_rect: [f32; 4],        // x, y, width, height (for atlas)
+    /// `[flip_x, flip_y, is_lit, reserved]`.
     pub properties: [f32; 4],     // x=flip_x, y=flip_y, z=is_lit, w=reserved
 }
 
 impl SpriteInstance {
+    /// Vertex-buffer layout describing this instance type to wgpu.
     pub const fn descriptor() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<SpriteInstance>() as wgpu::BufferAddress,
@@ -32,18 +40,30 @@ impl SpriteInstance {
 }
 
 /// Instance data for non-textured 2D shapes (technical drawing).
+///
+/// The four transform columns encode a full model matrix; the shader only
+/// supports the rounded-rectangle SDF family (rectangle, circle, stroked
+/// segment), not arbitrary polygons. Prefer the ergonomic constructors below
+/// over building the matrix by hand.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct ShapeInstance {
+    /// First column of the model matrix (x basis; its length is the local width).
     pub transform_c0: [f32; 4],
+    /// Second column of the model matrix (y basis; its length is the local height).
     pub transform_c1: [f32; 4],
+    /// Third column of the model matrix (z basis).
     pub transform_c2: [f32; 4],
+    /// Fourth column of the model matrix (translation; `.z` carries depth).
     pub transform_c3: [f32; 4],
+    /// RGBA colour (straight, display-referred; see the `#12` colour-space note).
     pub color: [f32; 4],
+    /// `[border_thickness, corner_radius, smoothing, is_filled]`.
     pub params: [f32; 4],         // x=border_thickness, y=corner_radius, z=smoothing, w=is_filled
 }
 
 impl ShapeInstance {
+    /// Vertex-buffer layout describing this instance type to wgpu.
     pub const fn descriptor() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<ShapeInstance>() as wgpu::BufferAddress,
@@ -178,8 +198,11 @@ impl ShapeInstance {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct Uniform2d {
+    /// Combined view-projection matrix, column-major.
     pub view_proj: [f32; 16],
+    /// Viewport size in physical pixels `[width, height]`.
     pub resolution: [f32; 2],
+    /// Padding to satisfy 16-byte uniform alignment.
     pub padding: [f32; 2], // 16-byte alignment
 }
 

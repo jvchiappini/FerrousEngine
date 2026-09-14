@@ -168,12 +168,12 @@ cross-platform / WASM builds.
 
 ## 5. Next steps
 
-- **More widgets** → [Button](../ferrous_gui/widgets/button.md),
-  [Slider](../ferrous_gui/widgets/slider.md),
-  [TextInput](../ferrous_gui/widgets/textinput.md),
-  [ColorPicker](../ferrous_gui/widgets/color_picker.md),
-  [Container](../ferrous_gui/widgets/container.md)
-- **Declarative layout** → [Row / Column / UiButton / Text](../ferrous_gui/layout.md)
+- **More widgets** → [Button](../ferrous_ui_core/widgets/button.md),
+  [Slider](../ferrous_ui_core/widgets/slider.md),
+  [TextInput](../ferrous_ui_core/widgets/text_input.md),
+  [ColorPicker](../ferrous_ui_core/widgets/color_picker.md),
+  [Panel](../ferrous_ui_core/widgets/panel.md)
+- **Declarative layout** → [Layout reference](../ferrous_layout/LAYOUT.md)
 - **App configuration** → [App Builder reference](app-builder.md)
 - **All frame callbacks** → [FerrousApp trait](ferrous-app-trait.md)
 - **Input, time, world** → [AppContext reference](app-context.md)

@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 #[derive(Default)]
 pub struct SpriteBatcher {
     // texture_id → lista de instancias. BTreeMap mantiene el orden por texture_id.
+    /// Instances grouped by texture id; iterated in ascending id order.
     pub batches: BTreeMap<u32, Vec<SpriteInstance>>,
 }
 
@@ -19,6 +20,7 @@ impl SpriteBatcher {
         }
     }
 
+    /// Append one sprite instance to the bucket for `texture_id`.
     pub fn push_sprite(&mut self, texture_id: u32, instance: SpriteInstance) {
         self.batches
             .entry(texture_id)
@@ -37,6 +39,7 @@ impl SpriteBatcher {
 /// Es un Vec plano — máxima cache locality, O(1) push, 1 draw call total.
 #[derive(Default)]
 pub struct ShapeBatcher {
+    /// Flat, insertion-ordered list of shape instances.
     pub instances: Vec<crate::render::types::ShapeInstance>,
 }
 

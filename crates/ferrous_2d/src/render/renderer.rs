@@ -27,9 +27,17 @@ pub struct Frame2dCounters {
     pub buffer_reallocations: u32,
 }
 
+/// Owns the 2D instance/camera buffers and pipelines and issues 2D draw calls.
+///
+/// One `Renderer2d` is created per 2D output (the engine currently keeps one
+/// for the Pure2D swapchain path and one for the Full3D overlay). The caller
+/// prepares instances with `prepare` / `prepare_shapes`, then records draws
+/// with `render*` inside a render pass.
 pub struct Renderer2d {
     device: Arc<wgpu::Device>,
+    /// Sprite pipeline and its texture bind-group layout.
     pub pipeline: SpritePipeline,
+    /// Shape (SDF) pipeline and its camera bind-group layout.
     pub shape_pipeline: ShapePipeline,
     
     // Buffers
@@ -55,6 +63,10 @@ pub struct Renderer2d {
 }
 
 impl Renderer2d {
+    /// Create the pipelines and growable instance/camera buffers.
+    ///
+    /// `initial_capacity` is the starting instance count (clamped to `128`);
+    /// buffers grow to the next power of two when a frame needs more.
     pub fn new(device: Arc<wgpu::Device>, output_format: wgpu::TextureFormat, depth_format: Option<wgpu::TextureFormat>, sample_count: u32, initial_capacity: u32) -> Self {
         let pipeline = SpritePipeline::new(device.clone(), output_format, depth_format, sample_count);
         let shape_pipeline = ShapePipeline::new(device.clone(), output_format, depth_format, sample_count);
@@ -207,6 +219,8 @@ impl Renderer2d {
         total_instances
     }
 
+    /// Upload all shape instances as one contiguous `write_buffer`, growing the
+    /// GPU buffer first if needed. Returns the number of instances uploaded.
     pub fn prepare_shapes(&mut self, queue: &wgpu::Queue, batcher: &crate::render::ShapeBatcher) -> usize {
         let total = batcher.instances.len();
         if total == 0 { return 0; }
@@ -262,6 +276,7 @@ impl Renderer2d {
         }
     }
 
+    /// Draw every shape in `batcher` as a single instanced draw call.
     pub fn render_shapes<'a>(
         &'a self,
         render_pass: &mut wgpu::RenderPass<'a>,
