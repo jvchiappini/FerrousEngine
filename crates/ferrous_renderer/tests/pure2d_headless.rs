@@ -289,6 +289,105 @@ fn frame_2d_stats_reports_live_pure2d_counters() {
     );
 }
 
+/// 2D culling correctness: with culling ON the image must be byte-identical to
+/// culling OFF for every visible instance, while the off-screen instances are
+/// reported as culled and are neither uploaded nor billed as bytes.
+#[test]
+fn culling_preserves_visible_pixels_and_drops_offscreen_instances() {
+    let _guard = GPU_LOCK.lock().unwrap();
+    let mut h = Pure2dHarness::new(128, 128, TextureFormat::Rgba8Unorm).expect("headless gpu");
+    let t_vis = h.register_texture_rgba8(2, 2, &[0, 255, 0, 255].repeat(4));
+
+    let draw_scene = |h: &mut Pure2dHarness| {
+        h.begin_frame();
+        // Visible geometry (inside [-64, 64]^2 world rect).
+        h.draw_shape(ShapeInstance::rect(Vec2::ZERO, Vec2::splat(40.0), RED));
+        h.draw_shape(ShapeInstance::circle(Vec2::new(40.0, 40.0), 10.0, BLUE));
+        h.draw_sprite(t_vis, sprite(Vec2::new(-40.0, -40.0), Vec2::splat(12.0), 0.0));
+        // Off-screen geometry: 64 shapes + 64 sprites, all far outside.
+        for i in 0..64 {
+            let x = 1_000.0 + i as f32 * 3.0;
+            h.draw_shape(ShapeInstance::rect(Vec2::new(x, 0.0), Vec2::splat(5.0), GREEN));
+            h.draw_sprite(t_vis, sprite(Vec2::new(x, 500.0), Vec2::splat(5.0), 1.0));
+        }
+    };
+
+    h.renderer_mut()
+        .set_render_2d_config(Render2dConfig { cull_2d: false, ..Default::default() });
+    draw_scene(&mut h);
+    let off = h.render_frame();
+    let pixels_off = h.read_pixels();
+    assert_eq!(off.culled_instances, 0, "culling off reports nothing culled");
+
+    h.renderer_mut()
+        .set_render_2d_config(Render2dConfig { cull_2d: true, ..Default::default() });
+    draw_scene(&mut h);
+    let on = h.render_frame();
+    let pixels_on = h.read_pixels();
+
+    assert_eq!(
+        pixels_on, pixels_off,
+        "culling must not change any visible pixel"
+    );
+    assert_eq!(on.culled_instances, 128, "64 shapes + 64 sprites are off-screen");
+    assert_eq!(
+        on.instances_uploaded + 128,
+        off.instances_uploaded,
+        "culled instances must not be uploaded"
+    );
+    assert!(
+        on.bytes_uploaded < off.bytes_uploaded,
+        "culling must reduce bytes uploaded"
+    );
+}
+
+/// Culling also removes whole texture runs, so it lowers draw calls (not just
+/// bytes): an off-screen texture interleaved with a visible one disappears and
+/// the surviving visible sprites coalesce into a single run.
+#[test]
+fn culling_reduces_draw_calls_for_interleaved_culled_texture_runs() {
+    let _guard = GPU_LOCK.lock().unwrap();
+    let mut h = Pure2dHarness::new(128, 128, TextureFormat::Rgba8Unorm).expect("headless gpu");
+    let t_vis = h.register_texture_rgba8(2, 2, &[0, 255, 0, 255].repeat(4));
+    let t_off = h.register_texture_rgba8(2, 2, &[255, 0, 0, 255].repeat(4));
+
+    let draw_scene = |h: &mut Pure2dHarness| {
+        h.begin_frame();
+        // Alternate an off-screen sprite (t_off) before each visible one (t_vis).
+        for i in 0..8 {
+            h.draw_sprite(
+                t_off,
+                sprite(Vec2::new(5_000.0, 0.0), Vec2::splat(8.0), (i * 2) as f32),
+            );
+            h.draw_sprite(
+                t_vis,
+                sprite(Vec2::new(-28.0 + i as f32 * 8.0, 0.0), Vec2::splat(6.0), (i * 2 + 1) as f32),
+            );
+        }
+    };
+
+    h.renderer_mut()
+        .set_render_2d_config(Render2dConfig { cull_2d: false, ..Default::default() });
+    draw_scene(&mut h);
+    let off = h.render_frame();
+
+    h.renderer_mut()
+        .set_render_2d_config(Render2dConfig { cull_2d: true, ..Default::default() });
+    draw_scene(&mut h);
+    let on = h.render_frame();
+
+    assert_eq!(
+        off.sprite_draw_calls, 16,
+        "alternating textures => 16 single-sprite runs"
+    );
+    assert_eq!(on.culled_instances, 8);
+    assert_eq!(
+        on.sprite_draw_calls, 1,
+        "surviving t_vis sprites become one contiguous run"
+    );
+    assert!(on.draw_calls < off.draw_calls, "culling must lower draw calls");
+}
+
 /// H10 regression: `bind_groups_total` must report the number of **live** sprite
 /// bind groups. After the texture-id free-list landed (id recycling),
 /// `next_sprite_texture_id` is only a high-water mark and over-reports once a

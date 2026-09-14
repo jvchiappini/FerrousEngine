@@ -33,6 +33,7 @@ use divan::counter::BytesCount;
 use divan::AllocProfiler;
 use ferrous_2d::render::{ShapeInstance, SpriteInstance};
 use ferrous_renderer::headless::{Pure2dHarness, DEFAULT_FORMAT};
+use ferrous_renderer::Render2dConfig;
 use glam::{Mat4, Quat, Vec2, Vec3};
 
 #[global_allocator]
@@ -109,6 +110,43 @@ impl Scene {
         }
     }
 
+    /// Enable/disable Pure2D viewport culling for this scene.
+    fn set_cull(&mut self, enabled: bool) {
+        let cfg = Render2dConfig {
+            cull_2d: enabled,
+            ..self.harness.renderer().render_2d_config()
+        };
+        self.harness.renderer_mut().set_render_2d_config(cfg);
+    }
+
+    /// Culling scene: `visible` on-screen sprites (texture 0) interleaved in
+    /// painter order with `offscreen` far-away sprites (texture 1).  With
+    /// culling off the off-screen sprites are uploaded and each draws as its
+    /// own run (they alternate with the visible texture); with culling on they
+    /// vanish and the surviving visible sprites coalesce into a single draw.
+    /// Assumes two registered textures.
+    fn fill_culling(&mut self, visible: usize, offscreen: usize) {
+        let h = &mut self.harness;
+        h.begin_frame();
+        let pairs = visible.max(offscreen);
+        for i in 0..pairs {
+            if i < offscreen {
+                h.draw_sprite(
+                    1,
+                    sprite(Vec2::new(10_000.0 + i as f32, 0.0), Vec2::splat(6.0), (i * 2) as f32),
+                );
+            }
+            if i < visible {
+                let x = (i % 32) as f32 * 12.0 - 176.0;
+                let y = (i / 32) as f32 * 12.0 - 176.0;
+                h.draw_sprite(
+                    0,
+                    sprite(Vec2::new(x, y), Vec2::splat(6.0), (i * 2 + 1) as f32),
+                );
+            }
+        }
+    }
+
     fn render(&mut self) -> ferrous_renderer::headless::FrameReport {
         self.harness.render_frame()
     }
@@ -116,11 +154,12 @@ impl Scene {
 
 fn print_baseline(label: &str, report: &ferrous_renderer::headless::FrameReport) {
     eprintln!(
-        "[baseline] {label}: draw_calls={} (shapes={} sprites={}) instances={} bytes_uploaded={} buffer_reallocations={} bind_groups_total={} cpu_ms={:.3}",
+        "[baseline] {label}: draw_calls={} (shapes={} sprites={}) instances={} culled={} bytes_uploaded={} buffer_reallocations={} bind_groups_total={} cpu_ms={:.3}",
         report.draw_calls,
         report.shape_draw_calls,
         report.sprite_draw_calls,
         report.instances_uploaded,
+        report.culled_instances,
         report.bytes_uploaded,
         report.buffer_reallocations,
         report.bind_groups_total,
@@ -138,6 +177,11 @@ fn print_baseline(label: &str, report: &ferrous_renderer::headless::FrameReport)
 #[divan::bench(args = [16, 256, 4096])]
 fn pure2d_shapes(bencher: divan::Bencher, n: usize) {
     let mut scene = Scene::new(n, 0, 0);
+    // This bench measures the full extract/coalesce/upload path; the grid
+    // intentionally overflows the 512px viewport for large `n`, so disable
+    // culling to keep it a complete-workload baseline.  Culling is measured by
+    // `pure2d_culling_on` / `pure2d_culling_off`.
+    scene.set_cull(false);
     scene.fill();
     print_baseline(&format!("pure2d_shapes n={n}"), &scene.render());
     bencher
@@ -158,6 +202,8 @@ fn pure2d_shapes(bencher: divan::Bencher, n: usize) {
 #[divan::bench(args = [(64, 1), (512, 8), (2048, 64)])]
 fn pure2d_sprites(bencher: divan::Bencher, (n, t): (usize, usize)) {
     let mut scene = Scene::new(0, n, t);
+    // Full-workload baseline: see `pure2d_shapes`.
+    scene.set_cull(false);
     scene.fill();
     print_baseline(&format!("pure2d_sprites n={n} t={t}"), &scene.render());
     bencher
@@ -166,6 +212,44 @@ fn pure2d_sprites(bencher: divan::Bencher, (n, t): (usize, usize)) {
         ))
         .bench_local(|| {
             scene.fill();
+            divan::black_box(scene.render())
+        });
+}
+
+/// Viewport culling ON: 512 visible sprites plus `n_off` far-off-screen sprites
+/// are submitted; culling drops the off-screen ones before upload.  Compare the
+/// `culled` / `instances` / `bytes_uploaded` / `draw_calls` fields against
+/// [`pure2d_culling_off`] to see the hardware-independent delta.
+#[divan::bench(args = [1024, 8192])]
+fn pure2d_culling_on(bencher: divan::Bencher, n_off: usize) {
+    let mut scene = Scene::new(0, 0, 2);
+    scene.set_cull(true);
+    scene.fill_culling(512, n_off);
+    print_baseline(&format!("pure2d_culling_on off={n_off}"), &scene.render());
+    bencher
+        .counter(BytesCount::from(
+            (n_off * std::mem::size_of::<SpriteInstance>()) as u64,
+        ))
+        .bench_local(|| {
+            scene.fill_culling(512, n_off);
+            divan::black_box(scene.render())
+        });
+}
+
+/// Same scene as [`pure2d_culling_on`] but with culling disabled, to measure the
+/// cost the off-screen geometry would have added.
+#[divan::bench(args = [1024, 8192])]
+fn pure2d_culling_off(bencher: divan::Bencher, n_off: usize) {
+    let mut scene = Scene::new(0, 0, 2);
+    scene.set_cull(false);
+    scene.fill_culling(512, n_off);
+    print_baseline(&format!("pure2d_culling_off off={n_off}"), &scene.render());
+    bencher
+        .counter(BytesCount::from(
+            (n_off * std::mem::size_of::<SpriteInstance>()) as u64,
+        ))
+        .bench_local(|| {
+            scene.fill_culling(512, n_off);
             divan::black_box(scene.render())
         });
 }
