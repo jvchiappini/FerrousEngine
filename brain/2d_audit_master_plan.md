@@ -66,6 +66,7 @@ Ordering: severity → measured impact → risk to Koncreta/GUIMaker → effort.
 | **H12** | 2D ECS path unreachable: `ferrous_2d::systems` never registered; spawning `Sprite`/`Shape2d` renders nothing (no warning) | B/D | `batching.rs:6,44`, `runner/types.rs:64-69` | Public components are a silent no-op; duplicated bridge in engine | — | M |
 | **H13** | UI texture-array slots: native 16 vs web 8; validation uses 16 on both; web silently drops textures 9–16, native panics >16 | C/D | `ui_render/pipelines/layout.rs:51-100`, `gui_batch.rs:226-231` | Cross-platform correctness + native panic | — | S/M |
 | **H14** | `draw_2d_path`/caps unify + `#9` remaining lyon cap/join hardcode in `circle_2d`/`rect_2d` | A | `shapes2d.rs:227-257` | Contractual; no measured impact | H7 | S |
+| **H15** ✅ | Pure2D uploads/draws **every** instance even when off-camera — no CPU-side viewport culling on large plans (wasted instances/bytes/draws). **DONE** (`perf/2d-culling`): automatic world-AABB vs camera-rect culling, `cull_2d`/`cull_margin` knobs, `culled_instances` telemetry. See `brain/2d_culling.md` | A | `renderer_core.rs` Pure2D emit path | M | — |
 
 ### Tier 2 — MEDIO
 
@@ -139,3 +140,20 @@ Implemented on branch `perf/2d-optimize`, not merged to `main`:
 
 Still open from this cluster: H2 (overlay unification) and H5 (sprite atlas);
 H3 cross-texture sprite interleaving depends on H5.
+
+## 7. 2D viewport culling pass (branch `perf/2d-culling`)
+
+Implemented on branch `perf/2d-culling`, not merged to `main`:
+
+- **H15:** automatic CPU-side viewport culling in the Pure2D emit path.
+  Instances (shapes + sprites) whose conservative world AABB misses the visible
+  camera rect are dropped before upload/draw.  Culling happens before the
+  coalescing run walk, so surviving runs merge and draw calls drop too.
+- **Config:** `Render2dConfig::cull_2d` (default `true`) and `cull_margin`
+  (world units, default `4.0`; effective margin
+  `max(cull_margin, 4 * world_units_per_pixel)`).
+- **Telemetry:** `Frame2dCounters::culled_instances` (and
+  `headless::FrameReport::culled_instances`), exposed via
+  `RenderContext::frame_2d_stats()`.
+- Full details, AABB assumptions and measured deltas:
+  **`brain/2d_culling.md`**.
