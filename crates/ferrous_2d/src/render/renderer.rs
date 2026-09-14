@@ -68,8 +68,21 @@ impl Renderer2d {
     /// `initial_capacity` is the starting instance count (clamped to `128`);
     /// buffers grow to the next power of two when a frame needs more.
     pub fn new(device: Arc<wgpu::Device>, output_format: wgpu::TextureFormat, depth_format: Option<wgpu::TextureFormat>, sample_count: u32, initial_capacity: u32) -> Self {
-        let pipeline = SpritePipeline::new(device.clone(), output_format, depth_format, sample_count);
-        let shape_pipeline = ShapePipeline::new(device.clone(), output_format, depth_format, sample_count);
+        Self::new_with_cache(device, output_format, depth_format, sample_count, initial_capacity, None)
+    }
+
+    /// Same as [`Renderer2d::new`] but threads a shared [`wgpu::PipelineCache`]
+    /// into both the sprite and shape pipelines.
+    pub fn new_with_cache(
+        device: Arc<wgpu::Device>,
+        output_format: wgpu::TextureFormat,
+        depth_format: Option<wgpu::TextureFormat>,
+        sample_count: u32,
+        initial_capacity: u32,
+        cache: Option<&wgpu::PipelineCache>,
+    ) -> Self {
+        let pipeline = SpritePipeline::new_with_cache(device.clone(), output_format, depth_format, sample_count, cache);
+        let shape_pipeline = ShapePipeline::new_with_cache(device.clone(), output_format, depth_format, sample_count, cache);
         
         let max_instances = initial_capacity.max(128);
         

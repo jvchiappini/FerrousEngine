@@ -16,6 +16,12 @@ pub struct EngineContext {
     pub queue: Arc<wgpu::Queue>,
     /// Backend seleccionado por wgpu (Vulkan, Metal, Dx12, WebGpu, Gl, etc.).
     pub backend: wgpu::Backend,
+    /// Shared pipeline cache, passed as `cache: Some(..)` when creating render
+    /// and compute pipelines. It lets the driver reuse shader compilation work
+    /// between pipelines and between program runs. `None` when the device does
+    /// not support [`wgpu::Features::PIPELINE_CACHE`] (only Vulkan implements it
+    /// in wgpu 23, so this is `None` on Metal/DX12/WebGPU/GL).
+    pub pipeline_cache: Option<wgpu::PipelineCache>,
 }
 
 #[derive(Debug, Error)]
@@ -117,7 +123,10 @@ impl EngineContext {
         let adapter_features = adapter.features();
         #[cfg(not(target_arch = "wasm32"))]
         let desired_features = wgpu::Features::TEXTURE_BINDING_ARRAY
-            | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING;
+            | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
+            // Pipeline cache is Vulkan-only in wgpu 23; requesting it when the
+            // adapter exposes it is what lets `create_pipeline_cache` succeed.
+            | wgpu::Features::PIPELINE_CACHE;
         #[cfg(target_arch = "wasm32")]
         let desired_features = wgpu::Features::empty();
 
@@ -136,12 +145,32 @@ impl EngineContext {
             .await
             .map_err(|e| ContextError::DeviceRequest(e.to_string()))?;
 
+        // Only create the cache when the device actually negotiated the
+        // feature; otherwise `create_pipeline_cache` is a validation error.
+        // SAFETY: `data: None` upholds `create_pipeline_cache`'s only unsafe
+        // precondition (initial data must come from `PipelineCache::get_data`).
+        let pipeline_cache = if device
+            .features()
+            .contains(wgpu::Features::PIPELINE_CACHE)
+        {
+            Some(unsafe {
+                device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
+                    label: Some("Engine Pipeline Cache"),
+                    data: None,
+                    fallback: true,
+                })
+            })
+        } else {
+            None
+        };
+
         Ok(Self {
             instance,
             adapter,
             device: Arc::new(device),
             queue: Arc::new(queue),
             backend,
+            pipeline_cache,
         })
     }
 }

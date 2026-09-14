@@ -17,6 +17,19 @@ impl SpritePipeline {
     /// Build the sprite pipeline for the given output `format` and
     /// `sample_count` (pass `depth_format: None` for the depth-less Pure2D path).
     pub fn new(device: Arc<wgpu::Device>, output_format: wgpu::TextureFormat, depth_format: Option<wgpu::TextureFormat>, sample_count: u32) -> Self {
+        Self::new_with_cache(device, output_format, depth_format, sample_count, None)
+    }
+
+    /// Same as [`SpritePipeline::new`] but threads a shared [`wgpu::PipelineCache`]
+    /// into `create_render_pipeline`, so repeated pipeline creation for the same
+    /// device can reuse the driver's compiled shaders.
+    pub fn new_with_cache(
+        device: Arc<wgpu::Device>,
+        output_format: wgpu::TextureFormat,
+        depth_format: Option<wgpu::TextureFormat>,
+        sample_count: u32,
+        cache: Option<&wgpu::PipelineCache>,
+    ) -> Self {
         // ... (resto del código de layouts se mantiene igual)
         // 1. Camera Layout
         let camera_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -113,7 +126,7 @@ impl SpritePipeline {
                 alpha_to_coverage_enabled: false,
             },
             multiview: None,
-            cache: None,
+            cache,
         });
 
         Self {
@@ -139,6 +152,18 @@ impl ShapePipeline {
     /// Build the shape pipeline for the given output `format` and
     /// `sample_count` (pass `depth_format: None` for the depth-less Pure2D path).
     pub fn new(device: Arc<wgpu::Device>, output_format: wgpu::TextureFormat, depth_format: Option<wgpu::TextureFormat>, sample_count: u32) -> Self {
+        Self::new_with_cache(device, output_format, depth_format, sample_count, None)
+    }
+
+    /// Same as [`ShapePipeline::new`] but threads a shared [`wgpu::PipelineCache`]
+    /// into `create_render_pipeline`.
+    pub fn new_with_cache(
+        device: Arc<wgpu::Device>,
+        output_format: wgpu::TextureFormat,
+        depth_format: Option<wgpu::TextureFormat>,
+        sample_count: u32,
+        cache: Option<&wgpu::PipelineCache>,
+    ) -> Self {
         use crate::render::types::ShapeInstance;
 
         // 1. Camera Layout
@@ -213,7 +238,7 @@ impl ShapePipeline {
                 alpha_to_coverage_enabled: false,
             },
             multiview: None,
-            cache: None,
+            cache,
         });
 
         Self {

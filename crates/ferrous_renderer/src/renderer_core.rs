@@ -422,10 +422,10 @@ impl Renderer {
         aa_pass.on_attach(device, hdr_format);
         aa_pass.on_resize(device, width, height);
 
-        let renderer_2d = Renderer2d::new(context.device.clone(), hdr_format, Some(wgpu::TextureFormat::Depth32Float), sample_count, 1024);
+        let renderer_2d = Renderer2d::new_with_cache(context.device.clone(), hdr_format, Some(wgpu::TextureFormat::Depth32Float), sample_count, 1024, context.pipeline_cache.as_ref());
         // Pure2D renderiza directo al swapchain: usa formato de superficie (no HDR)
         // y sample_count=1 (MSAA no es compatible con presentación directa).
-        let renderer_2d_pure = Renderer2d::new(context.device.clone(), format, None, 1, 1024);
+        let renderer_2d_pure = Renderer2d::new_with_cache(context.device.clone(), format, None, 1, 1024, context.pipeline_cache.as_ref());
         let shape_batcher = ShapeBatcher::default();
 
         Self {
