@@ -136,6 +136,82 @@ fn draw_calls_match_batched_scene() {
     );
 }
 
+/// M5 regression: the unified shape+sprite command stream must have a
+/// **deterministic total order**. `z` is the primary sort key and equal-`z`
+/// commands are tie-broken by the command itself (`DrawCommand2d` derived
+/// `Ord`), which reproduces insertion order. This is what makes the painter's
+/// order and the contiguous-run coalescing contractual instead of an accident
+/// of an unstable sort.
+#[test]
+fn z_order_is_deterministic_for_equal_and_interleaved_z() {
+    let _guard = GPU_LOCK.lock().unwrap();
+    let mut h = Pure2dHarness::new(128, 256, TextureFormat::Rgba8Unorm).expect("headless gpu");
+
+    // Equal z: both shapes share z = 0, so the later-inserted one wins the
+    // painter's order. Repeat identical frames to assert determinism.
+    for iteration in 0..3 {
+        h.begin_frame();
+        h.draw_shape(ShapeInstance::rect_z(Vec2::ZERO, 0.0, Vec2::splat(64.0), RED));
+        h.draw_shape(ShapeInstance::rect_z(Vec2::ZERO, 0.0, Vec2::splat(64.0), GREEN));
+        let report = h.render_frame();
+
+        assert_eq!(
+            report.shape_draw_calls, 1,
+            "iteration {iteration}: equal-z contiguous shapes must coalesce"
+        );
+        assert_rgb_near(
+            h.read_pixel(64, 128),
+            [0, 255, 0],
+            4,
+            "equal-z tie-break must paint the later command on top",
+        );
+    }
+
+    // Interleaved/differing z: z is the primary key, so a shape pushed *first*
+    // with a higher z must still be painted last. Two distinct z values cannot
+    // coalesce.
+    h.begin_frame();
+    h.draw_shape(ShapeInstance::rect_z(Vec2::ZERO, 0.5, Vec2::splat(64.0), GREEN));
+    h.draw_shape(ShapeInstance::rect_z(Vec2::ZERO, 0.0, Vec2::splat(64.0), RED));
+    let report = h.render_frame();
+
+    assert_eq!(
+        report.shape_draw_calls, 2,
+        "different z values must never share a coalesced draw"
+    );
+    assert_rgb_near(
+        h.read_pixel(64, 128),
+        [0, 255, 0],
+        4,
+        "higher z must be painted last regardless of insertion order",
+    );
+}
+
+/// H10 regression: `bind_groups_total` must report the number of **live** sprite
+/// bind groups. After the texture-id free-list landed (id recycling),
+/// `next_sprite_texture_id` is only a high-water mark and over-reports once a
+/// texture is freed.
+#[test]
+fn bind_groups_total_tracks_live_groups_after_free() {
+    let _guard = GPU_LOCK.lock().unwrap();
+    let mut h = Pure2dHarness::new(64, 64, DEFAULT_FORMAT).expect("headless gpu");
+    let t0 = h.register_texture_rgba8(2, 2, &[255, 0, 0, 255].repeat(4));
+    let t1 = h.register_texture_rgba8(2, 2, &[0, 255, 0, 255].repeat(4));
+
+    h.begin_frame();
+    h.draw_sprite(t0, sprite(Vec2::new(-16.0, 0.0), Vec2::splat(8.0), 0.0));
+    h.draw_sprite(t1, sprite(Vec2::new(16.0, 0.0), Vec2::splat(8.0), 0.0));
+    let first = h.render_frame();
+    assert_eq!(first.bind_groups_total, 2, "two live textures, two bind groups");
+
+    h.renderer_mut().free_sprite_texture(t0);
+    let after_free = h.render_frame();
+    assert_eq!(
+        after_free.bind_groups_total, 1,
+        "the freed texture's bind group must no longer be counted"
+    );
+}
+
 /// Each distinct sprite texture adds a draw call and a bind group; the bind
 /// group must be created **once**, not per frame.
 #[test]
@@ -166,4 +242,43 @@ fn sprite_textures_create_bind_groups_once() {
     let second = h.render_frame();
     assert_eq!(second.bind_groups_created, 0, "steady state creates no bind groups");
     assert_eq!(second.buffer_reallocations, 0);
+}
+
+/// Pins the per-frame-clear contract that the engine runner now enforces at the
+/// start of every frame (`crates/ferrous_engine/src/runner/frame.rs`). The
+/// runner path itself needs a window/event loop and is not testable headlessly,
+/// but the harness exposes the same `begin_frame()` contract:
+///
+/// - Without the clear the shape batcher is append-only, so each frame re-uploads
+///   the previous frame's shapes too ("ghosting").
+/// - With the clear every frame uploads only its own geometry.
+#[test]
+fn per_frame_clear_prevents_shape_accumulation() {
+    let _guard = GPU_LOCK.lock().unwrap();
+    let mut h = Pure2dHarness::new(64, 64, TextureFormat::Rgba8Unorm).expect("headless gpu");
+
+    // No `clear_2d()`: the shape batcher is not reset between renders. The
+    // per-frame counters are cumulative, so reset only those between renders to
+    // read each frame's upload count independently.
+    h.draw_shape(ShapeInstance::rect(Vec2::ZERO, Vec2::splat(8.0), RED));
+    h.renderer_mut().renderer_2d_pure.reset_frame_counters();
+    let first = h.render_frame();
+    assert_eq!(first.instances_uploaded, 1);
+
+    h.draw_shape(ShapeInstance::rect(Vec2::ZERO, Vec2::splat(8.0), GREEN));
+    h.renderer_mut().renderer_2d_pure.reset_frame_counters();
+    let second = h.render_frame();
+    assert_eq!(
+        second.instances_uploaded, 2,
+        "without a per-frame clear the previous frame's shapes are still batched"
+    );
+
+    // With the contract the runner applies, each frame is independent.
+    h.begin_frame();
+    h.draw_shape(ShapeInstance::rect(Vec2::ZERO, Vec2::splat(8.0), RED));
+    let third = h.render_frame();
+    assert_eq!(
+        third.instances_uploaded, 1,
+        "begin_frame()/clear_2d() resets the 2D batchers"
+    );
 }
