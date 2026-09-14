@@ -170,6 +170,9 @@ impl ShapeInstance {
     /// - `0` = Flat (extremos rectos exactamente en los endpoints)
     /// - `1` = Round (extremos redondeados, radio = width/2)
     /// - `2` = Square (extremos rectos que sobresalen width/2 más allá de los endpoints)
+    ///
+    /// Prefer the typed [`ShapeInstance::line_with_cap_style`] in new code: an
+    /// out-of-range `u8` here is not rejected and silently falls back to `Round`.
     pub fn line_with_cap(from: glam::Vec2, to: glam::Vec2, width: f32, color: [f32; 4], cap_style: u8) -> Self {
         let delta = to - from;
         let length = delta.length();
@@ -193,6 +196,42 @@ impl ShapeInstance {
         );
         // params: border=width, corner_radius=radius, smooth=2, filled=1
         Self::from_model(model, color, [width, radius, 2.0, 1.0])
+    }
+
+    /// Tipada de [`ShapeInstance::line_with_cap`] que acepta el enum
+    /// [`CapStyle`](crate::components::CapStyle) en vez del `u8` mágico.
+    ///
+    /// Es la forma recomendada de construir una línea con una punta concreta:
+    /// el compilador rechaza valores inválidos y la intención queda explícita.
+    /// Internamente delega en `line_with_cap` para que la geometría generada
+    /// sea idéntica.
+    ///
+    /// ```rust
+    /// use ferrous_2d::components::CapStyle;
+    /// use ferrous_2d::render::ShapeInstance;
+    /// use glam::Vec2;
+    ///
+    /// let line = ShapeInstance::line_with_cap_style(
+    ///     Vec2::ZERO,
+    ///     Vec2::new(10.0, 0.0),
+    ///     2.0,
+    ///     [1.0, 1.0, 1.0, 1.0],
+    ///     CapStyle::Flat,
+    /// );
+    /// ```
+    pub fn line_with_cap_style(
+        from: glam::Vec2,
+        to: glam::Vec2,
+        width: f32,
+        color: [f32; 4],
+        cap_style: crate::components::CapStyle,
+    ) -> Self {
+        let raw = match cap_style {
+            crate::components::CapStyle::Flat => 0,
+            crate::components::CapStyle::Round => 1,
+            crate::components::CapStyle::Square => 2,
+        };
+        Self::line_with_cap(from, to, width, color, raw)
     }
 
     /// Rectángulo rotado, centrado en `center`, con ángulo en radianes.
