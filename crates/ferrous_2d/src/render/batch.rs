@@ -85,7 +85,11 @@ impl ShapeBatcher {
 /// The z value used for sorting is read from the instance's own transform
 /// (`transform_c3[2]`), which is how `sort_by_z`, `prepare_shapes_system`,
 /// `prepare_sprites_system` and `prepare_paths_system` all encode depth.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Ord`/`PartialOrd` are derived so the command itself can act as the
+/// deterministic tie-break for equal `z` (variant order = insertion order:
+/// shapes before sprites, then by shape index / texture id / sprite offset).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DrawCommand2d {
     /// Draw `ShapeBatcher.instances[index]` with the shape (SDF) pipeline.
     Shape(usize),

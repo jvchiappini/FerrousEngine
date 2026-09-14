@@ -1153,12 +1153,16 @@ impl Renderer {
                     }
                     sprite_offset += instances.len();
                 }
-                // Stable sort: equal-z commands keep their insertion order, so
-                // both the painter's order and the contiguous-run coalescing
-                // below are contractual instead of depending on the sort
-                // implementation happening to preserve equal keys.
-                draw_list.sort_by(|a, b| {
-                    a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                // Deterministic total order: primary key is z, and equal-z
+                // commands are tie-broken by the command itself, whose derived
+                // ordering reproduces the build/insertion order (shape index
+                // ascending, then sprite texture id / offset ascending). This
+                // makes the painter's order and the contiguous-run coalescing
+                // below contractual without a stable sort's scratch allocation.
+                draw_list.sort_unstable_by(|a, b| {
+                    a.0.partial_cmp(&b.0)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| a.1.cmp(&b.1))
                 });
 
                 // Nota: en esta fase primamos corrección sobre nº de draw calls.
