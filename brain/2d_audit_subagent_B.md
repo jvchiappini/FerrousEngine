@@ -402,3 +402,106 @@ Ningún hallazgo rompe a Koncreta hoy, pero el espejo doble bloquea la unificaci
   no hay consumidor multicore; no habría señal representativa.
 - Si `ferrous_engine::Renderer::sync_ecs_to_shape_batcher` está en uso por algún
   consumidor externo: no hay referencias en el árbol inspeccionado.
+
+---
+
+# Fase 3 — Implementación (Subagente B: CPU / ECS / scheduler)
+
+> Rama: `fix/2d-cpu-ecs` (parte de `analysis/2d-audit-base` + Phase-3 de Subagente A).
+> Alcance aprobado: **H6**, **M1**, **M8-B**. NO tocado: C3, `ParallelScheduler` (M9),
+> orden de stages. `CARGO_TARGET_DIR` apuntado al `target/` real del repo.
+
+## Commits atómicos
+
+| Hash | Tipo | Qué |
+|---|---|---|
+| `476463d` | `fix(ecs)` | M1: `cargo test -p ferrous_ecs` compila y pasa |
+| `58dacbf` | `perf(ecs)` | H6: columnas de `Query` resueltas una vez por arquetipo |
+| `83d3731` | `refactor(2d)` | M8-B: deprecación de los sistemas ECS muertos |
+| `176fc1e` | `chore(renderer)` | M8-B: elimina dependencia `rayon` muerta en `ferrous_renderer` |
+| *(este informe)* | `docs(2d-audit)` | Fase 3 en `brain/` |
+
+## H6 — resolución de columnas por arquetipo (`Query`)
+
+- **Qué:** `WorldQuery` ahora tiene estado por arquetipo (`type Fetch<'w>` +
+  `init_fetch(arch)`); `fetch` consume ese estado en vez de recibir `&Archetype`.
+  `Query::iter` construye el estado **una vez por arquetipo** antes de recorrer filas.
+  Antes, `Q::fetch(arch, row)` re-ejecutaba `Archetype::column::<T>()` →
+  `binary_search` sobre la firma de `TypeId` (comparaciones `u128`) por cada fila.
+- **Por qué:** era el hot loop de cualquier escena ECS grande: O(filas·k·log c)
+  comparaciones solo para localizar columnas, no para el trabajo útil.
+- **API pública de `Query` intacta:** `new`/`iter`/`len`/`is_empty`/`reads`/`writes`
+  y el contrato `State = Vec<usize>` sin cambios (por eso `system_param`/`QueryParam`
+  no cambian). **Sí cambia el trait `WorldQuery`** (firma de `fetch` + `Fetch`/
+  `init_fetch`); nota de migración en el cuerpo del commit para implementadores
+  out-of-tree (0 en el árbol).
+- **Evidencia (delta operacional, medido con instrumentación `#[cfg(test)]`
+  thread-local sobre `Archetype::column_index`):**
+  - Query `(&Pos, &Vel)` sobre 64 entidades en 1 arquetipo (2 componentes):
+    **128 lookups antes → 2 ahora** (`<= 8` con margen). Test
+    `query::tests::iter_resolves_columns_once_per_archetype`.
+  - Query con 3 arquetipos y `Option<&Vel>`: resultado idéntico y lookups
+    proporcionales a arquetipos, no a filas. Test
+    `query::tests::iter_matches_len_across_archetypes`.
+  - **No hay número de wall-clock:** el harness de D no ejercita queries ECS, así
+    que el delta es de número de operaciones (comparaciones/`binary_search`), no de
+    ms. No se inventa un `cpu_ms`.
+
+## M1 — el test de ECS no compilaba
+
+- **Qué:** se fusionaron los dos `#[cfg(test)] mod tests` de `component.rs` (E0428);
+  se importó el derive `ferrous_ecs_macros::Component` (gateado por feature
+  `derive`); se añadió `extern crate self as ferrous_ecs` para que el path que emite
+  el derive (`ferrous_ecs::component::Component`) resuelva dentro del propio crate
+  (E0433, antes enmascarado por E0277). Al correr por primera vez, el test
+  `event::tests::reader_reads_previous_frame` fallaba por inferencia (`Events::new()`
+  → `i32` vs consulta `Events<u32>`): se fijó el tipo.
+- **Por qué:** destrabar toda la cobertura de tests del ECS (M1 era el blocker).
+- **Evidencia:** `cargo test -p ferrous_ecs` → **35 passed / 0 failed**;
+  `cargo test -p ferrous_ecs --features parallel` → **35 passed / 0 failed**.
+  El build de tests no introduce warnings `non_snake_case` (el macro de tuplas
+  lleva `#[allow(non_snake_case)]` local en `fetch`).
+
+## M8-B — sistemas ECS 2D muertos + `rayon`
+
+- **Confirmación (grep):** `prepare_{sprites,shapes,paths}_system` **0 call sites**
+  (solo referencias en comentarios/doc); `SpritePass` ya fue eliminado por A.
+- **Decisión:** los tres son `pub` re-exports de `ferrous_2d`, así que se
+  **deprecan** con `#[deprecated]` + doc + nota de migración (no se borran; podrían
+  romper consumidores externos). Migración: `Renderer::draw_sprite_2d` /
+  `draw_2d_shape` / `draw_2d_path`.
+- **Componentes NO borrados:** `Transform2d`/`Sprite`/`Camera2d` se usan en
+  `ferrous_web/src/dispatcher.rs` y `Path2d`/`Shape2d` en `ferrous_renderer`; no
+  están huérfanos.
+- **`rayon` en `ferrous_renderer`:** confirmado sin uso en `src/`/`tests/`/`benches/`
+  (único match: un comentario en el bench). Eliminado. Nota cruzada para C.
+- **Evidencia:** `cargo check -p ferrous_2d` sin warnings nuevos; la deprecación de
+  re-exports vía `pub use ...::*` no emite warnings.
+
+## Verificación obligatoria ejecutada
+
+| Comando | Resultado |
+|---|---|
+| `cargo check -p ferrous_ecs -p ferrous_2d` | OK, 0 warnings nuevos |
+| `cargo check --workspace` | OK (solo warnings preexistentes de `ferrous_web`) |
+| `cargo test -p ferrous_ecs` | 35 passed / 0 failed |
+| `cargo test -p ferrous_ecs --features parallel` | 35 passed / 0 failed |
+| `cargo test -p ferrous_renderer --test pure2d_headless -- --test-threads=1` | 3 passed / 0 failed (llvmpipe) |
+
+## Notas de migración / cross-agent
+
+- **`WorldQuery` (H6):** cambio de trait interno del ECS; no es Apéndice A y no lo
+  usa Koncreta/GUIMaker, pero cualquier implementador externo de `WorldQuery` debe
+  adaptarse. Normal `Query` no cambia.
+- **M8-B (2D):** los `prepare_*` siguen existiendo (deprecados); Koncreta/GUIMaker
+  no los usan. Sin cambio de comportamiento.
+- **C:** `rayon` de `ferrous_renderer` confirmado muerto y eliminado.
+- **Fuera de alcance, sin tocar:** C3 (espejo legacy), `ParallelScheduler` M9,
+  orden de stages, cualquier área de A/C/D.
+
+## No verificable en este entorno (Fase 3)
+
+- No hay benchmark de wall-clock del ECS (el harness de D no hace queries); el
+  beneficio de H6 se mide en número de `binary_search`/comparaciones, no en ms.
+- Build/run wasm32 no ejecutado (sin toolchain target en este pase); el cambio de
+  `WorldQuery` es puro Rust seguro/`unsafe` ya existente, sin `cfg` de plataforma.
