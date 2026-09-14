@@ -28,7 +28,7 @@
 //! | `frame_2d_stats()` | Hardware-independent Pure2D counters (draw calls, bytes, instances) |
 //! | `frame_ms()` / `frame_ms_avg()` | Wall-clock last-frame / rolling-average duration |
 //! | `backend_name()` | Active wgpu backend (`"vulkan"`, `"webgpu"`, `"gl"`, …) |
-//! | `render_2d_config()` / `set_render_2d_config(cfg)` | Runtime perf/AA knobs for A/B comparison |
+//! | `render_2d_config()` / `set_render_2d_config(cfg)` | Runtime perf/AA/culling knobs for A/B comparison |
 //! | `camera_eye()` | World-space camera eye position |
 //! | `camera_target()` | World-space camera look-at target |
 //! | `camera_orbit_distance()` | Orbit radius from the built-in camera controller |

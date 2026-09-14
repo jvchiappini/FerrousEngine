@@ -84,6 +84,76 @@ enum Coalesced2dDraw {
     },
 }
 
+/// World-space axis-aligned bounding box `(min, max)` of a [`ShapeInstance`]'s
+/// canonical quad, used by the Pure2D culling pass.
+///
+/// The instance's `Mat4` maps a canonical local quad to world space.  The
+/// shader has two canonical quads:
+///
+/// - rounded-rect / circle / line family: `[-0.5, 0.5]²` (`vertex_index`-based
+///   corners are re-centred by `0.5` in `shape_2d.wgsl`);
+/// - triangle (`params.w > 1.5`, see `SHAPE_KIND_TRIANGLE`): `[0, 1]²`, with
+///   `c0 = b - a`, `c1 = c - a`, `c3 = a` (the triangle itself is contained).
+///
+/// Transforming the four corners and taking their min/max yields a world-space
+/// AABB that contains the rendered geometry.  It is **conservative but not the
+/// tight SDF bounds**: for lines the round/square caps sit exactly on the quad
+/// edge, so the AABB is tight; the fragment shader's AA band and the sub-pixel
+/// line widening extend a few pixels past it, which is why the cull rect is
+/// expanded by a margin before testing.  No constructor produces geometry
+/// outside its canonical quad.
+#[inline]
+fn shape_world_aabb(s: &ferrous_2d::render::ShapeInstance) -> (glam::Vec2, glam::Vec2) {
+    let c0 = glam::Vec2::new(s.transform_c0[0], s.transform_c0[1]);
+    let c1 = glam::Vec2::new(s.transform_c1[0], s.transform_c1[1]);
+    let c3 = glam::Vec2::new(s.transform_c3[0], s.transform_c3[1]);
+    let corners: [(f32, f32); 4] = if s.params[3] > 1.5 {
+        // Triangle: [0,1]^2 maps to a, b, c and a+b+c-a.
+        [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]
+    } else {
+        // Rounded-rect / circle / line: centred [-0.5, 0.5]^2.
+        [(-0.5, -0.5), (0.5, -0.5), (-0.5, 0.5), (0.5, 0.5)]
+    };
+    let mut min = glam::Vec2::splat(f32::INFINITY);
+    let mut max = glam::Vec2::splat(f32::NEG_INFINITY);
+    for (lx, ly) in corners {
+        let p = c3 + c0 * lx + c1 * ly;
+        min = min.min(p);
+        max = max.max(p);
+    }
+    (min, max)
+}
+
+/// World-space AABB of a [`SpriteInstance`].  `sprite_2d.wgsl` maps the
+/// canonical `[-0.5, 0.5]²` quad through the instance matrix (no AA expansion),
+/// so this is exact.
+#[inline]
+fn sprite_world_aabb(s: &ferrous_2d::render::SpriteInstance) -> (glam::Vec2, glam::Vec2) {
+    let c0 = glam::Vec2::new(s.transform_c0[0], s.transform_c0[1]);
+    let c1 = glam::Vec2::new(s.transform_c1[0], s.transform_c1[1]);
+    let c3 = glam::Vec2::new(s.transform_c3[0], s.transform_c3[1]);
+    let mut min = glam::Vec2::splat(f32::INFINITY);
+    let mut max = glam::Vec2::splat(f32::NEG_INFINITY);
+    for (lx, ly) in [(-0.5f32, -0.5f32), (0.5, -0.5), (-0.5, 0.5), (0.5, 0.5)] {
+        let p = c3 + c0 * lx + c1 * ly;
+        min = min.min(p);
+        max = max.max(p);
+    }
+    (min, max)
+}
+
+/// Standard separating-axis AABB overlap test.  Touching counts as overlap
+/// (the cull rect already carries the AA margin).
+#[inline]
+fn aabb_intersects(
+    min: glam::Vec2,
+    max: glam::Vec2,
+    rect_min: glam::Vec2,
+    rect_max: glam::Vec2,
+) -> bool {
+    min.x <= rect_max.x && max.x >= rect_min.x && min.y <= rect_max.y && max.y >= rect_min.y
+}
+
 /// | `Full3D` | ✓ | ✓ |
 /// | `Flat2D` | ✗ (skipped) | ✓ (clears to `world_pass.clear_color`) |
 ///
@@ -867,7 +937,8 @@ impl Renderer {
     /// The antialiasing selector is mirrored into the internal
     /// [`AntialiasingPass`](crate::passes::AntialiasingPass); the UI bind-group
     /// cache and scratch-reuse flags are forwarded to the UI pass and the two
-    /// `Renderer2d` instances.
+    /// `Renderer2d` instances.  `cull_2d` / `cull_margin` are read directly by
+    /// the Pure2D pass each frame.
     pub fn set_render_2d_config(&mut self, config: Render2dConfig) {
         self.render_2d_config = config;
         self.aa_pass.set_mode(config.antialiasing.to_mode());
@@ -887,6 +958,41 @@ impl Renderer {
     /// allocation.  Returns zeroes before the first 2D frame.
     pub fn frame_2d_stats(&self) -> ferrous_2d::render::Frame2dCounters {
         self.renderer_2d_pure.frame_counters()
+    }
+
+    /// Visible world-space rect `(min, max)` for the current Pure2D camera,
+    /// expanded by the effective culling margin.
+    ///
+    /// Computed by inverting the camera's view-projection and unprojecting the
+    /// four NDC corners `(-1, -1) … (1, 1)` at `z = 0`.  For the Pure2D
+    /// orthographic camera the `xy` of those points is exactly the world rect
+    /// the camera can see (independent of the pan/zoom encoding), so it stays
+    /// correct for `set_ortho_size`, `set_camera_eye` and camera-target pan.
+    ///
+    /// The margin is `max(cull_margin, 4 * world_units_per_pixel)`: the caller's
+    /// world-space margin plus a 4-pixel floor that keeps the SDF anti-aliasing
+    /// band and sub-pixel line widening from popping at the viewport edge.
+    fn pure2d_cull_rect(&self) -> (glam::Vec2, glam::Vec2) {
+        let vp = self.camera_system.view_proj();
+        let inv = vp.inverse();
+        let mut min = glam::Vec2::splat(f32::INFINITY);
+        let mut max = glam::Vec2::splat(f32::NEG_INFINITY);
+        for (x, y) in [(-1.0f32, -1.0f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+            let p = inv.project_point3(glam::Vec3::new(x, y, 0.0));
+            let xy = glam::Vec2::new(p.x, p.y);
+            min = min.min(xy);
+            max = max.max(xy);
+        }
+        // `shape_2d.wgsl` / `sprite_2d.wgsl` derive world_units_per_pixel as
+        // `2 / (|view_proj[0][0]| * resolution.x)`.
+        let axis = vp.x_axis.x.abs();
+        let world_pixel_size = if axis > 1e-9 {
+            2.0 / (axis * self.width.max(1) as f32)
+        } else {
+            0.0
+        };
+        let margin = self.render_2d_config.cull_margin.max(world_pixel_size * 4.0);
+        (min - glam::Vec2::splat(margin), max + glam::Vec2::splat(margin))
     }
 
     /// Wall-clock duration of the last frame in milliseconds (engine runner
@@ -1351,6 +1457,34 @@ impl Renderer {
                 Vec::with_capacity(draw_list.len())
             };
 
+            // ── 2D viewport culling ─────────────────────────────────────────
+            // Compact the painter-order stream, dropping every instance whose
+            // world AABB is fully outside the visible camera rect (expanded by
+            // the AA-safe margin).  Culling *before* the run walk is what makes
+            // this also lower the draw-call count: once culled primitives are
+            // gone, surviving same-key runs that were separated by them become
+            // contiguous and coalesce.  Gated by `Render2dConfig::cull_2d` so
+            // consumers can A/B compare.
+            if self.render_2d_config.cull_2d {
+                let (rmin, rmax) = self.pure2d_cull_rect();
+                let before = draw_list.len();
+                draw_list.retain(|(_, cmd)| match *cmd {
+                    DrawCommand2d::Shape(idx) => {
+                        let (amin, amax) =
+                            shape_world_aabb(&self.shape_batcher.instances[idx]);
+                        aabb_intersects(amin, amax, rmin, rmax)
+                    }
+                    DrawCommand2d::Sprite(_, idx) => {
+                        let (amin, amax) = sprite_world_aabb(&sprite_flat[idx]);
+                        aabb_intersects(amin, amax, rmin, rmax)
+                    }
+                });
+                let culled = (before - draw_list.len()) as u32;
+                self.renderer_2d_pure.add_culled_instances(culled);
+            }
+
+            // Split the painter-order stream into maximal same-key runs and
+            // copy their instances into painter-ordered uploads.
             let mut i = 0usize;
             while i < draw_list.len() {
                 match draw_list[i].1 {

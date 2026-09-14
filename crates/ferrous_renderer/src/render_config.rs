@@ -85,6 +85,22 @@ pub struct Render2dConfig {
     /// Reuse per-frame scratch buffers instead of allocating per frame.
     /// Default `true` (audit **H8/H3**).
     pub scratch_reuse: bool,
+    /// CPU-side viewport culling for the Pure2D path.  When `true` (default),
+    /// instances whose world-space AABB does not intersect the visible camera
+    /// rect (expanded by the effective margin) are skipped before upload and
+    /// draw, so they cost neither bytes nor draw calls.  Set to `false` to
+    /// restore the old "upload and draw everything" behaviour for A/B
+    /// comparison; culled instances are then reported as `0`.
+    pub cull_2d: bool,
+    /// Extra world-space margin added around the visible camera rect before the
+    /// culling AABB test, in **world units** (pixels at Pure2D zoom 1).  It
+    /// exists so shapes whose anti-aliasing band / sub-pixel line widening
+    /// pokes into the viewport are never popped.
+    ///
+    /// The effective margin is `max(cull_margin, 4 * world_units_per_pixel)`,
+    /// i.e. at least a 4-pixel safety band at any zoom, plus whatever larger
+    /// margin the caller requests.  Raise it if a consumer observes edge pop.
+    pub cull_margin: f32,
 }
 
 impl Default for Render2dConfig {
@@ -93,6 +109,8 @@ impl Default for Render2dConfig {
             antialiasing: Antialiasing2d::Off,
             ui_bind_group_cache: true,
             scratch_reuse: true,
+            cull_2d: true,
+            cull_margin: 4.0,
         }
     }
 }
@@ -107,6 +125,8 @@ mod tests {
         assert_eq!(cfg.antialiasing, Antialiasing2d::Off);
         assert!(cfg.ui_bind_group_cache);
         assert!(cfg.scratch_reuse);
+        assert!(cfg.cull_2d);
+        assert!(cfg.cull_margin >= 4.0, "default margin must be AA-safe");
     }
 
     #[test]
