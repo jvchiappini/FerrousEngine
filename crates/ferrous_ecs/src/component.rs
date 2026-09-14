@@ -169,21 +169,6 @@ impl ComponentSet {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // Ensure the derive macro is available and produces a valid impl.
-    #[derive(Component)]
-    struct DeriveCheck(u8);
-
-    #[test]
-    fn derived_type_is_component() {
-        fn needs_component<T: Component>() {}
-        needs_component::<DeriveCheck>();
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Bundle trait — heterogeneous tuples of components that can be spawned together
 
@@ -244,6 +229,22 @@ impl_bundle!(0: A, 1: B, 2: C, 3: D, 4: E, 5: F, 6: G, 7: H, 8: I, 9: J, 10: K, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The derive macro shares its name with the `Component` trait but lives in
+    // the macro namespace, so importing it here does not shadow `super::*`.
+    #[cfg(feature = "derive")]
+    use ferrous_ecs_macros::Component;
+
+    // Ensure the derive macro is available and produces a valid impl.
+    #[cfg(feature = "derive")]
+    #[derive(Component)]
+    struct DeriveCheck(u8);
+
+    #[cfg(feature = "derive")]
+    #[test]
+    fn derived_type_is_component() {
+        fn needs_component<T: Component>() {}
+        needs_component::<DeriveCheck>();
+    }
 
     #[derive(Clone)]
     struct Hp(f32);

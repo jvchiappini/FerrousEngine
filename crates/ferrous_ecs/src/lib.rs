@@ -46,6 +46,12 @@
 //! assert!(world.contains(e));
 //! ```
 
+// The `#[derive(Component)]` macro (from `ferrous_ecs_macros`) emits paths of
+// the form `ferrous_ecs::component::Component`.  Aliasing the crate to itself
+// lets that macro resolve inside this crate, which is required by our own
+// in-crate tests and any future in-crate derive usage.
+extern crate self as ferrous_ecs;
+
 pub mod archetype;
 pub mod component;
 pub mod entity;

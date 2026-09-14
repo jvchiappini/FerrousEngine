@@ -190,7 +190,9 @@ mod tests {
 
     #[test]
     fn reader_reads_previous_frame() {
-        let mut events = Events::new();
+        // Pin the event type: without it `send(7)` infers `i32`, so the reader
+        // below (typed `u32`) would look up a different `Events<T>` resource.
+        let mut events = Events::<u32>::new();
         events.send(7);
         events.update();
         let mut resources = ResourceMap::new();
