@@ -420,3 +420,69 @@ Ninguno de los tres cambia firmas, campos ni comportamiento.
 - Los `AppMode::Flat2D`/UI-only y el path de UI (bind group por frame, mismatch
   16/8) requieren `GuiRenderer`/ventana; no verificable con el harness Pure2D.
 - Los números absolutos de FPS/vsync: rasterizador software (llvmpipe).
+
+## Fase 3 — implementación aprobada (rama `fix/2d-api-dx`)
+
+Alcance aprobado: **C1**, **C4**, **H10** y cobertura de tests **M5**. H11/M6/M7/
+M10/M16/M17 quedaron fuera de esta ola. Ningún cambio toca ECS (B) ni los
+internals de assets/cache SVG (C).
+
+### C1 — entrypoints 2D en `RenderContext` + clear por frame
+- **Commit:** `01f091e` `feat(engine): expose 2D entrypoints on RenderContext and clear 2D per frame`.
+- **Qué:** delegaciones aditivas en `RenderContext` (`enable_pure_2d`, `clear_2d`,
+  `draw_sprite_2d`, `register_sprite_texture`, mismas firmas que `Renderer`) +
+  tabla de API actualizada. El runner limpia ambos batchers 2D al inicio de cada
+  frame (`renderer.clear_2d()` antes de `update`/`draw_3d`/`draw_ui`).
+- **Por qué:** ghosting por acumulación de shapes y API 2D principal solo
+  alcanzable por `renderer_mut()`.
+- **Contrato elegido (el más seguro):** el runner es dueño del ciclo de vida y
+  limpia una vez por frame al inicio; `clear_2d()` sigue siendo público e
+  idempotente, por lo que un clear manual de la app es redundante pero inocuo
+  (no hay doble-clear con efectos). `sprite_batcher_2d` ya se limpiaba al final
+  del pass Pure2D; el clear de inicio fija el mismo contrato para shapes y para
+  el overlay 2D del modo Full3D.
+- **Nota de migración (Koncreta/GUIMaker):** llamada canónica
+  `ctx.render.enable_pure_2d(color)` / `ctx.render.clear_2d()`; `renderer_mut()`
+  sigue funcionando. Quitar el `clear_2d()` manual de inicio de frame si lo
+  hubiera. La geometría empujada en `setup()` ya no se renderiza (inmediato es
+  por frame): dibujar desde `update()`/`draw_ui()`.
+
+### C4 — `CapStyle` tipado para `line_with_cap`
+- **Commit:** `2747e1f` `feat(2d): add typed CapStyle line constructor`.
+- **Qué:** `ShapeInstance::line_with_cap_style(from, to, width, color, CapStyle)`
+  aditivo que delega en el `u8` para geometría idéntica. Doc del `u8` aclarada
+  (0=Flat, 1=Round, 2=Square; fuera de rango → Round).
+- **Por qué:** el `u8` mágico no valida y el enum `CapStyle` ya existía; un typo
+  compilaba y cambiaba la punta CAD en silencio.
+- **Nota de migración:** `line_with_cap(u8)` no cambia; preferir el método
+  tipado en código nuevo.
+
+### H10 — exactitud del harness
+- **Commit:** `a302627` `fix(renderer): count live sprite bind groups in headless harness`.
+- **Qué:** `bind_groups_total` pasa de `next_sprite_texture_id` (high-water mark
+  tras el reciclado de ids de C) a `sprite_bind_groups.len()` (bind groups vivos).
+- **DEFAULT_FORMAT:** verificado — `Rgba8UnormSrgb` sí coincide con producción
+  tras la inversión de A (`crates/ferrous_engine/src/graphics.rs:152-158` ahora
+  prefiere `*Srgb`). Sin cambio de código; comentario actualizado.
+
+### M5 — cobertura de tests (headless)
+- **Commit:** `7b0b675` `test(renderer): cover z-order determinism, per-frame clear and live bind groups`.
+- `z_order_is_deterministic_for_equal_and_interleaved_z`: orden total determinista
+  (z primario; empate de z por orden de comando) con coalescing para z iguales y
+  separación para z distintos; 3 iteraciones idénticas + lectura de píxel.
+- `per_frame_clear_prevents_shape_accumulation`: fija el contrato que ahora aplica
+  el runner, a través del harness (el runner real necesita ventana).
+- `bind_groups_total_tracks_live_groups_after_free`: regresión de H10.
+- **Evidencia:** `cargo test -p ferrous_renderer --test pure2d_headless --
+  --test-threads=1` → **6/6 OK** (llvmpipe). `cargo test -p ferrous_2d --doc` →
+  1/1 OK (doctest nuevo). `cargo check --workspace` y `cargo build --workspace`
+  OK.
+
+### No verificable / caveats
+- El `render_frame` real del runner (limpieza al inicio) **no es testeable
+  headless**: requiere `ActiveEventLoop` + `Surface` de winit. Se cubre el
+  contrato compartido vía `Pure2dHarness::begin_frame()`.
+- La ruta Full3D overlay también se beneficia del clear, pero su render visual no
+  está cubierto por el harness Pure2D (M6 fuera de alcance).
+- Números absolutos de FPS/vsync siguen sin ser significativos (software).
+
