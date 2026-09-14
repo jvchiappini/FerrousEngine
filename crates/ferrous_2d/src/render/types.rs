@@ -1,3 +1,15 @@
+//! GPU instance types for the 2D render path.
+//!
+//! # Colour-space contract (audit #12)
+//!
+//! The 2D pipeline renders in **linear light**. `ShapeInstance::color` and
+//! `SpriteInstance::color` are linear RGBA values; sRGB sprite/GUI textures are
+//! decoded to linear by wgpu on sample; and the output target is an `*Srgb`
+//! surface format, so wgpu applies the sRGB encode on write. Constants authored
+//! in display-referred sRGB must be converted to linear before being passed
+//! here (apply the sRGB EOTF: a display mid-grey of `0.5` becomes `~0.214`
+//! linear). This is the single colour semantic shared by shapes and sprites.
+
 use bytemuck::{Pod, Zeroable};
 
 /// Matches the `InstanceInput` struct in `sprite.wgsl`.
@@ -12,7 +24,8 @@ pub struct SpriteInstance {
     pub transform_c2: [f32; 4],
     /// Fourth column of the model matrix (translation; `.z` carries depth).
     pub transform_c3: [f32; 4],
-    /// RGBA tint multiplied with the sampled texel.
+    /// Linear RGBA tint multiplied with the sampled texel (the texel is
+    /// sRGB-decoded by wgpu because sprite textures are `Rgba8UnormSrgb`).
     pub color: [f32; 4],
     /// Source region in UV space `[x, y, width, height]` (for atlas/spritesheet).
     pub uv_rect: [f32; 4],        // x, y, width, height (for atlas)
@@ -56,7 +69,7 @@ pub struct ShapeInstance {
     pub transform_c2: [f32; 4],
     /// Fourth column of the model matrix (translation; `.z` carries depth).
     pub transform_c3: [f32; 4],
-    /// RGBA colour (straight, display-referred; see the `#12` colour-space note).
+    /// Linear RGBA colour (see the module colour-space contract).
     pub color: [f32; 4],
     /// `[border_thickness, corner_radius, smoothing, is_filled]`.
     pub params: [f32; 4],         // x=border_thickness, y=corner_radius, z=smoothing, w=is_filled

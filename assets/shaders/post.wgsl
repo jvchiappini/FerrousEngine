@@ -59,8 +59,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let e = 0.14;
         color = saturate((color * (a * color + b)) / (color * (c * color + d) + e));
 
-        // Gamma Correction
-        color = pow(color, vec3<f32>(1.0 / 2.2));
+        // No manual gamma here: the final surface is an `*Srgb` format, so wgpu
+        // applies the sRGB encode when writing this linear value. Doing it
+        // manually as well would double-encode (audit #12).
     } else {
         color = saturate(color);
     }

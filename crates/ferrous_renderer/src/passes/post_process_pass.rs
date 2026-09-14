@@ -1,7 +1,9 @@
-/// Post-process pass: ACES tone mapping + gamma correction.
+/// Post-process pass: ACES tone mapping.
 ///
-/// Reads the HDR `Rgba16Float` texture produced by [`WorldPass`] and writes
-/// a tone-mapped, gamma-corrected image to the final swapchain surface.
+/// Reads the HDR `Rgba16Float` texture produced by [`WorldPass`] and writes a
+/// tone-mapped image to the final swapchain surface. The surface is an `*Srgb`
+/// format (see `ferrous_engine::graphics`), so wgpu applies the sRGB encode on
+/// write; the shader must therefore hand it **linear** values (audit #12).
 ///
 /// ## Pipeline design
 /// - No vertex buffer — a fullscreen triangle is synthesised in the vertex

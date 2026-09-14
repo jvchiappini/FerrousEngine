@@ -141,12 +141,20 @@ impl GraphicsState {
         web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!("[WGPU-Init] Engine context created! Adapter: {:?}", context.adapter.get_info().name)));
 
         let caps = surface.get_capabilities(&context.adapter);
+        // Colour-space policy (audit #12): the engine renders in **linear**
+        // light and relies on the output target's transfer function for the
+        // final display encode. Prefer an `*Srgb` surface format so wgpu
+        // performs that sRGB encode on present; fall back to a linear format
+        // only if the surface exposes no sRGB variant. `ShapeInstance.color`
+        // and `SpriteInstance.color` are therefore linear values (see
+        // `ferrous_2d::render::types`) and sRGB sprite/GUI textures are
+        // decoded to linear on sample.
         let format = caps
             .formats
             .iter()
             .copied()
-            .find(|f| !f.is_srgb()) // Prefer linear format for engine UI compatibility
-            .or_else(|| caps.formats.iter().copied().find(|f| f.is_srgb()))
+            .find(|f| f.is_srgb())
+            .or_else(|| caps.formats.iter().copied().find(|f| !f.is_srgb()))
             .unwrap_or(caps.formats[0]);
         // PresentMode::Fifo        = hard vsync (locked to monitor refresh)
         // PresentMode::AutoNoVsync = fully uncapped, no tearing guarantee — works on all backends
