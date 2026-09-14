@@ -35,4 +35,3 @@ pub use ssao_pass::SsaoPass;
 #[cfg(feature = "gui")]
 pub use ui_pass::UiPass;
 pub use world_pass::{SkyMode, WorldPass};
-pub mod sprite_pass;

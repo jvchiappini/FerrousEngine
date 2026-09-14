@@ -2,6 +2,14 @@
 //!
 //! This module contains the rendering logic for the ferrous_renderer crate,
 //! including the main render pipeline, scene synchronization, and GPU-driven features.
+//!
+//! Deprecated: the only public type here, [`RendererPasses`], is an unwired
+//! duplicate of the live pipeline in `renderer_core::Renderer`. The whole
+//! module is scheduled for removal; it is kept compiled and reachable only to
+//! avoid breaking an unverifiable external consumer. The module-level
+//! `allow(deprecated)` silences the type's own deprecation warnings at its
+//! internal field accesses; the warning is still emitted for external users.
+#![allow(deprecated)]
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -39,9 +47,19 @@ enum RenderDest<'a> {
 
 /// Container for render pass coordination and execution logic.
 ///
-/// This struct holds references to the renderer's core components and provides
-/// methods for executing the full rendering pipeline, managing scene state,
-/// and handling GPU-driven features.
+/// # Deprecated
+///
+/// This struct is a **dead, unwired duplicate** of the live pipeline in
+/// [`crate::renderer_core::Renderer`]: it has no constructor and zero call
+/// sites anywhere in the workspace (`Renderer::render_internal` is the real
+/// implementation). It is kept compiled and publicly reachable only because
+/// the crate re-exports it at the root and a third-party consumer could, in
+/// principle, name it; that external-consumer check is not verifiable from
+/// this repository. New code must use [`crate::renderer_core::Renderer`].
+#[deprecated(
+    since = "0.1.0",
+    note = "unwired duplicate of Renderer::render_internal; use Renderer instead"
+)]
 pub struct RendererPasses {
     // Core renderer components
     pub context: core_context,
@@ -807,34 +825,5 @@ impl RendererPasses {
         self.current_dir_light = DirectionalLightUniform::new(direction, color, intensity);
         self.world_pass
             .update_light(&self.context.queue, self.current_dir_light);
-    }
-}
-
-// -- Pass management ---------------------------------------------------------
-
-/// Container for pass management methods.
-pub struct PassManager {
-    pub extra_passes: Vec<Box<dyn RenderPass>>,
-    pub context: core_context,
-    pub format: wgpu::TextureFormat,
-    pub sample_count: u32,
-}
-
-impl PassManager {
-    /// Appends a custom pass after the built-in ones.
-    /// `on_attach` is called immediately with the current surface format.
-    pub fn add_pass<P: RenderPass>(&mut self, mut pass: P) {
-        pass.on_attach(
-            &self.context.device,
-            &self.context.queue,
-            self.format,
-            self.sample_count,
-        );
-        self.extra_passes.push(Box::new(pass));
-    }
-
-    /// Removes all user-supplied passes.  Built-in passes are NOT removed.
-    pub fn clear_extra_passes(&mut self) {
-        self.extra_passes.clear();
     }
 }

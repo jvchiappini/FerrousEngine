@@ -5,7 +5,8 @@
 /// - `renderer_api`: Public API methods for the Renderer
 /// - `renderer_core`: Core Renderer struct and lifecycle methods
 /// - `renderer_resource`: Resource management (textures, materials, meshes)
-/// - `renderer_passes`: Render pass coordination and execution pipeline
+/// - `renderer_passes`: deprecated, unwired render-pass coordination skeleton
+///   (kept only for API compatibility; the live pipeline is `renderer_core`)
 
 // -- Module declarations ------------------------------------------------------
 
@@ -48,7 +49,12 @@ pub use renderer_api::*;
 pub use renderer_resource::MaterialRegistry;
 pub use resources::SsaoResources;
 
-// Re-export render pass types
+// Re-export render pass types.  `RendererPasses` is a dead, unwired duplicate
+// of `Renderer`'s live pipeline; it is deprecated rather than removed because
+// the crate re-exports it publicly and an external consumer cannot be ruled
+// out from this workspace (see the type's deprecation note).  New code must
+// use `Renderer`.
+#[allow(deprecated)]
 pub use renderer_passes::RendererPasses;
 
 // Re-export commonly used types from renderer_core
