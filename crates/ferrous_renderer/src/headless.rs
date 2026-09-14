@@ -197,6 +197,12 @@ pub struct FrameReport {
     /// Instances discarded by CPU-side viewport culling this frame (shapes +
     /// sprites).  `0` when `Render2dConfig::cull_2d` is disabled.
     pub culled_instances: u32,
+    /// Retained static 2D batches drawn this frame (one draw call each).  Their
+    /// instances are persistent, so they do **not** add to `instances_uploaded`
+    /// / `bytes_uploaded`.
+    pub static_batches_drawn: u32,
+    /// Shape instances covered by the retained static batches drawn this frame.
+    pub static_instances_drawn: u32,
     /// Instance buffers reallocated because the frame outgrew capacity.
     /// Steady-state frames report `0`.
     pub buffer_reallocations: u32,
@@ -343,6 +349,8 @@ impl Pure2dHarness {
             bytes_uploaded: counters.bytes_uploaded,
             instances_uploaded: counters.instances_uploaded,
             culled_instances: counters.culled_instances,
+            static_batches_drawn: counters.static_batches_drawn,
+            static_instances_drawn: counters.static_instances_drawn,
             buffer_reallocations: counters.buffer_reallocations,
             bind_groups_created: created,
             bind_groups_total,

@@ -52,6 +52,7 @@ pub use pipeline::InstancingPipeline;
 use ferrous_2d::render::{Renderer2d, ShapeBatcher, DrawCommand2d};
 
 use crate::render_config::Render2dConfig;
+use crate::static_2d::{Static2dBatch, Static2dBatchId, Static2dBatchSlot};
 
 
 use ferrous_core::context::EngineContext;
@@ -337,6 +338,15 @@ pub struct Renderer {
     /// Reusable list of coalesced draw runs, emitted in painter order.
     coalesced_2d_scratch: Vec<Coalesced2dDraw>,
 
+    // -- Retained static 2D batches ------------------------------------------
+    /// Persistent per-batch shape buffers.  `None` slots are free; the slot
+    /// generation invalidates stale [`Static2dBatchId`]s.
+    static_2d_batches: Vec<Static2dBatchSlot>,
+    /// Free slot indices, reused before the table grows.
+    static_2d_free: Vec<u32>,
+    /// Reusable ordering scratch (slot indices sorted by batch `z`).
+    static_2d_order_scratch: Vec<u32>,
+
     /// Bind groups de texturas indexados por texture_id para sprites 2D en Pure2D.
     pub sprite_bind_groups: std::collections::HashMap<u32, std::sync::Arc<wgpu::BindGroup>>,
     /// High-water mark: the next never-before-used sprite texture id.
@@ -618,6 +628,9 @@ impl Renderer {
             shape_upload_scratch: Vec::new(),
             sprite_upload_scratch: Vec::new(),
             coalesced_2d_scratch: Vec::new(),
+            static_2d_batches: Vec::new(),
+            static_2d_free: Vec::new(),
+            static_2d_order_scratch: Vec::new(),
             sprite_bind_groups: std::collections::HashMap::new(),
             next_sprite_texture_id: 0,
             freed_sprite_texture_ids: Vec::new(),
@@ -993,6 +1006,199 @@ impl Renderer {
         };
         let margin = self.render_2d_config.cull_margin.max(world_pixel_size * 4.0);
         (min - glam::Vec2::splat(margin), max + glam::Vec2::splat(margin))
+    }
+
+    // ── Retained static 2D batches ───────────────────────────────────────────
+
+    /// Creates a retained static 2D batch from `shapes` and uploads it to GPU
+    /// **once**.  Every subsequent frame draws it with a single instanced draw
+    /// call and **no** per-frame upload; call [`Self::update_static_2d_batch`]
+    /// when the geometry changes.
+    ///
+    /// Only the SDF shape pipeline is retained here (rect / circle / line /
+    /// triangle / polygon_triangle).  Textured sprites stay on the immediate
+    /// path.  The buffer is `VERTEX | COPY_DST` and grows to the next power of
+    /// two, with a 128-instance minimum.  An empty slice is allowed (the batch
+    /// keeps its slot and draws nothing until updated).
+    pub fn create_static_2d_batch(
+        &mut self,
+        shapes: &[ferrous_2d::render::ShapeInstance],
+    ) -> Static2dBatchId {
+        let batch =
+            Self::build_static_2d_buffer(&self.context.device, &self.context.queue, shapes);
+        let index = match self.static_2d_free.pop() {
+            Some(i) => i,
+            None => {
+                self.static_2d_batches.push(Static2dBatchSlot {
+                    generation: 0,
+                    batch: None,
+                });
+                (self.static_2d_batches.len() - 1) as u32
+            }
+        };
+        let slot = &mut self.static_2d_batches[index as usize];
+        let generation = slot.generation;
+        slot.batch = Some(batch);
+        Static2dBatchId { index, generation }
+    }
+
+    /// Replaces the contents of a retained batch, reusing its GPU buffer when
+    /// the new slice fits; otherwise the buffer is recreated with amortized
+    /// (next power of two) capacity.
+    ///
+    /// A stale or unknown `id` is a no-op (see [`Static2dBatchId`]).
+    pub fn update_static_2d_batch(
+        &mut self,
+        id: Static2dBatchId,
+        shapes: &[ferrous_2d::render::ShapeInstance],
+    ) {
+        let Some(slot) = self.static_2d_batches.get_mut(id.index as usize) else {
+            return;
+        };
+        if slot.generation != id.generation {
+            return;
+        }
+        let Some(batch) = slot.batch.as_mut() else {
+            return;
+        };
+        let len = shapes.len() as u32;
+        if len > batch.capacity {
+            *batch =
+                Self::build_static_2d_buffer(&self.context.device, &self.context.queue, shapes);
+        } else {
+            if len > 0 {
+                self.context
+                    .queue
+                    .write_buffer(&batch.buffer, 0, bytemuck::cast_slice(shapes));
+            }
+            batch.count = len;
+            batch.z = crate::static_2d::batch_min_z(shapes);
+        }
+    }
+
+    /// Frees a retained batch's GPU buffer and invalidates its handle.  Unknown
+    /// or stale ids are ignored.
+    pub fn destroy_static_2d_batch(&mut self, id: Static2dBatchId) {
+        let Some(slot) = self.static_2d_batches.get_mut(id.index as usize) else {
+            return;
+        };
+        if slot.generation != id.generation || slot.batch.is_none() {
+            return;
+        }
+        slot.batch = None;
+        // Bump the generation so handles issued before destroy can never
+        // address the slot once it is reused.
+        slot.generation = slot.generation.wrapping_add(1);
+        self.static_2d_free.push(id.index);
+    }
+
+    /// Number of live retained batches (including empty ones).  Cheap; for
+    /// diagnostics.
+    pub fn static_2d_batch_count(&self) -> usize {
+        self.static_2d_batches
+            .iter()
+            .filter(|s| s.batch.is_some())
+            .count()
+    }
+
+    /// Draws all active retained static 2D batches into a **new** render pass
+    /// over `view` (`LoadOp::Load`, no depth attachment).
+    ///
+    /// Normally you do **not** need this: when
+    /// [`Render2dConfig::static_batches`] is enabled the Pure2D pass draws the
+    /// batches automatically, before the immediate shape/sprite stream.  This
+    /// entry point is for consumers that drive their own encoder/compositing;
+    /// combining it with the automatic Pure2D path draws the batches twice.
+    pub fn draw_static_2d_batches(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+    ) {
+        let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Static2D Batches Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        self.emit_static_2d_batches(&mut rpass);
+    }
+
+    /// Emits the active static batches into an already-open render pass,
+    /// ordered by representative `z` (then slot index).  Returns the number of
+    /// batches drawn; no-op (0) when [`Render2dConfig::static_batches`] is off.
+    fn emit_static_2d_batches(&mut self, rpass: &mut wgpu::RenderPass<'_>) -> u32 {
+        if !self.render_2d_config.static_batches {
+            return 0;
+        }
+        // Non-allocating ordering via the reusable scratch.
+        let mut order = std::mem::take(&mut self.static_2d_order_scratch);
+        order.clear();
+        for (i, slot) in self.static_2d_batches.iter().enumerate() {
+            if let Some(b) = &slot.batch {
+                if b.count > 0 {
+                    order.push(i as u32);
+                }
+            }
+        }
+        order.sort_unstable_by(|&a, &b| {
+            let za = self.static_2d_batches[a as usize]
+                .batch
+                .as_ref()
+                .map(|x| x.z)
+                .unwrap_or(0.0);
+            let zb = self.static_2d_batches[b as usize]
+                .batch
+                .as_ref()
+                .map(|x| x.z)
+                .unwrap_or(0.0);
+            za.partial_cmp(&zb)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.cmp(&b))
+        });
+        let mut drawn = 0u32;
+        for &idx in &order {
+            if let Some(b) = self.static_2d_batches[idx as usize].batch.as_ref() {
+                self.renderer_2d_pure
+                    .render_static_shapes(rpass, &b.buffer, b.count);
+                drawn += 1;
+            }
+        }
+        self.static_2d_order_scratch = order;
+        drawn
+    }
+
+    /// Allocates a persistent instance buffer and uploads `shapes` once.
+    fn build_static_2d_buffer(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        shapes: &[ferrous_2d::render::ShapeInstance],
+    ) -> Static2dBatch {
+        let len = shapes.len() as u32;
+        let capacity = len.next_power_of_two().max(Static2dBatch::MIN_CAPACITY);
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Static2D Batch Instance Buffer"),
+            size: (capacity as usize * std::mem::size_of::<ferrous_2d::render::ShapeInstance>())
+                as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        if len > 0 {
+            queue.write_buffer(&buffer, 0, bytemuck::cast_slice(shapes));
+        }
+        Static2dBatch {
+            buffer,
+            capacity,
+            count: len,
+            z: crate::static_2d::batch_min_z(shapes),
+        }
     }
 
     /// Wall-clock duration of the last frame in milliseconds (engine runner
@@ -1548,6 +1754,13 @@ impl Renderer {
                     timestamp_writes: None,
                     occlusion_query_set: None,
                 });
+
+                // Retained static batches first: one instanced draw call each,
+                // no per-frame upload.  They are drawn before the immediate
+                // stream (the cross-layer z-ordering contract is documented in
+                // `brain/2d_static_batch.md`).  No-op when the config flag is
+                // off or when there are no active batches.
+                self.emit_static_2d_batches(&mut rpass);
 
                 // Emit the runs in painter order.  Texture bind groups are
                 // resolved per sprite run.

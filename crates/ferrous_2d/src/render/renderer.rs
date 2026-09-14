@@ -29,6 +29,13 @@ pub struct Frame2dCounters {
     /// AABB did not intersect the visible camera rect (shapes + sprites).
     /// `0` when culling is disabled (`Render2dConfig::cull_2d == false`).
     pub culled_instances: u32,
+    /// Retained static 2D batches drawn this frame.  Their instances are *not*
+    /// uploaded per frame (the buffer is persistent), so they contribute to
+    /// `draw_calls`/`shape_draw_calls` but not to `instances_uploaded` /
+    /// `bytes_uploaded`.  `0` when `Render2dConfig::static_batches == false`.
+    pub static_batches_drawn: u32,
+    /// Shape instances covered by the retained static batches drawn this frame.
+    pub static_instances_drawn: u32,
 }
 
 /// Owns the 2D instance/camera buffers and pipelines and issues 2D draw calls.
@@ -65,6 +72,8 @@ pub struct Renderer2d {
     counters_instances_uploaded: AtomicU32,
     counters_buffer_reallocations: AtomicU32,
     counters_culled_instances: AtomicU32,
+    counters_static_batches_drawn: AtomicU32,
+    counters_static_instances_drawn: AtomicU32,
 
     /// Reusable staging buffer for the flattened sprite upload.  Reusing it
     /// turns the per-frame `Vec::with_capacity` + `extend` (one heap alloc and
@@ -163,6 +172,8 @@ impl Renderer2d {
             counters_instances_uploaded: AtomicU32::new(0),
             counters_buffer_reallocations: AtomicU32::new(0),
             counters_culled_instances: AtomicU32::new(0),
+            counters_static_batches_drawn: AtomicU32::new(0),
+            counters_static_instances_drawn: AtomicU32::new(0),
             scratch_sprites: Vec::new(),
             scratch_reuse: true,
         }
@@ -192,6 +203,8 @@ impl Renderer2d {
         self.counters_instances_uploaded.store(0, Ordering::Relaxed);
         self.counters_buffer_reallocations.store(0, Ordering::Relaxed);
         self.counters_culled_instances.store(0, Ordering::Relaxed);
+        self.counters_static_batches_drawn.store(0, Ordering::Relaxed);
+        self.counters_static_instances_drawn.store(0, Ordering::Relaxed);
     }
 
     /// Adds `n` instances to the per-frame culled counter.  Called by the
@@ -216,6 +229,8 @@ impl Renderer2d {
             instances_uploaded: self.counters_instances_uploaded.load(Ordering::Relaxed),
             buffer_reallocations: self.counters_buffer_reallocations.load(Ordering::Relaxed),
             culled_instances: self.counters_culled_instances.load(Ordering::Relaxed),
+            static_batches_drawn: self.counters_static_batches_drawn.load(Ordering::Relaxed),
+            static_instances_drawn: self.counters_static_instances_drawn.load(Ordering::Relaxed),
         }
     }
 
@@ -426,6 +441,31 @@ impl Renderer2d {
         render_pass.set_vertex_buffer(0, self.shape_instance_buffer.slice(..));
         render_pass.draw(0..4, offset..(offset + count));
         self.record_shape_draw();
+    }
+
+    /// Draws a **persistent** shape instance buffer as a single instanced draw
+    /// call, using the shape (SDF) pipeline and the current camera bind group.
+    ///
+    /// Used by the engine's retained static 2D batches: the buffer is owned by
+    /// the batch and is uploaded only on create/update, so calling this every
+    /// frame does **no** upload.  `count` must not exceed the buffer capacity.
+    /// Records one shape draw plus the static-batch telemetry counters.
+    pub fn render_static_shapes(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        buffer: &wgpu::Buffer,
+        count: u32,
+    ) {
+        if count == 0 { return; }
+        render_pass.set_pipeline(&self.shape_pipeline.wgpu_pipeline);
+        render_pass.set_bind_group(0, &self.shape_camera_bind_group, &[]);
+        render_pass.set_vertex_buffer(0, buffer.slice(..));
+        render_pass.draw(0..4, 0..count);
+        self.record_shape_draw();
+        self.counters_static_batches_drawn
+            .fetch_add(1, Ordering::Relaxed);
+        self.counters_static_instances_drawn
+            .fetch_add(count, Ordering::Relaxed);
     }
 
     /// Renders a contiguous range `[offset, offset + count)` of sprite instances

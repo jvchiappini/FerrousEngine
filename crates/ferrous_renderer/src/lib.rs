@@ -37,6 +37,7 @@ pub mod render_target;
 pub mod resources;
 pub mod scene;
 pub mod context;
+pub mod static_2d;
 
 // -- Public re-exports --------------------------------------------------------
 
@@ -76,6 +77,9 @@ pub use render_config::{Antialiasing2d, Render2dConfig};
 pub use ferrous_2d::render::Frame2dCounters;
 /// Consumer-facing alias for [`Frame2dCounters`].
 pub type Frame2dStats = Frame2dCounters;
+
+// Retained static 2D batch handle (see `Renderer::create_static_2d_batch`).
+pub use static_2d::Static2dBatchId;
 
 // Re-export geometry types
 pub use geometry::{Mesh, Vertex};

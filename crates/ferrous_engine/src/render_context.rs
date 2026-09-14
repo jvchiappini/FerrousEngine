@@ -28,7 +28,11 @@
 //! | `frame_2d_stats()` | Hardware-independent Pure2D counters (draw calls, bytes, instances) |
 //! | `frame_ms()` / `frame_ms_avg()` | Wall-clock last-frame / rolling-average duration |
 //! | `backend_name()` | Active wgpu backend (`"vulkan"`, `"webgpu"`, `"gl"`, …) |
-//! | `render_2d_config()` / `set_render_2d_config(cfg)` | Runtime perf/AA/culling knobs for A/B comparison |
+//! | `render_2d_config()` / `set_render_2d_config(cfg)` | Runtime perf/AA/culling/static-batch knobs for A/B comparison |
+//! | `create_static_2d_batch(shapes)` | Create a retained, GPU-resident static shape batch (no per-frame upload) |
+//! | `update_static_2d_batch(id, shapes)` | Replace a retained batch's contents |
+//! | `destroy_static_2d_batch(id)` | Free a retained batch |
+//! | `draw_static_2d_batches(encoder, view)` | Advanced: draw retained batches manually (engine auto-draws in Pure2D) |
 //! | `camera_eye()` | World-space camera eye position |
 //! | `camera_target()` | World-space camera look-at target |
 //! | `camera_orbit_distance()` | Orbit radius from the built-in camera controller |
@@ -313,6 +317,56 @@ impl<'r> RenderContext<'r> {
     /// ```
     pub fn set_render_2d_config(&mut self, config: ferrous_renderer::Render2dConfig) {
         self.inner.set_render_2d_config(config);
+    }
+
+    // ── Retained static 2D batches ───────────────────────────────────────────
+
+    /// Creates a retained static 2D batch from `shapes`, uploading to GPU once.
+    ///
+    /// Use it for geometry that rarely changes (walls, slabs, baked plan
+    /// geometry): every frame it is drawn with one instanced draw call and
+    /// **no** per-frame upload.  Update it with
+    /// [`Self::update_static_2d_batch`] when the document changes and release it
+    /// with [`Self::destroy_static_2d_batch`].
+    ///
+    /// Only SDF shapes are retained (rect / circle / line / triangle /
+    /// polygon_triangle); textured sprites stay immediate.
+    ///
+    /// ```rust,ignore
+    /// let id = ctx.render.create_static_2d_batch(&wall_shapes);
+    /// ```
+    pub fn create_static_2d_batch(
+        &mut self,
+        shapes: &[ferrous_2d::render::ShapeInstance],
+    ) -> ferrous_renderer::Static2dBatchId {
+        self.inner.create_static_2d_batch(shapes)
+    }
+
+    /// Replaces a retained batch's contents (reusing its GPU buffer when it
+    /// fits).  Stale/unknown ids are ignored.
+    pub fn update_static_2d_batch(
+        &mut self,
+        id: ferrous_renderer::Static2dBatchId,
+        shapes: &[ferrous_2d::render::ShapeInstance],
+    ) {
+        self.inner.update_static_2d_batch(id, shapes);
+    }
+
+    /// Frees a retained batch's GPU buffer and invalidates its handle.
+    pub fn destroy_static_2d_batch(&mut self, id: ferrous_renderer::Static2dBatchId) {
+        self.inner.destroy_static_2d_batch(id);
+    }
+
+    /// Draws all active retained static batches into `view` in a new render pass
+    /// (`Load`).  Advanced/escape-hatch: the engine's Pure2D pass already draws
+    /// them automatically when `Render2dConfig::static_batches` is enabled, so
+    /// combining both draws them twice.
+    pub fn draw_static_2d_batches(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+    ) {
+        self.inner.draw_static_2d_batches(encoder, view);
     }
 
     /// World-space position of the camera eye this frame.

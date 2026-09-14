@@ -101,6 +101,12 @@ pub struct Render2dConfig {
     /// i.e. at least a 4-pixel safety band at any zoom, plus whatever larger
     /// margin the caller requests.  Raise it if a consumer observes edge pop.
     pub cull_margin: f32,
+    /// Draw the retained static 2D batches (created with
+    /// [`Renderer::create_static_2d_batch`](crate::Renderer::create_static_2d_batch))
+    /// during the Pure2D pass.  Default `true`.  Set to `false` to skip them for
+    /// A/B comparison against pushing the same geometry through the immediate
+    /// path (the batches are still alive and their buffers are not touched).
+    pub static_batches: bool,
 }
 
 impl Default for Render2dConfig {
@@ -111,6 +117,7 @@ impl Default for Render2dConfig {
             scratch_reuse: true,
             cull_2d: true,
             cull_margin: 4.0,
+            static_batches: true,
         }
     }
 }
@@ -127,6 +134,7 @@ mod tests {
         assert!(cfg.scratch_reuse);
         assert!(cfg.cull_2d);
         assert!(cfg.cull_margin >= 4.0, "default margin must be AA-safe");
+        assert!(cfg.static_batches);
     }
 
     #[test]
