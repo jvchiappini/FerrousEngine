@@ -31,9 +31,10 @@
 use ferrous_asset_types::Asset;
 use std::path::Path;
 
-// wgpu and the `font` module are only needed when the `gpu` feature is
-// enabled; guard their usage accordingly.
-#[cfg(feature = "gpu")]
+// `wgpu` is used only by `FontData::into_font`, which is gated on `text`
+// (and `text` enables `gpu`).  Gating the import on `gpu` alone would rebuild
+// it unused for `--features gpu` without `text`.
+#[cfg(feature = "text")]
 use wgpu;
 
 /// Raw font file bytes, ready to be baked into a GPU atlas.
@@ -60,7 +61,11 @@ impl FontData {
     /// `wgpu::Device` + `wgpu::Queue`.  Call this from the main (GPU) thread
     /// once [`crate::server::AssetServer::get`] returns
     /// [`ferrous_asset_types::AssetState::Ready`].
-    #[cfg(feature = "gpu")]
+    ///
+    /// Gated on `text` (not `gpu`) because the return type lives in
+    /// `ferrous_font`, which is only linked in by the `text` feature.  `text`
+    /// itself enables `gpu`, so the `wgpu` arguments are still available.
+    #[cfg(feature = "text")]
     pub fn into_font(
         &self,
         device: &wgpu::Device,
