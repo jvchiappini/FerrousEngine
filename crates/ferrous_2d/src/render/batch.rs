@@ -28,6 +28,17 @@ impl SpriteBatcher {
             .push(instance);
     }
 
+    /// Drop the bucket (key included) for a freed texture id.
+    ///
+    /// `clear` intentionally keeps empty buckets so the per-texture `Vec`
+    /// allocations survive to the next frame, but a *freed* texture will
+    /// never be pushed again, so its key would otherwise be iterated forever
+    /// (the measured "2000 orphan keys" leak).  Returns `true` if a bucket
+    /// existed.
+    pub fn remove_texture(&mut self, texture_id: u32) -> bool {
+        self.batches.remove(&texture_id).is_some()
+    }
+
     /// Total de instancias en todos los batches.
     #[inline]
     pub fn total_instances(&self) -> usize {
@@ -97,4 +108,27 @@ pub enum DrawCommand2d {
     /// Draw the sprite after `SpriteBatcher` flattening: `texture_id` selects
     /// the texture bind group, `index` is the offset in the flattened upload.
     Sprite(u32, usize),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remove_texture_drops_key_but_clear_keeps_it() {
+        let mut b = SpriteBatcher::default();
+        // `clear` is a per-frame reset that must preserve the `Vec`
+        // allocations of live textures; `remove_texture` is the free path that
+        // must delete the key entirely to avoid unbounded orphan-key growth.
+        b.batches.insert(7, Vec::new());
+        b.batches.insert(9, Vec::new());
+
+        assert!(b.remove_texture(7));
+        assert!(!b.batches.contains_key(&7));
+        assert!(b.batches.contains_key(&9));
+        assert!(!b.remove_texture(7), "removing an absent key returns false");
+
+        b.clear();
+        assert!(b.batches.contains_key(&9), "clear keeps live buckets");
+    }
 }

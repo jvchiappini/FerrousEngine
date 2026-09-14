@@ -220,7 +220,12 @@ pub struct Renderer {
 
     /// Bind groups de texturas indexados por texture_id para sprites 2D en Pure2D.
     pub sprite_bind_groups: std::collections::HashMap<u32, std::sync::Arc<wgpu::BindGroup>>,
+    /// High-water mark: the next never-before-used sprite texture id.
     pub next_sprite_texture_id: u32,
+    /// Ids returned by `free_sprite_texture`, reused before allocating a new id.
+    /// Without recycling, repeatedly loading plan textures grew
+    /// `next_sprite_texture_id` without bound.
+    pub freed_sprite_texture_ids: Vec<u32>,
 
     // -- Exportacion Headless (Fase 1) ----------------------------------------
     pub readback_manager: Option<crate::resources::readback::ReadbackFrameManager>,
@@ -481,6 +486,7 @@ impl Renderer {
             sprite_batcher_2d: ferrous_2d::render::SpriteBatcher::default(),
             sprite_bind_groups: std::collections::HashMap::new(),
             next_sprite_texture_id: 0,
+            freed_sprite_texture_ids: Vec::new(),
             readback_manager: None,
         }
     }
@@ -1895,17 +1901,32 @@ impl Renderer {
             },
         ));
 
-        let id = self.next_sprite_texture_id;
+        let id = match self.freed_sprite_texture_ids.pop() {
+            Some(recycled) => recycled,
+            None => {
+                let fresh = self.next_sprite_texture_id;
+                self.next_sprite_texture_id += 1;
+                fresh
+            }
+        };
         self.sprite_bind_groups.insert(id, bind_group);
-        self.next_sprite_texture_id += 1;
         id
     }
 
     /// Libera una textura de sprite previamente registrada.
     ///
     /// Las entidades `Sprite` que referencien este `texture_id` dejarán de renderizarse.
+    ///
+    /// Además de borrar el bind group, se elimina la entrada del
+    /// `SpriteBatcher` (si la hubiera) y el id vuelve a una free-list que
+    /// `register_sprite_texture*` reutiliza, evitando que ids y claves
+    /// huérfanas crezcan indefinidamente al recargar planos.
     pub fn free_sprite_texture(&mut self, texture_id: u32) {
-        self.sprite_bind_groups.remove(&texture_id);
+        let existed = self.sprite_bind_groups.remove(&texture_id).is_some();
+        self.sprite_batcher_2d.remove_texture(texture_id);
+        if existed && !self.freed_sprite_texture_ids.contains(&texture_id) {
+            self.freed_sprite_texture_ids.push(texture_id);
+        }
     }
 
     /// Clears 2D batchers (shapes and sprites). Call this at the start of every frame
