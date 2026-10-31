@@ -28,9 +28,9 @@ pub struct SpriteInstance {
     /// sRGB-decoded by wgpu because sprite textures are `Rgba8UnormSrgb`).
     pub color: [f32; 4],
     /// Source region in UV space `[x, y, width, height]` (for atlas/spritesheet).
-    pub uv_rect: [f32; 4],        // x, y, width, height (for atlas)
+    pub uv_rect: [f32; 4], // x, y, width, height (for atlas)
     /// `[flip_x, flip_y, is_lit, reserved]`.
-    pub properties: [f32; 4],     // x=flip_x, y=flip_y, z=is_lit, w=reserved
+    pub properties: [f32; 4], // x=flip_x, y=flip_y, z=is_lit, w=reserved
 }
 
 impl SpriteInstance {
@@ -40,15 +40,168 @@ impl SpriteInstance {
             array_stride: std::mem::size_of::<SpriteInstance>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &[
-                wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 16, shader_location: 1, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 32, shader_location: 2, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 48, shader_location: 3, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 64, shader_location: 4, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 80, shader_location: 5, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 96, shader_location: 6, format: wgpu::VertexFormat::Float32x4 },
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 16,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 32,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 48,
+                    shader_location: 3,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 64,
+                    shader_location: 4,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 80,
+                    shader_location: 5,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 96,
+                    shader_location: 6,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
             ],
         }
+    }
+}
+
+/// Stable handle to a font registered with [`crate::render::Renderer2d`]'s
+/// owner (the engine `Renderer`), used by [`TextInstance`] draw calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FontId2d(pub u32);
+
+/// GPU instance for one MSDF glyph quad (Pure2D text path).
+///
+/// The model matrix maps the canonical local quad `[0, 1]²` (Y up) to the
+/// glyph's pixel rectangle, exactly like [`SpriteInstance`] maps its own quad,
+/// so rotation, non-uniform scale and parent transforms compose the same way.
+/// `transform_c3[2]` carries the depth used by the unified painter-order
+/// command stream (shared by every glyph of one `draw_text` call).
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct TextInstance {
+    /// First column of the model matrix (x basis; its length is the quad width).
+    pub transform_c0: [f32; 4],
+    /// Second column of the model matrix (y basis; its length is the quad height).
+    pub transform_c1: [f32; 4],
+    /// Third column of the model matrix.
+    pub transform_c2: [f32; 4],
+    /// Fourth column (translation; `.z` carries depth).
+    pub transform_c3: [f32; 4],
+    /// Linear RGBA colour (see the module colour-space contract).
+    pub color: [f32; 4],
+    /// Atlas UV rectangle `[u0, v0, u1, v1]`.
+    pub uv_rect: [f32; 4],
+    /// `[px_range, 0, 0, 0]` where `px_range` is `FontAtlas::px_range`.
+    pub params: [f32; 4],
+}
+
+impl TextInstance {
+    /// Vertex-buffer layout describing this instance type to wgpu.
+    pub const fn descriptor() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<TextInstance>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 16,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 32,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 48,
+                    shader_location: 3,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 64,
+                    shader_location: 4,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 80,
+                    shader_location: 5,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 96,
+                    shader_location: 6,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+            ],
+        }
+    }
+
+    /// Build an instance from a model matrix, an atlas UV rect and a colour.
+    ///
+    /// `px_range` must be the atlas' [`crate::render::TextInstance::params`]
+    /// range (see `ferrous_font::FontAtlas::px_range`).
+    pub fn new(model: glam::Mat4, uv_rect: [f32; 4], color: [f32; 4], px_range: f32) -> Self {
+        Self {
+            transform_c0: model.x_axis.into(),
+            transform_c1: model.y_axis.into(),
+            transform_c2: model.z_axis.into(),
+            transform_c3: model.w_axis.into(),
+            color,
+            uv_rect,
+            params: [
+                if px_range.is_finite() && px_range > 0.0 {
+                    px_range
+                } else {
+                    6.0
+                },
+                0.0,
+                0.0,
+                0.0,
+            ],
+        }
+    }
+
+    /// Depth used by the unified painter-order command stream.
+    #[inline]
+    pub fn depth(&self) -> f32 {
+        self.transform_c3[2]
+    }
+
+    /// World-space AABB `(min, max)` of the canonical `[0, 1]²` quad.
+    ///
+    /// Conservative (the MSDF AA band extends slightly past the quad); callers
+    /// expand the cull rect by a pixel margin before testing.
+    #[inline]
+    pub fn world_aabb(&self) -> (glam::Vec2, glam::Vec2) {
+        let c0 = glam::Vec2::new(self.transform_c0[0], self.transform_c0[1]);
+        let c1 = glam::Vec2::new(self.transform_c1[0], self.transform_c1[1]);
+        let c3 = glam::Vec2::new(self.transform_c3[0], self.transform_c3[1]);
+        let p0 = c3;
+        let p1 = c3 + c0;
+        let p2 = c3 + c1;
+        let p3 = c3 + c0 + c1;
+        (p0.min(p1).min(p2).min(p3), p0.max(p1).max(p2).max(p3))
     }
 }
 
@@ -145,12 +298,36 @@ impl ShapeInstance {
             array_stride: std::mem::size_of::<ShapeInstance>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &[
-                wgpu::VertexAttribute { offset: 0,  shader_location: 0, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 16, shader_location: 1, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 32, shader_location: 2, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 48, shader_location: 3, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 64, shader_location: 4, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 80, shader_location: 5, format: wgpu::VertexFormat::Float32x4 },
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 16,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 32,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 48,
+                    shader_location: 3,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 64,
+                    shader_location: 4,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 80,
+                    shader_location: 5,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
             ],
         }
     }
@@ -204,7 +381,12 @@ impl ShapeInstance {
     }
 
     /// Rectángulo con esquinas redondeadas relleno.
-    pub fn rounded_rect(center: glam::Vec2, size: glam::Vec2, corner_radius: f32, color: [f32; 4]) -> Self {
+    pub fn rounded_rect(
+        center: glam::Vec2,
+        size: glam::Vec2,
+        corner_radius: f32,
+        color: [f32; 4],
+    ) -> Self {
         let model = glam::Mat4::from_scale_rotation_translation(
             glam::Vec3::new(size.x, size.y, 1.0),
             glam::Quat::IDENTITY,
@@ -214,7 +396,12 @@ impl ShapeInstance {
     }
 
     /// Solo el borde (outline) de un rectángulo, sin relleno.
-    pub fn rect_outline(center: glam::Vec2, size: glam::Vec2, thickness: f32, color: [f32; 4]) -> Self {
+    pub fn rect_outline(
+        center: glam::Vec2,
+        size: glam::Vec2,
+        thickness: f32,
+        color: [f32; 4],
+    ) -> Self {
         let model = glam::Mat4::from_scale_rotation_translation(
             glam::Vec3::new(size.x, size.y, 1.0),
             glam::Quat::IDENTITY,
@@ -238,7 +425,13 @@ impl ShapeInstance {
     ///
     /// Prefer the typed [`ShapeInstance::line_with_cap_style`] in new code: an
     /// out-of-range `u8` here is not rejected and silently falls back to `Round`.
-    pub fn line_with_cap(from: glam::Vec2, to: glam::Vec2, width: f32, color: [f32; 4], cap_style: u8) -> Self {
+    pub fn line_with_cap(
+        from: glam::Vec2,
+        to: glam::Vec2,
+        width: f32,
+        color: [f32; 4],
+        cap_style: u8,
+    ) -> Self {
         Self::line_with_cap_aa(from, to, width, color, cap_style, true, true)
     }
 
@@ -328,7 +521,11 @@ impl ShapeInstance {
     /// floor). Only affects instances created by a `line*` constructor, since
     /// the shader gates the widening on `SHAPE_GPU_LINE`.
     pub fn with_min_px(mut self, min_px: f32) -> Self {
-        self.params[2] = if min_px.is_finite() { min_px.max(0.0) } else { 0.0 };
+        self.params[2] = if min_px.is_finite() {
+            min_px.max(0.0)
+        } else {
+            0.0
+        };
         self
     }
 
@@ -377,7 +574,11 @@ impl ShapeInstance {
             params: [
                 width_world.max(0.0),
                 cap_style as f32,
-                if min_px.is_finite() { min_px.max(0.0) } else { 0.0 },
+                if min_px.is_finite() {
+                    min_px.max(0.0)
+                } else {
+                    0.0
+                },
                 1.0,
             ],
             ext0: [n_start.x, n_start.y, n_end.x, n_end.y],
@@ -439,7 +640,11 @@ impl ShapeInstance {
             params: [
                 radius.max(0.0),
                 width_world.max(0.0),
-                if min_px.is_finite() { min_px.max(0.0) } else { 0.0 },
+                if min_px.is_finite() {
+                    min_px.max(0.0)
+                } else {
+                    0.0
+                },
                 1.0,
             ],
             ext0: [start, sweep, cap_style as f32, 0.0],
@@ -450,18 +655,17 @@ impl ShapeInstance {
     /// Turns a circle/rect instance into a real hollow ring of `thickness`.
     pub fn with_ring(mut self, thickness: f32, min_px: f32) -> Self {
         self.params[0] = thickness.max(0.0);
-        self.params[2] = if min_px.is_finite() { min_px.max(0.0) } else { 0.0 };
+        self.params[2] = if min_px.is_finite() {
+            min_px.max(0.0)
+        } else {
+            0.0
+        };
         self.transform_c2[3] = 3.0;
         self
     }
 
     /// Real circular outline (ring), not a filled disc.
-    pub fn circle_ring(
-        center: glam::Vec2,
-        radius: f32,
-        thickness: f32,
-        color: [f32; 4],
-    ) -> Self {
+    pub fn circle_ring(center: glam::Vec2, radius: f32, thickness: f32, color: [f32; 4]) -> Self {
         Self::circle(center, radius, color).with_ring(thickness, 1.0)
     }
 
@@ -546,7 +750,12 @@ impl ShapeInstance {
     }
 
     /// Rectángulo rotado, centrado en `center`, con ángulo en radianes.
-    pub fn rect_rotated(center: glam::Vec2, size: glam::Vec2, angle_radians: f32, color: [f32; 4]) -> Self {
+    pub fn rect_rotated(
+        center: glam::Vec2,
+        size: glam::Vec2,
+        angle_radians: f32,
+        color: [f32; 4],
+    ) -> Self {
         let model = glam::Mat4::from_scale_rotation_translation(
             glam::Vec3::new(size.x, size.y, 1.0),
             glam::Quat::from_rotation_z(angle_radians),
@@ -667,7 +876,11 @@ impl ShapeInstance {
             return (c3 - pad, c3 + pad);
         }
         // Triangles map [0,1]² (origin = vertex a); the rest map [-0.5,0.5]².
-        let origin = if self.is_triangle() { c3 } else { c3 - (c0 + c1) * 0.5 };
+        let origin = if self.is_triangle() {
+            c3
+        } else {
+            c3 - (c0 + c1) * 0.5
+        };
         let ext = c0.abs() + c1.abs();
         let min = origin + c0.min(glam::Vec2::ZERO) + c1.min(glam::Vec2::ZERO);
         (min, min + ext)
@@ -762,14 +975,46 @@ impl ShapeGpu {
             array_stride: std::mem::size_of::<ShapeGpu>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &[
-                wgpu::VertexAttribute { offset: 0,  shader_location: 0, format: wgpu::VertexFormat::Float32x2 },
-                wgpu::VertexAttribute { offset: 8,  shader_location: 1, format: wgpu::VertexFormat::Float32x2 },
-                wgpu::VertexAttribute { offset: 16, shader_location: 2, format: wgpu::VertexFormat::Float32x2 },
-                wgpu::VertexAttribute { offset: 24, shader_location: 3, format: wgpu::VertexFormat::Float32x2 },
-                wgpu::VertexAttribute { offset: 32, shader_location: 4, format: wgpu::VertexFormat::Float16x4 },
-                wgpu::VertexAttribute { offset: 40, shader_location: 5, format: wgpu::VertexFormat::Uint32 },
-                wgpu::VertexAttribute { offset: 44, shader_location: 6, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 60, shader_location: 7, format: wgpu::VertexFormat::Float32 },
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: 8,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: 16,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: 24,
+                    shader_location: 3,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: 32,
+                    shader_location: 4,
+                    format: wgpu::VertexFormat::Float16x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 40,
+                    shader_location: 5,
+                    format: wgpu::VertexFormat::Uint32,
+                },
+                wgpu::VertexAttribute {
+                    offset: 44,
+                    shader_location: 6,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 60,
+                    shader_location: 7,
+                    format: wgpu::VertexFormat::Float32,
+                },
             ],
         }
     }
@@ -872,13 +1117,21 @@ pub fn f32_to_f16(v: f32) -> u16 {
         let half = m >> shift;
         let rem = m & ((1u32 << shift) - 1);
         let halfway = 1u32 << (shift - 1);
-        let r = if rem > halfway || (rem == halfway && (half & 1) == 1) { half + 1 } else { half };
+        let r = if rem > halfway || (rem == halfway && (half & 1) == 1) {
+            half + 1
+        } else {
+            half
+        };
         return sign | r as u16;
     }
     let half = ((e as u32) << 10) | (mant >> 13);
     let rem = mant & 0x1fff;
     // A carry out of the mantissa correctly bumps the exponent (up to inf).
-    let r = if rem > 0x1000 || (rem == 0x1000 && (half & 1) == 1) { half + 1 } else { half };
+    let r = if rem > 0x1000 || (rem == 0x1000 && (half & 1) == 1) {
+        half + 1
+    } else {
+        half
+    };
     sign | r as u16
 }
 
@@ -905,7 +1158,11 @@ mod gpu_pack_tests {
     #[test]
     fn pack_keeps_flags() {
         let t = ShapeInstance::polygon_triangle(
-            glam::Vec2::ZERO, glam::Vec2::X, glam::Vec2::Y, [1.0; 4], TRIANGLE_EDGE_AB,
+            glam::Vec2::ZERO,
+            glam::Vec2::X,
+            glam::Vec2::Y,
+            [1.0; 4],
+            TRIANGLE_EDGE_AB,
         );
         let g = ShapeGpu::pack(&t);
         assert_ne!(g.flags & SHAPE_GPU_TRIANGLE, 0);
@@ -916,7 +1173,13 @@ mod gpu_pack_tests {
         assert_eq!(g.flags & SHAPE_GPU_LINE, 0);
 
         let l = ShapeInstance::line_with_cap_aa(
-            glam::Vec2::ZERO, glam::Vec2::new(5.0, 0.0), 1.0, [1.0; 4], 0, false, true,
+            glam::Vec2::ZERO,
+            glam::Vec2::new(5.0, 0.0),
+            1.0,
+            [1.0; 4],
+            0,
+            false,
+            true,
         );
         let g = ShapeGpu::pack(&l);
         assert_eq!(g.flags & SHAPE_GPU_TRIANGLE, 0);
@@ -930,7 +1193,12 @@ mod gpu_pack_tests {
     #[test]
     fn pack_line_min_px_and_line_flag() {
         let l = ShapeInstance::line_px(
-            glam::Vec2::ZERO, glam::Vec2::new(10.0, 0.0), 0.015, 1.0, [1.0; 4], 0,
+            glam::Vec2::ZERO,
+            glam::Vec2::new(10.0, 0.0),
+            0.015,
+            1.0,
+            [1.0; 4],
+            0,
         );
         let g = ShapeGpu::pack(&l);
         assert_ne!(g.flags & SHAPE_GPU_LINE, 0);
@@ -975,7 +1243,9 @@ mod gpu_pack_tests {
         assert_eq!(g.ext1, 2.5);
         let (min, max) = j.world_aabb();
         assert!(min.x <= 0.0 && max.x >= 10.0);
-        assert!(min.y <= -0.05 && max.y >= 0.05);
+        // `0.02 * 2.5` rounds to just under `0.05` in f32, so compare with a
+        // tolerance rather than against the decimal literal.
+        assert!(min.y <= -0.05 + 1e-6 && max.y >= 0.05 - 1e-6);
     }
 
     #[test]
@@ -1000,9 +1270,7 @@ mod gpu_pack_tests {
         assert_eq!(g.ext0[1], std::f32::consts::TAU);
         assert_eq!((g.flags >> SHAPE_GPU_DASH_SHIFT) & 15, 2);
 
-        let r = ShapeInstance::circle_ring(
-            glam::Vec2::ZERO, 5.0, 0.02, [1.0; 4],
-        );
+        let r = ShapeInstance::circle_ring(glam::Vec2::ZERO, 5.0, 0.02, [1.0; 4]);
         let g = ShapeGpu::pack(&r);
         assert_ne!(g.flags & SHAPE_GPU_RING, 0);
         assert_eq!(g.flags & SHAPE_GPU_ARC, 0);
@@ -1013,7 +1281,12 @@ mod gpu_pack_tests {
 
     #[test]
     fn world_aabb_matches_corners() {
-        let r = ShapeInstance::rect_rotated(glam::Vec2::new(3.0, 4.0), glam::Vec2::new(2.0, 1.0), 0.7, [1.0; 4]);
+        let r = ShapeInstance::rect_rotated(
+            glam::Vec2::new(3.0, 4.0),
+            glam::Vec2::new(2.0, 1.0),
+            0.7,
+            [1.0; 4],
+        );
         let (min, max) = r.world_aabb();
         let c0 = glam::Vec2::new(r.transform_c0[0], r.transform_c0[1]);
         let c1 = glam::Vec2::new(r.transform_c1[0], r.transform_c1[1]);
@@ -1106,4 +1379,3 @@ pub struct Uniform2d {
     /// Pattern `i` uses `dash[i*2]` (lengths 0..3) and `dash[i*2+1]` (4..7).
     pub dash: [[f32; 4]; 32],
 }
-

@@ -1,25 +1,24 @@
-/// Renderer API Methods
-///
-/// This module contains the public API methods for the Renderer.
-/// These methods provide high-level control over rendering operations.
-
+//! Renderer API Methods
+//!
+//! This module contains the public API methods for the Renderer.
+//! These methods provide high-level control over rendering operations.
+use crate::camera::controller::OrbitState;
 use crate::camera::Camera;
 use crate::camera_system::CameraSystem;
+use crate::context::EngineContext;
 use crate::geometry::Mesh;
 use crate::gizmo_system::GizmoSystem;
-use crate::graph::RenderPass;
 use crate::graph::frame_packet::Viewport;
+use crate::graph::RenderPass;
 use crate::materials::MaterialRegistry;
 use crate::pipeline::PipelineLayouts;
 use crate::render_target::RenderTarget;
-use crate::resources::InstanceBuffer;
-use crate::scene::{SceneData, GizmoDraw};
-use ferrous_core::scene::{MaterialDescriptor, MaterialHandle, RenderStyle};
-use ferrous_core::input::InputState;
 use crate::resources::texture_registry::TextureHandle;
-use crate::camera::controller::OrbitState;
-use crate::context::EngineContext;
+use crate::resources::InstanceBuffer;
+use crate::scene::{GizmoDraw, SceneData};
 use crate::RendererMode;
+use ferrous_core::input::InputState;
+use ferrous_core::scene::{MaterialDescriptor, MaterialHandle, RenderStyle};
 use wgpu;
 
 // -- Camera Accessors --------------------------------------------------------
@@ -57,10 +56,7 @@ pub fn create_material(
     // sync the world pass table so newly-created slot is available to
     // shaders immediately; forgetting this leads to panics when the
     // pass tries to index past the end of its internal array.
-    world_pass.set_material_table(
-        &material_registry.bind_group_table(),
-        material_registry,
-    );
+    world_pass.set_material_table(&material_registry.bind_group_table(), material_registry);
     handle
 }
 
@@ -75,10 +71,7 @@ pub fn free_material(
     handle: MaterialHandle,
 ) {
     material_registry.free(handle);
-    world_pass.set_material_table(
-        &material_registry.bind_group_table(),
-        material_registry,
-    );
+    world_pass.set_material_table(&material_registry.bind_group_table(), material_registry);
 }
 
 /// Update the scalar parameters of an existing material. Only the
@@ -109,17 +102,16 @@ pub fn register_mesh(
     key: &str,
     mesh: Mesh,
 ) {
-    frame_builder.procedural_mesh_cache.insert(key.to_string(), mesh);
+    frame_builder
+        .procedural_mesh_cache
+        .insert(key.to_string(), mesh);
 }
 
 /// Remove a previously-registered procedural mesh.
 ///
 /// Any world elements still referring to the key will fall back to the cube
 /// primitive when the next `sync_world` runs.
-pub fn free_mesh(
-    frame_builder: &mut crate::frame_builder::FrameBuilder,
-    key: &str,
-) {
+pub fn free_mesh(frame_builder: &mut crate::frame_builder::FrameBuilder, key: &str) {
     frame_builder.procedural_mesh_cache.remove(key);
 }
 
@@ -136,10 +128,7 @@ pub fn register_asset_mesh(
 
 /// Remove a previously-registered asset-file mesh.
 #[cfg(feature = "assets")]
-pub fn free_asset_mesh(
-    frame_builder: &mut crate::frame_builder::FrameBuilder,
-    key: &str,
-) {
+pub fn free_asset_mesh(frame_builder: &mut crate::frame_builder::FrameBuilder, key: &str) {
     frame_builder.mesh_cache.remove(key);
 }
 
@@ -156,21 +145,12 @@ pub fn register_texture(
     height: u32,
     data: &[u8],
 ) -> TextureHandle {
-    let handle = material_registry.register_texture_rgba8(
-        device,
-        queue,
-        width,
-        height,
-        data,
-    );
+    let handle = material_registry.register_texture_rgba8(device, queue, width, height, data);
     // maintain the old behaviour of refreshing the world-pass table
     // even though the material bind groups are unchanged by adding a
     // standalone texture.  this keeps external code from implicitly
     // depending on the side-effect.
-    world_pass.set_material_table(
-        &material_registry.bind_group_table(),
-        material_registry,
-    );
+    world_pass.set_material_table(&material_registry.bind_group_table(), material_registry);
     handle
 }
 
@@ -187,17 +167,9 @@ pub fn register_texture_linear(
     height: u32,
     data: &[u8],
 ) -> TextureHandle {
-    let handle = material_registry.register_texture_rgba8_linear(
-        device,
-        queue,
-        width,
-        height,
-        data,
-    );
-    world_pass.set_material_table(
-        &material_registry.bind_group_table(),
-        material_registry,
-    );
+    let handle =
+        material_registry.register_texture_rgba8_linear(device, queue, width, height, data);
+    world_pass.set_material_table(&material_registry.bind_group_table(), material_registry);
     handle
 }
 
@@ -205,10 +177,7 @@ pub fn register_texture_linear(
 /// the provided handle corresponds to one of the three built-in
 /// fallbacks this function is a no-op. Freed slots are recycled by the
 /// registry on future registrations.
-pub fn free_texture(
-    material_registry: &mut MaterialRegistry,
-    handle: TextureHandle,
-) {
+pub fn free_texture(material_registry: &mut MaterialRegistry, handle: TextureHandle) {
     material_registry.free_texture(handle);
 }
 
@@ -224,13 +193,7 @@ pub fn update_texture_data(
     height: u32,
     data: &[u8],
 ) {
-    material_registry.update_texture_data(
-        queue,
-        handle,
-        width,
-        height,
-        data,
-    );
+    material_registry.update_texture_data(queue, handle, width, height, data);
 }
 
 // -- Lighting Methods --------------------------------------------------------
@@ -251,10 +214,12 @@ pub fn set_directional_light(
     // start from the default so we automatically populate
     // `light_view_proj` (it will be recalculated again by
     // `WorldPass::update_light` below).
-    let mut uniform = crate::resources::light::DirectionalLightUniform::default();
-    uniform.direction = direction;
-    uniform.color = color;
-    uniform.intensity = intensity;
+    let uniform = crate::resources::light::DirectionalLightUniform {
+        direction,
+        color,
+        intensity,
+        ..Default::default()
+    };
     // Cache for style-pass frame data injection.
     *current_dir_light = uniform;
     // delegate to world pass so that the buffer is encapsulated
@@ -279,11 +244,21 @@ pub fn set_exposure(camera_system: &mut CameraSystem, queue: &wgpu::Queue, expos
     camera_system.set_exposure(queue, exposure);
 }
 
-pub fn set_fog(camera_system: &mut CameraSystem, queue: &wgpu::Queue, color: [f32; 3], density: f32) {
+pub fn set_fog(
+    camera_system: &mut CameraSystem,
+    queue: &wgpu::Queue,
+    color: [f32; 3],
+    density: f32,
+) {
     camera_system.set_fog(queue, color, density);
 }
 
-pub fn set_ambient_light(camera_system: &mut CameraSystem, queue: &wgpu::Queue, color: [f32; 3], intensity: f32) {
+pub fn set_ambient_light(
+    camera_system: &mut CameraSystem,
+    queue: &wgpu::Queue,
+    color: [f32; 3],
+    intensity: f32,
+) {
     camera_system.set_ambient_light(queue, color, intensity);
 }
 
@@ -299,12 +274,7 @@ pub fn add_pass<P: RenderPass>(
     sample_count: u32,
 ) {
     let mut pass = pass;
-    pass.on_attach(
-        &context.device,
-        &context.queue,
-        format,
-        sample_count,
-    );
+    pass.on_attach(&context.device, &context.queue, format, sample_count);
     extra_passes.push(Box::new(pass));
 }
 
@@ -323,6 +293,8 @@ pub fn clear_extra_passes(extra_passes: &mut Vec<Box<dyn RenderPass>>) {
 ///
 /// The method propagates the current instance buffer and material table to
 /// newly-created passes immediately so they are ready to draw on the next frame.
+#[allow(clippy::too_many_arguments)]
+// Pass handles are passed explicitly to avoid a borrow of the whole Renderer.
 pub fn set_render_style(
     render_style: &mut RenderStyle,
     cel_pass: &mut Option<crate::passes::CelShadedPass>,
@@ -524,10 +496,7 @@ pub fn set_scene(
 // -- Gizmo Management --------------------------------------------------------
 
 /// Queue a gizmo for rendering this frame.
-pub fn queue_gizmo(
-    gizmo_system: &mut GizmoSystem,
-    gizmo: GizmoDraw,
-) {
+pub fn queue_gizmo(gizmo_system: &mut GizmoSystem, gizmo: GizmoDraw) {
     gizmo_system.queue(gizmo);
 }
 
@@ -535,6 +504,8 @@ pub fn queue_gizmo(
 
 /// Recreates GPU textures when the window changes size.
 /// Notifies every pass via `on_resize` -- no downcast needed.
+#[allow(clippy::too_many_arguments)]
+// Resize fans out to every pass and every size mirror.
 pub fn resize(
     render_target: &mut RenderTarget,
     context: &EngineContext,
@@ -567,52 +538,19 @@ pub fn resize(
     *height = new_height;
 
     // Built-in passes
-    world_pass.on_resize(
-        &context.device,
-        &context.queue,
-        new_width,
-        new_height,
-    );
+    world_pass.on_resize(&context.device, &context.queue, new_width, new_height);
     // SSAO passes
-    prepass.on_resize(
-        &context.device,
-        &context.queue,
-        new_width,
-        new_height,
-    );
-    ssao_pass.on_resize(
-        &context.device,
-        new_width,
-        new_height,
-    );
-    ssao_blur_pass.on_resize(
-        &context.device,
-        new_width,
-        new_height,
-    );
+    prepass.on_resize(&context.device, &context.queue, new_width, new_height);
+    ssao_pass.on_resize(&context.device, new_width, new_height);
+    ssao_blur_pass.on_resize(&context.device, new_width, new_height);
     // Post-process pass
-    post_process_pass.on_resize(
-        &context.device,
-        &context.queue,
-        new_width,
-        new_height,
-    );
+    post_process_pass.on_resize(&context.device, &context.queue, new_width, new_height);
     // UI pass
     #[cfg(feature = "gui")]
-    ui_pass.on_resize(
-        &context.device,
-        &context.queue,
-        new_width,
-        new_height,
-    );
+    ui_pass.on_resize(&context.device, &context.queue, new_width, new_height);
     // Extra passes
     for pass in extra_passes.iter_mut() {
-        pass.on_resize(
-            &context.device,
-            &context.queue,
-            new_width,
-            new_height,
-        );
+        pass.on_resize(&context.device, &context.queue, new_width, new_height);
     }
 }
 
@@ -650,11 +588,7 @@ pub fn set_font_atlas(
 // -- Input Handling ----------------------------------------------------------
 
 /// Handles input events for camera control and other interactions.
-pub fn handle_input(
-    camera_system: &mut CameraSystem,
-    input: &mut InputState,
-    dt: f32,
-) {
+pub fn handle_input(camera_system: &mut CameraSystem, input: &mut InputState, dt: f32) {
     // Handle camera input through the camera system
     camera_system.handle_input(input, dt);
 }

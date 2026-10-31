@@ -59,8 +59,15 @@ fn line_winding(px: f32, py: f32, s: &Segment) -> i32 {
 /// linear signed-distance ramp over roughly `PIXEL_RANGE` texels around the
 /// outline; a wider band keeps the reconstructed edge smooth when the glyph is
 /// rasterised at the small pixel sizes the UI uses (9–22 px).  The shader's
-/// `screenPxRange` must use the same constant.
-const PIXEL_RANGE: f32 = 6.0;
+/// `screenPxRange` must use the same value; it is exposed through
+/// [`crate::FontAtlas::px_range`] so no shader needs to hard-code it.
+pub const PIXEL_RANGE: f32 = 6.0;
+
+/// Em-space minimum `(x, y)` covered by one atlas cell.
+pub const CELL_MIN: f32 = -0.3;
+
+/// Em-space maximum `(x, y)` covered by one atlas cell.
+pub const CELL_MAX: f32 = 1.3;
 
 // ── Edge colouring (bit flags) ───────────────────────────────────────────────
 const RED: u8 = 1;
@@ -68,8 +75,6 @@ const GREEN: u8 = 2;
 const BLUE: u8 = 4;
 const WHITE: u8 = RED | GREEN | BLUE;
 const CYAN: u8 = GREEN | BLUE;
-const MAGENTA: u8 = RED | BLUE;
-const YELLOW: u8 = RED | GREEN;
 
 /// Rotates the enabled channels.  With the deterministic seed used here this
 /// cycles `CYAN → MAGENTA → YELLOW → CYAN`, i.e. every edge always enables
@@ -134,23 +139,47 @@ fn build_colored_segments(commands: &[GlyphCommand]) -> Vec<(Segment, u8)> {
                     contours.push(Vec::new());
                 }
                 let seg_start = segments.len();
-                segments.push(Segment { x0: cursor.0, y0: cursor.1, x1: *x, y1: *y });
+                segments.push(Segment {
+                    x0: cursor.0,
+                    y0: cursor.1,
+                    x1: *x,
+                    y1: *y,
+                });
                 let dir = unit(x - cursor.0, y - cursor.1);
-                edges.push(Edge { seg_start, seg_end: segments.len(), start_dir: dir, end_dir: dir, color: 0 });
+                edges.push(Edge {
+                    seg_start,
+                    seg_end: segments.len(),
+                    start_dir: dir,
+                    end_dir: dir,
+                    color: 0,
+                });
                 contours.last_mut().unwrap().push(edges.len() - 1);
                 cursor = (*x, *y);
             }
-            GlyphCommand::QuadTo { ctrl_x, ctrl_y, to_x, to_y } => {
+            GlyphCommand::QuadTo {
+                ctrl_x,
+                ctrl_y,
+                to_x,
+                to_y,
+            } => {
                 if contours.is_empty() {
                     contours.push(Vec::new());
                 }
                 let start_dir = {
                     let d = unit(ctrl_x - cursor.0, ctrl_y - cursor.1);
-                    if d == (0.0, 0.0) { unit(to_x - cursor.0, to_y - cursor.1) } else { d }
+                    if d == (0.0, 0.0) {
+                        unit(to_x - cursor.0, to_y - cursor.1)
+                    } else {
+                        d
+                    }
                 };
                 let end_dir = {
                     let d = unit(to_x - ctrl_x, to_y - ctrl_y);
-                    if d == (0.0, 0.0) { unit(to_x - cursor.0, to_y - cursor.1) } else { d }
+                    if d == (0.0, 0.0) {
+                        unit(to_x - cursor.0, to_y - cursor.1)
+                    } else {
+                        d
+                    }
                 };
                 let seg_start = segments.len();
                 let steps = 16;
@@ -160,11 +189,22 @@ fn build_colored_segments(commands: &[GlyphCommand]) -> Vec<(Segment, u8)> {
                     let mt = 1.0 - t;
                     let nx = mt * mt * cursor.0 + 2.0 * mt * t * ctrl_x + t * t * to_x;
                     let ny = mt * mt * cursor.1 + 2.0 * mt * t * ctrl_y + t * t * to_y;
-                    segments.push(Segment { x0: prev_x, y0: prev_y, x1: nx, y1: ny });
+                    segments.push(Segment {
+                        x0: prev_x,
+                        y0: prev_y,
+                        x1: nx,
+                        y1: ny,
+                    });
                     prev_x = nx;
                     prev_y = ny;
                 }
-                edges.push(Edge { seg_start, seg_end: segments.len(), start_dir, end_dir, color: 0 });
+                edges.push(Edge {
+                    seg_start,
+                    seg_end: segments.len(),
+                    start_dir,
+                    end_dir,
+                    color: 0,
+                });
                 contours.last_mut().unwrap().push(edges.len() - 1);
                 cursor = (*to_x, *to_y);
             }
@@ -176,8 +216,8 @@ fn build_colored_segments(commands: &[GlyphCommand]) -> Vec<(Segment, u8)> {
     // Fan the per-edge colour out to each of its flattened segments.
     let mut out = Vec::with_capacity(segments.len());
     for edge in &edges {
-        for seg_idx in edge.seg_start..edge.seg_end {
-            out.push((segments[seg_idx], edge.color));
+        for seg in &segments[edge.seg_start..edge.seg_end] {
+            out.push((*seg, edge.color));
         }
     }
     out
@@ -215,7 +255,11 @@ fn color_edges(edges: &mut [Edge], contours: &[Vec<usize>]) {
                 let idx = contour[(start + i) % m];
                 if spline + 1 < corner_count && corners[spline + 1] == i {
                     spline += 1;
-                    let banned = if spline == corner_count - 1 { initial } else { 0 };
+                    let banned = if spline == corner_count - 1 {
+                        initial
+                    } else {
+                        0
+                    };
                     color = switch_color_banned(color, banned);
                 }
                 edges[idx].color = color;
@@ -232,11 +276,12 @@ pub fn generate_msdf(commands: &[GlyphCommand], size: u32) -> Vec<u8> {
     }
 
     // Global EM box: most fonts live between Y = -0.3 (descenders) and
-    // Y = 1.3 (ascenders), X in the same range.
-    let cell_minx = -0.3f32;
-    let cell_maxx = 1.3f32;
-    let cell_miny = -0.3f32;
-    let cell_maxy = 1.3f32;
+    // Y = 1.3 (ascenders), X in the same range.  `CELL_MIN`/`CELL_MAX` are the
+    // public form of this mapping (see `FontAtlas::cell_bounds`).
+    let cell_minx = CELL_MIN;
+    let cell_maxx = CELL_MAX;
+    let cell_miny = CELL_MIN;
+    let cell_maxy = CELL_MAX;
 
     let inv_size = 1.0 / size as f32;
     let units_per_pixel = (cell_maxx - cell_minx) * inv_size;
@@ -359,12 +404,22 @@ mod tests {
         let size = 64u32;
         let bmp = generate_msdf(&square_outline(), size);
         let opacity = |p: [u8; 4]| -> f32 {
-            let mut c = [p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0];
+            let mut c = [
+                p[0] as f32 / 255.0,
+                p[1] as f32 / 255.0,
+                p[2] as f32 / 255.0,
+            ];
             c.sort_by(|a, b| a.partial_cmp(b).unwrap());
             (4.0 * (0.5 - c[1]) + 0.5).clamp(0.0, 1.0)
         };
-        assert!(opacity(pixel_at(&bmp, size, 32, 31)) > 0.9, "centre must be opaque");
-        assert!(opacity(pixel_at(&bmp, size, 1, 1)) < 0.1, "corner must be transparent");
+        assert!(
+            opacity(pixel_at(&bmp, size, 32, 31)) > 0.9,
+            "centre must be opaque"
+        );
+        assert!(
+            opacity(pixel_at(&bmp, size, 1, 1)) < 0.1,
+            "corner must be transparent"
+        );
     }
 
     #[test]

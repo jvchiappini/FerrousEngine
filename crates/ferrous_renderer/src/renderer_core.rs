@@ -1,9 +1,8 @@
-/// `ferrous_renderer::renderer_core` -- Core Renderer struct and lifecycle methods.
-///
-/// This module contains the fundamental Renderer struct definition and its core
-/// lifecycle and state management methods. The Renderer is the top-level GPU
-/// rendering context that holds all GPU resources and executes render passes.
-
+//! `ferrous_renderer::renderer_core` -- Core Renderer struct and lifecycle methods.
+//!
+//! This module contains the fundamental Renderer struct definition and its core
+//! lifecycle and state management methods. The Renderer is the top-level GPU
+//! rendering context that holds all GPU resources and executes render passes.
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -11,54 +10,67 @@ use std::sync::Arc;
 // Module declarations
 // Module re-exports from the crate root (since files are located in src/)
 pub use crate::camera;
-pub use crate::pipeline;
 pub use crate::camera_system;
 pub use crate::frame_builder;
 pub use crate::gizmo_system;
+pub use crate::pipeline;
 pub use crate::render_stats;
 
 // Re-export types needed for the Renderer struct
-pub use camera::{Camera, Controller, GpuCamera};
-pub use camera_system::CameraSystem;
-pub use frame_builder::FrameBuilder;
-pub use gizmo_system::GizmoSystem;
+pub use crate::geometry::{compute_tangents, Mesh, Vertex};
 pub use crate::graph::frame_packet::Viewport;
 pub use crate::graph::RenderPass;
-pub use pipeline::PipelineLayouts;
-pub use crate::geometry::{Mesh, Vertex, compute_tangents};
-pub use render_stats::RenderStats;
-pub use crate::render_target::RenderTarget;
-pub use crate::resources::InstanceBuffer;
-pub use ferrous_core::Color;
-pub use ferrous_core::scene::{RenderStyle, MaterialDescriptor};
 pub use crate::passes::{
     CelShadedPass, FlatShadedPass, OutlinePass, ParticleSystem, PostProcessPass, PrePass,
     ProceduralSkyPass, SkinningPass, SkyMode, SsaoBlurPass, SsaoPass, WorldPass,
 };
+pub use crate::render_target::RenderTarget;
+pub use crate::resources::InstanceBuffer;
+pub use camera::{Camera, Controller, GpuCamera};
+pub use camera_system::CameraSystem;
+pub use ferrous_core::scene::{MaterialDescriptor, RenderStyle};
+pub use ferrous_core::Color;
+pub use frame_builder::FrameBuilder;
+pub use gizmo_system::GizmoSystem;
+pub use pipeline::PipelineLayouts;
+pub use render_stats::RenderStats;
 
 #[cfg(feature = "gui")]
 pub use crate::passes::UiPass;
+
+/// Optional per-frame GUI batch consumed by [`Renderer::render_to_view`].
+///
+/// With the `gui` feature this is `ferrous_gui::GuiBatch`; without it, it is an
+/// uninhabited-in-practice placeholder so the renderer and the Pure2D headless
+/// harness build with `default-features = false`.  Callers always pass `None`
+/// in that configuration.
+#[cfg(feature = "gui")]
+pub use ferrous_gui::GuiBatch as UiBatch;
+/// Placeholder GUI batch used when the `gui` feature is disabled.
+#[cfg(not(feature = "gui"))]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct UiBatch;
 
 #[cfg(feature = "gpu-driven")]
 pub use crate::passes::CullPass;
 
 // Internal imports needed for method implementations
 use crate::materials::MaterialRegistry;
-use pipeline::PbrPipeline;
 use crate::resources::SsaoResources;
 use camera::controller::OrbitState;
 pub use pipeline::InstancingPipeline;
+use pipeline::PbrPipeline;
 
-use ferrous_2d::render::{Renderer2d, ShapeBatcher, DrawCommand2d};
+use ferrous_2d::render::{DrawCommand2d, FontId2d, Renderer2d, ShapeBatcher, TextInstance};
+use ferrous_font::{FontError, GlyphQuad, TextAlign};
 
 use crate::render_config::Render2dConfig;
 use crate::static_2d::{Static2dBatch, Static2dBatchId, Static2dBatchSlot};
 
-
-use ferrous_core::context::EngineContext;
 use crate::graph::frame_packet::CameraPacket;
 use crate::scene::culling::Frustum;
 use crate::scene::scene_data::SceneData;
+use ferrous_core::context::EngineContext;
 
 /// Controls which passes are executed each frame.
 ///
@@ -83,6 +95,19 @@ enum Coalesced2dDraw {
         start: u32,
         count: u32,
     },
+    /// Text pipeline bound to `font`'s atlas, `[start, start+count)` in the
+    /// text upload.
+    Text {
+        font: FontId2d,
+        start: u32,
+        count: u32,
+    },
+}
+
+/// A registered 2D font: its baked atlas and the bind group that samples it.
+struct Font2dEntry {
+    font: ferrous_font::Font,
+    bind_group: std::sync::Arc<wgpu::BindGroup>,
 }
 
 /// World-space axis-aligned bounding box `(min, max)` of a [`ShapeInstance`]'s
@@ -357,14 +382,33 @@ pub struct Renderer {
     /// `next_sprite_texture_id` without bound.
     pub freed_sprite_texture_ids: Vec<u32>,
 
+    // -- Pure2D text ----------------------------------------------------------
+    /// Registered 2D fonts (atlas + sampling bind group), keyed by handle.
+    fonts_2d: HashMap<FontId2d, Font2dEntry>,
+    /// High-water mark for [`FontId2d`] allocation.
+    next_font_2d_id: u32,
+    /// Font ids returned by [`Self::free_font_2d`], reused before allocating.
+    freed_font_2d_ids: Vec<u32>,
+    /// Per-frame glyph instances plus the font each one belongs to.
+    /// `DrawCommand2d::Text(i)` indexes this vector directly, so submission
+    /// order is preserved for equal `z`.
+    pub text_batcher_2d: Vec<(FontId2d, TextInstance)>,
+    /// Reusable CPU layout output for [`Self::draw_text_2d`].
+    text_layout_scratch: Vec<GlyphQuad>,
+    /// Reusable painter-ordered text upload for the coalesced Pure2D path.
+    text_upload_scratch: Vec<TextInstance>,
+
     // -- Exportacion Headless (Fase 1) ----------------------------------------
     pub readback_manager: Option<crate::resources::readback::ReadbackFrameManager>,
 }
 
-
 impl Renderer {
-    pub fn width(&self) -> u32 { self.width }
-    pub fn height(&self) -> u32 { self.height }
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+    pub fn height(&self) -> u32 {
+        self.height
+    }
     /// Creates a `Renderer` with the default world + UI passes.
     ///
     /// `sample_count`: `1` = no MSAA, `4` = 4x MSAA (recommended).
@@ -544,7 +588,13 @@ impl Renderer {
         let gizmo_system = GizmoSystem::new(device, hdr_format, rt.sample_count(), layouts.clone());
 
         // -- SSAO: build passes before the Self literal consumes the buffers --
-        let mut prepass = PrePass::new(device, layouts.instance.clone(), width, height, sample_count);
+        let mut prepass = PrePass::new(
+            device,
+            layouts.instance.clone(),
+            width,
+            height,
+            sample_count,
+        );
         prepass.set_instance_buffer(instance_buf.bind_group.clone());
         prepass.set_material_table(&material_registry.bind_group_table(), &material_registry);
         let ssao_pass = SsaoPass::new(device, width, height);
@@ -563,10 +613,24 @@ impl Renderer {
         // `set_render_2d_config`.
         aa_pass.set_mode(render_2d_config.antialiasing.to_mode());
 
-        let renderer_2d = Renderer2d::new_with_cache(context.device.clone(), hdr_format, Some(wgpu::TextureFormat::Depth32Float), sample_count, 1024, context.pipeline_cache.as_deref());
+        let renderer_2d = Renderer2d::new_with_cache(
+            context.device.clone(),
+            hdr_format,
+            Some(wgpu::TextureFormat::Depth32Float),
+            sample_count,
+            1024,
+            context.pipeline_cache.as_deref(),
+        );
         // Pure2D renderiza directo al swapchain: usa formato de superficie (no HDR)
         // y sample_count=1 (MSAA no es compatible con presentación directa).
-        let renderer_2d_pure = Renderer2d::new_with_cache(context.device.clone(), format, None, 1, 1024, context.pipeline_cache.as_deref());
+        let renderer_2d_pure = Renderer2d::new_with_cache(
+            context.device.clone(),
+            format,
+            None,
+            1,
+            1024,
+            context.pipeline_cache.as_deref(),
+        );
         let shape_batcher = ShapeBatcher::default();
 
         Self {
@@ -638,10 +702,15 @@ impl Renderer {
             sprite_bind_groups: std::collections::HashMap::new(),
             next_sprite_texture_id: 0,
             freed_sprite_texture_ids: Vec::new(),
+            fonts_2d: HashMap::new(),
+            next_font_2d_id: 0,
+            freed_font_2d_ids: Vec::new(),
+            text_batcher_2d: Vec::new(),
+            text_layout_scratch: Vec::new(),
+            text_upload_scratch: Vec::new(),
             readback_manager: None,
         }
     }
-
 
     /// Resizes the renderer's internal render target and updates all dependent passes.
     pub fn resize(&mut self, new_width: u32, new_height: u32) {
@@ -686,15 +755,17 @@ impl Renderer {
             new_width,
             new_height,
         );
-        self.aa_pass.on_resize(&self.context.device, new_width, new_height);
-        
+        self.aa_pass
+            .on_resize(&self.context.device, new_width, new_height);
+
         #[cfg(feature = "gui")]
         {
-            let (target_format, target_samples) = if self.mode == RendererMode::Pure2D || self.mode == RendererMode::Flat2D {
-                (self.format, 1)
-            } else {
-                (crate::render_target::HdrTexture::FORMAT, self.sample_count)
-            };
+            let (target_format, target_samples) =
+                if self.mode == RendererMode::Pure2D || self.mode == RendererMode::Flat2D {
+                    (self.format, 1)
+                } else {
+                    (crate::render_target::HdrTexture::FORMAT, self.sample_count)
+                };
             self.ui_pass.update_output_config(
                 &self.context.queue,
                 new_width,
@@ -713,21 +784,28 @@ impl Renderer {
             );
         }
         // Antialiasing textures
-        self.aa_pass.on_resize(&self.context.device, new_width, new_height);
+        self.aa_pass
+            .on_resize(&self.context.device, new_width, new_height);
 
         // Headless readback buffer must match the new resolution
         if let Some(ref mut rb) = self.readback_manager {
             if rb.width != new_width || rb.height != new_height {
                 *rb = crate::resources::readback::ReadbackFrameManager::new(
-                    &self.context.device, new_width, new_height,
+                    &self.context.device,
+                    new_width,
+                    new_height,
                 );
             }
         }
 
         // En Pure2D recalcular la ortho para mantener 1u=1px con el nuevo tamaño.
         if self.mode == RendererMode::Pure2D {
-            self.camera_system.camera.set_mode_2d(true, Some(new_height as f32));
-            self.camera_system.camera.set_aspect(new_width as f32 / new_height as f32);
+            self.camera_system
+                .camera
+                .set_mode_2d(true, Some(new_height as f32));
+            self.camera_system
+                .camera
+                .set_aspect(new_width as f32 / new_height as f32);
         }
     }
 
@@ -754,11 +832,12 @@ impl Renderer {
 
             // Sync UI output config: Pure2D/Flat2D render to swapchain (1 sample, surface format),
             // while Full3D renders to HDR target (MSAA sample_count, hdr format).
-            let (target_format, target_samples) = if mode == RendererMode::Pure2D || mode == RendererMode::Flat2D {
-                (self.format, 1)
-            } else {
-                (crate::render_target::HdrTexture::FORMAT, self.sample_count)
-            };
+            let (target_format, target_samples) =
+                if mode == RendererMode::Pure2D || mode == RendererMode::Flat2D {
+                    (self.format, 1)
+                } else {
+                    (crate::render_target::HdrTexture::FORMAT, self.sample_count)
+                };
             self.ui_pass.update_output_config(
                 &self.context.queue,
                 self.width,
@@ -788,9 +867,13 @@ impl Renderer {
     pub fn enable_pure_2d(&mut self, background: wgpu::Color) {
         self.set_mode(RendererMode::Pure2D);
         // Configurar cámara ortho pixel-perfect (1u = 1px)
-        self.camera_system.camera.set_mode_2d(true, Some(self.height as f32));
+        self.camera_system
+            .camera
+            .set_mode_2d(true, Some(self.height as f32));
         // Recalcular aspect ratio correcto post-set_mode_2d
-        self.camera_system.camera.set_aspect(self.width as f32 / self.height as f32);
+        self.camera_system
+            .camera
+            .set_aspect(self.width as f32 / self.height as f32);
         self.set_clear_color(background);
         self.mark_dirty();
     }
@@ -802,7 +885,8 @@ impl Renderer {
     pub fn enable_full_3d(&mut self) {
         self.set_mode(RendererMode::Full3D);
         self.camera_system.camera.set_mode_2d(false, None);
-        self.camera_system.set_aspect(self.width as f32 / self.height as f32);
+        self.camera_system
+            .set_aspect(self.width as f32 / self.height as f32);
         self.mark_dirty();
     }
 
@@ -896,14 +980,15 @@ impl Renderer {
         let aspect = self.width as f32 / self.height as f32;
         let hh = size / 2.0;
         let hw = hh * aspect;
-        self.camera_system.camera.projection = ferrous_core::scene::camera::Projection::Orthographic { 
-            left: -hw, 
-            right: hw, 
-            top: hh, 
-            bottom: -hh, 
-            z_near: -1000.0, 
-            z_far: 1000.0 
-        };
+        self.camera_system.camera.projection =
+            ferrous_core::scene::camera::Projection::Orthographic {
+                left: -hw,
+                right: hw,
+                top: hh,
+                bottom: -hh,
+                z_near: -1000.0,
+                z_far: 1000.0,
+            };
         self.mark_dirty();
     }
 
@@ -916,7 +1001,12 @@ impl Renderer {
 
     /// Set the global ambient light for the scene.
     pub fn set_ambient_light(&mut self, color: [f32; 3], intensity: f32) {
-        crate::renderer_api::set_ambient_light(&mut self.camera_system, &self.context.queue, color, intensity);
+        crate::renderer_api::set_ambient_light(
+            &mut self.camera_system,
+            &self.context.queue,
+            color,
+            intensity,
+        );
         self.mark_dirty();
     }
 
@@ -935,8 +1025,7 @@ impl Renderer {
     /// ```
     pub fn set_antialiasing(&mut self, mode: crate::passes::AntialiasingMode) {
         self.aa_pass.set_mode(mode);
-        self.render_2d_config.antialiasing =
-            crate::render_config::Antialiasing2d::from_mode(mode);
+        self.render_2d_config.antialiasing = crate::render_config::Antialiasing2d::from_mode(mode);
         self.mark_dirty();
     }
 
@@ -960,7 +1049,8 @@ impl Renderer {
         self.render_2d_config = config;
         self.aa_pass.set_mode(config.antialiasing.to_mode());
         self.renderer_2d.set_scratch_reuse(config.scratch_reuse);
-        self.renderer_2d_pure.set_scratch_reuse(config.scratch_reuse);
+        self.renderer_2d_pure
+            .set_scratch_reuse(config.scratch_reuse);
         #[cfg(feature = "gui")]
         self.ui_pass
             .set_bind_group_cache(config.ui_bind_group_cache);
@@ -1103,10 +1193,14 @@ impl Renderer {
         // logical px (resolved through the same pixel ratio the shader uses)
         // covers the widest line floor.
         let ratio = self.renderer_2d_pure.pixel_ratio().max(1.0);
-        let margin = self.render_2d_config.cull_margin.max(
-            world_pixel_size * (4.0 + ferrous_2d::render::types::MAX_MIN_PX_LOGICAL * ratio),
-        );
-        (min - glam::Vec2::splat(margin), max + glam::Vec2::splat(margin))
+        let margin = self
+            .render_2d_config
+            .cull_margin
+            .max(world_pixel_size * (4.0 + ferrous_2d::render::types::MAX_MIN_PX_LOGICAL * ratio));
+        (
+            min - glam::Vec2::splat(margin),
+            max + glam::Vec2::splat(margin),
+        )
     }
 
     // ── Retained static 2D batches ───────────────────────────────────────────
@@ -1125,8 +1219,7 @@ impl Renderer {
         &mut self,
         shapes: &[ferrous_2d::render::ShapeInstance],
     ) -> Static2dBatchId {
-        let batch =
-            Self::build_static_2d_buffer(&self.context.device, &self.context.queue, shapes);
+        let batch = Self::build_static_2d_buffer(&self.context.device, &self.context.queue, shapes);
         let index = match self.static_2d_free.pop() {
             Some(i) => i,
             None => {
@@ -1283,7 +1376,10 @@ impl Renderer {
         let (rmin, rmax) = if cull {
             self.pure2d_cull_rect()
         } else {
-            (glam::Vec2::splat(f32::NEG_INFINITY), glam::Vec2::splat(f32::INFINITY))
+            (
+                glam::Vec2::splat(f32::NEG_INFINITY),
+                glam::Vec2::splat(f32::INFINITY),
+            )
         };
         let mut runs = std::mem::take(&mut self.static_2d_runs_scratch);
         let mut drawn = 0u32;
@@ -1304,9 +1400,8 @@ impl Renderer {
                 for &(start, count) in &runs {
                     if let Some(i) = bg_view {
                         if let Some(bg) = self.renderer_2d_pure.view_shape_bg(i) {
-                            self.renderer_2d_pure.render_static_shapes_range_bg(
-                                rpass, bg, &b.buffer, start, count,
-                            );
+                            self.renderer_2d_pure
+                                .render_static_shapes_range_bg(rpass, bg, &b.buffer, start, count);
                         }
                     } else {
                         self.renderer_2d_pure
@@ -1333,8 +1428,7 @@ impl Renderer {
         let capacity = len.next_power_of_two().max(Static2dBatch::MIN_CAPACITY);
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Static2D Batch Instance Buffer"),
-            size: (capacity as usize * std::mem::size_of::<ferrous_2d::render::ShapeGpu>())
-                as u64,
+            size: (capacity as usize * std::mem::size_of::<ferrous_2d::render::ShapeGpu>()) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -1403,9 +1497,11 @@ impl Renderer {
     }
 
     pub fn begin_frame(&self) -> wgpu::CommandEncoder {
-        self.context.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Renderer Frame Encoder"),
-        })
+        self.context
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Renderer Frame Encoder"),
+            })
     }
 
     /// Mutable reference to the internal frame builder (mesh cache, packets).
@@ -1423,20 +1519,20 @@ impl Renderer {
     /// to the top-left of the renderer's viewport.
     pub fn get_ray(&self, screen_pos: (f32, f32)) -> (glam::Vec3, glam::Vec3) {
         let (w, h) = (self.width as f32, self.height as f32);
-        
+
         // Convert screen pixels to Normalized Device Coordinates (NDC) [-1, 1]
         // WebGPU Y is up in NDC, but screen Y is down.
         let ndc = glam::Vec2::new(
             (screen_pos.0 / w) * 2.0 - 1.0,
             1.0 - (screen_pos.1 / h) * 2.0,
         );
-        
+
         let inv_vp = self.camera_system.view_proj().inverse();
-        
+
         // Unproject two points (near and far plane) to find the ray direction
         let n = inv_vp.project_point3(glam::Vec3::new(ndc.x, ndc.y, 0.0));
         let f = inv_vp.project_point3(glam::Vec3::new(ndc.x, ndc.y, 1.0));
-        
+
         let dir = (f - n).normalize();
         (n, dir)
     }
@@ -1450,37 +1546,37 @@ impl Renderer {
     ///
     /// This method automatically calculates the mesh's AABB (bounding box)
     /// and generates tangent vectors for correct normal mapping.
-    pub fn create_mesh(
-        &self,
-        name: &str,
-        mut vertices: Vec<Vertex>,
-        indices: Vec<u32>,
-    ) -> Mesh {
-        log::debug!("[Mesh] Creating: {} (V:{}, I:{})", name, vertices.len(), indices.len());
+    pub fn create_mesh(&self, name: &str, mut vertices: Vec<Vertex>, indices: Vec<u32>) -> Mesh {
+        log::debug!(
+            "[Mesh] Creating: {} (V:{}, I:{})",
+            name,
+            vertices.len(),
+            indices.len()
+        );
 
         if indices.is_empty() {
-             return Mesh::empty(&self.context.device);
+            return Mesh::empty(&self.context.device);
         }
 
         log::debug!("[Mesh] Computing tangents for {}...", name);
-        
+
         crate::geometry::compute_tangents(&mut vertices, &indices);
-        
+
         log::debug!("[Mesh] Uploading {} to GPU...", name);
-        
+
         // Use full u32 indices for professionalism and to support larger meshes.
         // Previously this was truncated to u16 which caused issues with meshes > 65k vertices.
-        
+
         // Calculate the Axis-Aligned Bounding Box (AABB) from vertex positions
         let mut min = glam::Vec3::splat(f32::INFINITY);
         let mut max = glam::Vec3::splat(f32::NEG_INFINITY);
-        
+
         for v in &vertices {
             let p = glam::Vec3::new(v.position[0], v.position[1], v.position[2]);
             min = min.min(p);
             max = max.max(p);
         }
-        
+
         // Add a small epsilon to Y for perfectly flat meshes like floors to avoid culling issues
         if (max.y - min.y).abs() < 0.01 {
             min.y -= 0.01;
@@ -1490,8 +1586,16 @@ impl Renderer {
         let aabb = crate::scene::culling::Aabb::new(min, max);
 
         Mesh {
-            vertex_buffer: crate::resources::buffer::create_vertex(&self.context.device, &format!("{} VB", name), &vertices),
-            index_buffer: crate::resources::buffer::create_index(&self.context.device, &format!("{} IB", name), &indices),
+            vertex_buffer: crate::resources::buffer::create_vertex(
+                &self.context.device,
+                &format!("{} VB", name),
+                &vertices,
+            ),
+            index_buffer: crate::resources::buffer::create_index(
+                &self.context.device,
+                &format!("{} IB", name),
+                &indices,
+            ),
             index_count: indices.len() as u32,
             vertex_count: vertices.len() as u32,
             index_format: wgpu::IndexFormat::Uint32,
@@ -1541,11 +1645,11 @@ impl Renderer {
         {
             use ferrous_core::scene::ParticleEmitter;
             use ferrous_ecs::prelude::Query;
-            let emitters = Query::<(&ferrous_core::scene::GlobalTransform, &ParticleEmitter)>::new(&world.ecs);
-            let emitters_data: Vec<_> = emitters.iter()
-                .map(|(_, (t, e))| (*t, e.clone()))
-                .collect();
-            
+            let emitters =
+                Query::<(&ferrous_core::scene::GlobalTransform, &ParticleEmitter)>::new(&world.ecs);
+            let emitters_data: Vec<_> =
+                emitters.iter().map(|(_, (t, e))| (*t, e.clone())).collect();
+
             if let Some((transform, emitter)) = emitters_data.first() {
                 if let Some(ps) = &mut self.particle_system {
                     let (_, _, translation) = transform.0.to_scale_rotation_translation();
@@ -1553,7 +1657,11 @@ impl Renderer {
                         &self.context.queue,
                         0.016, // hardcoded for now, should use TimeSystem
                         [translation.x, translation.y, translation.z],
-                        if emitter.active { emitter.spawn_rate } else { 0.0 },
+                        if emitter.active {
+                            emitter.spawn_rate
+                        } else {
+                            0.0
+                        },
                     );
                 }
             }
@@ -1567,14 +1675,20 @@ impl Renderer {
                 self.camera_system.camera.eye = cam3d.eye;
                 self.camera_system.camera.target = cam3d.target;
                 self.camera_system.camera.set_fov_degrees(cam3d.fov_deg);
-                self.camera_system.camera.set_near_far(cam3d.near, cam3d.far);
+                self.camera_system
+                    .camera
+                    .set_near_far(cam3d.near, cam3d.far);
             }
         }
 
         // 0c. Sync Material ECS components → MaterialDescriptors
         {
             use ferrous_core::scene::world::MaterialComponent;
-            let mat_updates: Vec<(u64, ferrous_core::scene::MaterialHandle, ferrous_core::scene::MaterialDescriptor)> = world
+            let mat_updates: Vec<(
+                u64,
+                ferrous_core::scene::MaterialHandle,
+                ferrous_core::scene::MaterialDescriptor,
+            )> = world
                 .ecs
                 .query::<MaterialComponent>()
                 .map(|(e, m)| (e.index as u64, m.handle, m.descriptor.clone()))
@@ -1586,13 +1700,10 @@ impl Renderer {
                     .get(&ecs_id)
                     .map(|prev| *prev != desc)
                     .unwrap_or(true);
-                
+
                 if needs_update {
-                    self.material_registry.update_params(
-                        &self.context.queue,
-                        handle,
-                        &desc,
-                    );
+                    self.material_registry
+                        .update_params(&self.context.queue, handle, &desc);
                     self.world_material_descs.insert(ecs_id, desc.clone());
                 }
             }
@@ -1621,7 +1732,8 @@ impl Renderer {
                 &mut self.instance_buf,
                 &self.instance_layout,
                 &mut self.shadow_instance_buf,
-                &mut |bg: std::sync::Arc<wgpu::BindGroup>, shadow_bg: std::sync::Arc<wgpu::BindGroup>| {
+                &mut |bg: std::sync::Arc<wgpu::BindGroup>,
+                      shadow_bg: std::sync::Arc<wgpu::BindGroup>| {
                     world_pass_ref.set_instance_buffer(bg.clone());
                     world_pass_ref.set_shadow_instance_buffer(shadow_bg);
                     prepass_ref.set_instance_buffer(bg);
@@ -1632,12 +1744,15 @@ impl Renderer {
         self.frame_builder.scene_dirty = true;
     }
 
-    #[cfg(feature = "gui")]
+    /// Renders the scene into an external texture view.
+    ///
+    /// Available with and without the `gui` feature; without it, `ui_batch`
+    /// must be `None`.  The Pure2D branch does not need any GUI resource.
     pub fn render_to_view(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
-        ui_batch: Option<ferrous_gui::GuiBatch>,
+        ui_batch: Option<UiBatch>,
     ) {
         self.render_internal(encoder, RenderDest::View(view), ui_batch);
     }
@@ -1647,7 +1762,7 @@ impl Renderer {
     pub fn render_to_internal_target(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
-        ui_batch: Option<ferrous_gui::GuiBatch>,
+        ui_batch: Option<UiBatch>,
     ) {
         self.render_internal(encoder, RenderDest::Target, ui_batch);
     }
@@ -1656,7 +1771,7 @@ impl Renderer {
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         dest: RenderDest,
-        ui_batch: Option<ferrous_gui::GuiBatch>,
+        ui_batch: Option<UiBatch>,
     ) {
         // Frame start: reset the 2D counters so `frame_2d_stats()` reports the
         // counters accumulated by this frame's `prepare_*`/`render_*` calls
@@ -1670,7 +1785,7 @@ impl Renderer {
             RenderDest::View(v) => v,
             RenderDest::Target => unsafe {
                 &*(self.render_target.color_view() as *const wgpu::TextureView)
-            }
+            },
         };
 
         self.camera_system.sync_gpu(&self.context.queue);
@@ -1695,8 +1810,10 @@ impl Renderer {
 
         // Sync material table to all passes that need it (Phase 12 Professional Sync)
         let material_table = self.material_registry.bind_group_table();
-        self.world_pass.set_material_table(&material_table, &self.material_registry);
-        self.prepass.set_material_table(&material_table, &self.material_registry);
+        self.world_pass
+            .set_material_table(&material_table, &self.material_registry);
+        self.prepass
+            .set_material_table(&material_table, &self.material_registry);
         if let Some(p) = &mut self.cel_pass {
             p.set_material_table(&material_table);
         }
@@ -1707,12 +1824,14 @@ impl Renderer {
             p.set_material_table(&material_table);
         }
 
-
         self.render_stats = stats;
 
+        #[cfg(feature = "gui")]
         if let Some(b) = ui_batch {
             packet.insert(b);
         }
+        #[cfg(not(feature = "gui"))]
+        let _ = ui_batch;
 
         // ── Pure2D fast path ───────────────────────────────────────────────
         // Pipeline mínima: Clear → Shapes SDF → Sprites → UI → Extra passes.
@@ -1759,7 +1878,8 @@ impl Renderer {
             // for A/B comparison.
             let n_shapes = self.shape_batcher.instances.len();
             let n_sprites = self.sprite_batcher_2d.total_instances();
-            let total = n_shapes + n_sprites;
+            let n_text = self.text_batcher_2d.len();
+            let total = n_shapes + n_sprites + n_text;
             let scratch_reuse = self.render_2d_config.scratch_reuse;
             // Two or more recorded views switch to the per-view camera path.
             let multi_view = self.views_2d.len() > 1;
@@ -1777,7 +1897,10 @@ impl Renderer {
             let (rmin, rmax) = if cull {
                 self.pure2d_cull_rect()
             } else {
-                (glam::Vec2::splat(f32::NEG_INFINITY), glam::Vec2::splat(f32::INFINITY))
+                (
+                    glam::Vec2::splat(f32::NEG_INFINITY),
+                    glam::Vec2::splat(f32::INFINITY),
+                )
             };
 
             let mut draw_list: Vec<(f32, DrawCommand2d)> = if scratch_reuse {
@@ -1812,6 +1935,14 @@ impl Renderer {
             } else {
                 Vec::with_capacity(n_sprites)
             };
+            let mut text_upload: Vec<TextInstance> = if scratch_reuse {
+                let mut v = std::mem::take(&mut self.text_upload_scratch);
+                v.clear();
+                v.reserve(n_text);
+                v
+            } else {
+                Vec::with_capacity(n_text)
+            };
             let mut coalesced: Vec<Coalesced2dDraw> = if scratch_reuse {
                 let mut v = std::mem::take(&mut self.coalesced_2d_scratch);
                 v.clear();
@@ -1827,11 +1958,11 @@ impl Renderer {
             // submission order; never reorder across view boundaries.
             let shapes_in_order = multi_view
                 || (n_sprites == 0
-                    && self
-                        .shape_batcher
-                        .instances
-                        .windows(2)
-                        .all(|w| !(w[1].transform_c3[2] < w[0].transform_c3[2])));
+                    && n_text == 0
+                    && self.shape_batcher.instances.windows(2).all(|w| {
+                        w[1].transform_c3[2].partial_cmp(&w[0].transform_c3[2])
+                            != Some(std::cmp::Ordering::Less)
+                    }));
 
             if shapes_in_order {
                 for shape in &self.shape_batcher.instances {
@@ -1887,6 +2018,16 @@ impl Renderer {
                         ));
                     }
                 }
+                for (i, (_, inst)) in self.text_batcher_2d.iter().enumerate() {
+                    if cull {
+                        let (amin, amax) = inst.world_aabb();
+                        if !aabb_intersects(amin, amax, rmin, rmax) {
+                            culled += 1;
+                            continue;
+                        }
+                    }
+                    draw_list.push((inst.depth(), DrawCommand2d::Text(i)));
+                }
                 self.renderer_2d_pure.add_culled_instances(culled);
 
                 draw_list.sort_unstable_by(|a, b| {
@@ -1934,6 +2075,26 @@ impl Renderer {
                                 count: sprite_upload.len() as u32 - run_start,
                             });
                         }
+                        DrawCommand2d::Text(first) => {
+                            let font = self.text_batcher_2d[first].0;
+                            let run_start = text_upload.len() as u32;
+                            while i < draw_list.len() {
+                                match draw_list[i].1 {
+                                    DrawCommand2d::Text(idx)
+                                        if self.text_batcher_2d[idx].0 == font =>
+                                    {
+                                        text_upload.push(self.text_batcher_2d[idx].1);
+                                        i += 1;
+                                    }
+                                    _ => break,
+                                }
+                            }
+                            coalesced.push(Coalesced2dDraw::Text {
+                                font,
+                                start: run_start,
+                                count: text_upload.len() as u32 - run_start,
+                            });
+                        }
                     }
                 }
             }
@@ -1943,6 +2104,8 @@ impl Renderer {
                 .prepare_shape_gpu_slice(&self.context.queue, &shape_upload);
             self.renderer_2d_pure
                 .prepare_sprite_slice(&self.context.queue, &sprite_upload);
+            self.renderer_2d_pure
+                .prepare_text_slice(&self.context.queue, &text_upload);
 
             // Multi-view: upload one camera + grid uniform per view (before the
             // pass; uniform buffers cannot be written while encoding).
@@ -2007,8 +2170,12 @@ impl Renderer {
                         if let Some(bg) = self.renderer_2d_pure.view_shape_bg(i) {
                             let start = v.shape_start.min(shape_upload_len) as u32;
                             let end = v.shape_end.min(shape_upload_len) as u32;
-                            self.renderer_2d_pure
-                                .render_shapes_range_bg(&mut rpass, bg, start, end.saturating_sub(start));
+                            self.renderer_2d_pure.render_shapes_range_bg(
+                                &mut rpass,
+                                bg,
+                                start,
+                                end.saturating_sub(start),
+                            );
                         }
                     }
                     // Sprites are not segmented by view yet; draw them once in
@@ -2016,13 +2183,35 @@ impl Renderer {
                     if let Some(bg) = self.renderer_2d_pure.view_sprite_bg(0) {
                         let sprite_bgs = &self.sprite_bind_groups;
                         for draw in &coalesced {
-                            if let Coalesced2dDraw::Sprites { texture_id, start, count } = *draw {
+                            if let Coalesced2dDraw::Sprites {
+                                texture_id,
+                                start,
+                                count,
+                            } = *draw
+                            {
                                 let bg_fn = |id: u32| -> Option<&wgpu::BindGroup> {
                                     sprite_bgs.get(&id).map(|b| b.as_ref())
                                 };
                                 self.renderer_2d_pure.render_sprites_range_bg(
                                     &mut rpass, bg, texture_id, start, count, bg_fn,
                                 );
+                            }
+                        }
+                    }
+                    // Text is not segmented by view yet either; draw it once in
+                    // the first view.
+                    if let Some(cam_bg) = self.renderer_2d_pure.view_text_bg(0) {
+                        for draw in &coalesced {
+                            if let Coalesced2dDraw::Text { font, start, count } = *draw {
+                                if let Some(entry) = self.fonts_2d.get(&font) {
+                                    self.renderer_2d_pure.render_text_range_bg(
+                                        &mut rpass,
+                                        cam_bg,
+                                        &entry.bind_group,
+                                        start,
+                                        count,
+                                    );
+                                }
                             }
                         }
                     }
@@ -2056,12 +2245,18 @@ impl Renderer {
                                     sprite_bgs.get(&id).map(|bg| bg.as_ref())
                                 };
                                 self.renderer_2d_pure.render_sprites_range(
-                                    &mut rpass,
-                                    texture_id,
-                                    start,
-                                    count,
-                                    bg_fn,
+                                    &mut rpass, texture_id, start, count, bg_fn,
                                 );
+                            }
+                            Coalesced2dDraw::Text { font, start, count } => {
+                                if let Some(entry) = self.fonts_2d.get(&font) {
+                                    self.renderer_2d_pure.render_text_range(
+                                        &mut rpass,
+                                        &entry.bind_group,
+                                        start,
+                                        count,
+                                    );
+                                }
                             }
                         }
                     }
@@ -2074,6 +2269,7 @@ impl Renderer {
                 self.sprite_flat_scratch = sprite_flat;
                 self.shape_upload_scratch = shape_upload;
                 self.sprite_upload_scratch = sprite_upload;
+                self.text_upload_scratch = text_upload;
                 self.coalesced_2d_scratch = coalesced;
             }
 
@@ -2083,7 +2279,8 @@ impl Renderer {
             // UI Pass encima (texto, overlays, debug GUI)
             #[cfg(feature = "gui")]
             {
-                self.ui_pass.prepare(&self.context.device, &self.context.queue, &packet);
+                self.ui_pass
+                    .prepare(&self.context.device, &self.context.queue, &packet);
                 self.ui_pass.execute(
                     &self.context.device,
                     &self.context.queue,
@@ -2115,17 +2312,20 @@ impl Renderer {
 
         // ── Flat2D fast path ───────────────────────────────────────────────
         if self.mode == RendererMode::Flat2D {
-
-            self.ui_pass.prepare(&self.context.device, &self.context.queue, &packet);
-            self.ui_pass.execute(
-                &self.context.device,
-                &self.context.queue,
-                encoder,
-                target_view,
-                None,
-                None,
-                &packet,
-            );
+            #[cfg(feature = "gui")]
+            {
+                self.ui_pass
+                    .prepare(&self.context.device, &self.context.queue, &packet);
+                self.ui_pass.execute(
+                    &self.context.device,
+                    &self.context.queue,
+                    encoder,
+                    target_view,
+                    None,
+                    None,
+                    &packet,
+                );
+            }
             for pass in &mut self.extra_passes {
                 pass.prepare(&self.context.device, &self.context.queue, &packet);
                 pass.execute(
@@ -2152,8 +2352,10 @@ impl Renderer {
         {
             let v = self.camera_system.view_matrix();
             let p = self.camera_system.proj_matrix();
-            self.prepass.update_camera(&self.context.queue, v, p, self.camera_system.camera.eye);
-            self.prepass.prepare(&self.context.device, &self.context.queue, &packet);
+            self.prepass
+                .update_camera(&self.context.queue, v, p, self.camera_system.camera.eye);
+            self.prepass
+                .prepare(&self.context.device, &self.context.queue, &packet);
             self.prepass.execute(
                 &self.context.device,
                 &self.context.queue,
@@ -2170,21 +2372,40 @@ impl Renderer {
             let p = self.camera_system.proj_matrix();
             let ssao_w = self.ssao_pass.ssao_texture.width;
             let ssao_h = self.ssao_pass.ssao_texture.height;
-            self.ssao_resources.update_params(&self.context.queue, ssao_w, ssao_h, p, p.inverse());
+            self.ssao_resources
+                .update_params(&self.context.queue, ssao_w, ssao_h, p, p.inverse());
 
-            self.ssao_pass.run(&self.context.device, encoder, &self.ssao_resources, &self.prepass.normal_depth);
-            self.ssao_blur_pass.run(&self.context.device, encoder, &self.ssao_pass.ssao_texture, &self.prepass.normal_depth);
+            self.ssao_pass.run(
+                &self.context.device,
+                encoder,
+                &self.ssao_resources,
+                &self.prepass.normal_depth,
+            );
+            self.ssao_blur_pass.run(
+                &self.context.device,
+                encoder,
+                &self.ssao_pass.ssao_texture,
+                &self.prepass.normal_depth,
+            );
 
-            let ssao_view = Arc::new(self.ssao_blur_pass.blurred.texture.create_view(&wgpu::TextureViewDescriptor::default()));
-            let ssao_sampler = Arc::new(self.context.device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some("SSAO Result Sampler"),
-                mag_filter: wgpu::FilterMode::Nearest,
-                min_filter: wgpu::FilterMode::Nearest,
-                address_mode_u: wgpu::AddressMode::ClampToEdge,
-                address_mode_v: wgpu::AddressMode::ClampToEdge,
-                ..Default::default()
-            }));
-            self.world_pass.update_ssao(&self.context.device, ssao_view, ssao_sampler);
+            let ssao_view = Arc::new(
+                self.ssao_blur_pass
+                    .blurred
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor::default()),
+            );
+            let ssao_sampler = Arc::new(self.context.device.create_sampler(
+                &wgpu::SamplerDescriptor {
+                    label: Some("SSAO Result Sampler"),
+                    mag_filter: wgpu::FilterMode::Nearest,
+                    min_filter: wgpu::FilterMode::Nearest,
+                    address_mode_u: wgpu::AddressMode::ClampToEdge,
+                    address_mode_v: wgpu::AddressMode::ClampToEdge,
+                    ..Default::default()
+                },
+            ));
+            self.world_pass
+                .update_ssao(&self.context.device, ssao_view, ssao_sampler);
         }
 
         // -- 3. Phase 11: GPU cull compute dispatch (if enabled) --------------
@@ -2199,7 +2420,8 @@ impl Renderer {
         }
 
         // -- 4. World Pass (Opaque + Blended) ----------------------------------
-        self.world_pass.prepare(&self.context.device, &self.context.queue, &packet);
+        self.world_pass
+            .prepare(&self.context.device, &self.context.queue, &packet);
         self.world_pass.execute(
             &self.context.device,
             &self.context.queue,
@@ -2210,14 +2432,15 @@ impl Renderer {
             &packet,
         );
 
-        let (scene_view, scene_rt) = if let Some(m_view) = &self.world_pass.hdr_texture.multisampled_view {
-            (m_view, Some(&self.world_pass.hdr_texture.view))
-        } else {
-            (&self.world_pass.hdr_texture.view, None)
-        };
+        let (scene_view, scene_rt) =
+            if let Some(m_view) = &self.world_pass.hdr_texture.multisampled_view {
+                (m_view, Some(&self.world_pass.hdr_texture.view))
+            } else {
+                (&self.world_pass.hdr_texture.view, None)
+            };
         if let Some(ps) = &self.particle_system {
             ps.run_compute(encoder);
-            
+
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Particle Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -2245,7 +2468,10 @@ impl Renderer {
         // -- 5. Render Style Passes ------------------------------------------
 
         match &self.render_style {
-            RenderStyle::CelShaded { toon_levels, outline_width } => {
+            RenderStyle::CelShaded {
+                toon_levels,
+                outline_width,
+            } => {
                 let toon_levels = *toon_levels;
                 let outline_width = *outline_width;
                 packet.insert(crate::passes::CelFrameData {
@@ -2263,20 +2489,46 @@ impl Renderer {
                 }
                 if let Some(p) = &mut self.cel_pass {
                     p.prepare(&self.context.device, &self.context.queue, &packet);
-                    p.execute(&self.context.device, &self.context.queue, encoder, scene_view, scene_rt, Some(&self.render_target.depth.view), &packet);
+                    p.execute(
+                        &self.context.device,
+                        &self.context.queue,
+                        encoder,
+                        scene_view,
+                        scene_rt,
+                        Some(&self.render_target.depth.view),
+                        &packet,
+                    );
                 }
                 if outline_width > 0.0 {
                     if let Some(p) = &mut self.outline_pass {
                         p.prepare(&self.context.device, &self.context.queue, &packet);
-                        p.execute(&self.context.device, &self.context.queue, encoder, scene_view, scene_rt, Some(&self.render_target.depth.view), &packet);
+                        p.execute(
+                            &self.context.device,
+                            &self.context.queue,
+                            encoder,
+                            scene_view,
+                            scene_rt,
+                            Some(&self.render_target.depth.view),
+                            &packet,
+                        );
                     }
                 }
             }
             RenderStyle::FlatShaded => {
-                packet.insert(crate::passes::FlatFrameData { light: self.current_dir_light });
+                packet.insert(crate::passes::FlatFrameData {
+                    light: self.current_dir_light,
+                });
                 if let Some(p) = &mut self.flat_pass {
                     p.prepare(&self.context.device, &self.context.queue, &packet);
-                    p.execute(&self.context.device, &self.context.queue, encoder, scene_view, scene_rt, Some(&self.render_target.depth.view), &packet);
+                    p.execute(
+                        &self.context.device,
+                        &self.context.queue,
+                        encoder,
+                        scene_view,
+                        scene_rt,
+                        Some(&self.render_target.depth.view),
+                        &packet,
+                    );
                 }
             }
             RenderStyle::Pbr => {}
@@ -2287,7 +2539,14 @@ impl Renderer {
             self.gizmo_system.draw_line(line);
         }
 
-        self.gizmo_system.execute(&self.context.device, encoder, scene_view, scene_rt, &self.render_target.depth.view, &self.camera_system.gpu.bind_group);
+        self.gizmo_system.execute(
+            &self.context.device,
+            encoder,
+            scene_view,
+            scene_rt,
+            &self.render_target.depth.view,
+            &self.camera_system.gpu.bind_group,
+        );
 
         // -- 6a. Technical 2D Pass (Walls, etc.) -------------------------------
         // The 2D overlay is a screen-space pass: it must receive an independent
@@ -2301,7 +2560,7 @@ impl Renderer {
         self.renderer_2d.update_camera(
             &self.context.queue,
             self.overlay_2d_view_proj(),
-            glam::Vec2::new(self.width as f32, self.height as f32)
+            glam::Vec2::new(self.width as f32, self.height as f32),
         );
 
         // Sync components from the world if we are in a mode that supports it
@@ -2309,9 +2568,10 @@ impl Renderer {
         // Note: For now we only sync if we have a source of truth for the world.
         // In the full game loop, this happens during sync_world, but we can do it here too
         // if we want to support immediate-mode style draw_2d_path.
-        
-        self.renderer_2d.prepare_shapes(&self.context.queue, &self.shape_batcher);
-        
+
+        self.renderer_2d
+            .prepare_shapes(&self.context.queue, &self.shape_batcher);
+
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Technical 2D Render Pass"),
@@ -2334,14 +2594,16 @@ impl Renderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            self.renderer_2d.render_shapes(&mut rpass, &self.shape_batcher);
+            self.renderer_2d
+                .render_shapes(&mut rpass, &self.shape_batcher);
         }
 
         // -- 6b. UI Pass (Hardware MSAA) ---------------------------------------
         // By rendering UI to the MSAA target before resolve, we get perfect edges.
         #[cfg(feature = "gui")]
         {
-            self.ui_pass.prepare(&self.context.device, &self.context.queue, &packet);
+            self.ui_pass
+                .prepare(&self.context.device, &self.context.queue, &packet);
             self.ui_pass.execute(
                 &self.context.device,
                 &self.context.queue,
@@ -2355,8 +2617,10 @@ impl Renderer {
 
         // -- 6c. Antialiasing Pass (between gizmos and tone-mapping) -----------
 
-        self.aa_pass.update_params(&self.context.queue, self.width, self.height);
-        self.aa_pass.run_aa(&self.context.device, encoder, &self.world_pass.hdr_texture);
+        self.aa_pass
+            .update_params(&self.context.queue, self.width, self.height);
+        self.aa_pass
+            .run_aa(&self.context.device, encoder, &self.world_pass.hdr_texture);
 
         // -- 7. Post-Process (Tone Mapping) ------------------------------------
         // Route through AA output when a mode is active; fall back to raw HDR.
@@ -2364,7 +2628,8 @@ impl Renderer {
         match self.aa_pass.mode {
             AntialiasingMode::None => {
                 self.post_process_pass.render(
-                    &self.context.device, encoder,
+                    &self.context.device,
+                    encoder,
                     &self.world_pass.hdr_texture,
                     target_view,
                     &self.camera_system.gpu.bind_group,
@@ -2375,16 +2640,19 @@ impl Renderer {
                 // We need to pass the views by raw ptr to avoid conflicting borrows
                 // with the encoder.  This is sound because the textures outlive
                 // the render pass scope and are never moved during the blit.
-                let aa_view    = self.aa_pass.output(&self.world_pass.hdr_texture) as *const _;
-                let aa_sampler = self.aa_pass.output_sampler(&self.world_pass.hdr_texture) as *const _;
+                let aa_view = self.aa_pass.output(&self.world_pass.hdr_texture) as *const _;
+                let aa_sampler =
+                    self.aa_pass.output_sampler(&self.world_pass.hdr_texture) as *const _;
                 // SAFETY: views & samplers are GPU-side descriptors stored in
                 // self.aa_pass / self.world_pass which cannot be deallocated while
                 // self is alive.
-                let aa_view    = unsafe { &*aa_view };
+                let aa_view = unsafe { &*aa_view };
                 let aa_sampler = unsafe { &*aa_sampler };
                 self.post_process_pass.render_with_view(
-                    &self.context.device, encoder,
-                    aa_view, aa_sampler,
+                    &self.context.device,
+                    encoder,
+                    aa_view,
+                    aa_sampler,
                     &self.world_pass.hdr_texture,
                     target_view,
                     &self.camera_system.gpu.bind_group,
@@ -2392,18 +2660,29 @@ impl Renderer {
             }
         }
 
-
         // -- 9. Extra Passes ---------------------------------------------------
         for pass in &mut self.extra_passes {
             pass.prepare(&self.context.device, &self.context.queue, &packet);
-            pass.execute(&self.context.device, &self.context.queue, encoder, target_view, None, None, &packet);
+            pass.execute(
+                &self.context.device,
+                &self.context.queue,
+                encoder,
+                target_view,
+                None,
+                None,
+                &packet,
+            );
         }
 
         self.frame_builder.reclaim(packet);
     }
 
-
-    pub fn register_texture_linear(&mut self, w: u32, h: u32, pixels: &[u8]) -> crate::resources::TextureHandle {
+    pub fn register_texture_linear(
+        &mut self,
+        w: u32,
+        h: u32,
+        pixels: &[u8],
+    ) -> crate::resources::TextureHandle {
         crate::renderer_api::register_texture(
             &mut self.material_registry,
             &self.context.device,
@@ -2415,7 +2694,12 @@ impl Renderer {
         )
     }
 
-    pub fn register_texture(&mut self, w: u32, h: u32, pixels: &[u8]) -> crate::resources::TextureHandle {
+    pub fn register_texture(
+        &mut self,
+        w: u32,
+        h: u32,
+        pixels: &[u8],
+    ) -> crate::resources::TextureHandle {
         crate::renderer_api::register_texture(
             &mut self.material_registry,
             &self.context.device,
@@ -2427,7 +2711,10 @@ impl Renderer {
         )
     }
 
-    pub fn create_material(&mut self, desc: &ferrous_core::scene::MaterialDescriptor) -> ferrous_core::scene::MaterialHandle {
+    pub fn create_material(
+        &mut self,
+        desc: &ferrous_core::scene::MaterialDescriptor,
+    ) -> ferrous_core::scene::MaterialHandle {
         crate::renderer_api::create_material(
             &mut self.material_registry,
             &self.context.device,
@@ -2437,7 +2724,11 @@ impl Renderer {
         )
     }
 
-    pub fn update_material_params(&mut self, handle: ferrous_core::scene::MaterialHandle, desc: &ferrous_core::scene::MaterialDescriptor) {
+    pub fn update_material_params(
+        &mut self,
+        handle: ferrous_core::scene::MaterialHandle,
+        desc: &ferrous_core::scene::MaterialDescriptor,
+    ) {
         crate::renderer_api::update_material_params(
             &mut self.material_registry,
             &self.context.queue,
@@ -2456,7 +2747,8 @@ impl Renderer {
     pub fn set_clear_color(&mut self, color: wgpu::Color) {
         crate::renderer_api::set_clear_color(
             &mut self.world_pass,
-            #[cfg(feature = "gui")] &mut self.ui_pass,
+            #[cfg(feature = "gui")]
+            &mut self.ui_pass,
             self.mode,
             color,
         );
@@ -2474,14 +2766,12 @@ impl Renderer {
         self.mark_dirty();
     }
 
-
-
     pub fn set_ssao_params(&mut self, radius: f32, bias: f32, intensity: f32, power: f32) {
         self.ssao_resources.radius = radius;
         self.ssao_resources.bias = bias;
         self.ssao_resources.intensity = intensity;
         self.ssao_resources.power = power;
-        
+
         // Sync to GPU immediately so the next frame uses new params
         let proj = self.camera_system.proj_matrix();
         self.ssao_resources.update_params(
@@ -2541,7 +2831,7 @@ impl Renderer {
         self.shape_batcher.instances.extend_from_slice(shapes);
     }
 
-    /// Push a technical 2D path for rendering this frame. 
+    /// Push a technical 2D path for rendering this frame.
     /// Dibuja un sprite texturizdo en Pure2D mode.
     ///
     /// `texture_id` debe obtenerse de `register_sprite_texture()`.
@@ -2552,7 +2842,11 @@ impl Renderer {
     /// let tex_id = renderer.register_sprite_texture(64, 64, &rgba_data);
     /// renderer.draw_sprite_2d(tex_id, ferrous_2d::render::SpriteInstance { ... });
     /// ```
-    pub fn draw_sprite_2d(&mut self, texture_id: u32, instance: ferrous_2d::render::SpriteInstance) {
+    pub fn draw_sprite_2d(
+        &mut self,
+        texture_id: u32,
+        instance: ferrous_2d::render::SpriteInstance,
+    ) {
         self.sprite_batcher_2d.push_sprite(texture_id, instance);
     }
 
@@ -2570,37 +2864,38 @@ impl Renderer {
                     let end = *target;
                     let delta = end - start;
                     let length = delta.length();
-                    
+
                     if length > 0.0001 {
                         let center = (start + end) * 0.5;
                         let rotation = delta.y.atan2(delta.x);
-                        
+
                         // For a capsule/line with round caps to hit the exact start/end points,
                         // the total geometry length must be length + width.
                         let stroke_width = path.stroke_width;
                         let geom_length = length + stroke_width;
-                        
+
                         let model = ferrous_core::glam::Mat4::from_scale_rotation_translation(
                             ferrous_core::glam::Vec3::new(geom_length, stroke_width, 1.0),
                             ferrous_core::glam::Quat::from_rotation_z(rotation),
                             ferrous_core::glam::Vec3::new(center.x, center.y, path.z_index),
                         );
 
-                        self.shape_batcher.push_shape(ferrous_2d::render::types::ShapeInstance {
-                            transform_c0: model.x_axis.into(),
-                            transform_c1: model.y_axis.into(),
-                            transform_c2: model.z_axis.into(),
-                            transform_c3: model.w_axis.into(),
-                            color: path.stroke_color,
-                            params: [
-                                stroke_width,
-                                stroke_width * 0.5, // Perfect round caps center at start/end
-                                2.0,                // Slightly smoother AA
-                                1.0,
-                            ],
-                            ext0: [0.0; 4],
-                            ext1: 0.0,
-                        });
+                        self.shape_batcher
+                            .push_shape(ferrous_2d::render::types::ShapeInstance {
+                                transform_c0: model.x_axis.into(),
+                                transform_c1: model.y_axis.into(),
+                                transform_c2: model.z_axis.into(),
+                                transform_c3: model.w_axis.into(),
+                                color: path.stroke_color,
+                                params: [
+                                    stroke_width,
+                                    stroke_width * 0.5, // Perfect round caps center at start/end
+                                    2.0,                // Slightly smoother AA
+                                    1.0,
+                                ],
+                                ext0: [0.0; 4],
+                                ext1: 0.0,
+                            });
                     }
                     cursor = end;
                 }
@@ -2609,13 +2904,16 @@ impl Renderer {
     }
 
     /// Push a fully-assembled SceneData to the renderer for this frame.
-
     pub fn set_scene(&mut self, scene: &SceneData) {
         if let Some(cam) = &scene.camera {
             self.camera_system.camera.eye = cam.eye;
             self.camera_system.camera.target = cam.target;
-            self.camera_system.camera.set_fov_degrees(cam.fov_y.to_degrees());
-            self.camera_system.camera.set_near_far(cam.z_near, cam.z_far);
+            self.camera_system
+                .camera
+                .set_fov_degrees(cam.fov_y.to_degrees());
+            self.camera_system
+                .camera
+                .set_near_far(cam.z_near, cam.z_far);
         }
 
         if let Some(light) = &scene.directional_light {
@@ -2646,9 +2944,18 @@ pub struct DebugLine {
 }
 
 impl Renderer {
-    pub fn draw_line(&mut self, start: ferrous_core::glam::Vec3, end: ferrous_core::glam::Vec3, color: Color) {
+    pub fn draw_line(
+        &mut self,
+        start: ferrous_core::glam::Vec3,
+        end: ferrous_core::glam::Vec3,
+        color: Color,
+    ) {
         let [r, g, b, _] = color.to_array();
-        self.debug_lines.push(DebugLine { start, end, color: [r, g, b] });
+        self.debug_lines.push(DebugLine {
+            start,
+            end,
+            color: [r, g, b],
+        });
         self.mark_dirty();
     }
 
@@ -2675,11 +2982,7 @@ impl Renderer {
         let hh = self.height as f32 * 0.5;
 
         // Same eye/target/up as `set_mode_2d(true, ...)`.
-        let view = Mat4::look_at_rh(
-            Vec3::new(0.0, 0.0, 10.0),
-            Vec3::ZERO,
-            Vec3::Y,
-        );
+        let view = Mat4::look_at_rh(Vec3::new(0.0, 0.0, 10.0), Vec3::ZERO, Vec3::Y);
         let proj = Mat4::orthographic_rh(-hw, hw, -hh, hh, -100.0, 100.0);
         let corrected = crate::resources::camera::OPENGL_TO_WGPU_MATRIX * proj;
         corrected * view
@@ -2722,7 +3025,11 @@ impl Renderer {
             &self.context.queue,
             &wgpu::TextureDescriptor {
                 label: Some("Sprite2D Texture"),
-                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -2735,16 +3042,19 @@ impl Renderer {
         );
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let sampler = self.context.device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Sprite2D Sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: filter,
-            min_filter: filter,
-            mipmap_filter: wgpu::FilterMode::Nearest,
-            ..Default::default()
-        });
+        let sampler = self
+            .context
+            .device
+            .create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("Sprite2D Sampler"),
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
+                mag_filter: filter,
+                min_filter: filter,
+                mipmap_filter: wgpu::FilterMode::Nearest,
+                ..Default::default()
+            });
 
         let bind_group = std::sync::Arc::new(self.context.device.create_bind_group(
             &wgpu::BindGroupDescriptor {
@@ -2791,11 +3101,150 @@ impl Renderer {
         }
     }
 
-    /// Clears 2D batchers (shapes and sprites). Call this at the start of every frame
-    /// to avoid "ghosting" (accumulation of shapes).
+    /// Bake a font MSDF atlas and register it for Pure2D text.
+    ///
+    /// The atlas is built once; every [`Self::draw_text_2d`] call with the
+    /// returned [`FontId2d`] reuses it.  Free it with [`Self::free_font_2d`].
+    /// An empty `charset` falls back to `ferrous_font::charset::latin_western`.
+    pub fn register_font_2d<I>(&mut self, bytes: &[u8], charset: I) -> Result<FontId2d, FontError>
+    where
+        I: IntoIterator<Item = char>,
+    {
+        let font = ferrous_font::Font::try_load_bytes(
+            bytes,
+            &self.context.device,
+            &self.context.queue,
+            charset,
+        )?;
+        let bind_group = std::sync::Arc::new(
+            self.context
+                .device
+                .create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("2D Font Bind Group"),
+                    layout: &self
+                        .renderer_2d_pure
+                        .text_pipeline
+                        .texture_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&font.atlas.view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&font.atlas.sampler),
+                        },
+                    ],
+                }),
+        );
+        let id = match self.freed_font_2d_ids.pop() {
+            Some(recycled) => recycled,
+            None => {
+                let fresh = self.next_font_2d_id;
+                self.next_font_2d_id += 1;
+                fresh
+            }
+        };
+        let font_id = FontId2d(id);
+        self.fonts_2d
+            .insert(font_id, Font2dEntry { font, bind_group });
+        Ok(font_id)
+    }
+
+    /// Free a 2D font and recycle its handle.
+    ///
+    /// Pending glyphs of that font are dropped from the current frame's text
+    /// batch; later draws with the stale handle are ignored with a warning.
+    pub fn free_font_2d(&mut self, font_id: FontId2d) {
+        if self.fonts_2d.remove(&font_id).is_some() {
+            self.text_batcher_2d.retain(|(f, _)| *f != font_id);
+            if !self.freed_font_2d_ids.contains(&font_id.0) {
+                self.freed_font_2d_ids.push(font_id.0);
+            }
+        }
+    }
+
+    /// Number of live 2D fonts.
+    pub fn font_count_2d(&self) -> usize {
+        self.fonts_2d.len()
+    }
+
+    /// Lay out and queue one line of Pure2D text for this frame.
+    ///
+    /// Each visible glyph becomes one [`TextInstance`] whose model matrix is
+    /// `transform × quad placement`, so rotation, non-uniform scale and parent
+    /// transforms compose exactly like shapes and sprites.  Depth is
+    /// `transform`'s translation `z`, shared by every glyph of the call; glyphs
+    /// keep submission order for equal `z`, so alternate fonts do not reorder.
+    ///
+    /// Layout uses a reusable scratch buffer, so steady-state calls allocate
+    /// nothing.
+    pub fn draw_text_2d(
+        &mut self,
+        font_id: FontId2d,
+        text: &str,
+        transform: glam::Mat4,
+        size_px: f32,
+        align: TextAlign,
+        color: [f32; 4],
+    ) {
+        let Some(entry) = self.fonts_2d.get(&font_id) else {
+            log::warn!(
+                "draw_text_2d called with an unknown FontId2d({})",
+                font_id.0
+            );
+            return;
+        };
+
+        let mut layout = std::mem::take(&mut self.text_layout_scratch);
+        entry
+            .font
+            .atlas
+            .layout_line(text, size_px, align, &mut layout);
+        let px_range = entry.font.atlas.px_range;
+
+        for quad in &layout {
+            let [left, bottom, right, top] = quad.bounds;
+            let width = (right - left).max(0.0);
+            let height = (top - bottom).max(0.0);
+            let placement = glam::Mat4::from_translation(glam::Vec3::new(left, bottom, 0.0))
+                * glam::Mat4::from_scale(glam::Vec3::new(width, height, 1.0));
+            let model = transform * placement;
+            self.text_batcher_2d
+                .push((font_id, TextInstance::new(model, quad.uv, color, px_range)));
+        }
+
+        self.text_layout_scratch = layout;
+    }
+
+    /// Measure one line of Pure2D text without drawing it.
+    ///
+    /// Returns the line's total advance, vertical metrics and glyph count.
+    /// Measurement allocates a small local buffer; the draw path itself reuses
+    /// its scratch buffer instead.
+    pub fn measure_text_2d(
+        &self,
+        font_id: FontId2d,
+        text: &str,
+        size_px: f32,
+        align: TextAlign,
+    ) -> Option<ferrous_font::LineMetrics> {
+        let entry = self.fonts_2d.get(&font_id)?;
+        let mut quads = Vec::new();
+        Some(
+            entry
+                .font
+                .atlas
+                .layout_line(text, size_px, align, &mut quads),
+        )
+    }
+
+    /// Clears 2D batchers (shapes, sprites and text). Call this at the start of
+    /// every frame to avoid "ghosting" (accumulation of geometry).
     pub fn clear_2d(&mut self) {
         self.shape_batcher.clear();
         self.sprite_batcher_2d.clear();
+        self.text_batcher_2d.clear();
         self.views_2d.clear();
         self.view_2d_open = false;
     }

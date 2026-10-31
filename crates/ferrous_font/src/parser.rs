@@ -4,27 +4,119 @@ use super::tables::TableRecord;
 use std::collections::HashMap;
 use std::io::{Read, Seek};
 
+/// A rectangle in em units (1.0 = one em).  Y points up and the origin is the
+/// glyph's baseline origin (the pen position).
+///
+/// Used both for the font's global bounding box ([`FontMetrics::bbox`]) and for
+/// individual glyph ink bounds ([`FontParser::get_glyph_bounds`]).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct GlyphBounds {
+    /// Left edge (`xMin`).
+    pub left: f32,
+    /// Bottom edge (`yMin`).
+    pub bottom: f32,
+    /// Right edge (`xMax`).
+    pub right: f32,
+    /// Top edge (`yMax`).
+    pub top: f32,
+}
+
+/// Vertical metrics of a font, normalised to em units.
+///
+/// The values come from the `head` and `hhea` tables:
+///
+/// * `ascender` / `descender` / `line_gap` are `hhea` values divided by
+///   `units_per_em`; `descender` is negative for a normal font.
+/// * `bbox` is the global glyph bounding box from `head`, also in em units.
+///
+/// Multiply by the layout size in pixels to obtain pixel values.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct FontMetrics {
+    /// Font design units per em (`head.unitsPerEm`).
+    pub units_per_em: u16,
+    /// Distance from the baseline to the ascender (`hhea.ascender`), in em.
+    pub ascender: f32,
+    /// Distance from the baseline to the descender (`hhea.descender`), in em.
+    /// Negative for a normal font.
+    pub descender: f32,
+    /// Recommended extra space between lines (`hhea.lineGap`), in em.
+    pub line_gap: f32,
+    /// Global glyph bounding box from `head`, in em.
+    pub bbox: GlyphBounds,
+}
+
+/// TrueType/OpenType font parser.
+///
+/// Exposes glyph outlines (normalised to em units), advances, vertical metrics,
+/// per-glyph ink bounds and `kern` format 0 kerning.  GPOS kerning is detected
+/// but not applied (out of scope); [`Self::has_gpos_kerning`] reports it.
 pub struct FontParser {
     data: Vec<u8>,
     tables: HashMap<[u8; 4], TableRecord>,
     index_to_loc_format: i16,
     pub units_per_em: u16,
+    metrics: FontMetrics,
+    /// `kern` format 0 pairs in em units, keyed by glyph indices.
+    kerning: HashMap<(u16, u16), f32>,
+    has_gpos: bool,
 }
 
 impl FontParser {
+    /// Parse a font from raw bytes.
+    ///
+    /// Reads the table directory, `head`, `loca`, `hhea` and `kern`.  A missing
+    /// optional table is not an error; missing `head`/`loca` is.
     pub fn new(data: Vec<u8>) -> Result<Self, String> {
         let mut parser = FontParser {
             data,
             tables: HashMap::new(),
             index_to_loc_format: 0,
             units_per_em: 0,
+            metrics: FontMetrics::default(),
+            kerning: HashMap::new(),
+            has_gpos: false,
         };
         parser
             .read_offset_and_directory()
             .map_err(|e| e.to_string())?;
         parser.read_head().map_err(|e| e.to_string())?;
         parser.read_loca().map_err(|e| e.to_string())?;
+        parser.read_hhea().map_err(|e| e.to_string())?;
+        parser.read_kern();
+        parser.has_gpos = parser.tables.contains_key(b"GPOS");
+        if parser.has_gpos {
+            // Logged once per parsed font; GPOS kerning is intentionally out of
+            // scope for this parser.
+            log::debug!("font has a GPOS table; only 'kern' format 0 kerning is applied");
+        }
         Ok(parser)
+    }
+
+    /// Vertical metrics in em units (see [`FontMetrics`]).
+    pub fn metrics(&self) -> FontMetrics {
+        self.metrics
+    }
+
+    /// Whether the font carries a `GPOS` table (kerning is **not** read from it).
+    pub fn has_gpos_kerning(&self) -> bool {
+        self.has_gpos
+    }
+
+    /// Whether a `kern` table was found and parsed.
+    pub fn has_kern_table(&self) -> bool {
+        !self.kerning.is_empty()
+    }
+
+    /// All parsed `kern` format 0 pairs, in em units, keyed by glyph indices.
+    pub fn kerning_pairs(&self) -> &HashMap<(u16, u16), f32> {
+        &self.kerning
+    }
+
+    /// Kerning adjustment between two characters in em units (0.0 if absent).
+    pub fn get_kerning(&self, left: char, right: char) -> f32 {
+        let l = self.get_glyph_index(left);
+        let r = self.get_glyph_index(right);
+        self.kerning.get(&(l, r)).copied().unwrap_or(0.0)
     }
 
     fn read_offset_and_directory(&mut self) -> std::io::Result<()> {
@@ -63,8 +155,22 @@ impl FontParser {
         );
         cur.set_position(18);
         self.units_per_em = read_u16_be(&mut cur)?;
+        cur.set_position(36);
+        let x_min = read_i16_be(&mut cur)? as f32;
+        let y_min = read_i16_be(&mut cur)? as f32;
+        let x_max = read_i16_be(&mut cur)? as f32;
+        let y_max = read_i16_be(&mut cur)? as f32;
         cur.set_position(50);
         self.index_to_loc_format = read_i16_be(&mut cur)?;
+
+        self.metrics.units_per_em = self.units_per_em;
+        let upm = self.units_per_em.max(1) as f32;
+        self.metrics.bbox = GlyphBounds {
+            left: x_min / upm,
+            bottom: y_min / upm,
+            right: x_max / upm,
+            top: y_max / upm,
+        };
         Ok(())
     }
 
@@ -73,6 +179,81 @@ impl FontParser {
             return Err(std::io::Error::other("no loca"));
         }
         Ok(())
+    }
+
+    /// Read `hhea` ascender/descender/lineGap into [`Self::metrics`].
+    ///
+    /// A missing table leaves the fields at zero; it is not an error.
+    fn read_hhea(&mut self) -> std::io::Result<()> {
+        let Some(rec) = self.tables.get(b"hhea") else {
+            return Ok(());
+        };
+        let end = (rec.offset as usize).saturating_add(rec.length as usize);
+        if end > self.data.len() || rec.length < 10 {
+            return Ok(());
+        }
+        let mut cur = std::io::Cursor::new(&self.data[rec.offset as usize..end]);
+        cur.set_position(4);
+        let ascender = read_i16_be(&mut cur)?;
+        let descender = read_i16_be(&mut cur)?;
+        let line_gap = read_i16_be(&mut cur)?;
+        let upm = self.units_per_em.max(1) as f32;
+        self.metrics.ascender = ascender as f32 / upm;
+        self.metrics.descender = descender as f32 / upm;
+        self.metrics.line_gap = line_gap as f32 / upm;
+        Ok(())
+    }
+
+    /// Parse `kern` format 0 horizontal pairs into [`Self::kerning`].
+    ///
+    /// Invalid or unsupported subtables are skipped; never panics.
+    fn read_kern(&mut self) {
+        let Some(rec) = self.tables.get(b"kern") else {
+            return;
+        };
+        let start = rec.offset as usize;
+        let end = start
+            .saturating_add(rec.length as usize)
+            .min(self.data.len());
+        if end <= start + 4 {
+            return;
+        }
+        let data = &self.data[start..end];
+        let version = u16::from_be_bytes([data[0], data[1]]);
+        if version != 0 {
+            // Apple `kern` version 1 is not supported.
+            return;
+        }
+        let num_tables = u16::from_be_bytes([data[2], data[3]]) as usize;
+        let upm = self.units_per_em.max(1) as f32;
+        let mut pos = 4usize;
+        for _ in 0..num_tables {
+            if pos + 6 > data.len() {
+                break;
+            }
+            let length = u16::from_be_bytes([data[pos + 2], data[pos + 3]]) as usize;
+            let coverage = u16::from_be_bytes([data[pos + 4], data[pos + 5]]);
+            let format = coverage >> 8;
+            let horizontal = coverage & 0x1 != 0;
+            // Format 0 subtable: 6-byte header + 8-byte format header + pairs.
+            if format == 0 && horizontal && pos + 14 <= data.len() {
+                let n_pairs = u16::from_be_bytes([data[pos + 6], data[pos + 7]]) as usize;
+                let pairs_start = pos + 14;
+                if pairs_start + n_pairs * 6 <= data.len() {
+                    for i in 0..n_pairs {
+                        let p = pairs_start + i * 6;
+                        let left = u16::from_be_bytes([data[p], data[p + 1]]);
+                        let right = u16::from_be_bytes([data[p + 2], data[p + 3]]);
+                        let value = i16::from_be_bytes([data[p + 4], data[p + 5]]) as f32;
+                        self.kerning.insert((left, right), value / upm);
+                    }
+                }
+            }
+            if length < 6 {
+                break;
+            }
+            pos += length;
+        }
     }
 
     pub fn get_glyph_index(&self, c: char) -> u16 {
@@ -596,8 +777,17 @@ impl FontParser {
         self.parse_glyph_recursive(idx, 0)
     }
 
+    /// Outline of the glyph at `glyph_index` (0 = the `.notdef` glyph).
+    pub fn get_glyph_outline_by_index(&self, glyph_index: u16) -> Vec<GlyphCommand> {
+        self.parse_glyph_recursive(glyph_index, 0)
+    }
+
     pub fn get_glyph_advance(&self, c: char) -> f32 {
-        let idx = self.get_glyph_index(c);
+        self.get_glyph_advance_by_index(self.get_glyph_index(c))
+    }
+
+    /// Advance width of the glyph at `glyph_index`, in em units.
+    pub fn get_glyph_advance_by_index(&self, idx: u16) -> f32 {
         let hmtx_rec = match self.tables.get(b"hmtx") {
             Some(r) => r,
             None => return 0.0,
@@ -606,9 +796,15 @@ impl FontParser {
             Some(r) => r,
             None => return 0.0,
         };
+        if hhea_rec.offset as usize + 36 > self.data.len() {
+            return 0.0;
+        }
         let mut cur = std::io::Cursor::new(&self.data);
         cur.set_position(hhea_rec.offset as u64 + 34);
         let num_h = read_u16_be(&mut cur).unwrap_or(0);
+        if num_h == 0 {
+            return 0.0;
+        }
         let adv = if idx < num_h {
             cur.set_position(hmtx_rec.offset as u64 + (idx as u64 * 4));
             read_u16_be(&mut cur).unwrap_or(0)
@@ -616,7 +812,38 @@ impl FontParser {
             cur.set_position(hmtx_rec.offset as u64 + ((num_h as u64 - 1) * 4));
             read_u16_be(&mut cur).unwrap_or(0)
         };
-        adv as f32 / self.units_per_em as f32
+        adv as f32 / self.units_per_em.max(1) as f32
+    }
+
+    /// Ink bounds of a character from its `glyf` header, in em units.
+    ///
+    /// Returns `None` for an empty glyph (for example a space) or when the
+    /// `glyf`/`loca` tables are unavailable.
+    pub fn get_glyph_bounds(&self, c: char) -> Option<GlyphBounds> {
+        self.get_glyph_bounds_by_index(self.get_glyph_index(c))
+    }
+
+    /// Ink bounds of the glyph at `glyph_index` from its `glyf` header, in em.
+    pub fn get_glyph_bounds_by_index(&self, glyph_index: u16) -> Option<GlyphBounds> {
+        let (abs_off0, abs_off1) = self.glyf_offset(glyph_index)?;
+        if abs_off0 >= abs_off1 || abs_off0 as usize + 10 > self.data.len() {
+            return None;
+        }
+        let glyf = &self.data[abs_off0 as usize..abs_off1 as usize];
+        if glyf.len() < 10 {
+            return None;
+        }
+        let x_min = i16::from_be_bytes([glyf[2], glyf[3]]) as f32;
+        let y_min = i16::from_be_bytes([glyf[4], glyf[5]]) as f32;
+        let x_max = i16::from_be_bytes([glyf[6], glyf[7]]) as f32;
+        let y_max = i16::from_be_bytes([glyf[8], glyf[9]]) as f32;
+        let upm = self.units_per_em.max(1) as f32;
+        Some(GlyphBounds {
+            left: x_min / upm,
+            bottom: y_min / upm,
+            right: x_max / upm,
+            top: y_max / upm,
+        })
     }
 }
 
@@ -689,10 +916,13 @@ mod tests {
     use super::*;
 
     fn load_roboto() -> Option<FontParser> {
-        // Try GUIMaker assets first, then engine assets
+        // Resolve from the crate manifest so the test works no matter which
+        // directory `cargo test` is invoked from.
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let paths = [
-            "GUIMaker/assets/fonts/Roboto-Regular.ttf",
-            "assets/fonts/Roboto-Regular.ttf",
+            manifest.join("../../assets/fonts/Roboto-Regular.ttf"),
+            std::path::PathBuf::from("assets/fonts/Roboto-Regular.ttf"),
+            std::path::PathBuf::from("GUIMaker/assets/fonts/Roboto-Regular.ttf"),
         ];
         for p in &paths {
             if let Ok(bytes) = std::fs::read(p) {
@@ -700,6 +930,65 @@ mod tests {
             }
         }
         None
+    }
+
+    #[test]
+    fn roboto_vertical_metrics_match_the_file() {
+        let Some(parser) = load_roboto() else { return };
+        let m = parser.metrics();
+        assert_eq!(m.units_per_em, 2048);
+        // Values read directly from Roboto-Regular.ttf's `hhea` table.
+        assert!((m.ascender - 1900.0 / 2048.0).abs() < 1e-6);
+        assert!((m.descender - (-500.0 / 2048.0)).abs() < 1e-6);
+        assert!((m.line_gap - 0.0).abs() < 1e-6);
+        // Global `head` bounding box.
+        assert!((m.bbox.left - (-980.0 / 2048.0)).abs() < 1e-6);
+        assert!((m.bbox.top - (2163.0 / 2048.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn roboto_kern_pairs_kerning() {
+        let Some(parser) = load_roboto() else { return };
+        if !parser.has_kern_table() {
+            return;
+        }
+        let av = parser.get_kerning('A', 'V');
+        let to = parser.get_kerning('T', 'o');
+        assert!((av - (-87.0 / 2048.0)).abs() < 1e-6, "A/V kern = {av}");
+        assert!((to - (-99.0 / 2048.0)).abs() < 1e-6, "T/o kern = {to}");
+    }
+
+    #[test]
+    fn glyph_bounds_of_o_enclose_its_hole() {
+        let Some(parser) = load_roboto() else { return };
+        let Some(b) = parser.get_glyph_bounds('o') else {
+            panic!("'o' must have ink bounds");
+        };
+        // Values read directly from the `glyf` header of Roboto's 'o'.
+        assert!((b.left - 97.0 / 2048.0).abs() < 1e-6);
+        assert!((b.bottom - (-21.0 / 2048.0)).abs() < 1e-6);
+        assert!((b.right - 1066.0 / 2048.0).abs() < 1e-6);
+        assert!((b.top - 1102.0 / 2048.0).abs() < 1e-6);
+        // 'o' has an outer and an inner (hole) contour.
+        let outlines = parser.get_glyph_outline('o');
+        let contours = outlines
+            .iter()
+            .filter(|c| matches!(c, GlyphCommand::MoveTo(..)))
+            .count();
+        assert!(
+            contours >= 2,
+            "'o' must have a hole (2 contours), got {contours}"
+        );
+        assert!(
+            b.left < 0.25 && b.right > 0.45,
+            "hole must sit inside the ink"
+        );
+    }
+
+    #[test]
+    fn gpos_is_detected_but_not_parsed() {
+        let Some(parser) = load_roboto() else { return };
+        assert!(parser.has_gpos_kerning(), "Roboto has a GPOS table");
     }
 
     #[test]

@@ -9,23 +9,51 @@ pub mod atlas;
 pub mod binary_reader;
 /// Pre-built Unicode character sets for atlas generation.
 pub mod charset;
+pub mod icons;
+/// Pure-CPU single-line text layout (no GPU required).
+pub mod layout;
 pub mod msdf_gen;
 pub mod parser;
 pub mod path;
 pub mod tables;
-pub mod icons;
-pub use icons::{IconAtlas, IconMetrics};
 
-
-pub use atlas::{FontAtlas, GlyphMetrics};
+pub use atlas::{FontAtlas, GlyphMetrics, DEFAULT_GLYPH_SIZE};
 pub use charset::{ascii, cyrillic, from_str as charset_from_str, latin_extended, latin_western};
+pub use icons::{IconAtlas, IconMetrics};
+pub use layout::{layout_line, GlyphQuad, LayoutFont, LineMetrics, TextAlign};
+pub use parser::{FontMetrics, FontParser, GlyphBounds};
+
+/// Errors returned by the typed font loading entry points.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FontError {
+    /// The font file could not be parsed.
+    Parse {
+        /// Parser diagnostic (missing or malformed tables).
+        message: String,
+    },
+    /// The glyph atlas could not be built or uploaded.
+    Atlas {
+        /// Atlas diagnostic.
+        message: String,
+    },
+}
+
+impl std::fmt::Display for FontError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Parse { message } => write!(f, "failed to parse font: {message}"),
+            Self::Atlas { message } => write!(f, "failed to build font atlas: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for FontError {}
 
 /// High‑level font object holding an atlas; previously in `ferrous_assets`.
 pub struct Font {
     pub atlas: FontAtlas,
     pub icons: Option<IconAtlas>,
 }
-
 
 impl Font {
     /// Load a font from the filesystem (desktop) or use a fallback (wasm).
@@ -57,28 +85,35 @@ impl Font {
             Self::build_fallback_font()
         };
 
-        Self::from_bytes_and_chars(bytes, char_list, device, queue)
+        Self::try_load_bytes(&bytes, device, queue, char_list).expect("Failed to load font")
     }
 
     /// Load a font from raw bytes in memory.  Useful for wasm builds or
     /// embedded assets.
+    ///
+    /// This is the legacy panicking wrapper: prefer [`Self::try_load_bytes`].
     pub fn load_bytes(
         bytes: &[u8],
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         chars: impl IntoIterator<Item = char>,
     ) -> Self {
-        let char_list: Vec<char> = chars.into_iter().collect();
-        Self::from_bytes_and_chars(bytes.to_vec(), char_list, device, queue)
+        Self::try_load_bytes(bytes, device, queue, chars).expect("Failed to load font from bytes")
     }
 
-    fn from_bytes_and_chars(
-        bytes: Vec<u8>,
-        char_list: Vec<char>,
+    /// Load a font from raw bytes, returning a typed [`FontError`] instead of
+    /// panicking on parse or atlas failure.
+    ///
+    /// An empty character list falls back to [`charset::latin_western`].
+    pub fn try_load_bytes(
+        bytes: &[u8],
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-    ) -> Self {
-        let parser = parser::FontParser::new(bytes).expect("Failed to parse font data");
+        chars: impl IntoIterator<Item = char>,
+    ) -> Result<Self, FontError> {
+        let char_list: Vec<char> = chars.into_iter().collect();
+        let parser = parser::FontParser::new(bytes.to_vec())
+            .map_err(|message| FontError::Parse { message })?;
 
         // Fall back to the Latin Western set (ASCII + Latin-1 Supplement) so
         // that Spanish, French, German, and common symbols render out of the box.
@@ -88,12 +123,14 @@ impl Font {
             char_list
         };
 
-        let atlas = FontAtlas::new(device, queue, &parser, final_chars)
-            .expect("Failed to build font atlas");
- 
-        Self { atlas, icons: None }
-    }
+        let atlas = FontAtlas::new(device, queue, &parser, final_chars).map_err(|err| {
+            FontError::Atlas {
+                message: err.to_string(),
+            }
+        })?;
 
+        Ok(Self { atlas, icons: None })
+    }
 
     /// Generate a minimal in-memory TrueType fallback font containing only
     /// the character 'A'.  Used when loading fails or on wasm targets.
@@ -140,9 +177,7 @@ impl Font {
         glyf.extend(&[0; 8]); // bbox
         glyf.extend(&3u16.to_be_bytes()); // endPt
         glyf.extend(&0u16.to_be_bytes()); // instLen
-        for _ in 0..4 {
-            glyf.push(0x01);
-        }
+        glyf.extend([0x01u8; 4]);
         for v in &[0, 0, 0, 100, 100, 0, 0, -100] {
             glyf.extend(&((*v as i16).to_be_bytes()));
         }

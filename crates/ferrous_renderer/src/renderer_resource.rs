@@ -10,13 +10,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::geometry::Mesh;
 use crate::pipeline::PipelineLayouts;
 use crate::resources::material::{
     MaterialUniformPbr, ALBEDO_TEX, AO_TEX, EMISSIVE_TEX, FLAG_ALPHA_MASK, MET_ROUGH_TEX,
     NORMAL_TEX,
 };
 use crate::resources::{InstanceBuffer, Material, TextureHandle, TextureRegistry};
-use crate::geometry::Mesh;
 
 // material primitives (handle, descriptor, alpha mode) are defined in
 // `ferrous_core` so that the core crate can carry them without depending on
@@ -56,11 +56,19 @@ impl BindlessMaterials {
             layout: &layout,
             entries: &[],
         });
-        BindlessMaterials { bind_group: Arc::new(bind_group), count: 0 }
+        BindlessMaterials {
+            bind_group: Arc::new(bind_group),
+            count: 0,
+        }
     }
 
     /// Reserve a new slot in the bindless table and return its index.
-    fn add_material(&mut self, _device: &wgpu::Device, _queue: &wgpu::Queue, _material: &Material) -> u32 {
+    fn add_material(
+        &mut self,
+        _device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        _material: &Material,
+    ) -> u32 {
         let idx = self.count;
         self.count += 1;
         idx
@@ -120,8 +128,7 @@ impl MaterialRegistry {
         let default_material =
             Material::from_descriptor(device, queue, &layouts, &default_desc, &tex_registry);
 
-        let mut materials = Vec::new();
-        materials.push(default_material);
+        let materials = vec![default_material];
 
         Self {
             layouts,
@@ -200,7 +207,12 @@ impl MaterialRegistry {
         #[cfg(feature = "bindless")]
         {
             // allocate slot in bindless table and append material for flag
-            let handle = MaterialHandle(self.bindless.as_mut().unwrap().add_material(device, queue, &material));
+            let handle = MaterialHandle(
+                self.bindless
+                    .as_mut()
+                    .unwrap()
+                    .add_material(device, queue, &material),
+            );
             self.materials.push(material);
             handle
         }
@@ -235,16 +247,28 @@ impl MaterialRegistry {
         let mat = &mut self.materials[handle.0 as usize];
         // pack uniform exactly as in `from_descriptor` so that the size
         // stays stable and shaders continue to match.
-        let mut uniform = MaterialUniformPbr::default();
-        uniform.base_color = desc.base_color;
-        uniform.emissive = [
-            desc.emissive[0],
-            desc.emissive[1],
-            desc.emissive[2],
-            desc.emissive_strength,
-        ];
-        uniform.metallic_roughness = [desc.metallic, desc.roughness, desc.ao_strength, desc.opacity];
-        uniform.extra_params = [desc.normal_scale, desc.clearcoat, desc.clearcoat_roughness, 0.0];
+        let mut uniform = MaterialUniformPbr {
+            base_color: desc.base_color,
+            emissive: [
+                desc.emissive[0],
+                desc.emissive[1],
+                desc.emissive[2],
+                desc.emissive_strength,
+            ],
+            metallic_roughness: [
+                desc.metallic,
+                desc.roughness,
+                desc.ao_strength,
+                desc.opacity,
+            ],
+            extra_params: [
+                desc.normal_scale,
+                desc.clearcoat,
+                desc.clearcoat_roughness,
+                0.0,
+            ],
+            ..Default::default()
+        };
 
         let mut flags = 0;
         if desc.albedo_tex.is_some() {
@@ -326,6 +350,12 @@ pub struct MeshCache {
     meshes: HashMap<String, Mesh>,
 }
 
+impl Default for MeshCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MeshCache {
     /// Create a new empty mesh cache.
     pub fn new() -> Self {
@@ -393,7 +423,11 @@ impl ResourceManager {
         Self {
             material_registry: MaterialRegistry::new(device, queue, layouts),
             instance_buf: InstanceBuffer::new(device, &instance_layout, initial_instance_capacity),
-            shadow_instance_buf: InstanceBuffer::new(device, &instance_layout, initial_instance_capacity),
+            shadow_instance_buf: InstanceBuffer::new(
+                device,
+                &instance_layout,
+                initial_instance_capacity,
+            ),
             instance_layout,
             mesh_cache: MeshCache::new(),
             world_material_descs: HashMap::new(),
@@ -409,7 +443,8 @@ impl ResourceManager {
         height: u32,
         data: &[u8],
     ) -> TextureHandle {
-        self.material_registry.register_texture_rgba8(device, queue, width, height, data)
+        self.material_registry
+            .register_texture_rgba8(device, queue, width, height, data)
     }
 
     /// Register a linear texture for use in materials (normal maps, etc.).
@@ -421,7 +456,8 @@ impl ResourceManager {
         height: u32,
         data: &[u8],
     ) -> TextureHandle {
-        self.material_registry.register_texture_rgba8_linear(device, queue, width, height, data)
+        self.material_registry
+            .register_texture_rgba8_linear(device, queue, width, height, data)
     }
 
     /// Free a texture.
@@ -465,13 +501,11 @@ impl ResourceManager {
     }
 
     /// Reserve space in instance buffers.
-    pub fn reserve_instances(
-        &mut self,
-        device: &wgpu::Device,
-        needed: usize,
-    ) {
-        self.instance_buf.reserve(device, &self.instance_layout, needed);
-        self.shadow_instance_buf.reserve(device, &self.instance_layout, needed);
+    pub fn reserve_instances(&mut self, device: &wgpu::Device, needed: usize) {
+        self.instance_buf
+            .reserve(device, &self.instance_layout, needed);
+        self.shadow_instance_buf
+            .reserve(device, &self.instance_layout, needed);
     }
 
     /// Get bind groups for all materials.
@@ -497,16 +531,14 @@ mod tests {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
-        let adapter = pollster::block_on(
-            instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
-        )
-        .expect("adapter");
-        let (device, queue) = pollster::block_on(
-            adapter.request_device(&wgpu::DeviceDescriptor::default(), None),
-        )
-        .expect("device");
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+                .expect("adapter");
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None))
+                .expect("device");
         let layouts = PipelineLayouts::new(&device);
-        let mut reg = MaterialRegistry::new(&device, &queue, &layouts);
+        let reg = MaterialRegistry::new(&device, &queue, &layouts);
         let table = reg.bind_group_table();
         assert!(!table.is_empty());
     }

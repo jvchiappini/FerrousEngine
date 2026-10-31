@@ -3,9 +3,8 @@
 //! This module contains GuiBatch, which aggregates UI primitives into
 //! rendering segments optimized for GPU execution.
 
-use crate::gpu_types::{GuiQuad, TextQuad, DrawSegment, SvgCommand};
-use crate::{TEXTURED_BIT, MAX_TEXTURE_SLOTS};
-
+use crate::gpu_types::{DrawSegment, GuiQuad, SvgCommand, TextQuad};
+use crate::TEXTURED_BIT;
 
 /// Grouping of UI primitives organized by rendering segments.
 #[derive(Clone)]
@@ -21,7 +20,6 @@ pub struct GuiBatch {
     pub textures: Vec<std::sync::Arc<ferrous_assets::Texture2d>>,
     pub damage_union: Option<ferrous_ui_core::Rect>,
 }
-
 
 impl Default for GuiBatch {
     fn default() -> Self {
@@ -164,7 +162,7 @@ impl GuiBatch {
         self.icon_quads.extend(other.icon_quads);
         self.svg_commands.extend(other.svg_commands);
         self.segments.extend(other.segments);
-        
+
         if let Some(other_damage) = other.damage_union {
             self.damage_union = match self.damage_union {
                 Some(current) => Some(current.union(other_damage)),
@@ -187,7 +185,10 @@ impl GuiBatch {
     /// with the same scissor. No-op when the current segment is empty.
     pub fn begin_layer(&mut self) {
         let empty = self.segments.last().map_or(true, |s| {
-            s.quad_range.is_empty() && s.text_range.is_empty() && s.icon_range.is_empty() && s.svg_range.is_empty()
+            s.quad_range.is_empty()
+                && s.text_range.is_empty()
+                && s.icon_range.is_empty()
+                && s.svg_range.is_empty()
         });
         if empty {
             return;
@@ -250,10 +251,10 @@ impl GuiBatch {
         {
             return pos as u32;
         }
-        if self.textures.len() as u32 >= MAX_TEXTURE_SLOTS {
+        if self.textures.len() as u32 >= crate::MAX_TEXTURE_SLOTS {
             panic!(
                 "Exceeded texture limit per UI batch (max={})",
-                MAX_TEXTURE_SLOTS
+                crate::MAX_TEXTURE_SLOTS
             );
         }
         let idx = self.textures.len() as u32;
@@ -286,7 +287,16 @@ impl GuiBatch {
         self.update_last_segment();
     }
 
-    pub fn border(&mut self, x: f32, y: f32, w: f32, h: f32, color: [f32; 4], radii: [f32; 4], width: f32) {
+    pub fn border(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        color: [f32; 4],
+        radii: [f32; 4],
+        width: f32,
+    ) {
         self.push_quad(GuiQuad {
             pos: [x, y],
             size: [w, h],
@@ -303,14 +313,25 @@ impl GuiBatch {
         self.update_last_segment();
     }
 
-    pub fn shadow(&mut self, x: f32, y: f32, w: f32, h: f32, color: [f32; 4], blur_radius: f32, spread: f32, offset: [f32; 2], radii: [f32; 4]) {
+    pub fn shadow(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        color: [f32; 4],
+        blur_radius: f32,
+        spread: f32,
+        offset: [f32; 2],
+        radii: [f32; 4],
+    ) {
         // To include the shadow in the SDF, the quad must be expanded
         let expand = blur_radius * 2.0 + spread.abs() + offset[0].abs().max(offset[1].abs());
-        
+
         self.push_quad(GuiQuad {
             pos: [x - expand, y - expand],
             size: [w + expand * 2.0, h + expand * 2.0],
-            uv0: [spread, blur_radius], // uv0.x = spread, uv0.y = blur
+            uv0: [spread, blur_radius],  // uv0.x = spread, uv0.y = blur
             uv1: [offset[0], offset[1]], // uv1 = dx, dy
             color,
             color_b: [0.0; 4],
@@ -325,7 +346,17 @@ impl GuiBatch {
 
     pub fn shadow_rect(&mut self, x: f32, y: f32, w: f32, h: f32) {
         // Helper MD default shadow
-        self.shadow(x, y, w, h, [0.0, 0.0, 0.0, 0.35], 8.0, 0.0, [0.0, 4.0], [0.0; 4]);
+        self.shadow(
+            x,
+            y,
+            w,
+            h,
+            [0.0, 0.0, 0.0, 0.35],
+            8.0,
+            0.0,
+            [0.0, 4.0],
+            [0.0; 4],
+        );
     }
 
     pub fn rect_textured(
@@ -376,9 +407,9 @@ impl GuiBatch {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.quads.is_empty() 
-            && self.text_quads.is_empty() 
-            && self.icon_quads.is_empty() 
+        self.quads.is_empty()
+            && self.text_quads.is_empty()
+            && self.icon_quads.is_empty()
             && self.svg_commands.is_empty()
     }
 

@@ -1,4 +1,6 @@
+#[cfg(feature = "image")]
 use std::fs;
+#[cfg(feature = "image")]
 use std::path::{Path, PathBuf};
 
 /// [ENG-API-03] Contrato general de exportación.
@@ -35,15 +37,11 @@ impl ImageFolderExporter {
 #[cfg(feature = "image")]
 impl FrameExporter for ImageFolderExporter {
     fn push_frame(&mut self, rgba_data: &[u8], width: u32, height: u32) -> Result<(), String> {
-        let file_path = self.folder.join(format!("frame_{:04}.png", self.frame_count));
-        
-        match image::save_buffer(
-            file_path,
-            rgba_data,
-            width,
-            height,
-            image::ColorType::Rgba8,
-        ) {
+        let file_path = self
+            .folder
+            .join(format!("frame_{:04}.png", self.frame_count));
+
+        match image::save_buffer(file_path, rgba_data, width, height, image::ColorType::Rgba8) {
             Ok(_) => {
                 self.frame_count += 1;
                 Ok(())
@@ -72,15 +70,23 @@ impl FFmpegExporter {
 
         let child = Command::new("ffmpeg")
             .args([
-                "-y",                   // Overwrite existing file
-                "-f", "rawvideo",       // Input format
-                "-pixel_format", "rgba",
-                "-video_size", &format!("{}x{}", width, height),
-                "-framerate", &fps.to_string(),
-                "-i", "-",              // Read from stdin
-                "-c:v", "libx264",      // Use H.264 codec
-                "-pix_fmt", "yuv420p",  // Compatible pixel format for most players
-                "-preset", "veryfast",  // Balance speed/compression
+                "-y", // Overwrite existing file
+                "-f",
+                "rawvideo", // Input format
+                "-pixel_format",
+                "rgba",
+                "-video_size",
+                &format!("{}x{}", width, height),
+                "-framerate",
+                &fps.to_string(),
+                "-i",
+                "-", // Read from stdin
+                "-c:v",
+                "libx264", // Use H.264 codec
+                "-pix_fmt",
+                "yuv420p", // Compatible pixel format for most players
+                "-preset",
+                "veryfast", // Balance speed/compression
                 output_path.as_ref().to_str().unwrap(),
             ])
             .stdin(Stdio::piped())
@@ -108,8 +114,14 @@ impl FFmpegExporter {
 impl FrameExporter for FFmpegExporter {
     fn push_frame(&mut self, rgba_data: &[u8], _width: u32, _height: u32) -> Result<(), String> {
         use std::io::Write;
-        let stdin = self.process.stdin.as_mut().ok_or("FFmpeg stdin not available")?;
-        stdin.write_all(rgba_data).map_err(|e| format!("Pipe error: {}", e))?;
+        let stdin = self
+            .process
+            .stdin
+            .as_mut()
+            .ok_or("FFmpeg stdin not available")?;
+        stdin
+            .write_all(rgba_data)
+            .map_err(|e| format!("Pipe error: {}", e))?;
         Ok(())
     }
 }

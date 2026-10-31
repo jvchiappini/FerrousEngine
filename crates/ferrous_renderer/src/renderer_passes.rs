@@ -16,17 +16,17 @@ use std::sync::Arc;
 
 use wgpu::{CommandEncoder, TextureView};
 
-use ferrous_core::scene::{MaterialDescriptor, World};
-use crate::scene::{SceneData, Frustum, GizmoDraw};
 use crate::frame_builder::FrameBuilder;
 use crate::gizmo_system::GizmoSystem;
 use crate::graph::frame_packet::CameraPacket;
 use crate::graph::RenderPass;
-use crate::render_target::RenderTarget;
 use crate::render_stats::RenderStats;
+use crate::render_target::RenderTarget;
 use crate::resources::InstanceBuffer;
+use crate::scene::{Frustum, GizmoDraw, SceneData};
 use crate::{CameraSystem, RenderStyle, RendererMode, Viewport};
 use ferrous_core::context::EngineContext as core_context;
+use ferrous_core::scene::{MaterialDescriptor, World};
 
 // Conditional imports for GUI feature
 #[cfg(feature = "gui")]
@@ -38,8 +38,11 @@ use crate::passes::CullPass;
 
 // -- RenderDest ---------------------------------------------------------------
 
-enum RenderDest<'a> {
+/// Render destination for [`RendererPasses::do_render`].
+pub enum RenderDest<'a> {
+    /// Render into the renderer's internal target.
     Target,
+    /// Render into an external texture view.
     View(&'a TextureView),
 }
 
@@ -66,53 +69,53 @@ pub struct RendererPasses {
     pub render_target: RenderTarget,
     pub viewport: Viewport,
     pub mode: RendererMode,
-    
+
     // Camera system
     pub camera_system: CameraSystem,
-    
+
     // Frame building and statistics
     pub frame_builder: FrameBuilder,
     pub render_stats: RenderStats,
-    
+
     // Built-in passes (references)
     pub world_pass: crate::passes::WorldPass,
     pub post_process_pass: crate::passes::PostProcessPass,
     #[cfg(feature = "gui")]
     pub ui_pass: crate::passes::UiPass,
-    
+
     // Render style passes
     pub cel_pass: Option<crate::passes::CelShadedPass>,
     pub outline_pass: Option<crate::passes::OutlinePass>,
     pub flat_pass: Option<crate::passes::FlatShadedPass>,
-    
+
     // Prepass and SSAO
     pub prepass: crate::passes::PrePass,
     pub ssao_pass: crate::passes::SsaoPass,
     pub ssao_blur_pass: crate::passes::SsaoBlurPass,
     pub ssao_resources: crate::resources::SsaoResources,
     pub ssao_enabled: bool,
-    
+
     // Render style
     pub render_style: RenderStyle,
-    
+
     // Gizmo system
     pub gizmo_system: GizmoSystem,
-    
+
     // Scene state
     pub world_material_descs: HashMap<u64, MaterialDescriptor>,
     pub instance_buf: InstanceBuffer,
     pub instance_layout: Arc<wgpu::BindGroupLayout>,
     pub shadow_instance_buf: InstanceBuffer,
-    
+
     // Material registry reference
     pub material_registry: crate::materials::MaterialRegistry,
-    
+
     // Current directional light
     pub current_dir_light: crate::resources::DirectionalLightUniform,
-    
+
     // Extra passes
     pub extra_passes: Vec<Box<dyn RenderPass>>,
-    
+
     // Conditional features
     #[cfg(feature = "gpu-driven")]
     pub gpu_culling_enabled: bool,
@@ -295,13 +298,14 @@ impl RendererPasses {
         // pass(es).  All style passes render into the same HDR texture
         // (LoadOp::Load) so they composite on top of the world geometry.
         log::debug!("[WGPU-Render] Phase 5: Style Passes");
-        
-        let (scene_view, scene_rt) = if let Some(m_view) = &self.world_pass.hdr_texture.multisampled_view {
-            (m_view, Some(&self.world_pass.hdr_texture.view))
-        } else {
-            (&self.world_pass.hdr_texture.view, None)
-        };
-        
+
+        let (scene_view, scene_rt) =
+            if let Some(m_view) = &self.world_pass.hdr_texture.multisampled_view {
+                (m_view, Some(&self.world_pass.hdr_texture.view))
+            } else {
+                (&self.world_pass.hdr_texture.view, None)
+            };
+
         match &self.render_style {
             RenderStyle::CelShaded {
                 toon_levels,
@@ -428,11 +432,7 @@ impl RendererPasses {
 
     /// Renders to the render target's color texture.
     #[cfg(feature = "gui")]
-    pub fn render_to_target(
-        &mut self,
-        encoder: &mut CommandEncoder,
-        ui_batch: Option<GuiBatch>,
-    ) {
+    pub fn render_to_target(&mut self, encoder: &mut CommandEncoder, ui_batch: Option<GuiBatch>) {
         self.do_render(encoder, RenderDest::Target, ui_batch);
     }
 
@@ -462,8 +462,12 @@ impl RendererPasses {
         if let Some(cam) = &scene.camera {
             self.camera_system.camera.eye = cam.eye;
             self.camera_system.camera.target = cam.target;
-            self.camera_system.camera.set_fov_degrees(cam.fov_y.to_degrees());
-            self.camera_system.camera.set_near_far(cam.z_near, cam.z_far);
+            self.camera_system
+                .camera
+                .set_fov_degrees(cam.fov_y.to_degrees());
+            self.camera_system
+                .camera
+                .set_near_far(cam.z_near, cam.z_far);
         }
 
         // 2. Apply directional light if provided
@@ -518,7 +522,9 @@ impl RendererPasses {
                 self.camera_system.camera.eye = cam3d.eye;
                 self.camera_system.camera.target = cam3d.target;
                 self.camera_system.camera.set_fov_degrees(cam3d.fov_deg);
-                self.camera_system.camera.set_near_far(cam3d.near, cam3d.far);
+                self.camera_system
+                    .camera
+                    .set_near_far(cam3d.near, cam3d.far);
             }
         }
 
@@ -579,7 +585,8 @@ impl RendererPasses {
                 &mut self.instance_buf,
                 &self.instance_layout,
                 &mut self.shadow_instance_buf,
-                &mut |bg: std::sync::Arc<wgpu::BindGroup>, shadow_bg: std::sync::Arc<wgpu::BindGroup>| {
+                &mut |bg: std::sync::Arc<wgpu::BindGroup>,
+                      shadow_bg: std::sync::Arc<wgpu::BindGroup>| {
                     world_pass_ref.set_instance_buffer(bg.clone());
                     world_pass_ref.set_shadow_instance_buffer(shadow_bg);
                     prepass_ref.set_instance_buffer(bg);
@@ -677,9 +684,9 @@ impl RendererPasses {
             let is_2d_element = matches!(
                 element.kind,
                 ferrous_core::scene::world::ElementKind::Path
-                | ferrous_core::scene::world::ElementKind::Circle2D { .. }
-                | ferrous_core::scene::world::ElementKind::Rect2D { .. }
-                | ferrous_core::scene::world::ElementKind::Line2D { .. }
+                    | ferrous_core::scene::world::ElementKind::Circle2D { .. }
+                    | ferrous_core::scene::world::ElementKind::Rect2D { .. }
+                    | ferrous_core::scene::world::ElementKind::Line2D { .. }
             );
             let mut owned_desc;
             let desc: &ferrous_core::scene::MaterialDescriptor = if is_2d_element {

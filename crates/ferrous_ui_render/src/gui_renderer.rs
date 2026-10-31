@@ -3,17 +3,14 @@
 //! Handles WGPU pipelines, buffers, and textures for rendering UI batches.
 //! Modularized for Phase 4: Early-Z, Depth Buffer, and Prepare/Render split.
 
-use std::sync::Arc;
-use wgpu::util::DeviceExt;
 use crate::gpu_types::{GuiQuad, TextQuad};
 use crate::gui_batch::GuiBatch;
-use crate::MAX_TEXTURE_SLOTS;
 use crate::pipelines::{
-    layout::Layouts,
-    quad::create_quad_pipeline,
-    text::create_text_pipeline,
-    id::create_id_pipeline,
+    id::create_id_pipeline, layout::Layouts, quad::create_quad_pipeline, text::create_text_pipeline,
 };
+use crate::MAX_TEXTURE_SLOTS;
+use std::sync::Arc;
+use wgpu::util::DeviceExt;
 
 /// Main UI rendering engine on the GPU.
 pub struct GuiRenderer {
@@ -143,7 +140,11 @@ impl GuiRenderer {
         // Dummy image bind group
         let dummy_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("GUI Dummy Texture"),
-            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -158,16 +159,24 @@ impl GuiRenderer {
             min_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
-        let dummy_views: Vec<&wgpu::TextureView> = std::iter::repeat_n(&dummy_view, MAX_TEXTURE_SLOTS as usize).collect();
-        let dummy_samplers: Vec<&wgpu::Sampler> = std::iter::repeat_n(&dummy_sampler, MAX_TEXTURE_SLOTS as usize).collect();
+        let dummy_views: Vec<&wgpu::TextureView> =
+            std::iter::repeat_n(&dummy_view, MAX_TEXTURE_SLOTS as usize).collect();
+        let dummy_samplers: Vec<&wgpu::Sampler> =
+            std::iter::repeat_n(&dummy_sampler, MAX_TEXTURE_SLOTS as usize).collect();
 
         #[cfg(not(target_arch = "wasm32"))]
         let image_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("GUI Image Bind Group (dummy)"),
             layout: &layouts.image_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureViewArray(&dummy_views) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::SamplerArray(&dummy_samplers) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureViewArray(&dummy_views),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::SamplerArray(&dummy_samplers),
+                },
             ],
         });
 
@@ -193,16 +202,47 @@ impl GuiRenderer {
 
         // Pipelines
         let cache = pipeline_cache.as_deref();
-        let opaque_pipeline = create_quad_pipeline(&device, format, &layouts.quad_pipeline_layout, sample_count, true, cache);
-        let transparent_pipeline = create_quad_pipeline(&device, format, &layouts.quad_pipeline_layout, sample_count, false, cache);
-        let text_pipeline = create_text_pipeline(&device, format, &layouts.text_pipeline_layout, sample_count, false, cache);
-        let svg_pipeline = crate::pipelines::svg::create_svg_pipeline(&device, format, &layouts.quad_pipeline_layout, sample_count, cache);
+        let opaque_pipeline = create_quad_pipeline(
+            &device,
+            format,
+            &layouts.quad_pipeline_layout,
+            sample_count,
+            true,
+            cache,
+        );
+        let transparent_pipeline = create_quad_pipeline(
+            &device,
+            format,
+            &layouts.quad_pipeline_layout,
+            sample_count,
+            false,
+            cache,
+        );
+        let text_pipeline = create_text_pipeline(
+            &device,
+            format,
+            &layouts.text_pipeline_layout,
+            sample_count,
+            false,
+            cache,
+        );
+        let svg_pipeline = crate::pipelines::svg::create_svg_pipeline(
+            &device,
+            format,
+            &layouts.quad_pipeline_layout,
+            sample_count,
+            cache,
+        );
         let id_pipeline = create_id_pipeline(&device, &layouts.quad_pipeline_layout, cache);
 
         // Depth Buffer for Early-Z
         let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("GUI Depth Texture"),
-            size: wgpu::Extent3d { width: width.max(1), height: height.max(1), depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count,
             dimension: wgpu::TextureDimension::D2,
@@ -215,7 +255,11 @@ impl GuiRenderer {
         // ID Buffer
         let id_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("GUI ID Texture"),
-            size: wgpu::Extent3d { width: width.max(1), height: height.max(1), depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -300,30 +344,68 @@ impl GuiRenderer {
         let width = width.max(1);
         let height = height.max(1);
         self.resolution = [width as f32, height as f32];
-        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&self.resolution));
+        queue.write_buffer(
+            &self.uniform_buffer,
+            0,
+            bytemuck::cast_slice(&self.resolution),
+        );
 
         let state_changed = format != self.format || sample_count != self.sample_count;
-        
+
         if state_changed {
             self.format = format;
             self.sample_count = sample_count;
-            
+
             // Rebuild pipelines for new sample_count/format.  The shared
             // pipeline cache lets the driver reuse previously compiled shaders
             // across backends/formats instead of recompiling from scratch
             // (audit M18).
-            println!("[GuiRenderer] Rebuilding pipelines for format={:?}, sample_count={}", format, sample_count);
+            println!(
+                "[GuiRenderer] Rebuilding pipelines for format={:?}, sample_count={}",
+                format, sample_count
+            );
             let cache = self.pipeline_cache.as_deref();
-            self.opaque_pipeline = create_quad_pipeline(&self.device, format, &self.layouts.quad_pipeline_layout, sample_count, true, cache);
-            self.transparent_pipeline = create_quad_pipeline(&self.device, format, &self.layouts.quad_pipeline_layout, sample_count, false, cache);
-            self.text_pipeline = create_text_pipeline(&self.device, format, &self.layouts.text_pipeline_layout, sample_count, false, cache);
-            self.svg_pipeline = crate::pipelines::svg::create_svg_pipeline(&self.device, format, &self.layouts.quad_pipeline_layout, sample_count, cache);
+            self.opaque_pipeline = create_quad_pipeline(
+                &self.device,
+                format,
+                &self.layouts.quad_pipeline_layout,
+                sample_count,
+                true,
+                cache,
+            );
+            self.transparent_pipeline = create_quad_pipeline(
+                &self.device,
+                format,
+                &self.layouts.quad_pipeline_layout,
+                sample_count,
+                false,
+                cache,
+            );
+            self.text_pipeline = create_text_pipeline(
+                &self.device,
+                format,
+                &self.layouts.text_pipeline_layout,
+                sample_count,
+                false,
+                cache,
+            );
+            self.svg_pipeline = crate::pipelines::svg::create_svg_pipeline(
+                &self.device,
+                format,
+                &self.layouts.quad_pipeline_layout,
+                sample_count,
+                cache,
+            );
         }
 
         // Resize Depth
         self.depth_texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("GUI Depth Texture Resized"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count,
             dimension: wgpu::TextureDimension::D2,
@@ -331,12 +413,18 @@ impl GuiRenderer {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
-        self.depth_view = self.depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.depth_view = self
+            .depth_texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
         // Resize ID
         self.id_texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("GUI ID Texture Resized"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -344,7 +432,9 @@ impl GuiRenderer {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        self.id_view = self.id_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.id_view = self
+            .id_texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
     }
 
     /// Enable/disable the UI image bind-group cache (audit H8).
@@ -468,8 +558,14 @@ impl GuiRenderer {
                     label: Some("GUI Image Bind Group Update"),
                     layout: &self.layouts.image_layout,
                     entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureViewArray(&views) },
-                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::SamplerArray(&samplers) },
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureViewArray(&views),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::SamplerArray(&samplers),
+                        },
                     ],
                 });
             }
@@ -477,8 +573,16 @@ impl GuiRenderer {
             {
                 let mut entries = Vec::new();
                 for i in 0..8 {
-                    let v = if i < views.len() { views[i] } else { views.last().unwrap() };
-                    let s = if i < samplers.len() { samplers[i] } else { samplers.last().unwrap() };
+                    let v = if i < views.len() {
+                        views[i]
+                    } else {
+                        views.last().unwrap()
+                    };
+                    let s = if i < samplers.len() {
+                        samplers[i]
+                    } else {
+                        samplers.last().unwrap()
+                    };
                     entries.push(wgpu::BindGroupEntry {
                         binding: (i * 2) as u32,
                         resource: wgpu::BindingResource::TextureView(v),
@@ -539,8 +643,16 @@ impl GuiRenderer {
                 self.svg_max_indices = new_max;
             }
 
-            queue.write_buffer(&self.svg_vertex_buffer, 0, bytemuck::cast_slice(&all_vertices));
-            queue.write_buffer(&self.svg_index_buffer, 0, bytemuck::cast_slice(&all_indices));
+            queue.write_buffer(
+                &self.svg_vertex_buffer,
+                0,
+                bytemuck::cast_slice(&all_vertices),
+            );
+            queue.write_buffer(
+                &self.svg_index_buffer,
+                0,
+                bytemuck::cast_slice(&all_indices),
+            );
         }
     }
 
@@ -562,7 +674,10 @@ impl GuiRenderer {
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target_view,
                 resolve_target,
-                ops: wgpu::Operations { load: load_op, store: wgpu::StoreOp::Store },
+                ops: wgpu::Operations {
+                    load: load_op,
+                    store: wgpu::StoreOp::Store,
+                },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &self.depth_view,
@@ -586,18 +701,31 @@ impl GuiRenderer {
             (0, 0, self.resolution[0] as u32, self.resolution[1] as u32)
         };
 
-        if (base_sw == 0 || base_sh == 0)
-            && matches!(load_op, wgpu::LoadOp::Load) { return; }
-        
+        if (base_sw == 0 || base_sh == 0) && matches!(load_op, wgpu::LoadOp::Load) {
+            return;
+        }
+
         static mut FRAME_COUNT: u32 = 0;
         unsafe {
             FRAME_COUNT += 1;
             if FRAME_COUNT.is_multiple_of(120) {
-                println!("[GuiRenderer] Render: segments={}, quads={}, text={}, icons={}, svg={}", 
-                    batch.segments.len(), batch.quads.len(), batch.text_quads.len(), batch.icon_quads.len(), batch.svg_commands.len());
-                println!("[GuiRenderer] Base Scissor: x={}, y={}, w={}, h={}", base_sx, base_sy, base_sw, base_sh);
+                println!(
+                    "[GuiRenderer] Render: segments={}, quads={}, text={}, icons={}, svg={}",
+                    batch.segments.len(),
+                    batch.quads.len(),
+                    batch.text_quads.len(),
+                    batch.icon_quads.len(),
+                    batch.svg_commands.len()
+                );
+                println!(
+                    "[GuiRenderer] Base Scissor: x={}, y={}, w={}, h={}",
+                    base_sx, base_sy, base_sw, base_sh
+                );
                 if let Some(s) = batch.segments.first() {
-                    println!("[GuiRenderer] First Segment: q_range={:?}, scissor={:?}", s.quad_range, s.scissor);
+                    println!(
+                        "[GuiRenderer] First Segment: q_range={:?}, scissor={:?}",
+                        s.quad_range, s.scissor
+                    );
                 }
             }
         }
@@ -605,10 +733,12 @@ impl GuiRenderer {
         for segment in &batch.segments {
             // Apply scissor if present, intersected with base_scissor
             let (sx, sy, sw, sh) = if let Some(s) = segment.scissor {
-                let sx = (s.x.max(base_sx as f32) as u32).min(((base_sx + base_sw)));
-                let sy = (s.y.max(base_sy as f32) as u32).min(((base_sy + base_sh)));
-                let sw = ( (s.x + s.width).min((base_sx + base_sw) as f32) as u32 ).saturating_sub(sx);
-                let sh = ( (s.y + s.height).min((base_sy + base_sh) as f32) as u32 ).saturating_sub(sy);
+                let sx = (s.x.max(base_sx as f32) as u32).min(base_sx + base_sw);
+                let sy = (s.y.max(base_sy as f32) as u32).min(base_sy + base_sh);
+                let sw =
+                    ((s.x + s.width).min((base_sx + base_sw) as f32) as u32).saturating_sub(sx);
+                let sh =
+                    ((s.y + s.height).min((base_sy + base_sh) as f32) as u32).saturating_sub(sy);
                 (sx, sy, sw, sh)
             } else {
                 (base_sx, base_sy, base_sw, base_sh)
@@ -664,8 +794,8 @@ impl GuiRenderer {
                 rpass.set_bind_group(0, &self.uniform_bind_group, &[]);
                 rpass.set_vertex_buffer(0, self.svg_vertex_buffer.slice(..));
                 rpass.set_index_buffer(self.svg_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                
-                // We need to calculate the index range. 
+
+                // We need to calculate the index range.
                 // This is a bit tricky if we don't store index offsets per command.
                 // For now, let's assume one big mesh or calculate on the fly.
                 let mut start_idx = 0;
@@ -676,7 +806,7 @@ impl GuiRenderer {
                 for i in segment.svg_range.clone() {
                     end_idx += batch.svg_commands[i as usize].mesh.indices.len() as u32;
                 }
-                
+
                 if start_idx < end_idx {
                     rpass.draw_indexed(start_idx..end_idx, 0, 0..1);
                 }
@@ -689,8 +819,14 @@ impl GuiRenderer {
             label: Some("GUI Font Bind Group"),
             layout: &self.layouts.font_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
             ],
         }));
     }
@@ -700,8 +836,14 @@ impl GuiRenderer {
             label: Some("GUI Icon Bind Group"),
             layout: &self.layouts.font_layout, // Re-use font layout (1 tex + 1 sampler)
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
             ],
         }));
     }
@@ -719,7 +861,10 @@ impl GuiRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &self.id_view,
                     resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
                 })],
                 depth_stencil_attachment: None,
                 occlusion_query_set: None,
@@ -731,14 +876,14 @@ impl GuiRenderer {
             id_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             id_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
             id_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            
+
             for segment in &batch.segments {
                 if !segment.quad_range.is_empty() {
                     id_pass.draw_indexed(0..6, 0, segment.quad_range.clone());
                 }
             }
         }
-        
+
         encoder.copy_texture_to_buffer(
             wgpu::ImageCopyTexture {
                 texture: &self.id_texture,
@@ -748,15 +893,25 @@ impl GuiRenderer {
             },
             wgpu::ImageCopyBuffer {
                 buffer: &self.id_staging_buffer,
-                layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: None, rows_per_image: None },
+                layout: wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: None,
+                    rows_per_image: None,
+                },
             },
-            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
         );
 
         let (sender, receiver) = crossbeam_channel::bounded(1);
         let slice = self.id_staging_buffer.slice(..);
         slice.map_async(wgpu::MapMode::Read, move |v| {
-            if v.is_ok() { let _ = sender.send(1); }
+            if v.is_ok() {
+                let _ = sender.send(1);
+            }
         });
 
         receiver

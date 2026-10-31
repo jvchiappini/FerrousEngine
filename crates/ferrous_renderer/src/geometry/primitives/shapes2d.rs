@@ -15,8 +15,8 @@
 
 use lyon_tessellation::{
     math::{point, Box2D},
-    BuffersBuilder, FillOptions, FillTessellator, FillVertex, StrokeOptions,
-    StrokeTessellator, StrokeVertex, VertexBuffers,
+    BuffersBuilder, FillOptions, FillTessellator, FillVertex, StrokeOptions, StrokeTessellator,
+    StrokeVertex, VertexBuffers,
 };
 
 use crate::geometry::{Mesh, Vertex};
@@ -25,7 +25,9 @@ use crate::resources::buffer;
 // ── Internal vertices ──────────────────────────────────────────────────────
 
 /// Adapter: maps a lyon fill vertex to our `Vertex` type.
-struct FillCtor { color: [f32; 4] }
+struct FillCtor {
+    color: [f32; 4],
+}
 
 impl lyon_tessellation::FillVertexConstructor<Vertex> for FillCtor {
     fn new_vertex(&mut self, v: FillVertex) -> Vertex {
@@ -41,7 +43,9 @@ impl lyon_tessellation::FillVertexConstructor<Vertex> for FillCtor {
 }
 
 /// Adapter: maps a lyon stroke vertex to our `Vertex` type.
-struct StrokeCtor { color: [f32; 4] }
+struct StrokeCtor {
+    color: [f32; 4],
+}
 
 impl lyon_tessellation::StrokeVertexConstructor<Vertex> for StrokeCtor {
     fn new_vertex(&mut self, v: StrokeVertex) -> Vertex {
@@ -149,6 +153,8 @@ fn build_lyon_path(path_data: &PathData) -> Path {
 
 /// Dynamic tessellation of any [`PathData`].
 /// Supports simultaneous fill and stroke.
+#[allow(clippy::too_many_arguments)]
+// Tessellation entry point; every field is a caller-facing knob.
 pub fn path_to_mesh(
     device: &wgpu::Device,
     path_data: &PathData,
@@ -164,9 +170,10 @@ pub fn path_to_mesh(
 
     if do_fill {
         let mut tessellator = FillTessellator::new();
-        // Use NonZero fill rule (required for TTF composite paths) and a safe 0.01 tolerance 
+        // Use NonZero fill rule (required for TTF composite paths) and a safe 0.01 tolerance
         // to avoid LYON subdivision budget exhausts that cause straight paths or silent failures.
-        let options = FillOptions::tolerance(0.01).with_fill_rule(lyon_tessellation::FillRule::NonZero);
+        let options =
+            FillOptions::tolerance(0.01).with_fill_rule(lyon_tessellation::FillRule::NonZero);
         tessellator
             .tessellate_path(
                 &path,
@@ -196,7 +203,12 @@ pub fn path_to_mesh(
             .tessellate_path(
                 &path,
                 &options,
-                &mut BuffersBuilder::new(&mut buffers, StrokeCtor { color: stroke_color }),
+                &mut BuffersBuilder::new(
+                    &mut buffers,
+                    StrokeCtor {
+                        color: stroke_color,
+                    },
+                ),
             )
             .ok();
     }
@@ -207,46 +219,83 @@ pub fn path_to_mesh(
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /// Filled circle disc in the XY plane (z = 0), centred at the origin.
-pub fn circle_2d(device: &wgpu::Device, radius: f32, resolution: u32, do_fill: bool, stroke_thickness: f32, fill_c: [f32;4], stroke_c: [f32;4]) -> Mesh {
+pub fn circle_2d(
+    device: &wgpu::Device,
+    radius: f32,
+    _resolution: u32,
+    do_fill: bool,
+    stroke_thickness: f32,
+    fill_c: [f32; 4],
+    stroke_c: [f32; 4],
+) -> Mesh {
     use lyon_tessellation::path::Winding;
     let mut builder = lyon_tessellation::path::Builder::new();
     builder.add_circle(point(0.0, 0.0), radius, Winding::Positive);
     let path = builder.build();
 
     let mut buffers: VertexBuffers<Vertex, u32> = VertexBuffers::new();
-    
+
     if do_fill {
         let mut tessellator = FillTessellator::new();
-        tessellator.tessellate_path(&path, &FillOptions::tolerance(0.001), &mut BuffersBuilder::new(&mut buffers, FillCtor { color: fill_c })).ok();
+        tessellator
+            .tessellate_path(
+                &path,
+                &FillOptions::tolerance(0.001),
+                &mut BuffersBuilder::new(&mut buffers, FillCtor { color: fill_c }),
+            )
+            .ok();
     }
-    
+
     if stroke_thickness > 0.0 {
         let mut tessellator = StrokeTessellator::new();
         let opts = StrokeOptions::default()
             .with_line_width(stroke_thickness)
             .with_line_cap(lyon_tessellation::LineCap::Round)
             .with_line_join(lyon_tessellation::LineJoin::Round);
-        tessellator.tessellate_path(&path, &opts, &mut BuffersBuilder::new(&mut buffers, StrokeCtor { color: stroke_c })).ok();
+        tessellator
+            .tessellate_path(
+                &path,
+                &opts,
+                &mut BuffersBuilder::new(&mut buffers, StrokeCtor { color: stroke_c }),
+            )
+            .ok();
     }
 
     buffers_to_mesh(device, "Circle2D", buffers)
 }
 
 /// Filled axis-aligned rectangle in the XY plane (z = 0), centred at the origin.
-pub fn rect_2d(device: &wgpu::Device, width: f32, height: f32, do_fill: bool, stroke_thickness: f32, fill_c: [f32;4], stroke_c: [f32;4]) -> Mesh {
+pub fn rect_2d(
+    device: &wgpu::Device,
+    width: f32,
+    height: f32,
+    do_fill: bool,
+    stroke_thickness: f32,
+    fill_c: [f32; 4],
+    stroke_c: [f32; 4],
+) -> Mesh {
     let hw = width * 0.5;
     let hh = height * 0.5;
-    
+
     use lyon_tessellation::path::Builder;
     let mut builder = Builder::new();
-    builder.add_rectangle(&Box2D::new(point(-hw, -hh), point(hw, hh)), lyon_tessellation::path::Winding::Positive);
+    builder.add_rectangle(
+        &Box2D::new(point(-hw, -hh), point(hw, hh)),
+        lyon_tessellation::path::Winding::Positive,
+    );
     let path = builder.build();
 
     let mut buffers: VertexBuffers<Vertex, u32> = VertexBuffers::new();
 
     if do_fill {
         let mut tessellator = FillTessellator::new();
-        tessellator.tessellate_path(&path, &FillOptions::tolerance(0.001), &mut BuffersBuilder::new(&mut buffers, FillCtor { color: fill_c })).ok();
+        tessellator
+            .tessellate_path(
+                &path,
+                &FillOptions::tolerance(0.001),
+                &mut BuffersBuilder::new(&mut buffers, FillCtor { color: fill_c }),
+            )
+            .ok();
     }
 
     if stroke_thickness > 0.0 {
@@ -255,13 +304,21 @@ pub fn rect_2d(device: &wgpu::Device, width: f32, height: f32, do_fill: bool, st
             .with_line_width(stroke_thickness)
             .with_line_cap(lyon_tessellation::LineCap::Round)
             .with_line_join(lyon_tessellation::LineJoin::Round);
-        tessellator.tessellate_path(&path, &opts, &mut BuffersBuilder::new(&mut buffers, StrokeCtor { color: stroke_c })).ok();
+        tessellator
+            .tessellate_path(
+                &path,
+                &opts,
+                &mut BuffersBuilder::new(&mut buffers, StrokeCtor { color: stroke_c }),
+            )
+            .ok();
     }
 
     buffers_to_mesh(device, "Rect2D", buffers)
 }
 
 /// Thick line segment in the XY plane (z = 0).
+#[allow(clippy::too_many_arguments)]
+// Tessellation entry point; every field is a caller-facing knob.
 pub fn line_2d(
     device: &wgpu::Device,
     x0: f32,

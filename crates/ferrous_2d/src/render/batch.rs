@@ -22,10 +22,7 @@ impl SpriteBatcher {
 
     /// Append one sprite instance to the bucket for `texture_id`.
     pub fn push_sprite(&mut self, texture_id: u32, instance: SpriteInstance) {
-        self.batches
-            .entry(texture_id)
-            .or_insert_with(Vec::new)
-            .push(instance);
+        self.batches.entry(texture_id).or_default().push(instance);
     }
 
     /// Drop the bucket (key included) for a freed texture id.
@@ -57,7 +54,9 @@ pub struct ShapeBatcher {
 impl ShapeBatcher {
     /// Crea un batcher con capacidad pre-reservada para evitar reallocaciones.
     pub fn with_capacity(cap: usize) -> Self {
-        Self { instances: Vec::with_capacity(cap) }
+        Self {
+            instances: Vec::with_capacity(cap),
+        }
     }
 
     /// Limpia sin liberar memoria (hot path: O(1)).
@@ -78,7 +77,8 @@ impl ShapeBatcher {
     pub fn sort_by_z(&mut self) {
         self.instances.sort_unstable_by(|a, b| {
             // La traslación Z está en transform_c3[2] (columna 3, componente Z)
-            a.transform_c3[2].partial_cmp(&b.transform_c3[2])
+            a.transform_c3[2]
+                .partial_cmp(&b.transform_c3[2])
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
     }
@@ -88,19 +88,25 @@ impl ShapeBatcher {
 /// so shapes and sprites interleave correctly regardless of pipeline.
 ///
 /// Indices refer to the *flat GPU upload layouts* produced each frame by
-/// `Renderer2d::prepare_shapes` / `Renderer2d::prepare`:
+/// `Renderer2d::prepare_shapes` / `Renderer2d::prepare` / the engine's text
+/// upload:
 /// - `Shape(i)` → `ShapeBatcher.instances[i]`.
 /// - `Sprite(tex_id, i)` → i-th instance of the flattened sprite upload, which
 ///   is `SpriteBatcher` iterated in `BTreeMap` (ascending `texture_id`) order.
+/// - `Text(i)` → i-th entry of the engine's text batch (one per glyph quad).
 ///
 /// The z value used for sorting is read from the instance's own transform
-/// (`transform_c3[2]`), which is how `sort_by_z` and the immediate-mode
-/// renderer encode depth. (The ECS `prepare_*_system` helpers are deprecated
-/// dead code: nothing registers them.)
+/// (`transform_c3[2]`).  `Ord`/`PartialOrd` are derived so the command itself
+/// is the deterministic tie-break for equal `z`.  The documented full order is:
 ///
-/// `Ord`/`PartialOrd` are derived so the command itself can act as the
-/// deterministic tie-break for equal `z` (variant order = insertion order:
-/// shapes before sprites, then by shape index / texture id / sprite offset).
+/// 1. ascending `z`;
+/// 2. for equal `z`: shapes, then sprites, then text (variant order);
+/// 3. within a kind: submission order (shape index / texture id + sprite
+///    offset / text index).
+///
+/// Text therefore interleaves with shapes and sprites by `z`, and glyphs of one
+/// `draw_text` call stay in submission order, so consecutive glyphs of the same
+/// atlas coalesce into one draw call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DrawCommand2d {
     /// Draw `ShapeBatcher.instances[index]` with the shape (SDF) pipeline.
@@ -108,6 +114,8 @@ pub enum DrawCommand2d {
     /// Draw the sprite after `SpriteBatcher` flattening: `texture_id` selects
     /// the texture bind group, `index` is the offset in the flattened upload.
     Sprite(u32, usize),
+    /// Draw the text-batch entry `index` with the MSDF text pipeline.
+    Text(usize),
 }
 
 #[cfg(test)]

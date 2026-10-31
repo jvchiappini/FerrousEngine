@@ -1,0 +1,102 @@
+name: engine-2d-text-and-readback
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  check:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+
+      # Only the files this job created or edited are format-checked; the rest
+      # of the repository is not fmt-clean yet.  `skip_children` keeps rustfmt
+      # from following `mod` declarations into untouched modules.
+      - name: rustfmt (files touched by this job)
+        shell: bash
+        run: |
+          rustfmt --edition 2021 --config skip_children=true --check \
+            crates/ferrous_2d/src/components/path.rs \
+            crates/ferrous_2d/src/render/batch.rs \
+            crates/ferrous_2d/src/render/pipeline.rs \
+            crates/ferrous_2d/src/render/renderer.rs \
+            crates/ferrous_2d/src/render/types.rs \
+            crates/ferrous_2d/src/systems/batching.rs \
+            crates/ferrous_core/src/key.rs \
+            crates/ferrous_core/src/scene/systems/animator.rs \
+            crates/ferrous_font/src/atlas.rs \
+            crates/ferrous_font/src/layout.rs \
+            crates/ferrous_font/src/lib.rs \
+            crates/ferrous_font/src/msdf_gen.rs \
+            crates/ferrous_font/src/parser.rs \
+            crates/ferrous_renderer/benches/pure2d_headless.rs \
+            crates/ferrous_renderer/examples/cad_capture.rs \
+            crates/ferrous_renderer/src/bin/test_ortho.rs \
+            crates/ferrous_renderer/src/exporter.rs \
+            crates/ferrous_renderer/src/frame_builder.rs \
+            crates/ferrous_renderer/src/geometry/primitives/shapes2d.rs \
+            crates/ferrous_renderer/src/geometry/primitives/text3d.rs \
+            crates/ferrous_renderer/src/headless.rs \
+            crates/ferrous_renderer/src/lib.rs \
+            crates/ferrous_renderer/src/materials.rs \
+            crates/ferrous_renderer/src/passes/outline_pass.rs \
+            crates/ferrous_renderer/src/passes/particle_pass.rs \
+            crates/ferrous_renderer/src/passes/post_process_pass.rs \
+            crates/ferrous_renderer/src/passes/skinning_pass.rs \
+            crates/ferrous_renderer/src/passes/ssao_blur_pass.rs \
+            crates/ferrous_renderer/src/passes/world_pass.rs \
+            crates/ferrous_renderer/src/renderer_api.rs \
+            crates/ferrous_renderer/src/renderer_core.rs \
+            crates/ferrous_renderer/src/renderer_passes.rs \
+            crates/ferrous_renderer/src/renderer_resource.rs \
+            crates/ferrous_renderer/src/resources/camera.rs \
+            crates/ferrous_renderer/src/resources/material.rs \
+            crates/ferrous_renderer/src/resources/readback.rs \
+            crates/ferrous_renderer/src/resources/texture.rs \
+            crates/ferrous_renderer/src/resources/texture_registry.rs \
+            crates/ferrous_renderer/tests/headless_readback.rs \
+            crates/ferrous_renderer/tests/headless_text.rs \
+            crates/ferrous_renderer/tests/pure2d_headless.rs \
+            crates/ferrous_ui_core/src/render_collector.rs \
+            crates/ferrous_ui_render/src/gui_batch.rs \
+            crates/ferrous_ui_render/src/gui_renderer.rs \
+            crates/ferrous_ui_render/src/pipelines/text.rs \
+            crates/ferrous_ui_render/src/to_batches.rs
+
+      # `--no-deps` keeps this job focused on the three crates owned by this
+      # change; unrelated workspace crates still carry pre-existing warnings.
+      - name: clippy (ferrous_font / ferrous_2d / ferrous_renderer)
+        run: cargo clippy -p ferrous_font -p ferrous_2d -p ferrous_renderer --all-targets --no-deps -- -D warnings
+
+      - name: tests (ferrous_font / ferrous_2d / ferrous_renderer)
+        run: cargo test -p ferrous_font -p ferrous_2d -p ferrous_renderer -j 2
+
+      - name: headless Pure2D without the GUI stack
+        run: cargo test -p ferrous_renderer --no-default-features --test pure2d_headless -j 2
+
+      - name: headless Pure2D release
+        run: cargo test -p ferrous_renderer --release --test pure2d_headless -j 2
+
+      - name: workspace check
+        run: cargo check --workspace --all-targets -j 2
+
+      - name: wasm check
+        run: cargo check -p ferrous_web --target wasm32-unknown-unknown
+
+      - name: rustdoc
+        run: cargo doc -p ferrous_font -p ferrous_2d -p ferrous_renderer --no-deps

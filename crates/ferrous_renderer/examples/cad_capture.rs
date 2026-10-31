@@ -145,7 +145,7 @@ fn write_png(path: &str, pixels: &[u8]) -> Result<(), String> {
 }
 
 fn render_capture(format: TextureFormat, path: &str) -> Result<[u8; 4], String> {
-    let mut h = Pure2dHarness::new(W, H, format)?;
+    let mut h = Pure2dHarness::new(W, H, format).map_err(|e| e.to_string())?;
     h.begin_frame();
     draw_plan(&mut h);
     let report = h.render_frame();

@@ -1,7 +1,7 @@
-use ferrous_ecs::query::Query;
-use glam::{Mat4, Vec3};
 use crate::components::{Sprite, Transform2d};
 use crate::render::{SpriteBatcher, SpriteInstance};
+use ferrous_ecs::query::Query;
+use glam::{Mat4, Vec3};
 
 /// Clears the sprite batcher and re-fills it from every `(&Transform2d, &Sprite)`
 /// entity, sorted by ascending [`Transform2d::z_index`](crate::components::Transform2d::z_index).
@@ -18,17 +18,17 @@ use crate::render::{SpriteBatcher, SpriteInstance};
     since = "0.1.0",
     note = "not registered in any scheduler; use the immediate-mode Renderer::draw_sprite_2d path instead"
 )]
-pub fn prepare_sprites_system(
-    batcher: &mut SpriteBatcher,
-    query: Query<(&Transform2d, &Sprite)>,
-) {
+pub fn prepare_sprites_system(batcher: &mut SpriteBatcher, query: Query<(&Transform2d, &Sprite)>) {
     batcher.clear();
 
-    let mut renderables: Vec<(&Transform2d, &Sprite)> = query.iter().map(|(_, comps)| comps).collect();
+    let mut renderables: Vec<(&Transform2d, &Sprite)> =
+        query.iter().map(|(_, comps)| comps).collect();
 
     // Sort by Z index ascending for alpha blending
     renderables.sort_by(|(t_a, _), (t_b, _)| {
-        t_a.z_index.partial_cmp(&t_b.z_index).unwrap_or(std::cmp::Ordering::Equal)
+        t_a.z_index
+            .partial_cmp(&t_b.z_index)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
 
     for (transform, sprite) in renderables {
@@ -38,21 +38,33 @@ pub fn prepare_sprites_system(
         let model = Mat4::from_scale_rotation_translation(
             Vec3::new(transform.scale.x * size.x, transform.scale.y * size.y, 1.0),
             glam::Quat::from_rotation_z(transform.rotation),
-            Vec3::new(transform.position.x, transform.position.y, transform.z_index),
+            Vec3::new(
+                transform.position.x,
+                transform.position.y,
+                transform.z_index,
+            ),
         );
 
         let uv_r = sprite.rect.unwrap_or([0.0, 0.0, 1.0, 1.0]);
-        let props = [if sprite.flip_x{1.0}else{0.0}, if sprite.flip_y{1.0}else{0.0}, 1.0, 0.0];
-        
-        batcher.push_sprite(tex_id, SpriteInstance {
-            transform_c0: model.x_axis.into(),
-            transform_c1: model.y_axis.into(),
-            transform_c2: model.z_axis.into(),
-            transform_c3: model.w_axis.into(),
-            color: sprite.color.into(),
-            uv_rect: uv_r,
-            properties: props,
-        });
+        let props = [
+            if sprite.flip_x { 1.0 } else { 0.0 },
+            if sprite.flip_y { 1.0 } else { 0.0 },
+            1.0,
+            0.0,
+        ];
+
+        batcher.push_sprite(
+            tex_id,
+            SpriteInstance {
+                transform_c0: model.x_axis.into(),
+                transform_c1: model.y_axis.into(),
+                transform_c2: model.z_axis.into(),
+                transform_c3: model.w_axis.into(),
+                color: sprite.color.into(),
+                uv_rect: uv_r,
+                properties: props,
+            },
+        );
     }
 }
 
@@ -77,18 +89,29 @@ pub fn prepare_shapes_system(
 ) {
     batcher.clear();
 
-    let mut renderables: Vec<(&Transform2d, &crate::components::Shape2d)> = query.iter().map(|(_, comps)| comps).collect();
+    let mut renderables: Vec<(&Transform2d, &crate::components::Shape2d)> =
+        query.iter().map(|(_, comps)| comps).collect();
 
     // Sort by Z index ascending for correct alpha blending
     renderables.sort_by(|(t_a, _), (t_b, _)| {
-        t_a.z_index.partial_cmp(&t_b.z_index).unwrap_or(std::cmp::Ordering::Equal)
+        t_a.z_index
+            .partial_cmp(&t_b.z_index)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
 
     for (transform, shape) in renderables {
         let model = Mat4::from_scale_rotation_translation(
-            Vec3::new(transform.scale.x * shape.size.x, transform.scale.y * shape.size.y, 1.0),
+            Vec3::new(
+                transform.scale.x * shape.size.x,
+                transform.scale.y * shape.size.y,
+                1.0,
+            ),
             glam::Quat::from_rotation_z(transform.rotation),
-            Vec3::new(transform.position.x, transform.position.y, transform.z_index),
+            Vec3::new(
+                transform.position.x,
+                transform.position.y,
+                transform.z_index,
+            ),
         );
 
         batcher.push_shape(crate::render::types::ShapeInstance {
@@ -96,7 +119,7 @@ pub fn prepare_shapes_system(
             transform_c1: model.y_axis.into(),
             transform_c2: model.z_axis.into(),
             transform_c3: model.w_axis.into(),
-            color: shape.color.into(),
+            color: shape.color,
             params: [
                 shape.border_thickness,
                 shape.corner_radius,
@@ -115,10 +138,12 @@ pub fn prepare_shapes_system(
 /// ## Caps (Issue #5)
 /// Only the first segment of a subpath receives the path's `cap_style` as a
 /// *start* cap and only the last segment receives it as an *end* cap:
+///
 /// - `Flat`: the quad ends exactly on the vertex.
 /// - `Round`: a disc of radius `stroke_width/2` is drawn centred on the outer
 ///   endpoint (exact round-cap silhouette without extending the quad).
 /// - `Square`: the quad is extended `stroke_width/2` beyond the outer endpoint.
+///
 /// Intermediate segments always use flat ends — the join covers the corner, not
 /// an extra cap.
 ///
@@ -148,11 +173,14 @@ pub fn prepare_paths_system(
     // Note: We don't clear the batcher here as it's shared with Shape2d.
     // The Renderer/App should clear it once at the start of the frame.
 
-    let mut renderables: Vec<(&Transform2d, &crate::components::Path2d)> = query.iter().map(|(_, comps)| comps).collect();
+    let mut renderables: Vec<(&Transform2d, &crate::components::Path2d)> =
+        query.iter().map(|(_, comps)| comps).collect();
 
     // Sort by Z index
     renderables.sort_by(|(t_a, _), (t_b, _)| {
-        t_a.z_index.partial_cmp(&t_b.z_index).unwrap_or(std::cmp::Ordering::Equal)
+        t_a.z_index
+            .partial_cmp(&t_b.z_index)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
 
     for (transform, path) in renderables {
@@ -162,7 +190,9 @@ pub fn prepare_paths_system(
 
         for pts in &subpaths {
             let n = pts.len();
-            if n < 2 { continue; }
+            if n < 2 {
+                continue;
+            }
 
             let half_w = path.stroke_width * 0.5;
 
@@ -172,7 +202,9 @@ pub fn prepare_paths_system(
                 let delta = end - start;
                 let length = delta.length();
 
-                if length < 0.0001 { continue; }
+                if length < 0.0001 {
+                    continue;
+                }
 
                 let is_first = i == 0;
                 let is_last = i == n - 1;
@@ -181,8 +213,17 @@ pub fn prepare_paths_system(
                 // Only Square caps extend the quad itself (width/2 on the outer
                 // end, via an offset quad centre).  Round caps are separate
                 // discs; Flat caps end exactly on the vertex.
-                let start_ext = if is_first && path.cap_style == crate::components::CapStyle::Square { half_w } else { 0.0 };
-                let end_ext = if is_last && path.cap_style == crate::components::CapStyle::Square { half_w } else { 0.0 };
+                let start_ext = if is_first && path.cap_style == crate::components::CapStyle::Square
+                {
+                    half_w
+                } else {
+                    0.0
+                };
+                let end_ext = if is_last && path.cap_style == crate::components::CapStyle::Square {
+                    half_w
+                } else {
+                    0.0
+                };
 
                 let quad_u_start = -start_ext;
                 let quad_u_end = length + end_ext;
@@ -235,7 +276,9 @@ pub fn prepare_paths_system(
                 // Travel-direction angle at the vertex: 0 = straight line.
                 let theta = in_dir.dot(out_dir).clamp(-1.0, 1.0).acos();
                 // Skip near-straight joints (~2°) to avoid redundant discs.
-                if theta < 0.035 { continue; }
+                if theta < 0.035 {
+                    continue;
+                }
 
                 push_disc(batcher, transform, path, v, join_disc_radius(path, theta));
             }
@@ -245,9 +288,7 @@ pub fn prepare_paths_system(
 
 /// Splits the raw command list into subpaths (each `MoveTo`+`LineTo`* group).
 /// Points that produce no geometry (< 2 points) are dropped.
-fn extract_subpaths(
-    commands: &[crate::components::PathCommand],
-) -> Vec<Vec<glam::Vec2>> {
+fn extract_subpaths(commands: &[crate::components::PathCommand]) -> Vec<Vec<glam::Vec2>> {
     let mut subpaths: Vec<Vec<glam::Vec2>> = Vec::new();
     let mut current: Vec<glam::Vec2> = Vec::new();
 
@@ -274,10 +315,12 @@ fn extract_subpaths(
 
 /// Radius of the join disc at a vertex with travel-direction angle `theta`
 /// (radians), honouring the path's `join_style`:
+///
 /// - `Round`/`Bevel`: `stroke_width/2` — the true round-join arc silhouette
 ///   (used as an approximation for `Bevel` too).
 /// - `Miter` (sharp corners only): grows with the classic `1/sin(θ/2)` miter
 ///   ratio (capped at 4.0) so the disc reaches the miter point.
+///
 /// Exact miter/bevel geometry is a future improvement.
 fn join_disc_radius(path: &crate::components::Path2d, theta: f32) -> f32 {
     let half_w = path.stroke_width * 0.5;
@@ -329,5 +372,3 @@ fn push_disc(
         ext1: 0.0,
     });
 }
-
-

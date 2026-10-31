@@ -178,7 +178,6 @@ impl From<winit::keyboard::KeyCode> for KeyCode {
             winit::keyboard::KeyCode::Digit8 => KeyCode::Digit8,
             winit::keyboard::KeyCode::Digit9 => KeyCode::Digit9,
 
-            winit::keyboard::KeyCode::Tab => KeyCode::Tab,
             winit::keyboard::KeyCode::Period => KeyCode::Period,
             winit::keyboard::KeyCode::Comma => KeyCode::Comma,
             winit::keyboard::KeyCode::Minus => KeyCode::Minus,

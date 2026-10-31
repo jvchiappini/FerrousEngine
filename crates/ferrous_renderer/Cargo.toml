@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 ferrous_2d = { path = "../ferrous_2d" }
+ferrous_font = { path = "../ferrous_font" }
 wgpu = { workspace = true }
 anyhow = "1.0"
 thiserror = "1.0"

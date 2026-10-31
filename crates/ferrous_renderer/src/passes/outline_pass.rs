@@ -58,6 +58,8 @@ pub struct OutlinePass {
 }
 
 impl OutlinePass {
+    #[allow(clippy::too_many_arguments)]
+    // Pass constructor keeps the renderer's resource set explicit.
     pub fn new(
         device: &Device,
         layouts: &PipelineLayouts,
@@ -77,7 +79,9 @@ impl OutlinePass {
             _pad0: 0,
             _pad1: 0,
         };
-        let oc = OutlineColorUniform { color: outline_color };
+        let oc = OutlineColorUniform {
+            color: outline_color,
+        };
 
         let dir_light_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Outline DirLight Buffer"),
@@ -177,8 +181,14 @@ impl RenderPass for OutlinePass {
                         label: Some("Outline Lights BG"),
                         layout: &self.lights_layout,
                         entries: &[
-                            wgpu::BindGroupEntry { binding: 0, resource: dl.as_entire_binding() },
-                            wgpu::BindGroupEntry { binding: 10, resource: cp.as_entire_binding() },
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: dl.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 10,
+                                resource: cp.as_entire_binding(),
+                            },
                             wgpu::BindGroupEntry {
                                 binding: 11,
                                 resource: oc_buf.as_entire_binding(),
@@ -199,8 +209,12 @@ impl RenderPass for OutlinePass {
         depth_view: Option<&TextureView>,
         packet: &FramePacket,
     ) {
-        let Some(outline_bg) = &self.outline_bind_group else { return; };
-        let Some(inst_bg) = &self.instance_bind_group else { return; };
+        let Some(outline_bg) = &self.outline_bind_group else {
+            return;
+        };
+        let Some(inst_bg) = &self.instance_bind_group else {
+            return;
+        };
 
         let color_att = RenderPassColorAttachment {
             view: color_view,
@@ -233,7 +247,9 @@ impl RenderPass for OutlinePass {
             rpass.set_bind_group(0, &*self.camera_bind_group, &[]);
             rpass.set_bind_group(1, inst_bg.as_ref(), &[]);
 
-            let mat_idx = cmd.material_slot.min(self.material_bind_groups.len().saturating_sub(1));
+            let mat_idx = cmd
+                .material_slot
+                .min(self.material_bind_groups.len().saturating_sub(1));
             if let Some(mat_bg) = self.material_bind_groups.get(mat_idx) {
                 rpass.set_bind_group(2, mat_bg.as_ref(), &[]);
             } else {
@@ -254,10 +270,19 @@ impl RenderPass for OutlinePass {
 
 #[cfg(target_arch = "wasm32")]
 impl RenderPass for OutlinePass {
-    fn name(&self) -> &str { "OutlinePass" }
+    fn name(&self) -> &str {
+        "OutlinePass"
+    }
     fn prepare(&mut self, _: &Device, _: &Queue, _: &FramePacket) {}
     fn execute(
-        &mut self, _: &Device, _: &Queue, _: &mut CommandEncoder,
-        _: &TextureView, _: Option<&TextureView>, _: Option<&TextureView>, _: &FramePacket,
-    ) {}
+        &mut self,
+        _: &Device,
+        _: &Queue,
+        _: &mut CommandEncoder,
+        _: &TextureView,
+        _: Option<&TextureView>,
+        _: Option<&TextureView>,
+        _: &FramePacket,
+    ) {
+    }
 }

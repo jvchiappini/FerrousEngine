@@ -112,9 +112,24 @@ fn draw_calls_match_batched_scene() {
     let tex = h.register_texture_rgba8(2, 2, &[255u8; 16]);
 
     h.begin_frame();
-    h.draw_shape(ShapeInstance::rect_z(Vec2::new(-24.0, 0.0), 0.0, Vec2::splat(12.0), RED));
-    h.draw_shape(ShapeInstance::rect_z(Vec2::ZERO, 0.0, Vec2::splat(12.0), GREEN));
-    h.draw_shape(ShapeInstance::rect_z(Vec2::new(24.0, 0.0), 0.0, Vec2::splat(12.0), BLUE));
+    h.draw_shape(ShapeInstance::rect_z(
+        Vec2::new(-24.0, 0.0),
+        0.0,
+        Vec2::splat(12.0),
+        RED,
+    ));
+    h.draw_shape(ShapeInstance::rect_z(
+        Vec2::ZERO,
+        0.0,
+        Vec2::splat(12.0),
+        GREEN,
+    ));
+    h.draw_shape(ShapeInstance::rect_z(
+        Vec2::new(24.0, 0.0),
+        0.0,
+        Vec2::splat(12.0),
+        BLUE,
+    ));
     h.draw_sprite(tex, sprite(Vec2::new(-8.0, -24.0), Vec2::splat(8.0), 0.0));
     h.draw_sprite(tex, sprite(Vec2::new(8.0, -24.0), Vec2::splat(8.0), 0.0));
 
@@ -152,8 +167,18 @@ fn z_order_is_deterministic_for_equal_and_interleaved_z() {
     // painter's order. Repeat identical frames to assert determinism.
     for iteration in 0..3 {
         h.begin_frame();
-        h.draw_shape(ShapeInstance::rect_z(Vec2::ZERO, 0.0, Vec2::splat(64.0), RED));
-        h.draw_shape(ShapeInstance::rect_z(Vec2::ZERO, 0.0, Vec2::splat(64.0), GREEN));
+        h.draw_shape(ShapeInstance::rect_z(
+            Vec2::ZERO,
+            0.0,
+            Vec2::splat(64.0),
+            RED,
+        ));
+        h.draw_shape(ShapeInstance::rect_z(
+            Vec2::ZERO,
+            0.0,
+            Vec2::splat(64.0),
+            GREEN,
+        ));
         let report = h.render_frame();
 
         assert_eq!(
@@ -173,8 +198,18 @@ fn z_order_is_deterministic_for_equal_and_interleaved_z() {
     // groups by (pipeline, texture) and reorders the upload into painter order,
     // distinct-z shapes now share **one** draw call while preserving order.
     h.begin_frame();
-    h.draw_shape(ShapeInstance::rect_z(Vec2::ZERO, 0.5, Vec2::splat(64.0), GREEN));
-    h.draw_shape(ShapeInstance::rect_z(Vec2::ZERO, 0.0, Vec2::splat(64.0), RED));
+    h.draw_shape(ShapeInstance::rect_z(
+        Vec2::ZERO,
+        0.5,
+        Vec2::splat(64.0),
+        GREEN,
+    ));
+    h.draw_shape(ShapeInstance::rect_z(
+        Vec2::ZERO,
+        0.0,
+        Vec2::splat(64.0),
+        RED,
+    ));
     let report = h.render_frame();
 
     assert_eq!(
@@ -224,7 +259,10 @@ fn scratch_reuse_config_toggles_and_both_paths_render() {
     let _guard = GPU_LOCK.lock().unwrap();
     let mut h = Pure2dHarness::new(64, 64, TextureFormat::Rgba8Unorm).expect("headless gpu");
 
-    assert!(h.renderer().render_2d_config().scratch_reuse, "default is reuse");
+    assert!(
+        h.renderer().render_2d_config().scratch_reuse,
+        "default is reuse"
+    );
 
     h.renderer_mut().set_render_2d_config(Render2dConfig {
         scratch_reuse: false,
@@ -236,7 +274,12 @@ fn scratch_reuse_config_toggles_and_both_paths_render() {
     h.draw_shape(ShapeInstance::rect(Vec2::ZERO, Vec2::splat(32.0), RED));
     let report = h.render_frame();
     assert_eq!(report.draw_calls, 1);
-    assert_rgb_near(h.read_pixel(32, 32), [255, 0, 0], 4, "rect centre (no reuse)");
+    assert_rgb_near(
+        h.read_pixel(32, 32),
+        [255, 0, 0],
+        4,
+        "rect centre (no reuse)",
+    );
 
     // Switch back on and confirm the path still coalesces.
     h.renderer_mut().set_render_2d_config(Render2dConfig {
@@ -244,10 +287,23 @@ fn scratch_reuse_config_toggles_and_both_paths_render() {
         ..Default::default()
     });
     h.begin_frame();
-    h.draw_shape(ShapeInstance::rect_z(Vec2::ZERO, 0.0, Vec2::splat(32.0), GREEN));
-    h.draw_shape(ShapeInstance::rect_z(Vec2::ZERO, 1.0, Vec2::splat(16.0), BLUE));
+    h.draw_shape(ShapeInstance::rect_z(
+        Vec2::ZERO,
+        0.0,
+        Vec2::splat(32.0),
+        GREEN,
+    ));
+    h.draw_shape(ShapeInstance::rect_z(
+        Vec2::ZERO,
+        1.0,
+        Vec2::splat(16.0),
+        BLUE,
+    ));
     let report = h.render_frame();
-    assert_eq!(report.draw_calls, 1, "distinct-z shapes still coalesce after re-enable");
+    assert_eq!(
+        report.draw_calls, 1,
+        "distinct-z shapes still coalesce after re-enable"
+    );
 }
 
 /// New public metrics API: `Renderer::frame_2d_stats()` must report the live
@@ -303,24 +359,38 @@ fn culling_preserves_visible_pixels_and_drops_offscreen_instances() {
         // Visible geometry (inside [-64, 64]^2 world rect).
         h.draw_shape(ShapeInstance::rect(Vec2::ZERO, Vec2::splat(40.0), RED));
         h.draw_shape(ShapeInstance::circle(Vec2::new(40.0, 40.0), 10.0, BLUE));
-        h.draw_sprite(t_vis, sprite(Vec2::new(-40.0, -40.0), Vec2::splat(12.0), 0.0));
+        h.draw_sprite(
+            t_vis,
+            sprite(Vec2::new(-40.0, -40.0), Vec2::splat(12.0), 0.0),
+        );
         // Off-screen geometry: 64 shapes + 64 sprites, all far outside.
         for i in 0..64 {
             let x = 1_000.0 + i as f32 * 3.0;
-            h.draw_shape(ShapeInstance::rect(Vec2::new(x, 0.0), Vec2::splat(5.0), GREEN));
+            h.draw_shape(ShapeInstance::rect(
+                Vec2::new(x, 0.0),
+                Vec2::splat(5.0),
+                GREEN,
+            ));
             h.draw_sprite(t_vis, sprite(Vec2::new(x, 500.0), Vec2::splat(5.0), 1.0));
         }
     };
 
-    h.renderer_mut()
-        .set_render_2d_config(Render2dConfig { cull_2d: false, ..Default::default() });
+    h.renderer_mut().set_render_2d_config(Render2dConfig {
+        cull_2d: false,
+        ..Default::default()
+    });
     draw_scene(&mut h);
     let off = h.render_frame();
     let pixels_off = h.read_pixels();
-    assert_eq!(off.culled_instances, 0, "culling off reports nothing culled");
+    assert_eq!(
+        off.culled_instances, 0,
+        "culling off reports nothing culled"
+    );
 
-    h.renderer_mut()
-        .set_render_2d_config(Render2dConfig { cull_2d: true, ..Default::default() });
+    h.renderer_mut().set_render_2d_config(Render2dConfig {
+        cull_2d: true,
+        ..Default::default()
+    });
     draw_scene(&mut h);
     let on = h.render_frame();
     let pixels_on = h.read_pixels();
@@ -329,7 +399,10 @@ fn culling_preserves_visible_pixels_and_drops_offscreen_instances() {
         pixels_on, pixels_off,
         "culling must not change any visible pixel"
     );
-    assert_eq!(on.culled_instances, 128, "64 shapes + 64 sprites are off-screen");
+    assert_eq!(
+        on.culled_instances, 128,
+        "64 shapes + 64 sprites are off-screen"
+    );
     assert_eq!(
         on.instances_uploaded + 128,
         off.instances_uploaded,
@@ -361,18 +434,26 @@ fn culling_reduces_draw_calls_for_interleaved_culled_texture_runs() {
             );
             h.draw_sprite(
                 t_vis,
-                sprite(Vec2::new(-28.0 + i as f32 * 8.0, 0.0), Vec2::splat(6.0), (i * 2 + 1) as f32),
+                sprite(
+                    Vec2::new(-28.0 + i as f32 * 8.0, 0.0),
+                    Vec2::splat(6.0),
+                    (i * 2 + 1) as f32,
+                ),
             );
         }
     };
 
-    h.renderer_mut()
-        .set_render_2d_config(Render2dConfig { cull_2d: false, ..Default::default() });
+    h.renderer_mut().set_render_2d_config(Render2dConfig {
+        cull_2d: false,
+        ..Default::default()
+    });
     draw_scene(&mut h);
     let off = h.render_frame();
 
-    h.renderer_mut()
-        .set_render_2d_config(Render2dConfig { cull_2d: true, ..Default::default() });
+    h.renderer_mut().set_render_2d_config(Render2dConfig {
+        cull_2d: true,
+        ..Default::default()
+    });
     draw_scene(&mut h);
     let on = h.render_frame();
 
@@ -385,7 +466,10 @@ fn culling_reduces_draw_calls_for_interleaved_culled_texture_runs() {
         on.sprite_draw_calls, 1,
         "surviving t_vis sprites become one contiguous run"
     );
-    assert!(on.draw_calls < off.draw_calls, "culling must lower draw calls");
+    assert!(
+        on.draw_calls < off.draw_calls,
+        "culling must lower draw calls"
+    );
 }
 
 /// H10 regression: `bind_groups_total` must report the number of **live** sprite
@@ -403,7 +487,10 @@ fn bind_groups_total_tracks_live_groups_after_free() {
     h.draw_sprite(t0, sprite(Vec2::new(-16.0, 0.0), Vec2::splat(8.0), 0.0));
     h.draw_sprite(t1, sprite(Vec2::new(16.0, 0.0), Vec2::splat(8.0), 0.0));
     let first = h.render_frame();
-    assert_eq!(first.bind_groups_total, 2, "two live textures, two bind groups");
+    assert_eq!(
+        first.bind_groups_total, 2,
+        "two live textures, two bind groups"
+    );
 
     h.renderer_mut().free_sprite_texture(t0);
     let after_free = h.render_frame();
@@ -441,7 +528,10 @@ fn sprite_textures_create_bind_groups_once() {
     h.draw_sprite(t0, sprite(Vec2::new(-16.0, 0.0), Vec2::splat(8.0), 0.0));
     h.draw_sprite(t1, sprite(Vec2::new(16.0, 0.0), Vec2::splat(8.0), 1.0));
     let second = h.render_frame();
-    assert_eq!(second.bind_groups_created, 0, "steady state creates no bind groups");
+    assert_eq!(
+        second.bind_groups_created, 0,
+        "steady state creates no bind groups"
+    );
     assert_eq!(second.buffer_reallocations, 0);
 }
 
@@ -652,13 +742,19 @@ fn polygon_fill_triangle_fan_vs_scanline_rects_64gon() {
     );
 
     assert_eq!(old.instances_uploaded, rects.len() as u32);
-    assert_eq!(new.instances_uploaded, n as u32, "one triangle per 64-gon side");
+    assert_eq!(
+        new.instances_uploaded, n as u32,
+        "one triangle per 64-gon side"
+    );
     assert!(
         rects.len() > n,
         "scan-line fill needs more instances than the fan ({} vs {n})",
         rects.len()
     );
-    assert_eq!(old.draw_calls, 1, "H3 coalesces same-pipeline shapes to one draw");
+    assert_eq!(
+        old.draw_calls, 1,
+        "H3 coalesces same-pipeline shapes to one draw"
+    );
     assert_eq!(new.draw_calls, 1);
     assert!(
         new.bytes_uploaded < old.bytes_uploaded,
@@ -730,7 +826,12 @@ fn triangulated_quad_has_no_internal_seam() {
     let pixels = h.read_pixels();
     let at = |x: u32, y: u32| -> [u8; 4] {
         let idx = ((y * 256 + x) * 4) as usize;
-        [pixels[idx], pixels[idx + 1], pixels[idx + 2], pixels[idx + 3]]
+        [
+            pixels[idx],
+            pixels[idx + 1],
+            pixels[idx + 2],
+            pixels[idx + 3],
+        ]
     };
 
     // Scan the whole diagonal interior (away from the two corners p0/p2, whose
@@ -756,18 +857,33 @@ fn triangulated_quad_has_no_internal_seam() {
         );
     }
 
-    // Outer contour must still be anti-aliased: left edge x=0 (i=127 samples
-    // x=-0.5) and bottom edge y=0 (j=127 samples y=0.5) are partial.
-    let left = at(127, 77);
-    let bottom = at(177, 127);
-    println!("[seam] masked left-edge AA = {left:?}, bottom-edge AA = {bottom:?}");
-    assert!(
-        left[0] > 40 && left[0] < 230,
-        "left edge must be partial AA, got {left:?}"
+    // The silhouette must stay exactly on the quad boundary.  The edges are on
+    // integer coordinates, so pixel centres straddle them and there is no
+    // partially covered pixel: i = 127 (x = -0.5) is outside, i = 128
+    // (x = +0.5) is inside; j = 128 (y = -0.5) is outside, j = 127
+    // (y = +0.5) is inside.
+    let left_outside = at(127, 77);
+    let left_inside = at(128, 77);
+    let bottom_outside = at(177, 128);
+    let bottom_inside = at(177, 127);
+    println!(
+        "[seam] masked left outside/inside = {left_outside:?}/{left_inside:?}, bottom outside/inside = {bottom_outside:?}/{bottom_inside:?}"
     );
     assert!(
-        bottom[0] > 40 && bottom[0] < 230,
-        "bottom edge must be partial AA, got {bottom:?}"
+        left_outside[0] < 20,
+        "left edge must not bleed, got {left_outside:?}"
+    );
+    assert!(
+        left_inside[0] > 235,
+        "left edge must be filled, got {left_inside:?}"
+    );
+    assert!(
+        bottom_outside[0] < 20,
+        "bottom edge must not bleed, got {bottom_outside:?}"
+    );
+    assert!(
+        bottom_inside[0] > 235,
+        "bottom edge must be filled, got {bottom_inside:?}"
     );
 
     // Witness: the all-AA quad shows the seam on the diagonal.
@@ -836,7 +952,12 @@ fn collinear_segments_with_hard_joint_have_no_seam() {
 
     let at = |pixels: &[u8], x: u32, y: u32| -> [u8; 4] {
         let idx = ((y * 256 + x) * 4) as usize;
-        [pixels[idx], pixels[idx + 1], pixels[idx + 2], pixels[idx + 3]]
+        [
+            pixels[idx],
+            pixels[idx + 1],
+            pixels[idx + 2],
+            pixels[idx + 3],
+        ]
     };
 
     // Shared cap hard on both sides: left wall AA at its free end, right wall
@@ -879,27 +1000,36 @@ fn collinear_segments_with_hard_joint_have_no_seam() {
             );
         }
     }
-    // The free left cap must still be anti-aliased: x = -80 -> i = 47 samples
-    // x = -80.5, just outside the segment.
-    let free = at(&pixels, 47, 127);
-    println!("[line-seam] free left cap (47,127) = {free:?}");
+    // The free left cap sits exactly on the x = -80 pixel boundary.  Pixel
+    // centres straddle it, so i = 47 (centre -80.5) is outside and i = 48
+    // (centre -79.5) is inside: a flat cap on an integer boundary is hard, not
+    // partial.  Assert both sides so a bleeding cap is still caught.
+    let outside = at(&pixels, 47, 127);
+    let inside = at(&pixels, 48, 127);
+    println!("[line-seam] free cap outside(47,127) = {outside:?}, inside(48,127) = {inside:?}");
     assert!(
-        free[0] > 40 && free[0] < 230,
-        "free cap must be partial AA, got {free:?}"
+        outside[0] < 20,
+        "outside the free cap must stay black, got {outside:?}"
+    );
+    assert!(
+        inside[0] > 235,
+        "inside the free cap must be full red, got {inside:?}"
     );
 
-    // Witness: the same chain with both caps AA shows the seam at x = 0.
+    // Witness: the same chain with both caps AA shows a seam when the joint
+    // falls inside a pixel (x = 0.5).  A joint exactly on a pixel boundary
+    // (x = 0) has no partially covered pixel, so it can never show the seam.
     h.begin_frame();
     h.draw_shape(ShapeInstance::line_with_cap_style(
-        a_from,
-        joint,
+        Vec2::new(a_from.x + 0.5, 0.0),
+        Vec2::new(0.5, 0.0),
         width,
         RED,
         ferrous_2d::CapStyle::Flat,
     ));
     h.draw_shape(ShapeInstance::line_with_cap_style(
-        joint,
-        b_to,
+        Vec2::new(0.5, 0.0),
+        Vec2::new(b_to.x + 0.5, 0.0),
         width,
         RED,
         ferrous_2d::CapStyle::Flat,
@@ -947,7 +1077,12 @@ fn hard_end_against_side_of_another_segment_has_no_gap() {
 
     let at = |x: u32, y: u32| -> [u8; 4] {
         let idx = ((y * 256 + x) * 4) as usize;
-        [pixels[idx], pixels[idx + 1], pixels[idx + 2], pixels[idx + 3]]
+        [
+            pixels[idx],
+            pixels[idx + 1],
+            pixels[idx + 2],
+            pixels[idx + 3],
+        ]
     };
 
     // World box around the junction x in [-6,6], y in [-6,6]; must be all red.
@@ -1037,11 +1172,9 @@ fn static_batch_update_replaces_content_in_place() {
     let _guard = GPU_LOCK.lock().unwrap();
     let mut h = Pure2dHarness::new(128, 128, TextureFormat::Rgba8Unorm).expect("headless gpu");
 
-    let id = h.renderer_mut().create_static_2d_batch(&[ShapeInstance::rect(
-        Vec2::ZERO,
-        Vec2::splat(40.0),
-        RED,
-    )]);
+    let id = h
+        .renderer_mut()
+        .create_static_2d_batch(&[ShapeInstance::rect(Vec2::ZERO, Vec2::splat(40.0), RED)]);
     h.begin_frame();
     let _ = h.render_frame();
     assert_rgb_near(h.read_pixel(64, 64), [255, 0, 0], 4, "red after create");
@@ -1054,7 +1187,10 @@ fn static_batch_update_replaces_content_in_place() {
     let updated = h.render_frame();
     assert_rgb_near(h.read_pixel(64, 64), [0, 255, 0], 4, "green after update");
     assert_eq!(updated.static_instances_drawn, 1);
-    assert_eq!(updated.bytes_uploaded, 0, "update is not a per-frame upload");
+    assert_eq!(
+        updated.bytes_uploaded, 0,
+        "update is not a per-frame upload"
+    );
 
     // Grow past the 128-instance minimum: buffer is recreated, still 0 upload.
     let many: Vec<ShapeInstance> = (0..300)
@@ -1089,7 +1225,9 @@ fn static_batch_destroy_stops_drawing_and_invalidates_id() {
     let _guard = GPU_LOCK.lock().unwrap();
     let mut h = Pure2dHarness::new(128, 128, TextureFormat::Rgba8Unorm).expect("headless gpu");
 
-    let id = h.renderer_mut().create_static_2d_batch(&static_test_shapes());
+    let id = h
+        .renderer_mut()
+        .create_static_2d_batch(&static_test_shapes());
     h.begin_frame();
     let first = h.render_frame();
     assert_eq!(first.static_batches_drawn, 1);
@@ -1099,7 +1237,12 @@ fn static_batch_destroy_stops_drawing_and_invalidates_id() {
     let after = h.render_frame();
     assert_eq!(after.static_batches_drawn, 0);
     assert_eq!(after.draw_calls, 0, "destroyed batch must not draw");
-    assert_rgb_near(h.read_pixel(64, 64), [0, 0, 0], 4, "background after destroy");
+    assert_rgb_near(
+        h.read_pixel(64, 64),
+        [0, 0, 0],
+        4,
+        "background after destroy",
+    );
 
     // Stale handle: update/destroy are no-ops and must not panic/draw.
     h.renderer_mut().update_static_2d_batch(
@@ -1112,11 +1255,9 @@ fn static_batch_destroy_stops_drawing_and_invalidates_id() {
     assert_eq!(still.draw_calls, 0, "stale id must not draw");
 
     // Reusing the slot issues a new generation; the old id addresses nothing.
-    let new_id = h.renderer_mut().create_static_2d_batch(&[ShapeInstance::rect(
-        Vec2::ZERO,
-        Vec2::splat(20.0),
-        BLUE,
-    )]);
+    let new_id = h
+        .renderer_mut()
+        .create_static_2d_batch(&[ShapeInstance::rect(Vec2::ZERO, Vec2::splat(20.0), BLUE)]);
     assert_eq!(new_id.index(), id.index());
     assert_ne!(new_id.generation(), id.generation());
     assert_eq!(h.renderer().static_2d_batch_count(), 1);
@@ -1139,7 +1280,9 @@ fn static_batch_destroy_stops_drawing_and_invalidates_id() {
 fn static_batch_has_no_per_frame_upload() {
     let _guard = GPU_LOCK.lock().unwrap();
     let mut h = Pure2dHarness::new(128, 128, TextureFormat::Rgba8Unorm).expect("headless gpu");
-    let id = h.renderer_mut().create_static_2d_batch(&static_test_shapes());
+    let id = h
+        .renderer_mut()
+        .create_static_2d_batch(&static_test_shapes());
 
     for frame in 0..3 {
         h.begin_frame();
@@ -1161,16 +1304,20 @@ fn multiple_static_batches_draw_one_call_each() {
     let _guard = GPU_LOCK.lock().unwrap();
     let mut h = Pure2dHarness::new(128, 128, TextureFormat::Rgba8Unorm).expect("headless gpu");
 
-    let a = h.renderer_mut().create_static_2d_batch(&[ShapeInstance::rect(
-        Vec2::new(-20.0, 0.0),
-        Vec2::splat(20.0),
-        RED,
-    )]);
-    let b = h.renderer_mut().create_static_2d_batch(&[ShapeInstance::rect(
-        Vec2::new(20.0, 0.0),
-        Vec2::splat(20.0),
-        GREEN,
-    )]);
+    let a = h
+        .renderer_mut()
+        .create_static_2d_batch(&[ShapeInstance::rect(
+            Vec2::new(-20.0, 0.0),
+            Vec2::splat(20.0),
+            RED,
+        )]);
+    let b = h
+        .renderer_mut()
+        .create_static_2d_batch(&[ShapeInstance::rect(
+            Vec2::new(20.0, 0.0),
+            Vec2::splat(20.0),
+            GREEN,
+        )]);
     assert_eq!(h.renderer().static_2d_batch_count(), 2);
 
     h.begin_frame();
@@ -1193,4 +1340,3 @@ fn multiple_static_batches_draw_one_call_each() {
     h.renderer_mut().destroy_static_2d_batch(a);
     h.renderer_mut().destroy_static_2d_batch(b);
 }
-

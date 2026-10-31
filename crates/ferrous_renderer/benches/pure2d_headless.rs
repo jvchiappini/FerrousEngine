@@ -31,7 +31,8 @@
 
 use divan::counter::BytesCount;
 use divan::AllocProfiler;
-use ferrous_2d::render::{ShapeInstance, SpriteInstance};
+use ferrous_2d::render::{FontId2d, ShapeInstance, SpriteInstance};
+use ferrous_font::TextAlign;
 use ferrous_renderer::headless::{Pure2dHarness, DEFAULT_FORMAT};
 use ferrous_renderer::Render2dConfig;
 use glam::{Mat4, Quat, Vec2, Vec3};
@@ -106,7 +107,10 @@ impl Scene {
             let x = (i % 32) as f32 * 12.0 - 176.0;
             let y = (i / 32) as f32 * 12.0 - 176.0;
             let tex = (i % self.n_textures) as u32;
-            h.draw_sprite(tex, sprite(Vec2::new(x, y), Vec2::splat(6.0), 100.0 + i as f32));
+            h.draw_sprite(
+                tex,
+                sprite(Vec2::new(x, y), Vec2::splat(6.0), 100.0 + i as f32),
+            );
         }
     }
 
@@ -133,7 +137,11 @@ impl Scene {
             if i < offscreen {
                 h.draw_sprite(
                     1,
-                    sprite(Vec2::new(10_000.0 + i as f32, 0.0), Vec2::splat(6.0), (i * 2) as f32),
+                    sprite(
+                        Vec2::new(10_000.0 + i as f32, 0.0),
+                        Vec2::splat(6.0),
+                        (i * 2) as f32,
+                    ),
                 );
             }
             if i < visible {
@@ -154,10 +162,11 @@ impl Scene {
 
 fn print_baseline(label: &str, report: &ferrous_renderer::headless::FrameReport) {
     eprintln!(
-        "[baseline] {label}: draw_calls={} (shapes={} sprites={}) instances={} culled={} static={}/{} bytes_uploaded={} buffer_reallocations={} bind_groups_total={} cpu_ms={:.3}",
+        "[baseline] {label}: draw_calls={} (shapes={} sprites={} text={}) instances={} culled={} static={}/{} bytes_uploaded={} buffer_reallocations={} bind_groups_total={} cpu_ms={:.3}",
         report.draw_calls,
         report.shape_draw_calls,
         report.sprite_draw_calls,
+        report.text_draw_calls,
         report.instances_uploaded,
         report.culled_instances,
         report.static_batches_drawn,
@@ -253,6 +262,113 @@ fn pure2d_culling_off(bencher: divan::Bencher, n_off: usize) {
         .bench_local(|| {
             scene.fill_culling(512, n_off);
             divan::black_box(scene.render())
+        });
+}
+
+/// Readback into a caller-owned, reused `Vec` (the steady-state video path).
+///
+/// The `allocs` column reported by `divan::AllocProfiler` counts *process*
+/// allocations, including wgpu's command-encoder internals; the engine-owned
+/// allocations are zero after the first call (one persistent staging buffer in
+/// `OffscreenTarget::new`, one `Vec` owned by the caller).
+#[divan::bench]
+fn readback_into_reused_buffer(bencher: divan::Bencher) {
+    let mut harness = Pure2dHarness::new(256, 256, DEFAULT_FORMAT).expect("headless gpu");
+    harness.begin_frame();
+    harness.draw_shape(ShapeInstance::rect(Vec2::ZERO, Vec2::splat(128.0), RED));
+    harness.render_frame();
+    let mut out = Vec::new();
+    harness.read_pixels_into(&mut out).expect("first readback");
+    eprintln!(
+        "[baseline] readback 256x256: bytes={} staging_allocations={}",
+        out.len(),
+        harness.target().staging_allocations(),
+    );
+    bencher
+        .counter(BytesCount::from(out.len() as u64))
+        .bench_local(|| {
+            harness
+                .read_pixels_into(&mut out)
+                .expect("steady-state readback");
+            divan::black_box(out.len())
+        });
+}
+
+/// Single-texel readback (1x1 copy into the small persistent buffer).
+#[divan::bench]
+fn readback_single_pixel(bencher: divan::Bencher) {
+    let mut harness = Pure2dHarness::new(256, 256, DEFAULT_FORMAT).expect("headless gpu");
+    harness.begin_frame();
+    harness.draw_shape(ShapeInstance::rect(Vec2::ZERO, Vec2::splat(128.0), RED));
+    harness.render_frame();
+
+    bencher
+        .counter(BytesCount::from(4u64))
+        .bench_local(|| divan::black_box(harness.read_pixel(128, 128)));
+}
+
+/// Pipelined readback: submit the copy of the current frame, then map the
+/// oldest pending slot.  In a real loop the submit of frame N overlaps the
+/// rendering of frame N+1; this benchmark isolates the readback half.
+#[divan::bench]
+fn readback_pipelined(bencher: divan::Bencher) {
+    let mut harness = Pure2dHarness::new(256, 256, DEFAULT_FORMAT).expect("headless gpu");
+    harness.begin_frame();
+    harness.draw_shape(ShapeInstance::rect(Vec2::ZERO, Vec2::splat(128.0), RED));
+    harness.render_frame();
+    let mut out = Vec::new();
+
+    bencher
+        .counter(BytesCount::from((256usize * 256 * 4) as u64))
+        .bench_local(|| {
+            harness.submit_readback().expect("submit");
+            assert!(harness.take_readback(&mut out).expect("take"));
+            divan::black_box(out.len())
+        });
+}
+
+/// Pure2D MSDF text: `lines` lines of 32 characters, baked atlas reused.
+///
+/// The `allocs` column is the steady-state signal: layout reuses its scratch
+/// buffer, the painter-order upload reuses its `Vec`, and the GPU text instance
+/// buffer grows geometrically, so only the first frame allocates engine memory.
+#[divan::bench(args = [1, 32])]
+fn pure2d_text(bencher: divan::Bencher, lines: usize) {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let font_path = manifest.join("../../assets/fonts/Roboto-Regular.ttf");
+    let bytes = std::fs::read(&font_path).expect("Roboto-Regular.ttf");
+    let mut harness = Pure2dHarness::new(512, 512, DEFAULT_FORMAT).expect("headless gpu");
+    let font = harness
+        .register_font(&bytes, ferrous_font::charset::ascii())
+        .expect("font atlas");
+
+    let fill = |h: &mut Pure2dHarness, font: FontId2d| {
+        h.begin_frame();
+        for i in 0..lines {
+            let y = 236.0 - i as f32 * 14.0;
+            h.draw_text(
+                font,
+                "FerrousEngine Pure2D text bench",
+                Mat4::from_translation(Vec3::new(-250.0, y, i as f32)),
+                12.0,
+                TextAlign::Left,
+                [1.0, 1.0, 1.0, 1.0],
+            );
+        }
+    };
+
+    fill(&mut harness, font);
+    print_baseline(
+        &format!("pure2d_text lines={lines}"),
+        &harness.render_frame(),
+    );
+    bencher
+        .counter(BytesCount::from(
+            (lines * 32 * std::mem::size_of::<ferrous_2d::render::TextInstance>()) as u64,
+        ))
+        .bench_local(|| {
+            fill(&mut harness, font);
+            divan::black_box(harness.render_frame())
         });
 }
 

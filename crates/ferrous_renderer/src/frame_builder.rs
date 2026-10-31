@@ -21,7 +21,7 @@ use crate::geometry::primitives::{
     cylinder::cylinder as create_cylinder,
     plane::plane as create_plane,
     quad::quad as create_quad,
-    shapes2d::{circle_2d, rect_2d, line_2d, path_to_mesh, into_line_cap, into_line_join},
+    shapes2d::{circle_2d, into_line_cap, into_line_join, line_2d, path_to_mesh, rect_2d},
     sphere::sphere as create_sphere,
     torus::torus as create_torus,
 };
@@ -141,13 +141,16 @@ impl FrameBuilder {
     ///
     /// Frustum culling is deferred to `build()` so that a camera change still
     /// re-culls even when the scene is otherwise static.
+    // Long-standing scene-sync signature shared with `Renderer::sync_world`;
+    // splitting it would churn every caller for no behaviour change.
+    #[allow(clippy::too_many_arguments)]
     pub fn build_world_commands(
         &mut self,
         world: &ferrous_core::scene::World,
         device: &wgpu::Device,
-        frustum: &Frustum,
+        _frustum: &Frustum,
         camera_eye: glam::Vec3,
-        camera_vp: glam::Mat4,
+        _camera_vp: glam::Mat4,
         viewport: crate::Viewport,
         instance_buf: &mut InstanceBuffer,
         instance_layout: &wgpu::BindGroupLayout,
@@ -181,28 +184,50 @@ impl FrameBuilder {
         let mut visible_groups: HashMap<MeshGroupKey, MeshGroupVal> = HashMap::new();
         // All-objects groups for shadow pass (no frustum culling)
         let mut shadow_groups: HashMap<MeshGroupKey, MeshGroupVal> = HashMap::new();
-        
+
         let mut entities_to_render = Vec::new();
         let query = ferrous_ecs::query::Query::<(
-                &Element,
-                &Transform,
-                &MaterialComponent,
-                Option<&ferrous_core::scene::ShadowCaster>,
-                Option<&ferrous_core::scene::Billboard>,
-                Option<&ferrous_core::scene::ScreenSpace>,
-                Option<&ferrous_core::scene::world::types::ZIndex>,
-            )>::new(&world.ecs);
-            
-        for (entity, (element, transform, material, shadow_caster, billboard, screen_space, z_index)) in query.iter()
+            &Element,
+            &Transform,
+            &MaterialComponent,
+            Option<&ferrous_core::scene::ShadowCaster>,
+            Option<&ferrous_core::scene::Billboard>,
+            Option<&ferrous_core::scene::ScreenSpace>,
+            Option<&ferrous_core::scene::world::types::ZIndex>,
+        )>::new(&world.ecs);
+
+        for (
+            entity,
+            (element, transform, material, shadow_caster, billboard, screen_space, z_index),
+        ) in query.iter()
         {
-            entities_to_render.push((entity, element, transform, material, shadow_caster, billboard, screen_space, z_index));
+            entities_to_render.push((
+                entity,
+                element,
+                transform,
+                material,
+                shadow_caster,
+                billboard,
+                screen_space,
+                z_index,
+            ));
         }
 
         // v13: Algorithm of the Painter (Z-Index sorting)
         // Sort by Z-Index (None = 0)
         entities_to_render.sort_by_key(|(_, _, _, _, _, _, _, zi)| zi.map(|z| z.0).unwrap_or(0));
 
-        for (_entity, element, transform, material, shadow_caster, billboard, screen_space, z_index) in entities_to_render {
+        for (
+            _entity,
+            element,
+            transform,
+            material,
+            shadow_caster,
+            billboard,
+            screen_space,
+            z_index,
+        ) in entities_to_render
+        {
             // ... (keep the same match block for mesh selection)
             let is_renderable = matches!(
                 element.kind,
@@ -304,55 +329,96 @@ impl FrameBuilder {
                     open_ended,
                 } => {
                     let key = (
-                        radius_top.to_bits(), radius_bottom.to_bits(), height.to_bits(),
-                        *radial_segments, *height_segments, *open_ended as u8,
+                        radius_top.to_bits(),
+                        radius_bottom.to_bits(),
+                        height.to_bits(),
+                        *radial_segments,
+                        *height_segments,
+                        *open_ended as u8,
                     );
                     self.cylinder_cache
                         .entry(key)
-                        .or_insert_with(|| create_cylinder(
-                            device, *radius_top, *radius_bottom, *height,
-                            *radial_segments, *height_segments, *open_ended,
-                        ))
+                        .or_insert_with(|| {
+                            create_cylinder(
+                                device,
+                                *radius_top,
+                                *radius_bottom,
+                                *height,
+                                *radial_segments,
+                                *height_segments,
+                                *open_ended,
+                            )
+                        })
                         .clone()
                 }
-                ElementKind::Torus { radius, tube, radial_segments, tubular_segments } => {
+                ElementKind::Torus {
+                    radius,
+                    tube,
+                    radial_segments,
+                    tubular_segments,
+                } => {
                     let key = (
-                        radius.to_bits(), tube.to_bits(),
-                        *radial_segments, *tubular_segments,
+                        radius.to_bits(),
+                        tube.to_bits(),
+                        *radial_segments,
+                        *tubular_segments,
                     );
                     self.torus_cache
                         .entry(key)
-                        .or_insert_with(|| create_torus(
-                            device, *radius, *tube,
-                            *radial_segments, *tubular_segments,
-                            std::f32::consts::TAU,
-                        ))
+                        .or_insert_with(|| {
+                            create_torus(
+                                device,
+                                *radius,
+                                *tube,
+                                *radial_segments,
+                                *tubular_segments,
+                                std::f32::consts::TAU,
+                            )
+                        })
                         .clone()
                 }
-                ElementKind::Plane { width, height, width_segments, height_segments } => {
+                ElementKind::Plane {
+                    width,
+                    height,
+                    width_segments,
+                    height_segments,
+                } => {
                     let key = (
-                        width.to_bits(), height.to_bits(),
-                        *width_segments, *height_segments,
+                        width.to_bits(),
+                        height.to_bits(),
+                        *width_segments,
+                        *height_segments,
                     );
                     self.plane_cache
                         .entry(key)
-                        .or_insert_with(|| create_plane(
-                            device, *width, *height,
-                            *width_segments, *height_segments,
-                        ))
+                        .or_insert_with(|| {
+                            create_plane(device, *width, *height, *width_segments, *height_segments)
+                        })
                         .clone()
                 }
-                ElementKind::Capsule { radius, height, radial_segments, cap_segments } => {
+                ElementKind::Capsule {
+                    radius,
+                    height,
+                    radial_segments,
+                    cap_segments,
+                } => {
                     let key = (
-                        radius.to_bits(), height.to_bits(),
-                        *radial_segments, *cap_segments,
+                        radius.to_bits(),
+                        height.to_bits(),
+                        *radial_segments,
+                        *cap_segments,
                     );
                     self.capsule_cache
                         .entry(key)
-                        .or_insert_with(|| create_capsule(
-                            device, *radius, *height,
-                            *radial_segments, *cap_segments,
-                        ))
+                        .or_insert_with(|| {
+                            create_capsule(
+                                device,
+                                *radius,
+                                *height,
+                                *radial_segments,
+                                *cap_segments,
+                            )
+                        })
                         .clone()
                 }
                 ElementKind::Circle { radius, segments } => {
@@ -362,19 +428,34 @@ impl FrameBuilder {
                         .or_insert_with(|| create_circle(device, *radius, *segments))
                         .clone()
                 }
-                ElementKind::Ring { inner_radius, outer_radius, segments, rings } => {
+                ElementKind::Ring {
+                    inner_radius,
+                    outer_radius,
+                    segments,
+                    rings,
+                } => {
                     let key = (
-                        inner_radius.to_bits(), outer_radius.to_bits(),
-                        *segments, *rings,
+                        inner_radius.to_bits(),
+                        outer_radius.to_bits(),
+                        *segments,
+                        *rings,
                     );
                     self.disc_cache
                         .entry(key)
-                        .or_insert_with(|| create_ring(
-                            device, *inner_radius, *outer_radius, *segments, *rings,
-                        ))
+                        .or_insert_with(|| {
+                            create_ring(device, *inner_radius, *outer_radius, *segments, *rings)
+                        })
                         .clone()
                 }
-                ElementKind::Text3D { text, font_data, depth, bevel_enabled, bevel_thickness, bevel_size, quality } => {
+                ElementKind::Text3D {
+                    text,
+                    font_data,
+                    depth,
+                    bevel_enabled,
+                    bevel_thickness,
+                    bevel_size,
+                    quality,
+                } => {
                     let key = (
                         text.clone(),
                         depth.to_bits(),
@@ -386,12 +467,15 @@ impl FrameBuilder {
                     self.text3d_cache
                         .entry(key)
                         .or_insert_with(|| {
-                            let builder = crate::geometry::primitives::Text3dBuilder::new(text, font_data)
-                                .depth(*depth)
-                                .quality(*quality)
-                                .bevel(*bevel_enabled, *bevel_thickness, *bevel_size);
-                            
-                            builder.build(device).unwrap_or_else(|_| create_cube(device))
+                            let builder =
+                                crate::geometry::primitives::Text3dBuilder::new(text, font_data)
+                                    .depth(*depth)
+                                    .quality(*quality)
+                                    .bevel(*bevel_enabled, *bevel_thickness, *bevel_size);
+
+                            builder
+                                .build(device)
+                                .unwrap_or_else(|_| create_cube(device))
                         })
                         .clone()
                 }
@@ -399,43 +483,113 @@ impl FrameBuilder {
                     let do_fill = element.fill_color.is_some();
                     let f_c = element.fill_color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
                     let s_c = element.stroke_color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
-                    let f_c_bits = f_c[0].to_bits() ^ f_c[1].to_bits() ^ f_c[2].to_bits() ^ f_c[3].to_bits();
-                    let s_c_bits = s_c[0].to_bits() ^ s_c[1].to_bits() ^ s_c[2].to_bits() ^ s_c[3].to_bits();
-                    let key = (0u8, radius.to_bits(), *resolution, do_fill as u32, element.stroke_thickness.to_bits(), f_c_bits ^ s_c_bits);
+                    let f_c_bits =
+                        f_c[0].to_bits() ^ f_c[1].to_bits() ^ f_c[2].to_bits() ^ f_c[3].to_bits();
+                    let s_c_bits =
+                        s_c[0].to_bits() ^ s_c[1].to_bits() ^ s_c[2].to_bits() ^ s_c[3].to_bits();
+                    let key = (
+                        0u8,
+                        radius.to_bits(),
+                        *resolution,
+                        do_fill as u32,
+                        element.stroke_thickness.to_bits(),
+                        f_c_bits ^ s_c_bits,
+                    );
                     self.shapes2d_cache
                         .entry(key)
-                        .or_insert_with(|| circle_2d(device, *radius, *resolution, do_fill, element.stroke_thickness, f_c, s_c))
+                        .or_insert_with(|| {
+                            circle_2d(
+                                device,
+                                *radius,
+                                *resolution,
+                                do_fill,
+                                element.stroke_thickness,
+                                f_c,
+                                s_c,
+                            )
+                        })
                         .clone()
                 }
                 ElementKind::Rect2D { width, height } => {
                     let do_fill = element.fill_color.is_some();
                     let f_c = element.fill_color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
                     let s_c = element.stroke_color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
-                    let f_c_bits = f_c[0].to_bits() ^ f_c[1].to_bits() ^ f_c[2].to_bits() ^ f_c[3].to_bits();
-                    let s_c_bits = s_c[0].to_bits() ^ s_c[1].to_bits() ^ s_c[2].to_bits() ^ s_c[3].to_bits();
-                    let key = (1u8, width.to_bits(), height.to_bits(), do_fill as u32, element.stroke_thickness.to_bits(), f_c_bits ^ s_c_bits);
+                    let f_c_bits =
+                        f_c[0].to_bits() ^ f_c[1].to_bits() ^ f_c[2].to_bits() ^ f_c[3].to_bits();
+                    let s_c_bits =
+                        s_c[0].to_bits() ^ s_c[1].to_bits() ^ s_c[2].to_bits() ^ s_c[3].to_bits();
+                    let key = (
+                        1u8,
+                        width.to_bits(),
+                        height.to_bits(),
+                        do_fill as u32,
+                        element.stroke_thickness.to_bits(),
+                        f_c_bits ^ s_c_bits,
+                    );
                     self.shapes2d_cache
                         .entry(key)
-                        .or_insert_with(|| rect_2d(device, *width, *height, do_fill, element.stroke_thickness, f_c, s_c))
+                        .or_insert_with(|| {
+                            rect_2d(
+                                device,
+                                *width,
+                                *height,
+                                do_fill,
+                                element.stroke_thickness,
+                                f_c,
+                                s_c,
+                            )
+                        })
                         .clone()
                 }
                 ElementKind::Line2D { x0, y0, x1, y1, .. } => {
                     let s_c = element.stroke_color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
-                    let s_c_bits = s_c[0].to_bits() ^ s_c[1].to_bits() ^ s_c[2].to_bits() ^ s_c[3].to_bits();
+                    let s_c_bits =
+                        s_c[0].to_bits() ^ s_c[1].to_bits() ^ s_c[2].to_bits() ^ s_c[3].to_bits();
                     let t = element.stroke_thickness;
                     let cap = element.line_cap_style;
                     let join = element.line_join_style;
-                    let key = (2u8, x0.to_bits(), y0.to_bits(), x1.to_bits(), y1.to_bits(), t.to_bits() ^ s_c_bits ^ (cap as u32) ^ ((join as u32) << 8));
+                    let key = (
+                        2u8,
+                        x0.to_bits(),
+                        y0.to_bits(),
+                        x1.to_bits(),
+                        y1.to_bits(),
+                        t.to_bits() ^ s_c_bits ^ (cap as u32) ^ ((join as u32) << 8),
+                    );
                     self.shapes2d_cache
                         .entry(key)
-                        .or_insert_with(|| line_2d(device, *x0, *y0, *x1, *y1, t, s_c, into_line_cap(cap), into_line_join(join)))
+                        .or_insert_with(|| {
+                            line_2d(
+                                device,
+                                *x0,
+                                *y0,
+                                *x1,
+                                *y1,
+                                t,
+                                s_c,
+                                into_line_cap(cap),
+                                into_line_join(join),
+                            )
+                        })
                         .clone()
                 }
                 ElementKind::Path => {
-                    if let Some(path_data) = world.ecs.get::<ferrous_core::scene::world::types::PathData>(_entity) {
+                    if let Some(path_data) = world
+                        .ecs
+                        .get::<ferrous_core::scene::world::types::PathData>(_entity)
+                    {
                         let fill_c = element.fill_color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
                         let stroke_c = element.stroke_color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
-                        path_to_mesh(device, path_data, element.fill_color.is_some(), element.stroke_thickness, fill_c, stroke_c, into_line_cap(element.line_cap_style), into_line_join(element.line_join_style))
+                        path_to_mesh(
+                            device,
+                            path_data,
+                            element.fill_color.is_some(),
+                            element.stroke_thickness,
+                            fill_c,
+                            stroke_c,
+                            into_line_cap(element.line_cap_style),
+                            into_line_join(element.line_join_style),
+                        )
                     } else {
                         continue;
                     }
@@ -444,11 +598,11 @@ impl FrameBuilder {
             };
 
             let mut matrix = transform.matrix();
-            // v15: Apply Z-Index offset to the world matrix. 
-            // This ensures that even if objects are in the same frame and overlap, 
+            // v15: Apply Z-Index offset to the world matrix.
+            // This ensures that even if objects are in the same frame and overlap,
             // the depth buffer will correctly resolve their ordering based on world-space Z.
             let zi = z_index.map(|z| z.0).unwrap_or(0);
-            // v16: Añadimos un minúsculo offset basado en el orden de creación (id) 
+            // v16: Añadimos un minúsculo offset basado en el orden de creación (id)
             // paramitigar el Z-fighting cuando todas las formas tienen z_index=0 por defecto,
             // forzando el Painter's Algorithm automático de Manim.
             let sub_offset = (element.id as f32) * 0.00001;
@@ -463,9 +617,13 @@ impl FrameBuilder {
                         if forward.length_squared() < 1e-10 {
                             glam::Quat::IDENTITY
                         } else {
-                            let world_up = if forward.dot(glam::Vec3::Y).abs() > 0.999 { glam::Vec3::Z } else { glam::Vec3::Y };
+                            let world_up = if forward.dot(glam::Vec3::Y).abs() > 0.999 {
+                                glam::Vec3::Z
+                            } else {
+                                glam::Vec3::Y
+                            };
                             let right = world_up.cross(forward).normalize();
-                            let up    = forward.cross(right);
+                            let up = forward.cross(right);
                             glam::Quat::from_mat3(&glam::Mat3::from_cols(right, up, forward))
                         }
                     }
@@ -477,12 +635,16 @@ impl FrameBuilder {
                             glam::Quat::IDENTITY
                         } else {
                             let right = glam::Vec3::Y.cross(forward_xz).normalize();
-                            let up    = forward_xz.cross(right);
+                            let up = forward_xz.cross(right);
                             glam::Quat::from_mat3(&glam::Mat3::from_cols(right, up, forward_xz))
                         }
                     }
                 };
-                matrix = glam::Mat4::from_scale_rotation_translation(transform.scale, rot, transform.position + glam::Vec3::new(0.0, 0.0, zi as f32 * 0.001 + sub_offset));
+                matrix = glam::Mat4::from_scale_rotation_translation(
+                    transform.scale,
+                    rot,
+                    transform.position + glam::Vec3::new(0.0, 0.0, zi as f32 * 0.001 + sub_offset),
+                );
             }
             let material_slot = material.handle.0 as usize;
 
@@ -490,35 +652,54 @@ impl FrameBuilder {
                 let wf = viewport.width as f32;
                 let hf = viewport.height as f32;
                 let ortho = glam::Mat4::orthographic_rh(0.0, wf, hf, 0.0, -1.0, 1.0);
-                let screen_matrix = crate::resources::camera::OPENGL_TO_WGPU_MATRIX * ortho * matrix;
+                let screen_matrix =
+                    crate::resources::camera::OPENGL_TO_WGPU_MATRIX * ortho * matrix;
                 let mut col0 = screen_matrix.col(0);
                 let mut col1 = screen_matrix.col(1);
                 let mut col2 = screen_matrix.col(2);
                 let mut col3 = screen_matrix.col(3);
-                col0.z = 0.0; col1.z = 0.0; col2.z = 0.0; col3.z = 0.0;
-                col2.w = 55.5; col3.w = 1.0;
+                col0.z = 0.0;
+                col1.z = 0.0;
+                col2.z = 0.0;
+                col3.z = 0.0;
+                col2.w = 55.5;
+                col3.w = 1.0;
                 matrix = glam::Mat4::from_cols(col0, col1, col2, col3);
-                
-                let key = (Arc::as_ptr(&mesh.vertex_buffer) as usize, material_slot, is_double_sided, zi);
-                visible_groups.entry(key).or_insert_with(|| (mesh.clone(), material_slot, Vec::new())).2.push(matrix);
+
+                let key = (
+                    Arc::as_ptr(&mesh.vertex_buffer) as usize,
+                    material_slot,
+                    is_double_sided,
+                    zi,
+                );
+                visible_groups
+                    .entry(key)
+                    .or_insert_with(|| (mesh.clone(), material_slot, Vec::new()))
+                    .2
+                    .push(matrix);
                 continue;
             }
 
-            let world_aabb = mesh.aabb.transform(&matrix);
-            let key = (Arc::as_ptr(&mesh.vertex_buffer) as usize, material_slot, is_double_sided, zi);
+            let key = (
+                Arc::as_ptr(&mesh.vertex_buffer) as usize,
+                material_slot,
+                is_double_sided,
+                zi,
+            );
 
             if shadow_caster.is_some() {
-                shadow_groups.entry(key).or_insert_with(|| (mesh.clone(), material_slot, Vec::new())).2.push(matrix);
+                shadow_groups
+                    .entry(key)
+                    .or_insert_with(|| (mesh.clone(), material_slot, Vec::new()))
+                    .2
+                    .push(matrix);
             }
 
-            // v15: For mathematical paths, wait for fill_color directly
-            let is_filled = element.fill_color.is_some();
-            let effective_thick = if element.stroke_thickness > 0.0 { element.stroke_thickness } else { 0.05 };
-            
-            let is_path = matches!(element.kind, ElementKind::Path | ElementKind::Line2D { .. } | ElementKind::Circle2D { .. } | ElementKind::Rect2D { .. });
-            if is_path || true {
-                visible_groups.entry(key).or_insert_with(|| (mesh.clone(), material_slot, Vec::new())).2.push(matrix);
-            }
+            visible_groups
+                .entry(key)
+                .or_insert_with(|| (mesh.clone(), material_slot, Vec::new()))
+                .2
+                .push(matrix);
         }
 
         // -- Build visible instanced commands --------------------------------
@@ -534,7 +715,10 @@ impl FrameBuilder {
             let prev_bg = instance_buf.bind_group.clone();
             instance_buf.reserve(device, instance_layout, total_visible);
             if !Arc::ptr_eq(&prev_bg, &instance_buf.bind_group) {
-                instance_callback(instance_buf.bind_group.clone(), shadow_instance_buf.bind_group.clone());
+                instance_callback(
+                    instance_buf.bind_group.clone(),
+                    shadow_instance_buf.bind_group.clone(),
+                );
             }
 
             let mut offset = 0u32;
@@ -563,7 +747,10 @@ impl FrameBuilder {
             let prev_bg = instance_buf.bind_group.clone();
             instance_buf.reserve(device, instance_layout, 1);
             if !Arc::ptr_eq(&prev_bg, &instance_buf.bind_group) {
-                instance_callback(instance_buf.bind_group.clone(), shadow_instance_buf.bind_group.clone());
+                instance_callback(
+                    instance_buf.bind_group.clone(),
+                    shadow_instance_buf.bind_group.clone(),
+                );
             }
         }
 

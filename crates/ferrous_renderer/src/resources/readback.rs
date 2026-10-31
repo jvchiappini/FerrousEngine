@@ -1,4 +1,7 @@
-use wgpu::{Buffer, BufferDescriptor, BufferUsages, CommandEncoder, Device, MapMode, Texture, Origin3d, TextureAspect, ImageCopyTexture, ImageCopyBuffer, ImageDataLayout, Extent3d, Maintain};
+use wgpu::{
+    Buffer, BufferDescriptor, BufferUsages, CommandEncoder, Device, Extent3d, ImageCopyBuffer,
+    ImageCopyTexture, ImageDataLayout, Maintain, MapMode, Origin3d, Texture, TextureAspect,
+};
 
 /// Allocates and manages a pinned GPU-to-CPU staging buffer for downloading frame pixels.
 pub struct ReadbackFrameManager {
@@ -14,12 +17,12 @@ impl ReadbackFrameManager {
     pub fn new(device: &Device, width: u32, height: u32) -> Self {
         let align_size = 256;
         let unpadded_bytes = width * 4; // Assuming RGBA8
-        let padded_bytes = ((unpadded_bytes + align_size - 1) / align_size) * align_size;
-        
+        let padded_bytes = unpadded_bytes.div_ceil(align_size) * align_size;
+
         let buffer = device.create_buffer(&BufferDescriptor {
             label: Some("Frame Readback Buffer"),
             size: (padded_bytes * height) as wgpu::BufferAddress,
-            // We use COPY_DST so it can receive data from textures, 
+            // We use COPY_DST so it can receive data from textures,
             // and MAP_READ so the CPU can poll and read its content.
             usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
             mapped_at_creation: false,
@@ -36,7 +39,7 @@ impl ReadbackFrameManager {
     pub fn copy_to_buffer(&self, encoder: &mut CommandEncoder, texture: &Texture) {
         let align_size = 256;
         let unpadded_bytes = self.width * 4;
-        let padded_bytes = ((unpadded_bytes + align_size - 1) / align_size) * align_size;
+        let padded_bytes = unpadded_bytes.div_ceil(align_size) * align_size;
 
         encoder.copy_texture_to_buffer(
             ImageCopyTexture {
@@ -72,14 +75,11 @@ impl ReadbackFrameManager {
     /// Like `poll_and_map` but reuses an existing `Vec<u8>` buffer to avoid per-frame allocation.
     pub async fn poll_and_map_into(&self, device: &Device, out: &mut Vec<u8>) -> Result<(), ()> {
         let slice = self.buffer.slice(..);
-        
+
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(MapMode::Read, move |result| {
-            if result.is_ok() {
-                let _ = tx.send(());
-            } else {
-                let _ = tx.send(());
-            }
+            let _ = result;
+            let _ = tx.send(());
         });
 
         device.poll(Maintain::Wait);
@@ -88,17 +88,17 @@ impl ReadbackFrameManager {
             let data = slice.get_mapped_range();
             let align_size = 256;
             let unpadded_bytes = self.width * 4;
-            let padded_bytes = ((unpadded_bytes + align_size - 1) / align_size) * align_size;
+            let padded_bytes = unpadded_bytes.div_ceil(align_size) * align_size;
 
             out.clear();
             out.reserve((self.width * self.height * 4) as usize);
-            
+
             for row in 0..self.height {
                 let start = (row * padded_bytes) as usize;
                 let end = start + unpadded_bytes as usize;
                 out.extend_from_slice(&data[start..end]);
             }
-            
+
             drop(data);
             self.buffer.unmap();
             Ok(())

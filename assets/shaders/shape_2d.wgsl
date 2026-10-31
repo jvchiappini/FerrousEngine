@@ -300,19 +300,34 @@ fn sd_edge_segment(p: vec2<f32>, u: vec2<f32>, v: vec2<f32>, w: f32) -> f32 {
 // Half-plane test for a hard (non-AA) edge.
 //
 // Two neighbouring triangles see their shared edge in opposite directions, so
-// the side test has opposite signs. On the line itself (`c == 0`) both would
-// include the pixel, double-blending translucent fills into a darker diagonal.
-// The direction tie-break makes exactly one of the two copies own the line.
+// the side test has opposite signs. On the line itself both would include the
+// pixel, double-blending translucent fills into a darker diagonal. The
+// direction tie-break makes exactly one of the two copies own the line.
+//
+// The interpolated world position of a pixel whose centre lies exactly on the
+// shared edge is not bit-exactly on the line: each triangle gets a slightly
+// different rounding, so a strict `c == 0` test almost never fires and the two
+// copies can both decide "outside", leaving a one-pixel hole.  Treat a band of
+// `EDGE_EPS` world units around the edge as "on the line" and let the
+// deterministic tie-break own it.  1e-3 world units is far below a pixel and
+// far above f32 interpolation noise at ordinary scene scales.
+const EDGE_EPS: f32 = 1e-3;
+
 fn edge_inside(p: vec2<f32>, u: vec2<f32>, v: vec2<f32>, w: f32) -> bool {
     let e = v - u;
     let c = w * (e.x * (p.y - u.y) - e.y * (p.x - u.x));
-    if (c > 0.0) {
+    // `c / |e|` is the signed distance to the edge.
+    let tol = EDGE_EPS * length(e);
+    if (c > tol) {
         return true;
     }
-    if (c < 0.0) {
+    if (c < -tol) {
         return false;
     }
-    return (e.x > 0.0) || (e.x == 0.0 && e.y > 0.0);
+    // On the edge: pick the copy whose edge points in the -x direction.  The
+    // viewport's Y flip mirrors the intended winding, so this is the side the
+    // rasteriser assigns the pixel to; picking the other side leaves a hole.
+    return (e.x < 0.0) || (e.x == 0.0 && e.y < 0.0);
 }
 
 // Selective-AA coverage: hard-clip unmarked edges, fade only near marked ones.
