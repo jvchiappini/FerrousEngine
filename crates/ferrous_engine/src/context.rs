@@ -116,12 +116,40 @@ pub struct AppContext<'a> {
 
     /// Active GPU backend, set by the runner after GPU init.
     pub(crate) _gpu_backend: wgpu::Backend,
+
+    /// Render-scale override requested this frame via
+    /// [`AppContext::set_resolution_scale`].  The runner consumes it after
+    /// `update()` and resizes the surface (`css × dpr × scale`) on the next
+    /// frame, so the setting can be changed live.
+    pub(crate) requested_resolution_scale: Option<f64>,
+
+    /// Set via [`AppContext::keep_awake`]: counts this frame as activity so
+    /// the idle timeout does not throttle an ongoing animation.
+    pub(crate) keep_awake_requested: bool,
 }
 
 impl<'a> AppContext<'a> {
     /// Signal the event loop to shut down after the current frame.
     pub fn request_exit(&mut self) {
         self.exit_requested = true;
+    }
+
+    /// Keep rendering at the full frame rate: counts this frame as activity
+    /// for the idle timeout (`AppConfig::idle_timeout`). Call it every frame
+    /// while something animates without user input.
+    pub fn keep_awake(&mut self) {
+        self.keep_awake_requested = true;
+    }
+
+    /// Request a new render scale (engine surface = `css × dpr × scale`).
+    ///
+    /// The runner applies it on the next frame.  Use this together with the
+    /// caller's own logical→physical compensation so the UI keeps its size
+    /// while the canvas gains/loses resolution.
+    pub fn set_resolution_scale(&mut self, scale: f64) {
+        if scale.is_finite() && scale > 0.0 {
+            self.requested_resolution_scale = Some(scale);
+        }
     }
 
     /// Active GPU backend as a readable string (e.g. `"WebGPU"`, `"WebGL2"`, `"Vulkan"`).

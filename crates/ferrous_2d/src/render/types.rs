@@ -113,18 +113,29 @@ pub struct ShapeInstance {
     pub transform_c3: [f32; 4],
     /// Linear RGBA colour (see the module colour-space contract).
     pub color: [f32; 4],
-    /// `[border_thickness, corner_radius, smoothing, shape_kind]`.
+    /// `[border_thickness, corner_radius, min_px, shape_kind]`.
     ///
-    /// `x`/`y`/`z` keep their historical meaning (border, corner radius,
-    /// AA smoothing). `w` is the shape-kind flag: `0.0`/`1.0` are the legacy
-    /// `is_filled` values for the rounded-rect/circle family (ignored by the
-    /// shader) and [`SHAPE_KIND_TRIANGLE`] selects the triangle SDF.
+    /// `x`/`y` keep their historical meaning (border, corner radius). `z` is
+    /// the **minimum stroke width in logical pixels** (`0.0` = no floor) used
+    /// only by line instances; it replaces the old AA `smoothing` value, since
+    /// the 1-pixel box coverage filter no longer needs a smoothing width.
+    /// `w` is the shape-kind flag: `0.0`/`1.0` are the legacy `is_filled`
+    /// values for the rounded-rect/circle family (ignored by the shader) and
+    /// [`SHAPE_KIND_TRIANGLE`] selects the triangle SDF.
     ///
     /// For the triangle kind, `x` is repurposed as the **edge-AA bitmask**
     /// (bits [`TRIANGLE_EDGE_AB`] / [`TRIANGLE_EDGE_BC`] / [`TRIANGLE_EDGE_CA`]);
     /// see [`ShapeInstance::polygon_triangle`]. The rounded-rect/circle path
     /// never sees a triangle instance, so there is no collision.
     pub params: [f32; 4],
+    /// Extended data (joined segment: `n_start.xy`, `n_end.xy`).
+    ///
+    /// For [`ShapeInstance::joined_segment`] these are the per-end joint plane
+    /// normals in world space. `(0, 0)` means "free cap" on that end. Other
+    /// constructors leave it zeroed.
+    pub ext0: [f32; 4],
+    /// Segment distance at the start point `a` along the polyline (dash phase).
+    pub ext1: f32,
 }
 
 impl ShapeInstance {
@@ -154,6 +165,8 @@ impl ShapeInstance {
             transform_c3: model.w_axis.into(),
             color,
             params,
+            ext0: [0.0; 4],
+            ext1: 0.0,
         }
     }
 
@@ -170,8 +183,8 @@ impl ShapeInstance {
             glam::Quat::IDENTITY,
             glam::Vec3::new(center.x, center.y, z),
         );
-        // params: border=0, corner_radius=radius (círculo perfecto), smooth=2, filled=1
-        Self::from_model(model, color, [0.0, radius, 2.0, 1.0])
+        // params: border=0, corner_radius=radius (círculo perfecto), min_px=0, filled=1
+        Self::from_model(model, color, [0.0, radius, 0.0, 1.0])
     }
 
     /// Rectángulo relleno centrado en `center` con dimensiones `size` (ancho, alto).
@@ -186,8 +199,8 @@ impl ShapeInstance {
             glam::Quat::IDENTITY,
             glam::Vec3::new(center.x, center.y, z),
         );
-        // params: border=0, corner_radius=0, smooth=2, filled=1
-        Self::from_model(model, color, [0.0, 0.0, 2.0, 1.0])
+        // params: border=0, corner_radius=0, min_px=0, filled=1
+        Self::from_model(model, color, [0.0, 0.0, 0.0, 1.0])
     }
 
     /// Rectángulo con esquinas redondeadas relleno.
@@ -197,7 +210,7 @@ impl ShapeInstance {
             glam::Quat::IDENTITY,
             glam::Vec3::new(center.x, center.y, 0.0),
         );
-        Self::from_model(model, color, [0.0, corner_radius, 2.0, 1.0])
+        Self::from_model(model, color, [0.0, corner_radius, 0.0, 1.0])
     }
 
     /// Solo el borde (outline) de un rectángulo, sin relleno.
@@ -207,8 +220,8 @@ impl ShapeInstance {
             glam::Quat::IDENTITY,
             glam::Vec3::new(center.x, center.y, 0.0),
         );
-        // params: border=thickness, corner_radius=0, smooth=2, filled=0
-        Self::from_model(model, color, [thickness, 0.0, 2.0, 0.0])
+        // params: border=thickness, corner_radius=0, min_px=0, filled=0
+        Self::from_model(model, color, [thickness, 0.0, 0.0, 0.0])
     }
 
     /// Línea entre dos puntos 2D con grosor `width` y caps redondeados (por defecto).
@@ -286,8 +299,180 @@ impl ShapeInstance {
         // it carries the per-cap hard flags: 1.0 = disable AA on that cap.
         model.z_axis.x = if aa_start { 0.0 } else { 1.0 };
         model.z_axis.y = if aa_end { 0.0 } else { 1.0 };
-        // params: border=width, corner_radius=radius, smooth=2, filled=1
-        Self::from_model(model, color, [width, radius, 2.0, 1.0])
+        // z is only used as a "is a stroked line" marker: `ShapeGpu::pack`
+        // maps `c2.z < 0.5` to `SHAPE_GPU_LINE`, which enables the minimum
+        // screen-width floor. Rect / circle constructors keep c2.z = 1.
+        model.z_axis.z = 0.0;
+        // params: border=width, corner_radius=radius, min_px=0, filled=1
+        Self::from_model(model, color, [width, radius, 0.0, 1.0])
+    }
+
+    /// Line with a fixed **minimum** width in logical pixels (`min_px`).
+    ///
+    /// `width_world` is still the real width in world units (metres in
+    /// Koncreta); the shader renders `max(width_world, min_px · device px)`
+    /// without touching opacity. This is the constructor used by the CAD /
+    /// wall pipelines (hybrid lineweight mode).
+    pub fn line_px(
+        from: glam::Vec2,
+        to: glam::Vec2,
+        width_world: f32,
+        min_px: f32,
+        color: [f32; 4],
+        cap_style: u8,
+    ) -> Self {
+        Self::line_with_cap(from, to, width_world, color, cap_style).with_min_px(min_px)
+    }
+
+    /// Sets the minimum stroke width in logical pixels (`0.0` disables the
+    /// floor). Only affects instances created by a `line*` constructor, since
+    /// the shader gates the widening on `SHAPE_GPU_LINE`.
+    pub fn with_min_px(mut self, min_px: f32) -> Self {
+        self.params[2] = if min_px.is_finite() { min_px.max(0.0) } else { 0.0 };
+        self
+    }
+
+    /// One segment of a joined polyline / polygon stroke.
+    ///
+    /// Encoding (see `shape_2d.wgsl`):
+    /// - `c0 = b - a` (world vector), `c3 = midpoint`;
+    /// - `dims.x = width_world`, `dims.y = cap_style` (0 flat, 1 round, 2 square);
+    /// - `ext0 = (n_start.xy, n_end.xy)` joint plane normals (`(0,0)` = cap);
+    /// - `ext1 = s0` accumulated polyline length at `a` (dash phase).
+    ///
+    /// `round_start` / `round_end` select a round join instead of a miter on
+    /// that end (used when the miter limit is exceeded). A round **join** still
+    /// needs `n_*` to split the joint disc exactly with the neighbour segment.
+    /// Free caps use the `cap_style`.
+    ///
+    /// `dash_id` indexes the shader dash table (0 = continuous).
+    #[allow(clippy::too_many_arguments)]
+    pub fn joined_segment(
+        a: glam::Vec2,
+        b: glam::Vec2,
+        width_world: f32,
+        min_px: f32,
+        color: [f32; 4],
+        cap_style: u8,
+        n_start: glam::Vec2,
+        n_end: glam::Vec2,
+        round_start: bool,
+        round_end: bool,
+        s0: f32,
+        dash_id: u8,
+    ) -> Self {
+        let delta = b - a;
+        let len = delta.length();
+        if len < 1e-6 {
+            return Self::circle(a, width_world.max(0.001) * 0.5, color);
+        }
+        let mid = (a + b) * 0.5;
+        Self {
+            transform_c0: [delta.x, delta.y, 0.0, if round_start { 1.0 } else { 0.0 }],
+            transform_c1: [0.0, 0.0, 0.0, if round_end { 1.0 } else { 0.0 }],
+            // c2.w = joined-segment marker (c2.z stays 0: also a stroked line).
+            transform_c2: [0.0, 0.0, 0.0, 1.0],
+            transform_c3: [mid.x, mid.y, 0.0, dash_id as f32],
+            color,
+            params: [
+                width_world.max(0.0),
+                cap_style as f32,
+                if min_px.is_finite() { min_px.max(0.0) } else { 0.0 },
+                1.0,
+            ],
+            ext0: [n_start.x, n_start.y, n_end.x, n_end.y],
+            ext1: s0,
+        }
+    }
+
+    /// Whether this is a joined-segment instance.
+    pub fn is_joined(&self) -> bool {
+        let kind = self.transform_c2[3];
+        kind > 0.5 && kind < 1.5
+    }
+
+    /// Whether this is an analytic arc/circle instance.
+    pub fn is_arc(&self) -> bool {
+        let kind = self.transform_c2[3];
+        kind > 1.5 && kind < 2.5
+    }
+
+    /// Whether this is a ring (outline) instance.
+    pub fn is_ring(&self) -> bool {
+        self.transform_c2[3] > 2.5
+    }
+
+    /// Marks the dash table lengths (`dash_id`) as **logical px** instead of
+    /// world units. Only meaningful for joined/arc instances (elevation and
+    /// section hidden lines).
+    pub fn with_dash_px(mut self) -> Self {
+        self.transform_c1[2] = 1.0;
+        self
+    }
+
+    /// Analytic circular arc / circle stroke.
+    ///
+    /// Encoding: `c3 = centre`, `dims.x = radius`, `dims.y = width`,
+    /// `ext0 = (start_angle, sweep, cap_style, 0)`, `ext1 = s0` (dash phase).
+    /// A full circle uses `sweep = TAU`. The shader evaluates
+    /// `abs(|p-c| - radius) - half_w`, so no tessellation facets appear at any
+    /// zoom. Free caps are Flat/Round/Square.
+    #[allow(clippy::too_many_arguments)]
+    pub fn arc(
+        center: glam::Vec2,
+        radius: f32,
+        start: f32,
+        sweep: f32,
+        width_world: f32,
+        min_px: f32,
+        color: [f32; 4],
+        cap_style: u8,
+        s0: f32,
+        dash_id: u8,
+    ) -> Self {
+        Self {
+            transform_c0: [0.0; 4],
+            transform_c1: [0.0; 4],
+            transform_c2: [0.0, 0.0, 0.0, 2.0],
+            transform_c3: [center.x, center.y, 0.0, dash_id as f32],
+            color,
+            params: [
+                radius.max(0.0),
+                width_world.max(0.0),
+                if min_px.is_finite() { min_px.max(0.0) } else { 0.0 },
+                1.0,
+            ],
+            ext0: [start, sweep, cap_style as f32, 0.0],
+            ext1: s0,
+        }
+    }
+
+    /// Turns a circle/rect instance into a real hollow ring of `thickness`.
+    pub fn with_ring(mut self, thickness: f32, min_px: f32) -> Self {
+        self.params[0] = thickness.max(0.0);
+        self.params[2] = if min_px.is_finite() { min_px.max(0.0) } else { 0.0 };
+        self.transform_c2[3] = 3.0;
+        self
+    }
+
+    /// Real circular outline (ring), not a filled disc.
+    pub fn circle_ring(
+        center: glam::Vec2,
+        radius: f32,
+        thickness: f32,
+        color: [f32; 4],
+    ) -> Self {
+        Self::circle(center, radius, color).with_ring(thickness, 1.0)
+    }
+
+    /// Real rectangular outline (ring), not a filled rectangle.
+    pub fn rect_ring(
+        center: glam::Vec2,
+        size: glam::Vec2,
+        thickness: f32,
+        color: [f32; 4],
+    ) -> Self {
+        Self::rect(center, size, color).with_ring(thickness, 1.0)
     }
 
     /// Tipada de [`ShapeInstance::line_with_cap`] que acepta el enum
@@ -367,7 +552,7 @@ impl ShapeInstance {
             glam::Quat::from_rotation_z(angle_radians),
             glam::Vec3::new(center.x, center.y, 0.0),
         );
-        Self::from_model(model, color, [0.0, 0.0, 2.0, 1.0])
+        Self::from_model(model, color, [0.0, 0.0, 0.0, 1.0])
     }
 
     /// Triángulo **relleno y anti-aliaseado** con vértices `a`, `b`, `c` en
@@ -393,7 +578,7 @@ impl ShapeInstance {
     /// evalúa un SDF de triángulo en espacio de mundo, por lo que el relleno
     /// es **two-sided**: el resultado es el mismo sin importar el winding.
     ///
-    /// `params` emitido: `[edge_aa_mask=0b111, 0, smoothing=2,
+    /// `params` emitido: `[edge_aa_mask=0b111, 0, min_px=0,
     /// SHAPE_KIND_TRIANGLE]`. Equivalente a
     /// [`ShapeInstance::polygon_triangle`] con [`TRIANGLE_EDGES_ALL`]. Usar
     /// triángulos en abanico (fan) desde el centroide es la forma directa de
@@ -446,10 +631,465 @@ impl ShapeInstance {
             glam::Vec4::new(a.x, a.y, 0.0, 1.0),
         );
         let mask = (edge_aa_mask & TRIANGLE_EDGES_ALL) as f32;
-        Self::from_model(model, color, [mask, 0.0, 2.0, SHAPE_KIND_TRIANGLE])
+        Self::from_model(model, color, [mask, 0.0, 0.0, SHAPE_KIND_TRIANGLE])
     }
 }
 
+impl ShapeInstance {
+    /// Whether this instance uses the triangle SDF ([`SHAPE_KIND_TRIANGLE`]).
+    #[inline]
+    pub fn is_triangle(&self) -> bool {
+        self.params[3] > 1.5
+    }
+
+    /// World-space AABB `(min, max)` of the canonical quad.
+    ///
+    /// Conservative for culling but not the AA-padded bounds: the shader's
+    /// anti-aliasing band extends a few pixels past it, so callers expand the
+    /// cull rect by a pixel margin before testing.
+    #[inline]
+    pub fn world_aabb(&self) -> (glam::Vec2, glam::Vec2) {
+        let c0 = glam::Vec2::new(self.transform_c0[0], self.transform_c0[1]);
+        let c1 = glam::Vec2::new(self.transform_c1[0], self.transform_c1[1]);
+        let c3 = glam::Vec2::new(self.transform_c3[0], self.transform_c3[1]);
+        if self.is_joined() {
+            // Endpoints a/b plus the miter wedge (max ratio 4) and the stroke
+            // half-width. The AA / min_px margin is added by the caller.
+            let a = c3 - c0 * 0.5;
+            let b = c3 + c0 * 0.5;
+            let pad = glam::Vec2::splat((self.params[0].abs() * 2.5).max(1e-6));
+            return (a.min(b) - pad, a.max(b) + pad);
+        }
+        if self.is_arc() {
+            // Full-circle bound: centre ± (radius + half width).
+            let reach = self.params[0].abs() + self.params[1].abs() * 0.5 + 1e-6;
+            let pad = glam::Vec2::splat(reach);
+            return (c3 - pad, c3 + pad);
+        }
+        // Triangles map [0,1]² (origin = vertex a); the rest map [-0.5,0.5]².
+        let origin = if self.is_triangle() { c3 } else { c3 - (c0 + c1) * 0.5 };
+        let ext = c0.abs() + c1.abs();
+        let min = origin + c0.min(glam::Vec2::ZERO) + c1.min(glam::Vec2::ZERO);
+        (min, min + ext)
+    }
+}
+
+/// Compact GPU-side encoding of a [`ShapeInstance`] (64 bytes instead of 120).
+///
+/// [`ShapeInstance`] stays the authoring type; the renderer packs it into this
+/// layout right before upload, so callers never build it by hand. What is kept:
+///
+/// - the 2D affine part of the model matrix (`c0.xy`, `c1.xy`, `c3.xy`) — the
+///   2D shader never used the z row/column, and depth ordering is CPU-side;
+/// - `border` / `radius` in full `f32` (world units can be large or tiny);
+/// - the linear colour as four `f16` (11-bit precision, HDR-safe);
+/// - every flag in one `u32`:
+///
+/// | bits    | meaning |
+/// |---------|---------|
+/// | 0..=15  | minimum line width in logical px, unsigned 8.8 fixed point |
+/// | 16      | triangle kind ([`SHAPE_KIND_TRIANGLE`]) |
+/// | 17      | hollow ring / real outline (`ShapeInstance::with_ring`) |
+/// | 18..=20 | triangle edge-AA mask |
+/// | 21      | hard start cap ([`ShapeInstance::line_with_cap_aa`]) |
+/// | 22      | hard end cap |
+/// | 23      | stroked line ([`ShapeInstance::line_px`], min-width floor) |
+/// | 24      | joined segment ([`ShapeInstance::joined_segment`]) |
+/// | 25      | start end is a round join (not miter) |
+/// | 26      | end end is a round join (not miter) |
+/// | 27      | analytic arc/circle (`ShapeInstance::arc`) |
+/// | 28..=31 | dash pattern index (`0` = continuous) |
+///
+/// Bits 0..=15 used to hold the AA `smoothing` value. The 1-pixel box coverage
+/// filter no longer needs it, so the slot now carries the per-instance minimum
+/// width (resolved to world units by the shader using the camera's
+/// device-pixels-per-logical-pixel ratio).
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct ShapeGpu {
+    /// Model x basis (`transform_c0.xy`).
+    pub c0: [f32; 2],
+    /// Model y basis (`transform_c1.xy`).
+    pub c1: [f32; 2],
+    /// Translation (`transform_c3.xy`).
+    pub c3: [f32; 2],
+    /// `[border_thickness, corner_radius]` (border is 0 for triangles).
+    pub dims: [f32; 2],
+    /// Linear RGBA as IEEE half floats.
+    pub color: [u16; 4],
+    /// Packed min width + kind + masks (see the type docs).
+    pub flags: u32,
+    /// Joined segment: `(n_start.xy, n_end.xy)` joint plane normals.
+    pub ext0: [f32; 4],
+    /// Joined segment: accumulated polyline length at the start (dash phase).
+    pub ext1: f32,
+}
+
+/// `ShapeGpu::flags` bit: triangle kind.
+pub const SHAPE_GPU_TRIANGLE: u32 = 1 << 16;
+/// `ShapeGpu::flags` shift of the 3-bit triangle edge-AA mask.
+pub const SHAPE_GPU_MASK_SHIFT: u32 = 18;
+/// `ShapeGpu::flags` bit: hard start cap.
+pub const SHAPE_GPU_CAP_START_HARD: u32 = 1 << 21;
+/// `ShapeGpu::flags` bit: hard end cap.
+pub const SHAPE_GPU_CAP_END_HARD: u32 = 1 << 22;
+/// `ShapeGpu::flags` bit: stroked line (enables the min-width floor).
+pub const SHAPE_GPU_LINE: u32 = 1 << 23;
+/// Mask of the 8.8 fixed-point minimum line width in `ShapeGpu::flags`.
+pub const SHAPE_GPU_MIN_PX_MASK: u32 = 0xFFFF;
+/// `ShapeGpu::flags` bit: joined segment (per-end joint planes in `ext0`).
+pub const SHAPE_GPU_JOINED: u32 = 1 << 24;
+/// `ShapeGpu::flags` bit: the start end uses a round join.
+pub const SHAPE_GPU_JOIN_ROUND_START: u32 = 1 << 25;
+/// `ShapeGpu::flags` bit: the end end uses a round join.
+pub const SHAPE_GPU_JOIN_ROUND_END: u32 = 1 << 26;
+/// `ShapeGpu::flags` bit: analytic arc/circle stroke.
+pub const SHAPE_GPU_ARC: u32 = 1 << 27;
+/// `ShapeGpu::flags` bit: dash pattern lengths are logical px (not world).
+pub const SHAPE_GPU_DASH_PX: u32 = 1 << 18;
+/// `ShapeGpu::flags` bit: hollow ring (real outline).
+pub const SHAPE_GPU_RING: u32 = 1 << 17;
+/// Shift of the 4-bit dash pattern index in `ShapeGpu::flags`.
+pub const SHAPE_GPU_DASH_SHIFT: u32 = 28;
+/// Upper bound (logical px) the shader accepts for the per-instance minimum
+/// width. CPU culling uses it to size the AA/widening margin.
+pub const MAX_MIN_PX_LOGICAL: f32 = 8.0;
+
+impl ShapeGpu {
+    /// Vertex-buffer layout describing this instance type to wgpu.
+    pub const fn descriptor() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<ShapeGpu>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[
+                wgpu::VertexAttribute { offset: 0,  shader_location: 0, format: wgpu::VertexFormat::Float32x2 },
+                wgpu::VertexAttribute { offset: 8,  shader_location: 1, format: wgpu::VertexFormat::Float32x2 },
+                wgpu::VertexAttribute { offset: 16, shader_location: 2, format: wgpu::VertexFormat::Float32x2 },
+                wgpu::VertexAttribute { offset: 24, shader_location: 3, format: wgpu::VertexFormat::Float32x2 },
+                wgpu::VertexAttribute { offset: 32, shader_location: 4, format: wgpu::VertexFormat::Float16x4 },
+                wgpu::VertexAttribute { offset: 40, shader_location: 5, format: wgpu::VertexFormat::Uint32 },
+                wgpu::VertexAttribute { offset: 44, shader_location: 6, format: wgpu::VertexFormat::Float32x4 },
+                wgpu::VertexAttribute { offset: 60, shader_location: 7, format: wgpu::VertexFormat::Float32 },
+            ],
+        }
+    }
+
+    /// Pack an authoring [`ShapeInstance`] into the GPU layout.
+    #[inline]
+    pub fn pack(s: &ShapeInstance) -> Self {
+        let min_px = if s.params[2].is_finite() {
+            (s.params[2].max(0.0) * 256.0 + 0.5) as u32
+        } else {
+            0
+        };
+        let mut flags = min_px.min(SHAPE_GPU_MIN_PX_MASK);
+        let mut border = s.params[0];
+        if s.is_triangle() {
+            // Same decode as the old shader: `u32(params.x + 0.5)`, >= 7 = all.
+            let mask = ((s.params[0].max(0.0) + 0.5) as u32).min(7);
+            flags |= SHAPE_GPU_TRIANGLE | (mask << SHAPE_GPU_MASK_SHIFT);
+            border = 0.0;
+        } else if s.is_joined() {
+            flags |= SHAPE_GPU_JOINED | SHAPE_GPU_LINE;
+            if s.transform_c0[3] > 0.5 {
+                flags |= SHAPE_GPU_JOIN_ROUND_START;
+            }
+            if s.transform_c1[3] > 0.5 {
+                flags |= SHAPE_GPU_JOIN_ROUND_END;
+            }
+            let dash = s.transform_c3[3].clamp(0.0, 15.0) as u32;
+            flags |= dash << SHAPE_GPU_DASH_SHIFT;
+            if s.transform_c1[2] > 0.5 {
+                flags |= SHAPE_GPU_DASH_PX;
+            }
+        } else if s.is_arc() {
+            flags |= SHAPE_GPU_ARC | SHAPE_GPU_LINE;
+            let dash = s.transform_c3[3].clamp(0.0, 15.0) as u32;
+            flags |= dash << SHAPE_GPU_DASH_SHIFT;
+            if s.transform_c1[2] > 0.5 {
+                flags |= SHAPE_GPU_DASH_PX;
+            }
+        } else if s.is_ring() {
+            flags |= SHAPE_GPU_RING;
+        } else {
+            if s.transform_c2[0] > 0.5 {
+                flags |= SHAPE_GPU_CAP_START_HARD;
+            }
+            if s.transform_c2[1] > 0.5 {
+                flags |= SHAPE_GPU_CAP_END_HARD;
+            }
+            // `line*` constructors clear c2.z; every other constructor keeps 1.
+            if s.transform_c2[2] < 0.5 {
+                flags |= SHAPE_GPU_LINE;
+            }
+        }
+        Self {
+            c0: [s.transform_c0[0], s.transform_c0[1]],
+            c1: [s.transform_c1[0], s.transform_c1[1]],
+            c3: [s.transform_c3[0], s.transform_c3[1]],
+            dims: [border, s.params[1]],
+            color: [
+                f32_to_f16(s.color[0]),
+                f32_to_f16(s.color[1]),
+                f32_to_f16(s.color[2]),
+                f32_to_f16(s.color[3]),
+            ],
+            flags,
+            ext0: s.ext0,
+            ext1: s.ext1,
+        }
+    }
+}
+
+impl From<&ShapeInstance> for ShapeGpu {
+    #[inline]
+    fn from(s: &ShapeInstance) -> Self {
+        Self::pack(s)
+    }
+}
+
+/// IEEE 754 binary32 → binary16, round-to-nearest-even (no external crate).
+#[inline]
+pub fn f32_to_f16(v: f32) -> u16 {
+    let x = v.to_bits();
+    let sign = ((x >> 16) & 0x8000) as u16;
+    let exp = ((x >> 23) & 0xff) as i32;
+    let mant = x & 0x007f_ffff;
+    if exp == 0xff {
+        // Inf / NaN (keep NaN quiet).
+        return sign | 0x7c00 | if mant != 0 { 0x0200 } else { 0 };
+    }
+    let e = exp - 127 + 15;
+    if e >= 0x1f {
+        return sign | 0x7c00;
+    }
+    if e <= 0 {
+        if e < -10 {
+            return sign;
+        }
+        let m = mant | 0x0080_0000;
+        let shift = (14 - e) as u32;
+        let half = m >> shift;
+        let rem = m & ((1u32 << shift) - 1);
+        let halfway = 1u32 << (shift - 1);
+        let r = if rem > halfway || (rem == halfway && (half & 1) == 1) { half + 1 } else { half };
+        return sign | r as u16;
+    }
+    let half = ((e as u32) << 10) | (mant >> 13);
+    let rem = mant & 0x1fff;
+    // A carry out of the mantissa correctly bumps the exponent (up to inf).
+    let r = if rem > 0x1000 || (rem == 0x1000 && (half & 1) == 1) { half + 1 } else { half };
+    sign | r as u16
+}
+
+#[cfg(test)]
+mod gpu_pack_tests {
+    use super::*;
+
+    #[test]
+    fn shape_gpu_is_64_bytes() {
+        assert_eq!(std::mem::size_of::<ShapeGpu>(), 64);
+    }
+
+    #[test]
+    fn f16_known_values() {
+        assert_eq!(f32_to_f16(0.0), 0x0000);
+        assert_eq!(f32_to_f16(1.0), 0x3c00);
+        assert_eq!(f32_to_f16(-2.0), 0xc000);
+        assert_eq!(f32_to_f16(0.5), 0x3800);
+        assert_eq!(f32_to_f16(65504.0), 0x7bff);
+        assert_eq!(f32_to_f16(1.0e6), 0x7c00);
+        assert_eq!(f32_to_f16(5.960_464_5e-8), 0x0001);
+    }
+
+    #[test]
+    fn pack_keeps_flags() {
+        let t = ShapeInstance::polygon_triangle(
+            glam::Vec2::ZERO, glam::Vec2::X, glam::Vec2::Y, [1.0; 4], TRIANGLE_EDGE_AB,
+        );
+        let g = ShapeGpu::pack(&t);
+        assert_ne!(g.flags & SHAPE_GPU_TRIANGLE, 0);
+        assert_eq!((g.flags >> SHAPE_GPU_MASK_SHIFT) & 7, 1);
+        // Bits 0..=15 now hold min_px (8.8 fixed). Triangles do not ask for a
+        // minimum stroke width, so they pack 0 here.
+        assert_eq!(g.flags & SHAPE_GPU_MIN_PX_MASK, 0);
+        assert_eq!(g.flags & SHAPE_GPU_LINE, 0);
+
+        let l = ShapeInstance::line_with_cap_aa(
+            glam::Vec2::ZERO, glam::Vec2::new(5.0, 0.0), 1.0, [1.0; 4], 0, false, true,
+        );
+        let g = ShapeGpu::pack(&l);
+        assert_eq!(g.flags & SHAPE_GPU_TRIANGLE, 0);
+        assert_ne!(g.flags & SHAPE_GPU_CAP_START_HARD, 0);
+        assert_eq!(g.flags & SHAPE_GPU_CAP_END_HARD, 0);
+        assert_eq!(g.flags & SHAPE_GPU_MIN_PX_MASK, 0);
+        assert_ne!(g.flags & SHAPE_GPU_LINE, 0);
+        assert_eq!(g.dims[0], 1.0);
+    }
+
+    #[test]
+    fn pack_line_min_px_and_line_flag() {
+        let l = ShapeInstance::line_px(
+            glam::Vec2::ZERO, glam::Vec2::new(10.0, 0.0), 0.015, 1.0, [1.0; 4], 0,
+        );
+        let g = ShapeGpu::pack(&l);
+        assert_ne!(g.flags & SHAPE_GPU_LINE, 0);
+        assert_eq!(g.flags & SHAPE_GPU_MIN_PX_MASK, 256); // 1.0 in 8.8
+
+        // Rect / circle constructors must not be treated as lines.
+        let r = ShapeInstance::rect(glam::Vec2::ZERO, glam::Vec2::new(2.0, 1.0), [1.0; 4]);
+        assert_eq!(ShapeGpu::pack(&r).flags & SHAPE_GPU_LINE, 0);
+
+        // `with_min_px` clamps negatives / NaN to zero.
+        let l = l.with_min_px(-3.0);
+        assert_eq!(ShapeGpu::pack(&l).flags & SHAPE_GPU_MIN_PX_MASK, 0);
+        let l = l.with_min_px(f32::NAN);
+        assert_eq!(ShapeGpu::pack(&l).flags & SHAPE_GPU_MIN_PX_MASK, 0);
+    }
+
+    #[test]
+    fn pack_joined_segment_flags_ext_and_dash() {
+        let j = ShapeInstance::joined_segment(
+            glam::Vec2::ZERO,
+            glam::Vec2::new(10.0, 0.0),
+            0.02,
+            1.0,
+            [1.0; 4],
+            0,
+            glam::Vec2::new(0.707, 0.707),
+            glam::Vec2::new(0.707, -0.707),
+            false,
+            true,
+            2.5,
+            3,
+        );
+        let g = ShapeGpu::pack(&j);
+        assert_ne!(g.flags & SHAPE_GPU_JOINED, 0);
+        assert_ne!(g.flags & SHAPE_GPU_JOIN_ROUND_END, 0);
+        assert_eq!(g.flags & SHAPE_GPU_JOIN_ROUND_START, 0);
+        assert_eq!((g.flags >> SHAPE_GPU_DASH_SHIFT) & 15, 3);
+        assert_eq!(g.flags & SHAPE_GPU_MIN_PX_MASK, 256);
+        assert_eq!(g.dims, [0.02, 0.0]);
+        assert_eq!(g.ext0[0], 0.707);
+        assert_eq!(g.ext0[3], -0.707);
+        assert_eq!(g.ext1, 2.5);
+        let (min, max) = j.world_aabb();
+        assert!(min.x <= 0.0 && max.x >= 10.0);
+        assert!(min.y <= -0.05 && max.y >= 0.05);
+    }
+
+    #[test]
+    fn pack_arc_and_ring_flags() {
+        let a = ShapeInstance::arc(
+            glam::Vec2::new(3.0, 4.0),
+            10.0,
+            0.5,
+            std::f32::consts::TAU,
+            0.05,
+            1.0,
+            [1.0; 4],
+            1,
+            0.0,
+            2,
+        );
+        let g = ShapeGpu::pack(&a);
+        assert_ne!(g.flags & SHAPE_GPU_ARC, 0);
+        assert_eq!(g.flags & SHAPE_GPU_RING, 0);
+        assert_eq!(g.dims, [10.0, 0.05]);
+        assert_eq!(g.ext0[0], 0.5);
+        assert_eq!(g.ext0[1], std::f32::consts::TAU);
+        assert_eq!((g.flags >> SHAPE_GPU_DASH_SHIFT) & 15, 2);
+
+        let r = ShapeInstance::circle_ring(
+            glam::Vec2::ZERO, 5.0, 0.02, [1.0; 4],
+        );
+        let g = ShapeGpu::pack(&r);
+        assert_ne!(g.flags & SHAPE_GPU_RING, 0);
+        assert_eq!(g.flags & SHAPE_GPU_ARC, 0);
+        assert_eq!(g.dims, [0.02, 5.0]);
+        let (min, max) = r.world_aabb();
+        assert!(min.x <= -5.0 && max.x >= 5.0);
+    }
+
+    #[test]
+    fn world_aabb_matches_corners() {
+        let r = ShapeInstance::rect_rotated(glam::Vec2::new(3.0, 4.0), glam::Vec2::new(2.0, 1.0), 0.7, [1.0; 4]);
+        let (min, max) = r.world_aabb();
+        let c0 = glam::Vec2::new(r.transform_c0[0], r.transform_c0[1]);
+        let c1 = glam::Vec2::new(r.transform_c1[0], r.transform_c1[1]);
+        let c3 = glam::Vec2::new(r.transform_c3[0], r.transform_c3[1]);
+        for (x, y) in [(-0.5, -0.5), (0.5, -0.5), (-0.5, 0.5), (0.5, 0.5)] {
+            let p = c3 + c0 * x + c1 * y;
+            assert!(p.x >= min.x - 1e-5 && p.y >= min.y - 1e-5);
+            assert!(p.x <= max.x + 1e-5 && p.y <= max.y + 1e-5);
+        }
+    }
+}
+
+/// Parameters for the procedural, camera-following 2D background grid.
+///
+/// The grid is evaluated per fragment from the inverse view-projection, so it
+/// is truly infinite, has constant cost and never needs CPU geometry. Widths
+/// are in **logical pixels**; colours are linear RGBA.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Grid2dParams {
+    /// Base (user) minor spacing in world metres.
+    pub base_step: f32,
+    /// Major line every `major_every` minor steps (>= 1).
+    pub major_every: f32,
+    pub minor_width_px: f32,
+    pub major_width_px: f32,
+    pub axis_width_px: f32,
+    pub minor_color: [f32; 4],
+    pub major_color: [f32; 4],
+    /// Colour of the horizontal axis (y = 0).
+    pub axis_x_color: [f32; 4],
+    /// Colour of the vertical axis (x = 0).
+    pub axis_y_color: [f32; 4],
+    /// Draw the coloured axes at world x = 0 / y = 0.
+    pub axes: bool,
+}
+
+impl Default for Grid2dParams {
+    fn default() -> Self {
+        Self {
+            base_step: 1.0,
+            major_every: 5.0,
+            minor_width_px: 1.0,
+            major_width_px: 1.0,
+            axis_width_px: 1.5,
+            minor_color: [0.35, 0.42, 0.55, 0.14],
+            major_color: [0.50, 0.65, 0.85, 0.26],
+            axis_x_color: [0.88, 0.28, 0.28, 0.50],
+            axis_y_color: [0.28, 0.80, 0.38, 0.50],
+            axes: true,
+        }
+    }
+}
+
+/// GPU uniform for `grid_2d.wgsl` (176 bytes, 16-byte aligned).
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub(crate) struct Grid2dUniform {
+    pub inv_view_proj: [f32; 16],
+    pub resolution: [f32; 2],
+    /// Align `viewport` (WGSL `vec4`) to 16 bytes.
+    pub _pad0: [f32; 2],
+    /// Pixel viewport `[x, y, w, h]` (multi-view uses sub-rects).
+    pub viewport: [f32; 4],
+    pub world_per_px: f32,
+    pub dpp: f32,
+    /// Align `params` (WGSL `vec4`) to 16 bytes.
+    pub _pad1: [f32; 2],
+    /// `[base_step, major_every, minor_width_px, major_width_px]`.
+    pub params: [f32; 4],
+    /// `[axis_width_px, flags, 0, 0]`.
+    pub params2: [f32; 4],
+    pub minor_color: [f32; 4],
+    pub major_color: [f32; 4],
+    pub axis_x_color: [f32; 4],
+    pub axis_y_color: [f32; 4],
+}
 
 /// Shared uniform data for 2D passes.
 #[repr(C)]
@@ -459,7 +1099,11 @@ pub struct Uniform2d {
     pub view_proj: [f32; 16],
     /// Viewport size in physical pixels `[width, height]`.
     pub resolution: [f32; 2],
-    /// Padding to satisfy 16-byte uniform alignment.
+    /// `[device_px_per_logical_px, legacy_2d_flag]`.
     pub padding: [f32; 2], // 16-byte alignment
+    /// Dash table: 16 patterns × 8 lengths, stored as 32 `vec4` so the WGSL
+    /// uniform array is 16-byte aligned. Slot `0` is unused (continuous).
+    /// Pattern `i` uses `dash[i*2]` (lengths 0..3) and `dash[i*2+1]` (4..7).
+    pub dash: [[f32; 4]; 32],
 }
 

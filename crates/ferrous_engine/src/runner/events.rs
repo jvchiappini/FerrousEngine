@@ -102,7 +102,7 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
                     bytes,
                     &gfx.renderer.context.device,
                     &gfx.renderer.context.queue,
-                    ' '..'~',
+                    ferrous_font::latin_western(),
                 );
                 gfx.renderer
                     .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
@@ -131,6 +131,8 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
                     render: RenderContext::new(&mut gfx.renderer),
                     asset_server: &mut self.asset_server,
                     exit_requested: false,
+                    requested_resolution_scale: None,
+                    keep_awake_requested: false,
                     _gpu_backend: backend,
                 };
                 self.app.setup(&mut ctx);
@@ -181,7 +183,7 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
                         bytes,
                         &gfx.renderer.context.device,
                         &gfx.renderer.context.queue,
-                        ' '..'~',
+                        ferrous_font::latin_western(),
                     );
                     gfx.renderer
                         .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
@@ -374,63 +376,30 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
                 log::info!("[Ferrous] Scale factor changed: {}", scale_factor);
                 
                 #[cfg(target_arch = "wasm32")]
-                if let Some(win) = web_sys::window() {
-                    let dpr = win.device_pixel_ratio();
-                    let css_w = win.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(self.window_size.0 as f64);
-                    let css_h = win.inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(self.window_size.1 as f64);
-                    let scale = self.config.resolution_scale;
-                    
-                    let phys_w = (css_w * dpr * scale).round() as u32;
-                    let phys_h = (css_h * dpr * scale).round() as u32;
-                    
+                if let Some(window) = &self.window {
+                    let (phys_w, phys_h) =
+                        super::canvas_physical_size(window, self.config.resolution_scale);
                     if let Some(gfx) = &mut self.graphics {
                         gfx.resize(phys_w, phys_h);
                     }
                     self.window_size = (phys_w, phys_h);
-                    
-                    if let Some(doc) = win.document() {
-                        if let Ok(Some(c)) = doc.query_selector("canvas") {
-                            if let Ok(html_canvas) = wasm_bindgen::JsCast::dyn_into::<web_sys::HtmlCanvasElement>(c) {
-                                if html_canvas.width() != phys_w {
-                                    html_canvas.set_width(phys_w);
-                                }
-                                if html_canvas.height() != phys_h {
-                                    html_canvas.set_height(phys_h);
-                                }
-                            }
-                        }
-                    }
+                    super::set_canvas_backing_size(window, phys_w, phys_h);
                 }
             }
             WindowEvent::Resized(_size) => {
                 #[cfg(target_arch = "wasm32")]
                 let size = {
-                    use wasm_bindgen::JsCast;
-                    let mut s = _size;
-                    if let Some(window) = web_sys::window() {
-                        let dpr = window.device_pixel_ratio();
-                        let scale = self.config.resolution_scale;
-                        let css_w = window.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(s.width as f64);
-                        let css_h = window.inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(s.height as f64);
-                        let phys_w = (css_w * dpr * scale).round() as u32;
-                        let phys_h = (css_h * dpr * scale).round() as u32;
-                        s.width = phys_w.max(1);
-                        s.height = phys_h.max(1);
-
-                        if let Some(doc) = window.document() {
-                            if let Ok(Some(c)) = doc.query_selector("canvas") {
-                                if let Ok(html_canvas) = c.dyn_into::<web_sys::HtmlCanvasElement>() {
-                                    if html_canvas.width() != s.width {
-                                        html_canvas.set_width(s.width);
-                                    }
-                                    if html_canvas.height() != s.height {
-                                        html_canvas.set_height(s.height);
-                                    }
-                                }
-                            }
-                        }
+                    let (w, h) = self
+                        .window
+                        .as_ref()
+                        .map(|window| {
+                            super::canvas_physical_size(window, self.config.resolution_scale)
+                        })
+                        .unwrap_or((_size.width.max(1), _size.height.max(1)));
+                    if let Some(window) = &self.window {
+                        super::set_canvas_backing_size(window, w, h);
                     }
-                    s
+                    winit::dpi::PhysicalSize::new(w, h)
                 };
                 #[cfg(not(target_arch = "wasm32"))]
                 let size = _size;

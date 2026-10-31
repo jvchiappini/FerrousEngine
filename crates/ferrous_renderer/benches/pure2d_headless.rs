@@ -188,7 +188,7 @@ fn pure2d_shapes(bencher: divan::Bencher, n: usize) {
     print_baseline(&format!("pure2d_shapes n={n}"), &scene.render());
     bencher
         .counter(BytesCount::from(
-            (n * std::mem::size_of::<ShapeInstance>()) as u64,
+            (n * std::mem::size_of::<ferrous_2d::render::ShapeGpu>()) as u64,
         ))
         .bench_local(|| {
             scene.fill();

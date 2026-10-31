@@ -34,6 +34,9 @@ pub enum KeyCode {
     /// Left or right Shift key.
     ShiftLeft,
     ShiftRight,
+    /// Left or right Alt key.
+    AltLeft,
+    AltRight,
     /// Delete key (forward delete).
     Delete,
 
@@ -133,6 +136,8 @@ impl From<winit::keyboard::KeyCode> for KeyCode {
             winit::keyboard::KeyCode::ControlRight => KeyCode::ControlRight,
             winit::keyboard::KeyCode::ShiftLeft => KeyCode::ShiftLeft,
             winit::keyboard::KeyCode::ShiftRight => KeyCode::ShiftRight,
+            winit::keyboard::KeyCode::AltLeft => KeyCode::AltLeft,
+            winit::keyboard::KeyCode::AltRight => KeyCode::AltRight,
             winit::keyboard::KeyCode::Delete => KeyCode::Delete,
 
             winit::keyboard::KeyCode::KeyA => KeyCode::KeyA,

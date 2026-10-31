@@ -70,7 +70,8 @@ pub use ferrous_renderer::{AntialiasingMode, FxaaParams};
 // Runtime 2D performance/config API (metrics + knobs).  Re-exported so a
 // consumer only needs to depend on `ferrous_engine`.
 pub use ferrous_renderer::{
-    Antialiasing2d, Frame2dCounters, Frame2dStats, Render2dConfig, Static2dBatchId,
+    Antialiasing2d, Frame2dCounters, Frame2dStats, Grid2dParams, Render2dConfig,
+    Static2dBatchId,
 };
 
 // --- Helpers de Assets ---

@@ -61,6 +61,13 @@ pub struct AppConfig {
     /// Useful for editors or UI-heavy apps.
     /// `None` = never goes idle (always continuously redraws).
     pub idle_timeout: Option<f32>,
+    /// Frame rate kept while idle (see [`idle_timeout`](Self::idle_timeout)).
+    ///
+    /// `None` = stop redrawing completely until the next input event.
+    /// `Some(n)` = keep drawing at `n` fps, so time-driven UI (caret blink,
+    /// messages from other windows, async loads) still shows up — at a
+    /// fraction of the full-rate cost.
+    pub idle_fps: Option<u32>,
     /// MSAA sample count: `1` = no anti-aliasing, `4` = 4x MSAA.
     ///
     /// Higher values improve edge quality but multiply GPU raster work.
@@ -106,6 +113,7 @@ impl Default for AppConfig {
             background_color: Color::rgb(0.1, 0.1, 0.1),
             target_fps: Some(60),
             idle_timeout: None,
+            idle_fps: None,
             sample_count: 1,
             hdri_path: None,
             render_style: RenderStyle::Pbr,
@@ -277,6 +285,14 @@ impl<A: FerrousApp + 'static> App<A> {
     /// stopping continuous redraws. `None` disables idling.
     pub fn with_idle_timeout(mut self, timeout: Option<f32>) -> Self {
         self.config.idle_timeout = timeout;
+        self
+    }
+
+    /// Frame rate kept while idle. `None` stops redrawing until input
+    /// arrives; `Some(n)` throttles to `n` fps. Only used with
+    /// [`with_idle_timeout`](Self::with_idle_timeout).
+    pub fn with_idle_fps(mut self, fps: Option<u32>) -> Self {
+        self.config.idle_fps = fps;
         self
     }
 

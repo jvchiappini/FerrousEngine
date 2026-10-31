@@ -178,6 +178,33 @@ impl GuiBatch {
         }
     }
 
+    /// Starts a new **layer**: everything drawn after this call is painted
+    /// above everything drawn before it, text included.
+    ///
+    /// Inside one segment the renderer draws all quads, then all text, then
+    /// icons and SVG, so text drawn early (e.g. canvas labels) would otherwise
+    /// end up on top of panels drawn later. A layer is simply a new segment
+    /// with the same scissor. No-op when the current segment is empty.
+    pub fn begin_layer(&mut self) {
+        let empty = self.segments.last().map_or(true, |s| {
+            s.quad_range.is_empty() && s.text_range.is_empty() && s.icon_range.is_empty() && s.svg_range.is_empty()
+        });
+        if empty {
+            return;
+        }
+        let q = self.quads.len() as u32;
+        let t = self.text_quads.len() as u32;
+        let i = self.icon_quads.len() as u32;
+        let s = self.svg_commands.len() as u32;
+        self.segments.push(DrawSegment {
+            quad_range: q..q,
+            text_range: t..t,
+            icon_range: i..i,
+            svg_range: s..s,
+            scissor: self.current_scissor,
+        });
+    }
+
     /// Ensures there is an active segment for the current scissor.
     pub fn ensure_segment(&mut self) {
         let needs_new = match self.segments.last() {

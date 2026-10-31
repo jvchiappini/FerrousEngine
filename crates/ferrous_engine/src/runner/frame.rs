@@ -33,16 +33,10 @@ impl<A: FerrousApp + 'static> Runner<A> {
                         self.gfx_pending = None;
                         if let (Some(gfx), Some(window)) = (&mut self.graphics, &self.window) {
                             #[cfg(target_arch = "wasm32")]
-                            let (w, h) = if let Some(win) = web_sys::window() {
-                                let dpr = win.device_pixel_ratio();
-                                let scale = self.config.resolution_scale;
-                                let css_w = win.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(self.window_size.0 as f64);
-                                let css_h = win.inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(self.window_size.1 as f64);
-                                ((css_w * dpr * scale).round() as u32, (css_h * dpr * scale).round() as u32)
-                            } else {
-                                let size = window.inner_size();
-                                (size.width, size.height)
-                            };
+                            let (w, h) = super::canvas_physical_size(
+                                window,
+                                self.config.resolution_scale,
+                            );
                             #[cfg(not(target_arch = "wasm32"))]
                             let (w, h) = {
                                 let size = window.inner_size();
@@ -70,6 +64,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
                                 gizmos: Vec::new(),
                                 world: &mut self.world,
                                 exit_requested: false,
+                                requested_resolution_scale: None,
+                                keep_awake_requested: false,
                                 _gpu_backend: gfx.renderer.context.backend,
                                 render: RenderContext::new(&mut gfx.renderer),
                                 asset_server: &mut self.asset_server,
@@ -112,45 +108,34 @@ impl<A: FerrousApp + 'static> Runner<A> {
         // `frame_ms_avg()` expose the result to consumers for logging/telemetry.
         let frame_start = Instant::now();
 
-        // wasm32: proactive size sync as browser layout can be delayed/asynchronous
+        // wasm32: proactive size sync as browser layout can be delayed/asynchronous.
+        // Measure **the canvas element** (not window.innerWidth) so the buffer
+        // is exactly the device-pixel box and the browser never rescales it.
         #[cfg(target_arch = "wasm32")]
         {
-            if let Some(win) = web_sys::window() {
-                let dpr = win.device_pixel_ratio();
-                let scale = self.config.resolution_scale;
-                let css_w = win.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(self.window_size.0 as f64);
-                let css_h = win.inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(self.window_size.1 as f64);
-                let phys_w = (css_w * dpr * scale).round() as u32;
-                let phys_h = (css_h * dpr * scale).round() as u32;
-                if phys_w > 0 && phys_h > 0 && (phys_w != self.window_size.0 || phys_h != self.window_size.1) {
-                    self.window_size = (phys_w, phys_h);
-                    self.viewport = ferrous_core::Viewport {
-                        x: 0,
-                        y: 0,
-                        width: phys_w,
-                        height: phys_h,
-                    };
-                    gfx.resize(phys_w, phys_h);
-                    gfx.renderer.set_viewport(self.viewport);
-                    if let Some(doc) = win.document() {
-                        if let Ok(Some(c)) = doc.query_selector("canvas") {
-                            if let Ok(html_canvas) = wasm_bindgen::JsCast::dyn_into::<web_sys::HtmlCanvasElement>(c) {
-                                if html_canvas.width() != phys_w {
-                                    html_canvas.set_width(phys_w);
-                                }
-                                if html_canvas.height() != phys_h {
-                                    html_canvas.set_height(phys_h);
-                                }
-                            }
-                        }
-                    }
-                }
+            let (phys_w, phys_h) =
+                super::canvas_physical_size(window, self.config.resolution_scale);
+            if phys_w > 0
+                && phys_h > 0
+                && (phys_w != self.window_size.0 || phys_h != self.window_size.1)
+            {
+                self.window_size = (phys_w, phys_h);
+                self.viewport = ferrous_core::Viewport {
+                    x: 0,
+                    y: 0,
+                    width: phys_w,
+                    height: phys_h,
+                };
+                gfx.resize(phys_w, phys_h);
+                gfx.renderer.set_viewport(self.viewport);
+                super::set_canvas_backing_size(window, phys_w, phys_h);
             }
         }
 
         let now = Instant::now();
         self.last_frame = now;
-        self.last_action_time = now;
+        // Note: rendering a frame is not "activity" — only input events and
+        // `AppContext::keep_awake` are, otherwise the idle timeout never fires.
 
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(target_fps) = self.config.target_fps {
@@ -224,11 +209,23 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 world: &mut self.world,
                 render: RenderContext::new(&mut gfx.renderer),
                 exit_requested: false,
+                requested_resolution_scale: None,
+                keep_awake_requested: false,
                 _gpu_backend: backend,
                 asset_server: &mut self.asset_server,
             };
 
             self.app.update(&mut ctx);
+
+            if ctx.keep_awake_requested {
+                self.last_action_time = Instant::now();
+            }
+
+            // Live render-scale change: resize the surface next frame.
+            if let Some(requested) = ctx.requested_resolution_scale.take() {
+                self.config.resolution_scale = requested;
+            }
+
             if ctx.exit_requested {
                 drop(ctx);
                 gfx.renderer
@@ -291,6 +288,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 world: &mut self.world,
                 render: RenderContext::new(&mut gfx.renderer),
                 exit_requested: false,
+                requested_resolution_scale: None,
+                keep_awake_requested: false,
                 _gpu_backend: backend,
                 asset_server: &mut self.asset_server,
             };
@@ -341,7 +340,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
 
             gfx.renderer
                 .render_to_view(&mut encoder, &view, Some(gui_batch));
-            
+
             // Si el motor está en "Modo Exportación", inyectar la copia al readback buffer.
             if let Some(readback) = &gfx.renderer.readback_manager {
                 readback.copy_to_buffer(&mut encoder, &frame.texture);
@@ -350,6 +349,33 @@ impl<A: FerrousApp + 'static> Runner<A> {
             gfx.renderer.context.queue.submit(Some(encoder.finish()));
             
             frame.present();
+
+            // wasm32: keep a throttled copy of the REAL canvas. `present()`
+            // has already copied the rendered frame to the canvas, and the
+            // browser has not cleared it yet (same task), so `toDataURL` sees
+            // the actual image. AI snapshots use it when a later read-back
+            // returns a cleared buffer. Same renderer, at most ~300 ms old.
+            #[cfg(target_arch = "wasm32")]
+            {
+                use std::sync::atomic::{AtomicU64, Ordering};
+                static LAST_CAPTURE_MS: AtomicU64 = AtomicU64::new(0);
+                let now = js_sys::Date::now() as u64;
+                if now.saturating_sub(LAST_CAPTURE_MS.load(Ordering::Relaxed)) >= 300 {
+                    LAST_CAPTURE_MS.store(now, Ordering::Relaxed);
+                    use winit::platform::web::WindowExtWebSys;
+                    if let Some(canvas) = window.canvas() {
+                        if let Ok(url) = canvas.to_data_url_with_type("image/jpeg") {
+                            if let Some(win) = web_sys::window() {
+                                let _ = js_sys::Reflect::set(
+                                    win.as_ref(),
+                                    &"__koncretaLastFrame".into(),
+                                    &wasm_bindgen::JsValue::from_str(&url),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
 
             // Frame complete (present done): publish the wall-clock duration.
             // Placement here also covers the export/readback path below, which
@@ -382,34 +408,42 @@ impl<A: FerrousApp + 'static> Runner<A> {
 
     /// Called by winit between frames to manage redraw scheduling.
     pub(super) fn about_to_wait_impl(&mut self, event_loop: &ActiveEventLoop) {
-        #[cfg(target_arch = "wasm32")]
-        {
-            if let Some(window) = &self.window {
-                window.request_redraw();
+        let Some(window) = &self.window else { return };
+        let now = Instant::now();
+
+        let is_idle = match self.config.idle_timeout {
+            Some(timeout) => now.duration_since(self.last_action_time).as_secs_f32() > timeout,
+            None => false,
+        };
+
+        if is_idle {
+            match self.config.idle_fps {
+                // Throttled idle: keep drawing at a low rate.
+                Some(fps) if fps > 0 => {
+                    let next = self.last_frame + std::time::Duration::from_secs_f64(1.0 / fps as f64);
+                    if now >= next {
+                        window.request_redraw();
+                    } else {
+                        event_loop.set_control_flow(ControlFlow::WaitUntil(next));
+                    }
+                }
+                // Full idle: sleep until the next input event.
+                _ => event_loop.set_control_flow(ControlFlow::Wait),
             }
             return;
         }
 
+        #[cfg(target_arch = "wasm32")]
+        {
+            // The browser paces frames (requestAnimationFrame).
+            event_loop.set_control_flow(ControlFlow::Wait);
+            window.request_redraw();
+        }
+
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let Some(window) = &self.window else { return };
-
-            let is_idle = if let Some(timeout) = self.config.idle_timeout {
-                Instant::now()
-                    .duration_since(self.last_action_time)
-                    .as_secs_f32()
-                    > timeout
-            } else {
-                false
-            };
-
-            if is_idle {
-                event_loop.set_control_flow(ControlFlow::Wait);
-                return;
-            }
-
             if let Some(deadline) = self.next_frame_deadline {
-                if Instant::now() >= deadline {
+                if now >= deadline {
                     window.request_redraw();
                 } else {
                     event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));

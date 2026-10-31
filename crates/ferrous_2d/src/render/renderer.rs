@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::Arc;
-use crate::render::{SpriteBatcher, SpritePipeline, SpriteInstance, ShapePipeline};
+use std::sync::{Arc, Mutex};
+use crate::render::{Grid2dParams, GridPipeline, SpriteBatcher, SpritePipeline, SpriteInstance, ShapePipeline, ShapeGpu};
 use glam::Mat4;
 
 /// Hardware-independent per-frame counters for the 2D render path.
@@ -82,9 +82,39 @@ pub struct Renderer2d {
     /// keeps the previous frame's capacity.  Gated by [`Self::scratch_reuse`]
     /// so a consumer can A/B compare against the allocating path.
     scratch_sprites: Vec<SpriteInstance>,
+    /// Reusable staging buffer for packing [`crate::render::ShapeInstance`]s
+    /// into the compact [`ShapeGpu`] upload layout.
+    scratch_shapes: Vec<ShapeGpu>,
     /// When `false`, [`Self::prepare`] allocates a fresh `Vec` per frame
     /// instead of reusing [`Self::scratch_sprites`].  Defaults to `true`.
     scratch_reuse: bool,
+
+    /// Device pixels per logical pixel, passed to `shape_2d.wgsl` in
+    /// `Uniform2d::padding.x`. Used to resolve a per-instance `min_px`
+    /// (logical px) into world units. Stored as bits so `update_camera(&self)`
+    /// can read it without `&mut self`.
+    pixel_ratio_bits: AtomicU32,
+    /// `1` = legacy line stabiliser (pre-Phase-1 A/B switch, `?render=legacy`).
+    /// Sent to the shader in `Uniform2d::padding.y`.
+    legacy_2d: AtomicU32,
+    /// Dash table (16 patterns × up to 8 lengths, metres). Index 0 is unused.
+    /// Written rarely (pattern registration), read every frame when the
+    /// camera uniform is uploaded.
+    dash_table: Mutex<[[f32; 8]; 16]>,
+
+    /// Procedural background grid (optional).
+    pub grid_pipeline: GridPipeline,
+    grid_uniform_buffer: wgpu::Buffer,
+    grid_bind_group: wgpu::BindGroup,
+    grid_params: Option<Grid2dParams>,
+
+    /// Per-view camera/grid resources for the multi-viewport Pure2D path.
+    /// Index `i` belongs to `Renderer`'s `views_2d[i]`.
+    view_camera_buffers: Vec<wgpu::Buffer>,
+    view_shape_bgs: Vec<wgpu::BindGroup>,
+    view_sprite_bgs: Vec<wgpu::BindGroup>,
+    view_grid_buffers: Vec<wgpu::Buffer>,
+    view_grid_bgs: Vec<wgpu::BindGroup>,
 }
 
 impl Renderer2d {
@@ -108,6 +138,7 @@ impl Renderer2d {
     ) -> Self {
         let pipeline = SpritePipeline::new_with_cache(device.clone(), output_format, depth_format, sample_count, cache);
         let shape_pipeline = ShapePipeline::new_with_cache(device.clone(), output_format, depth_format, sample_count, cache);
+        let grid_pipeline = GridPipeline::new_with_cache(device.clone(), output_format, sample_count, cache);
         
         let max_instances = initial_capacity.max(128);
         
@@ -120,7 +151,7 @@ impl Renderer2d {
 
         let shape_instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Shape Instance Buffer"),
-            size: (max_instances as usize * std::mem::size_of::<crate::render::types::ShapeInstance>()) as u64,
+            size: (max_instances as usize * std::mem::size_of::<ShapeGpu>()) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -154,6 +185,21 @@ impl Renderer2d {
             label: Some("Shape Camera Bind Group"),
         });
 
+        let grid_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Grid Uniform Buffer"),
+            size: std::mem::size_of::<crate::render::types::Grid2dUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let grid_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &grid_pipeline.camera_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: grid_uniform_buffer.as_entire_binding(),
+            }],
+            label: Some("Grid Bind Group"),
+        });
+
         Self {
             device,
             pipeline,
@@ -175,7 +221,66 @@ impl Renderer2d {
             counters_static_batches_drawn: AtomicU32::new(0),
             counters_static_instances_drawn: AtomicU32::new(0),
             scratch_sprites: Vec::new(),
+            scratch_shapes: Vec::new(),
             scratch_reuse: true,
+            pixel_ratio_bits: AtomicU32::new(1.0f32.to_bits()),
+            legacy_2d: AtomicU32::new(0),
+            dash_table: Mutex::new([[0.0; 8]; 16]),
+            grid_pipeline,
+            grid_uniform_buffer,
+            grid_bind_group,
+            grid_params: None,
+            view_camera_buffers: Vec::new(),
+            view_shape_bgs: Vec::new(),
+            view_sprite_bgs: Vec::new(),
+            view_grid_buffers: Vec::new(),
+            view_grid_bgs: Vec::new(),
+        }
+    }
+
+    /// Sets the device-pixels-per-logical-pixel ratio used by the shader to
+    /// resolve per-instance `min_px` (logical) into world units.
+    ///
+    /// Values below `1.0` are accepted but the shader clamps the ratio to
+    /// `>= 1.0`, so a minimum width always covers at least one device pixel.
+    pub fn set_pixel_ratio(&self, ratio: f32) {
+        let ratio = if ratio.is_finite() && ratio > 0.0 { ratio } else { 1.0 };
+        self.pixel_ratio_bits.store(ratio.to_bits(), Ordering::Relaxed);
+    }
+
+    /// Current device-pixels-per-logical-pixel ratio.
+    pub fn pixel_ratio(&self) -> f32 {
+        f32::from_bits(self.pixel_ratio_bits.load(Ordering::Relaxed))
+    }
+
+    /// A/B switch: restore the legacy thin-line stabiliser / 4 px AA band.
+    pub fn set_legacy_2d(&self, legacy: bool) {
+        self.legacy_2d
+            .store(if legacy { 1 } else { 0 }, Ordering::Relaxed);
+    }
+
+    /// Whether the legacy line stabiliser is active.
+    pub fn legacy_2d(&self) -> bool {
+        self.legacy_2d.load(Ordering::Relaxed) != 0
+    }
+
+    /// Registers a shader dash pattern. `id` must be `1..=15` (`0` = solid).
+    /// Lengths are alternating dash/gap in world units (metres in Koncreta);
+    /// up to 8 values, zero-terminated. Registration is persistent.
+    pub fn set_dash_pattern(&self, id: u8, lengths: &[f32]) {
+        if id == 0 {
+            return;
+        }
+        let mut table = self
+            .dash_table
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let slot = &mut table[(id as usize).min(15)];
+        *slot = [0.0; 8];
+        for (dst, &src) in slot.iter_mut().zip(lengths.iter()) {
+            if src.is_finite() && src > 0.0 {
+                *dst = src;
+            }
         }
     }
 
@@ -191,6 +296,202 @@ impl Renderer2d {
     /// Whether the internal scratch buffers are being reused across frames.
     pub fn scratch_reuse(&self) -> bool {
         self.scratch_reuse
+    }
+
+    fn camera_uniform(&self, proj_view: Mat4, resolution: glam::Vec2) -> crate::render::types::Uniform2d {
+        let mut dash = [[0.0f32; 4]; 32];
+        {
+            let table = self
+                .dash_table
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for p in 0..16 {
+                dash[p * 2][0] = table[p][0];
+                dash[p * 2][1] = table[p][1];
+                dash[p * 2][2] = table[p][2];
+                dash[p * 2][3] = table[p][3];
+                dash[p * 2 + 1][0] = table[p][4];
+                dash[p * 2 + 1][1] = table[p][5];
+                dash[p * 2 + 1][2] = table[p][6];
+                dash[p * 2 + 1][3] = table[p][7];
+            }
+        }
+        crate::render::types::Uniform2d {
+            view_proj: proj_view.to_cols_array(),
+            resolution: resolution.to_array(),
+            padding: [
+                self.pixel_ratio(),
+                if self.legacy_2d() { 1.0 } else { 0.0 },
+            ],
+            dash,
+        }
+    }
+
+    fn ensure_view_slots(&mut self, index: usize) {
+        while self.view_camera_buffers.len() <= index {
+            let camera_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("View Camera Uniform Buffer"),
+                size: std::mem::size_of::<crate::render::types::Uniform2d>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let shape_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &self.shape_pipeline.camera_bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_buffer.as_entire_binding(),
+                }],
+                label: Some("View Shape Camera Bind Group"),
+            });
+            let sprite_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &self.pipeline.camera_bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_buffer.as_entire_binding(),
+                }],
+                label: Some("View Sprite Camera Bind Group"),
+            });
+            let grid_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("View Grid Uniform Buffer"),
+                size: std::mem::size_of::<crate::render::types::Grid2dUniform>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let grid_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &self.grid_pipeline.camera_bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: grid_buffer.as_entire_binding(),
+                }],
+                label: Some("View Grid Bind Group"),
+            });
+            self.view_camera_buffers.push(camera_buffer);
+            self.view_shape_bgs.push(shape_bg);
+            self.view_sprite_bgs.push(sprite_bg);
+            self.view_grid_buffers.push(grid_buffer);
+            self.view_grid_bgs.push(grid_bg);
+        }
+    }
+
+    /// Uploads one view's camera + grid uniform (multi-viewport Pure2D path).
+    pub fn prepare_view(
+        &mut self,
+        index: usize,
+        queue: &wgpu::Queue,
+        view_proj: Mat4,
+        rect_px: [f32; 4],
+        inv_view_proj: Mat4,
+        world_per_px: f32,
+    ) {
+        self.ensure_view_slots(index);
+        let res = glam::Vec2::new(rect_px[2].max(1.0), rect_px[3].max(1.0));
+        let u = self.camera_uniform(view_proj, res);
+        queue.write_buffer(&self.view_camera_buffers[index], 0, bytemuck::bytes_of(&u));
+        if let Some(p) = self.grid_params {
+            let gu = crate::render::types::Grid2dUniform {
+                inv_view_proj: inv_view_proj.to_cols_array(),
+                resolution: res.to_array(),
+                _pad0: [0.0; 2],
+                viewport: rect_px,
+                world_per_px: world_per_px.max(1e-9),
+                dpp: self.pixel_ratio(),
+                _pad1: [0.0; 2],
+                params: [
+                    p.base_step.max(1e-9),
+                    p.major_every.max(1.0),
+                    p.minor_width_px.max(0.0),
+                    p.major_width_px.max(0.0),
+                ],
+                params2: [
+                    p.axis_width_px.max(0.0),
+                    if p.axes { 1.0 } else { 0.0 },
+                    0.0,
+                    0.0,
+                ],
+                minor_color: p.minor_color,
+                major_color: p.major_color,
+                axis_x_color: p.axis_x_color,
+                axis_y_color: p.axis_y_color,
+            };
+            queue.write_buffer(&self.view_grid_buffers[index], 0, bytemuck::bytes_of(&gu));
+        }
+    }
+
+    /// Camera bind group for view `index`.
+    pub fn view_shape_bg(&self, index: usize) -> Option<&wgpu::BindGroup> {
+        self.view_shape_bgs.get(index)
+    }
+
+    /// Sprite camera bind group for view `index`.
+    pub fn view_sprite_bg(&self, index: usize) -> Option<&wgpu::BindGroup> {
+        self.view_sprite_bgs.get(index)
+    }
+
+    /// Grid bind group for view `index` (only meaningful when the grid is on).
+    pub fn view_grid_bg(&self, index: usize) -> Option<&wgpu::BindGroup> {
+        self.view_grid_bgs.get(index)
+    }
+
+    /// Draws the procedural grid using a view-specific bind group.
+    pub fn render_grid_bg(&self, rpass: &mut wgpu::RenderPass<'_>, bg: &wgpu::BindGroup) {
+        if self.grid_params.is_none() {
+            return;
+        }
+        rpass.set_pipeline(&self.grid_pipeline.wgpu_pipeline);
+        rpass.set_bind_group(0, bg, &[]);
+        rpass.draw(0..3, 0..1);
+    }
+
+    /// Enables / replaces / disables (`None`) the procedural background grid.
+    pub fn set_grid(&mut self, params: Option<Grid2dParams>) {
+        self.grid_params = params;
+    }
+
+    /// Whether a grid pass will be drawn this frame.
+    pub fn has_grid(&self) -> bool {
+        self.grid_params.is_some()
+    }
+
+    /// Uploads the grid uniform for this frame. No-op when the grid is off.
+    pub fn prepare_grid(
+        &self,
+        queue: &wgpu::Queue,
+        inv_view_proj: Mat4,
+        resolution: glam::Vec2,
+        world_per_px: f32,
+    ) {
+        let Some(p) = self.grid_params else { return; };
+        let u = crate::render::types::Grid2dUniform {
+            inv_view_proj: inv_view_proj.to_cols_array(),
+            resolution: resolution.to_array(),
+            _pad0: [0.0; 2],
+            viewport: [0.0, 0.0, resolution.x, resolution.y],
+            world_per_px: world_per_px.max(1e-9),
+            dpp: self.pixel_ratio(),
+            _pad1: [0.0; 2],
+            params: [
+                p.base_step.max(1e-9),
+                p.major_every.max(1.0),
+                p.minor_width_px.max(0.0),
+                p.major_width_px.max(0.0),
+            ],
+            params2: [p.axis_width_px.max(0.0), if p.axes { 1.0 } else { 0.0 }, 0.0, 0.0],
+            minor_color: p.minor_color,
+            major_color: p.major_color,
+            axis_x_color: p.axis_x_color,
+            axis_y_color: p.axis_y_color,
+        };
+        queue.write_buffer(&self.grid_uniform_buffer, 0, bytemuck::bytes_of(&u));
+    }
+
+    /// Draws the procedural grid (full-screen triangle, one draw call).
+    pub fn render_grid(&self, rpass: &mut wgpu::RenderPass<'_>) {
+        if self.grid_params.is_none() {
+            return;
+        }
+        rpass.set_pipeline(&self.grid_pipeline.wgpu_pipeline);
+        rpass.set_bind_group(0, &self.grid_bind_group, &[]);
+        rpass.draw(0..3, 0..1);
     }
 
     /// Resets the per-frame instrumentation.  Call once at the start of every
@@ -248,10 +549,33 @@ impl Renderer2d {
 
     /// Update the Orthographic Camera Matrix and Resolution
     pub fn update_camera(&self, queue: &wgpu::Queue, proj_view: Mat4, resolution: glam::Vec2) {
+        let mut dash = [[0.0f32; 4]; 32];
+        {
+            let table = self
+                .dash_table
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for p in 0..16 {
+                dash[p * 2][0] = table[p][0];
+                dash[p * 2][1] = table[p][1];
+                dash[p * 2][2] = table[p][2];
+                dash[p * 2][3] = table[p][3];
+                dash[p * 2 + 1][0] = table[p][4];
+                dash[p * 2 + 1][1] = table[p][5];
+                dash[p * 2 + 1][2] = table[p][6];
+                dash[p * 2 + 1][3] = table[p][7];
+            }
+        }
         let uniform = crate::render::types::Uniform2d {
             view_proj: proj_view.to_cols_array(),
             resolution: resolution.to_array(),
-            padding: [0.0; 2],
+            // x = device px per logical px (min_px resolution),
+            // y = legacy stabiliser flag (>0.5 = on).
+            padding: [
+                self.pixel_ratio(),
+                if self.legacy_2d() { 1.0 } else { 0.0 },
+            ],
+            dash,
         };
         queue.write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&uniform));
     }
@@ -325,6 +649,20 @@ impl Renderer2d {
         queue: &wgpu::Queue,
         data: &[crate::render::types::ShapeInstance],
     ) -> usize {
+        let mut packed = std::mem::take(&mut self.scratch_shapes);
+        packed.clear();
+        packed.extend(data.iter().map(ShapeGpu::pack));
+        let n = self.prepare_shape_gpu_slice(queue, &packed);
+        self.scratch_shapes = packed;
+        n
+    }
+
+    /// Upload an already-packed, caller-ordered slice of [`ShapeGpu`]s as one
+    /// `write_buffer`, growing the GPU buffer first if needed.
+    ///
+    /// The engine's Pure2D path packs while it builds the painter-ordered
+    /// upload, so it calls this directly and avoids a second copy.
+    pub fn prepare_shape_gpu_slice(&mut self, queue: &wgpu::Queue, data: &[ShapeGpu]) -> usize {
         let total = data.len();
         if total == 0 { return 0; }
 
@@ -332,7 +670,7 @@ impl Renderer2d {
             self.max_shape_instances = (total as u32).next_power_of_two();
             self.shape_instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("Shape Instance Buffer (Resized)"),
-                size: (self.max_shape_instances as usize * std::mem::size_of::<crate::render::types::ShapeInstance>()) as u64,
+                size: (self.max_shape_instances as usize * std::mem::size_of::<ShapeGpu>()) as u64,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
@@ -340,7 +678,7 @@ impl Renderer2d {
                 .fetch_add(1, Ordering::Relaxed);
         }
 
-        let uploaded = bytemuck::cast_slice(data);
+        let uploaded: &[u8] = bytemuck::cast_slice(data);
         queue.write_buffer(&self.shape_instance_buffer, 0, uploaded);
         self.counters_bytes_uploaded
             .fetch_add(uploaded.len() as u64, Ordering::Relaxed);
@@ -443,6 +781,23 @@ impl Renderer2d {
         self.record_shape_draw();
     }
 
+    /// Same as [`Self::render_shapes_range`] with an explicit camera bind group
+    /// (multi-viewport path).
+    pub fn render_shapes_range_bg(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        bg: &wgpu::BindGroup,
+        offset: u32,
+        count: u32,
+    ) {
+        if count == 0 { return; }
+        render_pass.set_pipeline(&self.shape_pipeline.wgpu_pipeline);
+        render_pass.set_bind_group(0, bg, &[]);
+        render_pass.set_vertex_buffer(0, self.shape_instance_buffer.slice(..));
+        render_pass.draw(0..4, offset..(offset + count));
+        self.record_shape_draw();
+    }
+
     /// Draws a **persistent** shape instance buffer as a single instanced draw
     /// call, using the shape (SDF) pipeline and the current camera bind group.
     ///
@@ -468,6 +823,55 @@ impl Renderer2d {
             .fetch_add(count, Ordering::Relaxed);
     }
 
+    /// Draws `[start, start + count)` of a **persistent** [`ShapeGpu`] buffer.
+    ///
+    /// Used by the engine's chunk-culled static batches: one call per visible
+    /// run of chunks.  Records one shape draw and adds `count` to the
+    /// static-instance counter; the caller records the batch itself with
+    /// [`Self::record_static_batch`].
+    pub fn render_static_shapes_range(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        buffer: &wgpu::Buffer,
+        start: u32,
+        count: u32,
+    ) {
+        if count == 0 { return; }
+        render_pass.set_pipeline(&self.shape_pipeline.wgpu_pipeline);
+        render_pass.set_bind_group(0, &self.shape_camera_bind_group, &[]);
+        render_pass.set_vertex_buffer(0, buffer.slice(..));
+        render_pass.draw(0..4, start..(start + count));
+        self.record_shape_draw();
+        self.counters_static_instances_drawn
+            .fetch_add(count, Ordering::Relaxed);
+    }
+
+    /// Static-batch range draw with an explicit camera bind group.
+    pub fn render_static_shapes_range_bg(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        bg: &wgpu::BindGroup,
+        buffer: &wgpu::Buffer,
+        start: u32,
+        count: u32,
+    ) {
+        if count == 0 { return; }
+        render_pass.set_pipeline(&self.shape_pipeline.wgpu_pipeline);
+        render_pass.set_bind_group(0, bg, &[]);
+        render_pass.set_vertex_buffer(0, buffer.slice(..));
+        render_pass.draw(0..4, start..(start + count));
+        self.record_shape_draw();
+        self.counters_static_instances_drawn
+            .fetch_add(count, Ordering::Relaxed);
+    }
+
+    /// Counts one retained static batch as drawn this frame (see
+    /// [`Self::render_static_shapes_range`]).
+    pub fn record_static_batch(&self) {
+        self.counters_static_batches_drawn
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Renders a contiguous range `[offset, offset + count)` of sprite instances
     /// for a single `texture_id`, binding its texture bind group first.  Same
     /// usage as `render` but scoped to an arbitrary slice of the flat upload.
@@ -483,6 +887,26 @@ impl Renderer2d {
         let Some(bg) = get_texture_bind_group(tex_id) else { return; };
         render_pass.set_pipeline(&self.pipeline.wgpu_pipeline);
         render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+        render_pass.set_bind_group(1, bg, &[]);
+        render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
+        render_pass.draw(0..4, offset..(offset + count));
+        self.record_sprite_draw();
+    }
+
+    /// Sprite range with an explicit camera bind group (multi-viewport path).
+    pub fn render_sprites_range_bg<'a>(
+        &'a self,
+        render_pass: &mut wgpu::RenderPass<'a>,
+        camera_bg: &'a wgpu::BindGroup,
+        tex_id: u32,
+        offset: u32,
+        count: u32,
+        get_texture_bind_group: impl Fn(u32) -> Option<&'a wgpu::BindGroup>,
+    ) {
+        if count == 0 { return; }
+        let Some(bg) = get_texture_bind_group(tex_id) else { return; };
+        render_pass.set_pipeline(&self.pipeline.wgpu_pipeline);
+        render_pass.set_bind_group(0, camera_bg, &[]);
         render_pass.set_bind_group(1, bg, &[]);
         render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
         render_pass.draw(0..4, offset..(offset + count));

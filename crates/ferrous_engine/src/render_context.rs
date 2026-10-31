@@ -319,6 +319,58 @@ impl<'r> RenderContext<'r> {
         self.inner.set_render_2d_config(config);
     }
 
+    /// Sets the device-pixels-per-logical-pixel ratio used to resolve the
+    /// per-instance minimum stroke width (`ShapeInstance::with_min_px`).
+    ///
+    /// Call it whenever the render scale / DPR changes. The value travels to
+    /// `shape_2d.wgsl` via `Uniform2d::padding.x`; the shader clamps it to
+    /// `>= 1.0` so a minimum-width line always covers at least one device px.
+    pub fn set_2d_pixel_ratio(&mut self, ratio: f32) {
+        self.inner.set_2d_pixel_ratio(ratio);
+    }
+
+    /// A/B switch for the pre-Phase-1 2D line rendering (4 px AA + thin-line
+    /// alpha stabiliser). `false` uses the 1-pixel box coverage filter and the
+    /// opacity-preserving minimum width. Koncreta drives it with `?render=`.
+    pub fn set_2d_legacy(&mut self, legacy: bool) {
+        self.inner.set_2d_legacy(legacy);
+    }
+
+    /// Registers a shader dash pattern for joined 2D segments.
+    ///
+    /// `id` is `1..=15` (`0` = continuous); `lengths` alternate dash/gap in
+    /// world units (metres in Koncreta) and are zero-terminated (max 8).
+    pub fn set_2d_dash_pattern(&mut self, id: u8, lengths: &[f32]) {
+        self.inner.set_2d_dash_pattern(id, lengths);
+    }
+
+    /// Enables / replaces / disables (`None`) the procedural background grid.
+    ///
+    /// Drawn in the Pure2D path right after Clear and before any model
+    /// geometry. The grid is evaluated from the inverse view-projection, so it
+    /// is infinite and constant-cost; widths are logical pixels.
+    pub fn set_2d_grid(&mut self, params: Option<ferrous_2d::render::Grid2dParams>) {
+        self.inner.set_2d_grid(params);
+    }
+
+    /// Starts a 2D view segment (multi-viewport): shapes submitted until
+    /// [`Self::end_2d_view`] use `view_proj` and are clipped to `rect_px`
+    /// (physical pixels, top-left origin).
+    pub fn begin_2d_view(&mut self, rect_px: [f32; 4], view_proj: ferrous_core::glam::Mat4) {
+        self.inner.begin_2d_view(rect_px, view_proj);
+    }
+
+    /// Ends the current 2D view segment.
+    pub fn end_2d_view(&mut self) {
+        self.inner.end_2d_view();
+    }
+
+    /// Starts an **overlay-only** 2D view: shapes use `view_proj` and are
+    /// clipped to `rect_px`, but the grid/static batches are not redrawn.
+    pub fn begin_2d_overlay_view(&mut self, rect_px: [f32; 4], view_proj: ferrous_core::glam::Mat4) {
+        self.inner.begin_2d_overlay_view(rect_px, view_proj);
+    }
+
     // ── Retained static 2D batches ───────────────────────────────────────────
 
     /// Creates a retained static 2D batch from `shapes`, uploading to GPU once.

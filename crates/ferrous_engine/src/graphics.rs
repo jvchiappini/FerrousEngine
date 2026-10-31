@@ -99,13 +99,30 @@ impl GraphicsState {
             canvas.set_attribute("tabindex", "0").ok();
             canvas.focus().ok();
 
-            // Auto-focus on click to capture keyboard input (often blocked programmatically without interactions)
+            // Auto-focus on click to capture keyboard input (often blocked
+            // programmatically without interactions).  Also stop the browser's
+            // default actions — middle-click autoscroll, native text/image drag
+            // and the compatibility mouse events — and capture the pointer, so a
+            // middle/right-drag pan tracks the cursor 1:1 instead of dropping
+            // events (or being hijacked) when the cursor leaves the canvas.
             let focus_canvas = canvas.clone();
             let on_pointer_down = wasm_bindgen::prelude::Closure::<dyn FnMut(web_sys::PointerEvent)>::new(move |e: web_sys::PointerEvent| {
                 focus_canvas.focus().ok();
+                e.prevent_default();
+                let _ = focus_canvas.set_pointer_capture(e.pointer_id());
             });
             canvas.add_event_listener_with_callback("pointerdown", on_pointer_down.as_ref().unchecked_ref()).ok();
             on_pointer_down.forget();
+
+            // Stop the page/trackpad default for wheel gestures (macOS back/
+            // forward, overscroll) so wheel-zoom stays smooth.
+            let on_wheel = wasm_bindgen::prelude::Closure::<dyn FnMut(web_sys::Event)>::new(|e: web_sys::Event| {
+                e.prevent_default();
+            });
+            canvas
+                .add_event_listener_with_callback("wheel", on_wheel.as_ref().unchecked_ref())
+                .ok();
+            on_wheel.forget();
 
             // Disable browser context menu to allow right-click interaction in 3D
             let on_context_menu = wasm_bindgen::prelude::Closure::<dyn FnMut(web_sys::MouseEvent)>::new(|e: web_sys::MouseEvent| {
@@ -113,6 +130,58 @@ impl GraphicsState {
             });
             canvas.add_event_listener_with_callback("contextmenu", on_context_menu.as_ref().unchecked_ref()).ok();
             on_context_menu.forget();
+
+            // Keep the browser from stealing Ctrl/Alt + number (tab switching /
+            // menu access), so Koncreta's viewport-layout shortcuts reach winit.
+            let on_key_down = wasm_bindgen::prelude::Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(
+                |e: web_sys::KeyboardEvent| {
+                    let code = e.code();
+                    let layout_digit = matches!(
+                        code.as_str(),
+                        "Digit1" | "Digit2" | "Digit3" | "Digit4"
+                            | "Numpad1" | "Numpad2" | "Numpad3" | "Numpad4"
+                    );
+                    if layout_digit && (e.ctrl_key() || e.alt_key()) {
+                        e.prevent_default();
+                        e.stop_propagation();
+                    }
+                },
+            );
+            canvas
+                .add_event_listener_with_callback(
+                    "keydown",
+                    on_key_down.as_ref().unchecked_ref(),
+                )
+                .ok();
+            on_key_down.forget();
+        }
+
+        // On plain HTTP, wgpu uses the WebGL2 backend. Pre-create the context
+        // with `preserveDrawingBuffer` so the browser can hand the last frame
+        // to consumers (AI snapshots / `canvas.toDataURL`) instead of a cleared
+        // buffer. On HTTPS/WebGPU we must NOT create a WebGL context here.
+        #[cfg(target_arch = "wasm32")]
+        {
+            let secure = web_sys::window()
+                .map(|w| w.is_secure_context())
+                .unwrap_or(true);
+            if !secure {
+                use winit::platform::web::WindowExtWebSys;
+                if let Some(canvas) = window.canvas() {
+                    let opts = js_sys::Object::new();
+                    let _ = js_sys::Reflect::set(
+                        &opts,
+                        &"antialias".into(),
+                        &wasm_bindgen::JsValue::FALSE,
+                    );
+                    let _ = js_sys::Reflect::set(
+                        &opts,
+                        &"preserveDrawingBuffer".into(),
+                        &wasm_bindgen::JsValue::TRUE,
+                    );
+                    let _ = canvas.get_context_with_context_options("webgl2", &opts);
+                }
+            }
         }
 
         let surface = instance.create_surface(window).unwrap_or_else(|e| {

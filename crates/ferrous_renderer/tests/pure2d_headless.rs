@@ -80,7 +80,7 @@ fn renders_shape_offscreen_and_matches_pixels() {
     assert_eq!(report.instances_uploaded, 1);
     assert_eq!(
         report.bytes_uploaded,
-        std::mem::size_of::<ShapeInstance>() as u64,
+        std::mem::size_of::<ferrous_2d::render::ShapeGpu>() as u64,
         "exactly one ShapeInstance must be uploaded"
     );
     assert_eq!(
@@ -132,7 +132,7 @@ fn draw_calls_match_batched_scene() {
     assert_eq!(report.draw_calls, 2);
     assert_eq!(
         report.bytes_uploaded,
-        (3 * std::mem::size_of::<ShapeInstance>()
+        (3 * std::mem::size_of::<ferrous_2d::render::ShapeGpu>()
             + 2 * std::mem::size_of::<SpriteInstance>()) as u64
     );
 }
@@ -277,7 +277,7 @@ fn frame_2d_stats_reports_live_pure2d_counters() {
     assert_eq!(stats.draw_calls, 1, "two equal-z shapes coalesce");
     assert_eq!(stats.shape_draw_calls, 1);
     assert_eq!(stats.instances_uploaded, 2);
-    assert!(stats.bytes_uploaded >= 2 * std::mem::size_of::<ShapeInstance>() as u64);
+    assert!(stats.bytes_uploaded >= 2 * std::mem::size_of::<ferrous_2d::render::ShapeGpu>() as u64);
 
     // Next frame with no geometry: the counters must have been reset.
     h.begin_frame();
@@ -1024,7 +1024,7 @@ fn static_batch_matches_immediate_pixels_and_uploads_once() {
     assert_eq!(immediate_report.instances_uploaded, shapes.len() as u32);
     assert_eq!(
         immediate_report.bytes_uploaded,
-        (shapes.len() * std::mem::size_of::<ShapeInstance>()) as u64
+        (shapes.len() * std::mem::size_of::<ferrous_2d::render::ShapeGpu>()) as u64
     );
 
     h.renderer_mut().destroy_static_2d_batch(id);

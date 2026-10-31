@@ -71,6 +71,7 @@ pub use passes::{AntialiasingMode, AntialiasingPass, FxaaParams};
 
 // Runtime render/performance configuration (Part 1/2 of the 2D performance pass)
 pub use render_config::{Antialiasing2d, Render2dConfig};
+pub use ferrous_2d::render::types::Grid2dParams;
 
 // Hardware-independent per-frame 2D counters, surfaced through
 // `Renderer::frame_2d_stats()` and `ferrous_engine::RenderContext`.
@@ -104,6 +105,6 @@ pub use ferrous_ui_render::{GuiBatch, GuiQuad};
 
 // -- 2D Technical Rendering Re-exports ----------------------------------------
 pub mod render_2d {
-    pub use ferrous_2d::render::types::ShapeInstance;
+    pub use ferrous_2d::render::types::{Grid2dParams, ShapeInstance};
     pub use ferrous_2d::components::Shape2d;
 }

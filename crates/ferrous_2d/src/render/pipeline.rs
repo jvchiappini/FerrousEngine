@@ -164,7 +164,7 @@ impl ShapePipeline {
         sample_count: u32,
         cache: Option<&wgpu::PipelineCache>,
     ) -> Self {
-        use crate::render::types::ShapeInstance;
+        use crate::render::types::ShapeGpu;
 
         // 1. Camera Layout
         let camera_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -203,7 +203,7 @@ impl ShapePipeline {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[ShapeInstance::descriptor()],
+                buffers: &[ShapeGpu::descriptor()],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -232,6 +232,109 @@ impl ShapePipeline {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
+            multisample: wgpu::MultisampleState {
+                count: sample_count,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+            cache,
+        });
+
+        Self {
+            device,
+            wgpu_pipeline,
+            camera_bind_group_layout,
+        }
+    }
+}
+
+/// Render pipeline for the procedural 2D grid.
+///
+/// The grid is a full-screen triangle (no vertex buffers) evaluated in the
+/// fragment shader from the inverse view-projection. It is drawn right after
+/// the clear and before the retained/immediate geometry, so it stays behind
+/// the model.
+pub struct GridPipeline {
+    pub device: Arc<wgpu::Device>,
+    pub wgpu_pipeline: wgpu::RenderPipeline,
+    /// Bind group 0: the grid uniform.
+    pub camera_bind_group_layout: wgpu::BindGroupLayout,
+}
+
+impl GridPipeline {
+    pub fn new(
+        device: Arc<wgpu::Device>,
+        output_format: wgpu::TextureFormat,
+        sample_count: u32,
+    ) -> Self {
+        Self::new_with_cache(device, output_format, sample_count, None)
+    }
+
+    pub fn new_with_cache(
+        device: Arc<wgpu::Device>,
+        output_format: wgpu::TextureFormat,
+        sample_count: u32,
+        cache: Option<&wgpu::PipelineCache>,
+    ) -> Self {
+        let camera_bind_group_layout = device.create_bind_group_layout(
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("Grid Uniform Bind Group Layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            },
+        );
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Grid Render Pipeline Layout"),
+            bind_group_layouts: &[&camera_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Grid Shader"),
+            source: wgpu::ShaderSource::Wgsl(
+                include_str!("../../../../assets/shaders/grid_2d.wgsl").into(),
+            ),
+        });
+
+        let wgpu_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Grid WGPU Pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: output_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
             multisample: wgpu::MultisampleState {
                 count: sample_count,
                 mask: !0,

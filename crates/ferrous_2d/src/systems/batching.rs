@@ -103,6 +103,8 @@ pub fn prepare_shapes_system(
                 shape.smoothing,
                 if shape.is_filled { 1.0 } else { 0.0 },
             ],
+            ext0: [0.0; 4],
+            ext1: 0.0,
         });
     }
 }
@@ -211,6 +213,8 @@ pub fn prepare_paths_system(
                     transform_c3: model.w_axis.into(),
                     color: path.stroke_color,
                     params: [path.stroke_width, 0.0, 1.0, 1.0],
+                    ext0: [0.0; 4],
+                    ext1: 0.0,
                 });
 
                 // Round caps: a disc on the outer endpoint only.
@@ -321,6 +325,8 @@ fn push_disc(
         transform_c3: model.w_axis.into(),
         color: path.stroke_color,
         params: [path.stroke_width, radius, 1.0, 1.0],
+        ext0: [0.0; 4],
+        ext1: 0.0,
     });
 }
 

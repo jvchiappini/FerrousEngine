@@ -105,24 +105,7 @@ enum Coalesced2dDraw {
 /// outside its canonical quad.
 #[inline]
 fn shape_world_aabb(s: &ferrous_2d::render::ShapeInstance) -> (glam::Vec2, glam::Vec2) {
-    let c0 = glam::Vec2::new(s.transform_c0[0], s.transform_c0[1]);
-    let c1 = glam::Vec2::new(s.transform_c1[0], s.transform_c1[1]);
-    let c3 = glam::Vec2::new(s.transform_c3[0], s.transform_c3[1]);
-    let corners: [(f32, f32); 4] = if s.params[3] > 1.5 {
-        // Triangle: [0,1]^2 maps to a, b, c and a+b+c-a.
-        [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]
-    } else {
-        // Rounded-rect / circle / line: centred [-0.5, 0.5]^2.
-        [(-0.5, -0.5), (0.5, -0.5), (-0.5, 0.5), (0.5, 0.5)]
-    };
-    let mut min = glam::Vec2::splat(f32::INFINITY);
-    let mut max = glam::Vec2::splat(f32::NEG_INFINITY);
-    for (lx, ly) in corners {
-        let p = c3 + c0 * lx + c1 * ly;
-        min = min.min(p);
-        max = max.max(p);
-    }
-    (min, max)
+    s.world_aabb()
 }
 
 /// World-space AABB of a [`SpriteInstance`].  `sprite_2d.wgsl` maps the
@@ -192,6 +175,19 @@ pub enum RendererMode {
 /// ## 2-D / 3-D support
 /// Both modes work simultaneously. Use an orthographic camera for 2-D,
 /// perspective for 3-D. The pipeline is the same either way.
+/// One recorded 2D view (multi-viewport Pure2D path).
+#[derive(Clone, Copy, Debug)]
+struct View2dCommand {
+    /// Pixel rect `[x, y, w, h]` in the render target.
+    rect: [f32; 4],
+    view_proj: glam::Mat4,
+    shape_start: usize,
+    shape_end: usize,
+    /// Draw the grid + retained static batches for this view (background
+    /// views). Overlay-only views skip them so the scene is not drawn twice.
+    background: bool,
+}
+
 pub struct Renderer {
     pub context: EngineContext,
     pub render_target: RenderTarget,
@@ -319,6 +315,9 @@ pub struct Renderer {
     pub renderer_2d: Renderer2d,
     /// 2D renderer para Pure2D: sample_count=1, formato swapchain, sin overhead HDR.
     pub renderer_2d_pure: Renderer2d,
+    /// Recorded multi-view segments (`begin_2d_view`/`end_2d_view`).
+    views_2d: Vec<View2dCommand>,
+    view_2d_open: bool,
     pub shape_batcher: ShapeBatcher,
     /// Batcher de sprites dedicado al modo Pure2D.
     pub sprite_batcher_2d: ferrous_2d::render::SpriteBatcher,
@@ -332,7 +331,7 @@ pub struct Renderer {
     /// painter-order upload is built.
     sprite_flat_scratch: Vec<ferrous_2d::render::SpriteInstance>,
     /// Reusable painter-ordered shape upload for the coalesced Pure2D path.
-    shape_upload_scratch: Vec<ferrous_2d::render::ShapeInstance>,
+    shape_upload_scratch: Vec<ferrous_2d::render::ShapeGpu>,
     /// Reusable painter-ordered sprite upload for the coalesced Pure2D path.
     sprite_upload_scratch: Vec<ferrous_2d::render::SpriteInstance>,
     /// Reusable list of coalesced draw runs, emitted in painter order.
@@ -346,6 +345,8 @@ pub struct Renderer {
     static_2d_free: Vec<u32>,
     /// Reusable ordering scratch (slot indices sorted by batch `z`).
     static_2d_order_scratch: Vec<u32>,
+    /// Reusable list of visible `(start, count)` chunk runs for one batch.
+    static_2d_runs_scratch: Vec<(u32, u32)>,
 
     /// Bind groups de texturas indexados por texture_id para sprites 2D en Pure2D.
     pub sprite_bind_groups: std::collections::HashMap<u32, std::sync::Arc<wgpu::BindGroup>>,
@@ -621,6 +622,8 @@ impl Renderer {
             aa_pass,
             renderer_2d,
             renderer_2d_pure,
+            views_2d: Vec::new(),
+            view_2d_open: false,
             shape_batcher,
             sprite_batcher_2d: ferrous_2d::render::SpriteBatcher::default(),
             draw_list_scratch: Vec::new(),
@@ -631,6 +634,7 @@ impl Renderer {
             static_2d_batches: Vec::new(),
             static_2d_free: Vec::new(),
             static_2d_order_scratch: Vec::new(),
+            static_2d_runs_scratch: Vec::new(),
             sprite_bind_groups: std::collections::HashMap::new(),
             next_sprite_texture_id: 0,
             freed_sprite_texture_ids: Vec::new(),
@@ -963,6 +967,95 @@ impl Renderer {
         self.mark_dirty();
     }
 
+    /// Sets the device-pixels-per-logical-pixel ratio used by the 2D shape
+    /// shader to resolve a per-instance `min_px` (logical) into world units.
+    ///
+    /// Call this whenever the render scale / DPR changes. The value is stored
+    /// in `Uniform2d::padding.x` for both 2D renderers; the shader clamps it to
+    /// `>= 1.0` so the minimum stroke width always covers at least one device
+    /// pixel.
+    pub fn set_2d_pixel_ratio(&mut self, ratio: f32) {
+        self.renderer_2d.set_pixel_ratio(ratio);
+        self.renderer_2d_pure.set_pixel_ratio(ratio);
+    }
+
+    /// A/B switch that restores the pre-Phase-1 2D line behaviour: 4 px
+    /// `smoothstep` AA and the thin-line stabiliser that faded sub-1.8 px
+    /// strokes. Used by Koncreta's `?render=legacy` URL flag.
+    pub fn set_2d_legacy(&mut self, legacy: bool) {
+        self.renderer_2d.set_legacy_2d(legacy);
+        self.renderer_2d_pure.set_legacy_2d(legacy);
+    }
+
+    /// Current 2D device-pixels-per-logical-pixel ratio.
+    pub fn two_d_pixel_ratio(&self) -> f32 {
+        self.renderer_2d_pure.pixel_ratio()
+    }
+
+    /// Enables / replaces / disables (`None`) the procedural background grid.
+    ///
+    /// The grid is a single full-screen triangle evaluated from the inverse
+    /// view-projection: infinite, constant-cost, no CPU geometry. Widths are
+    /// logical pixels. It is drawn only in the Pure2D path, right after Clear.
+    pub fn set_2d_grid(&mut self, params: Option<ferrous_2d::render::Grid2dParams>) {
+        self.renderer_2d_pure.set_grid(params);
+    }
+
+    /// Starts a 2D view segment: subsequent `draw_2d_shapes` calls until
+    /// [`Self::end_2d_view`] are drawn with `view_proj`, clipped to `rect_px`
+    /// (physical pixels, top-left origin).
+    ///
+    /// With one segment per frame the normal single-camera path is used; two or
+    /// more segments activate the multi-viewport Pure2D path (per-view camera,
+    /// scissor, grid and static batches).
+    pub fn begin_2d_view(&mut self, rect_px: [f32; 4], view_proj: glam::Mat4) {
+        self.push_2d_view(rect_px, view_proj, true);
+    }
+
+    /// Starts an **overlay-only** view segment: shapes are clipped to `rect_px`
+    /// and use `view_proj`, but the grid and retained static batches are not
+    /// redrawn (used for the editor overlay over the primary viewport).
+    pub fn begin_2d_overlay_view(&mut self, rect_px: [f32; 4], view_proj: glam::Mat4) {
+        self.push_2d_view(rect_px, view_proj, false);
+    }
+
+    fn push_2d_view(&mut self, rect_px: [f32; 4], view_proj: glam::Mat4, background: bool) {
+        if self.view_2d_open {
+            self.end_2d_view();
+        }
+        let start = self.shape_batcher.instances.len();
+        self.views_2d.push(View2dCommand {
+            rect: rect_px,
+            view_proj,
+            shape_start: start,
+            shape_end: start,
+            background,
+        });
+        self.view_2d_open = true;
+    }
+
+    /// Closes the current 2D view segment.
+    pub fn end_2d_view(&mut self) {
+        if !self.view_2d_open {
+            return;
+        }
+        let end = self.shape_batcher.instances.len();
+        if let Some(v) = self.views_2d.last_mut() {
+            v.shape_end = end;
+        }
+        self.view_2d_open = false;
+    }
+
+    /// Registers a shader dash pattern for joined 2D segments.
+    ///
+    /// `id` is `1..=15` (`0` = continuous). Lengths alternate dash/gap in world
+    /// units and are zero-terminated (up to 8 values). The table lives in the
+    /// 2D camera uniform, so it applies to both 2D renderers.
+    pub fn set_2d_dash_pattern(&mut self, id: u8, lengths: &[f32]) {
+        self.renderer_2d.set_dash_pattern(id, lengths);
+        self.renderer_2d_pure.set_dash_pattern(id, lengths);
+    }
+
     /// Snapshot of the hardware-independent per-frame 2D counters for the
     /// **live Pure2D path** (`renderer_2d_pure`).
     ///
@@ -1004,7 +1097,15 @@ impl Renderer {
         } else {
             0.0
         };
-        let margin = self.render_2d_config.cull_margin.max(world_pixel_size * 4.0);
+        // The canonical quad AABB does not include the shader's AA expansion
+        // nor the per-instance minimum line width (`min_px`). Account for both:
+        // 4 px covers the 1.5 px AA padding + slack, and MAX_MIN_PX_LOGICAL in
+        // logical px (resolved through the same pixel ratio the shader uses)
+        // covers the widest line floor.
+        let ratio = self.renderer_2d_pure.pixel_ratio().max(1.0);
+        let margin = self.render_2d_config.cull_margin.max(
+            world_pixel_size * (4.0 + ferrous_2d::render::types::MAX_MIN_PX_LOGICAL * ratio),
+        );
         (min - glam::Vec2::splat(margin), max + glam::Vec2::splat(margin))
     }
 
@@ -1066,13 +1167,21 @@ impl Renderer {
             *batch =
                 Self::build_static_2d_buffer(&self.context.device, &self.context.queue, shapes);
         } else {
-            if len > 0 {
-                self.context
-                    .queue
-                    .write_buffer(&batch.buffer, 0, bytemuck::cast_slice(shapes));
+            // Upload only the chunks that changed since the last upload: a
+            // local edit (one wall) re-sends a few KB instead of the scene.
+            let packed = crate::static_2d::pack_shapes(shapes);
+            for (start, end) in crate::static_2d::dirty_ranges(&batch.cpu, &packed) {
+                let offset = (start * std::mem::size_of::<ferrous_2d::render::ShapeGpu>()) as u64;
+                self.context.queue.write_buffer(
+                    &batch.buffer,
+                    offset,
+                    bytemuck::cast_slice(&packed[start..end]),
+                );
             }
             batch.count = len;
             batch.z = crate::static_2d::batch_min_z(shapes);
+            batch.chunk_aabbs = crate::static_2d::chunk_aabbs(shapes);
+            batch.cpu = packed;
         }
     }
 
@@ -1128,13 +1237,18 @@ impl Renderer {
             timestamp_writes: None,
             occlusion_query_set: None,
         });
-        self.emit_static_2d_batches(&mut rpass);
+        self.emit_static_2d_batches(&mut rpass, None, false);
     }
 
     /// Emits the active static batches into an already-open render pass,
     /// ordered by representative `z` (then slot index).  Returns the number of
     /// batches drawn; no-op (0) when [`Render2dConfig::static_batches`] is off.
-    fn emit_static_2d_batches(&mut self, rpass: &mut wgpu::RenderPass<'_>) -> u32 {
+    fn emit_static_2d_batches(
+        &mut self,
+        rpass: &mut wgpu::RenderPass<'_>,
+        bg_view: Option<usize>,
+        no_cull: bool,
+    ) -> u32 {
         if !self.render_2d_config.static_batches {
             return 0;
         }
@@ -1163,14 +1277,48 @@ impl Renderer {
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| a.cmp(&b))
         });
+        // Chunk culling: only the runs of chunks that touch the visible rect
+        // are drawn, in their original order (painter order is preserved).
+        let cull = self.render_2d_config.cull_2d && !no_cull;
+        let (rmin, rmax) = if cull {
+            self.pure2d_cull_rect()
+        } else {
+            (glam::Vec2::splat(f32::NEG_INFINITY), glam::Vec2::splat(f32::INFINITY))
+        };
+        let mut runs = std::mem::take(&mut self.static_2d_runs_scratch);
         let mut drawn = 0u32;
+        let mut culled = 0u32;
         for &idx in &order {
             if let Some(b) = self.static_2d_batches[idx as usize].batch.as_ref() {
-                self.renderer_2d_pure
-                    .render_static_shapes(rpass, &b.buffer, b.count);
+                runs.clear();
+                let visible = if cull {
+                    crate::static_2d::visible_runs(&b.chunk_aabbs, b.count, rmin, rmax, &mut runs)
+                } else {
+                    runs.push((0, b.count));
+                    b.count
+                };
+                culled += b.count - visible;
+                if runs.is_empty() {
+                    continue;
+                }
+                for &(start, count) in &runs {
+                    if let Some(i) = bg_view {
+                        if let Some(bg) = self.renderer_2d_pure.view_shape_bg(i) {
+                            self.renderer_2d_pure.render_static_shapes_range_bg(
+                                rpass, bg, &b.buffer, start, count,
+                            );
+                        }
+                    } else {
+                        self.renderer_2d_pure
+                            .render_static_shapes_range(rpass, &b.buffer, start, count);
+                    }
+                }
+                self.renderer_2d_pure.record_static_batch();
                 drawn += 1;
             }
         }
+        self.renderer_2d_pure.add_culled_instances(culled);
+        self.static_2d_runs_scratch = runs;
         self.static_2d_order_scratch = order;
         drawn
     }
@@ -1185,19 +1333,22 @@ impl Renderer {
         let capacity = len.next_power_of_two().max(Static2dBatch::MIN_CAPACITY);
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Static2D Batch Instance Buffer"),
-            size: (capacity as usize * std::mem::size_of::<ferrous_2d::render::ShapeInstance>())
+            size: (capacity as usize * std::mem::size_of::<ferrous_2d::render::ShapeGpu>())
                 as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let cpu = crate::static_2d::pack_shapes(shapes);
         if len > 0 {
-            queue.write_buffer(&buffer, 0, bytemuck::cast_slice(shapes));
+            queue.write_buffer(&buffer, 0, bytemuck::cast_slice(&cpu));
         }
         Static2dBatch {
             buffer,
             capacity,
             count: len,
             z: crate::static_2d::batch_min_z(shapes),
+            cpu,
+            chunk_aabbs: crate::static_2d::chunk_aabbs(shapes),
         }
     }
 
@@ -1569,11 +1720,26 @@ impl Renderer {
         // NOTA: camera_system.sync_gpu() ya se llamó arriba, no repetir.
         if self.mode == RendererMode::Pure2D {
             // Subir la cámara al renderer 2D puro
-            self.renderer_2d_pure.update_camera(
-                &self.context.queue,
-                self.camera_system.view_proj(),
-                glam::Vec2::new(self.width as f32, self.height as f32),
-            );
+            let vp = self.camera_system.view_proj();
+            let resolution = glam::Vec2::new(self.width as f32, self.height as f32);
+            self.renderer_2d_pure
+                .update_camera(&self.context.queue, vp, resolution);
+
+            // Procedural grid uniform (inverse view-projection + world/px).
+            if self.renderer_2d_pure.has_grid() {
+                let axis = vp.x_axis.x.abs();
+                let world_per_px = if axis > 1e-9 {
+                    2.0 / (axis * self.width.max(1) as f32)
+                } else {
+                    1.0
+                };
+                self.renderer_2d_pure.prepare_grid(
+                    &self.context.queue,
+                    vp.inverse(),
+                    resolution,
+                    world_per_px,
+                );
+            }
 
             // ── Pure2D painter-order batcher (audit H3) ─────────────────────
             // Build a painter-order command list **without mutating** the
@@ -1595,14 +1761,31 @@ impl Renderer {
             let n_sprites = self.sprite_batcher_2d.total_instances();
             let total = n_shapes + n_sprites;
             let scratch_reuse = self.render_2d_config.scratch_reuse;
+            // Two or more recorded views switch to the per-view camera path.
+            let multi_view = self.views_2d.len() > 1;
+
+            // ── 2D viewport culling rect ────────────────────────────────────
+            // Instances whose world AABB is fully outside the visible camera
+            // rect (expanded by the AA-safe margin) are dropped *before* the
+            // sort and the run walk, so they cost neither sorting nor upload,
+            // and surviving same-key runs that were separated by them
+            // coalesce.  Gated by `Render2dConfig::cull_2d`.
+            // Per-view culling is not applied yet; skip global culling when the
+            // frame is split so shapes meant for another view are not dropped
+            // using the primary camera.
+            let cull = self.render_2d_config.cull_2d && !multi_view;
+            let (rmin, rmax) = if cull {
+                self.pure2d_cull_rect()
+            } else {
+                (glam::Vec2::splat(f32::NEG_INFINITY), glam::Vec2::splat(f32::INFINITY))
+            };
 
             let mut draw_list: Vec<(f32, DrawCommand2d)> = if scratch_reuse {
                 let mut v = std::mem::take(&mut self.draw_list_scratch);
                 v.clear();
-                v.reserve(total);
                 v
             } else {
-                Vec::with_capacity(total)
+                Vec::new()
             };
             // Bucket-order flat copy, used to resolve `Sprite(tex, flat_idx)`.
             let mut sprite_flat: Vec<ferrous_2d::render::SpriteInstance> = if scratch_reuse {
@@ -1613,32 +1796,7 @@ impl Renderer {
             } else {
                 Vec::with_capacity(n_sprites)
             };
-
-            for (i, shape) in self.shape_batcher.instances.iter().enumerate() {
-                draw_list.push((shape.transform_c3[2], DrawCommand2d::Shape(i)));
-            }
-            for (&tex_id, instances) in &self.sprite_batcher_2d.batches {
-                for inst in instances {
-                    sprite_flat.push(*inst);
-                    draw_list.push((
-                        inst.transform_c3[2],
-                        DrawCommand2d::Sprite(tex_id, sprite_flat.len() - 1),
-                    ));
-                }
-            }
-            // Deterministic total order: primary key z; equal-z commands are
-            // tie-broken by the command itself (shape index ascending, then
-            // sprite texture id / flat offset ascending), which reproduces the
-            // insertion order (audit M5) without a stable sort.
-            draw_list.sort_unstable_by(|a, b| {
-                a.0.partial_cmp(&b.0)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| a.1.cmp(&b.1))
-            });
-
-            // Split the painter-order stream into maximal same-key runs and
-            // copy their instances into painter-ordered uploads.
-            let mut shape_upload: Vec<ferrous_2d::render::ShapeInstance> = if scratch_reuse {
+            let mut shape_upload: Vec<ferrous_2d::render::ShapeGpu> = if scratch_reuse {
                 let mut v = std::mem::take(&mut self.shape_upload_scratch);
                 v.clear();
                 v.reserve(n_shapes);
@@ -1657,84 +1815,158 @@ impl Renderer {
             let mut coalesced: Vec<Coalesced2dDraw> = if scratch_reuse {
                 let mut v = std::mem::take(&mut self.coalesced_2d_scratch);
                 v.clear();
-                v.reserve(draw_list.len());
                 v
             } else {
-                Vec::with_capacity(draw_list.len())
+                Vec::new()
             };
 
-            // ── 2D viewport culling ─────────────────────────────────────────
-            // Compact the painter-order stream, dropping every instance whose
-            // world AABB is fully outside the visible camera rect (expanded by
-            // the AA-safe margin).  Culling *before* the run walk is what makes
-            // this also lower the draw-call count: once culled primitives are
-            // gone, surviving same-key runs that were separated by them become
-            // contiguous and coalesce.  Gated by `Render2dConfig::cull_2d` so
-            // consumers can A/B compare.
-            if self.render_2d_config.cull_2d {
-                let (rmin, rmax) = self.pure2d_cull_rect();
-                let before = draw_list.len();
-                draw_list.retain(|(_, cmd)| match *cmd {
-                    DrawCommand2d::Shape(idx) => {
-                        let (amin, amax) =
-                            shape_world_aabb(&self.shape_batcher.instances[idx]);
-                        aabb_intersects(amin, amax, rmin, rmax)
-                    }
-                    DrawCommand2d::Sprite(_, idx) => {
-                        let (amin, amax) = sprite_world_aabb(&sprite_flat[idx]);
-                        aabb_intersects(amin, amax, rmin, rmax)
-                    }
-                });
-                let culled = (before - draw_list.len()) as u32;
-                self.renderer_2d_pure.add_culled_instances(culled);
-            }
+            // Fast path: shapes only, already in painter (z) order — the usual
+            // CAD case (callers submit in layer order).  No command list and no
+            // sort: cull and pack straight into the upload as a single run.
+            // In multi-view the shape vector is already grouped per view in
+            // submission order; never reorder across view boundaries.
+            let shapes_in_order = multi_view
+                || (n_sprites == 0
+                    && self
+                        .shape_batcher
+                        .instances
+                        .windows(2)
+                        .all(|w| !(w[1].transform_c3[2] < w[0].transform_c3[2])));
 
-            // Split the painter-order stream into maximal same-key runs and
-            // copy their instances into painter-ordered uploads.
-            let mut i = 0usize;
-            while i < draw_list.len() {
-                match draw_list[i].1 {
-                    DrawCommand2d::Shape(_) => {
-                        let run_start = shape_upload.len() as u32;
-                        while i < draw_list.len() {
-                            match draw_list[i].1 {
-                                DrawCommand2d::Shape(idx) => {
-                                    shape_upload.push(self.shape_batcher.instances[idx]);
-                                    i += 1;
-                                }
-                                _ => break,
-                            }
+            if shapes_in_order {
+                for shape in &self.shape_batcher.instances {
+                    if cull {
+                        let (amin, amax) = shape_world_aabb(shape);
+                        if !aabb_intersects(amin, amax, rmin, rmax) {
+                            continue;
                         }
-                        coalesced.push(Coalesced2dDraw::Shapes {
-                            start: run_start,
-                            count: shape_upload.len() as u32 - run_start,
-                        });
                     }
-                    DrawCommand2d::Sprite(tex_id, _) => {
-                        let run_start = sprite_upload.len() as u32;
-                        while i < draw_list.len() {
-                            match draw_list[i].1 {
-                                DrawCommand2d::Sprite(t, idx) if t == tex_id => {
-                                    sprite_upload.push(sprite_flat[idx]);
-                                    i += 1;
-                                }
-                                _ => break,
+                    shape_upload.push(ferrous_2d::render::ShapeGpu::pack(shape));
+                }
+                self.renderer_2d_pure
+                    .add_culled_instances((n_shapes - shape_upload.len()) as u32);
+                if !shape_upload.is_empty() {
+                    coalesced.push(Coalesced2dDraw::Shapes {
+                        start: 0,
+                        count: shape_upload.len() as u32,
+                    });
+                }
+            } else {
+                // ── Painter-order batcher (audit H3) ────────────────────────
+                // Build a painter-order command list without mutating the
+                // batchers, then reorder the instances into the uploads so
+                // every (pipeline, texture) run is a contiguous GPU range.
+                // `sort_unstable_by` on the total-order `(z, command)` key is
+                // deterministic (the command is a unique tie-break) and
+                // allocation-free.
+                draw_list.reserve(total);
+                let mut culled = 0u32;
+                for (i, shape) in self.shape_batcher.instances.iter().enumerate() {
+                    if cull {
+                        let (amin, amax) = shape_world_aabb(shape);
+                        if !aabb_intersects(amin, amax, rmin, rmax) {
+                            culled += 1;
+                            continue;
+                        }
+                    }
+                    draw_list.push((shape.transform_c3[2], DrawCommand2d::Shape(i)));
+                }
+                for (&tex_id, instances) in &self.sprite_batcher_2d.batches {
+                    for inst in instances {
+                        sprite_flat.push(*inst);
+                        if cull {
+                            let (amin, amax) = sprite_world_aabb(inst);
+                            if !aabb_intersects(amin, amax, rmin, rmax) {
+                                culled += 1;
+                                continue;
                             }
                         }
-                        coalesced.push(Coalesced2dDraw::Sprites {
-                            texture_id: tex_id,
-                            start: run_start,
-                            count: sprite_upload.len() as u32 - run_start,
-                        });
+                        draw_list.push((
+                            inst.transform_c3[2],
+                            DrawCommand2d::Sprite(tex_id, sprite_flat.len() - 1),
+                        ));
+                    }
+                }
+                self.renderer_2d_pure.add_culled_instances(culled);
+
+                draw_list.sort_unstable_by(|a, b| {
+                    a.0.partial_cmp(&b.0)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| a.1.cmp(&b.1))
+                });
+
+                // Split the painter-order stream into maximal same-key runs.
+                let mut i = 0usize;
+                while i < draw_list.len() {
+                    match draw_list[i].1 {
+                        DrawCommand2d::Shape(_) => {
+                            let run_start = shape_upload.len() as u32;
+                            while i < draw_list.len() {
+                                match draw_list[i].1 {
+                                    DrawCommand2d::Shape(idx) => {
+                                        shape_upload.push(ferrous_2d::render::ShapeGpu::pack(
+                                            &self.shape_batcher.instances[idx],
+                                        ));
+                                        i += 1;
+                                    }
+                                    _ => break,
+                                }
+                            }
+                            coalesced.push(Coalesced2dDraw::Shapes {
+                                start: run_start,
+                                count: shape_upload.len() as u32 - run_start,
+                            });
+                        }
+                        DrawCommand2d::Sprite(tex_id, _) => {
+                            let run_start = sprite_upload.len() as u32;
+                            while i < draw_list.len() {
+                                match draw_list[i].1 {
+                                    DrawCommand2d::Sprite(t, idx) if t == tex_id => {
+                                        sprite_upload.push(sprite_flat[idx]);
+                                        i += 1;
+                                    }
+                                    _ => break,
+                                }
+                            }
+                            coalesced.push(Coalesced2dDraw::Sprites {
+                                texture_id: tex_id,
+                                start: run_start,
+                                count: sprite_upload.len() as u32 - run_start,
+                            });
+                        }
                     }
                 }
             }
 
             // Upload the painter-ordered coalesced buffers (one write_buffer each).
             self.renderer_2d_pure
-                .prepare_shape_slice(&self.context.queue, &shape_upload);
+                .prepare_shape_gpu_slice(&self.context.queue, &shape_upload);
             self.renderer_2d_pure
                 .prepare_sprite_slice(&self.context.queue, &sprite_upload);
+
+            // Multi-view: upload one camera + grid uniform per view (before the
+            // pass; uniform buffers cannot be written while encoding).
+            if multi_view {
+                let views = self.views_2d.clone();
+                for (i, v) in views.iter().enumerate() {
+                    let rw = v.rect[2].max(1.0);
+                    let world_per_px = if v.view_proj.x_axis.x.abs() > 1e-9 {
+                        2.0 / (v.view_proj.x_axis.x.abs() * rw)
+                    } else {
+                        1.0
+                    };
+                    self.renderer_2d_pure.prepare_view(
+                        i,
+                        &self.context.queue,
+                        v.view_proj,
+                        v.rect,
+                        v.view_proj.inverse(),
+                        world_per_px,
+                    );
+                }
+            }
+
+            let shape_upload_len = shape_upload.len();
 
             // Un único render pass: Clear → Shapes → Sprites
             {
@@ -1755,37 +1987,82 @@ impl Renderer {
                     occlusion_query_set: None,
                 });
 
-                // Retained static batches first: one instanced draw call each,
-                // no per-frame upload.  They are drawn before the immediate
-                // stream (the cross-layer z-ordering contract is documented in
-                // `brain/2d_static_batch.md`).  No-op when the config flag is
-                // off or when there are no active batches.
-                self.emit_static_2d_batches(&mut rpass);
+                if multi_view {
+                    // Draw each view into its own scissor with its own camera.
+                    let views = self.views_2d.clone();
+                    for (i, v) in views.iter().enumerate() {
+                        let x = v.rect[0].max(0.0) as u32;
+                        let y = v.rect[1].max(0.0) as u32;
+                        let w = (v.rect[2].max(1.0)) as u32;
+                        let h = (v.rect[3].max(1.0)) as u32;
+                        rpass.set_viewport(x as f32, y as f32, w as f32, h as f32, 0.0, 1.0);
+                        rpass.set_scissor_rect(x, y, w, h);
 
-                // Emit the runs in painter order.  Texture bind groups are
-                // resolved per sprite run.
-                let sprite_bgs = &self.sprite_bind_groups;
-                for draw in &coalesced {
-                    match *draw {
-                        Coalesced2dDraw::Shapes { start, count } => {
-                            self.renderer_2d_pure
-                                .render_shapes_range(&mut rpass, start, count);
+                        if v.background {
+                            if let Some(gb) = self.renderer_2d_pure.view_grid_bg(i) {
+                                self.renderer_2d_pure.render_grid_bg(&mut rpass, gb);
+                            }
+                            self.emit_static_2d_batches(&mut rpass, Some(i), true);
                         }
-                        Coalesced2dDraw::Sprites {
-                            texture_id,
-                            start,
-                            count,
-                        } => {
-                            let bg_fn = |id: u32| -> Option<&wgpu::BindGroup> {
-                                sprite_bgs.get(&id).map(|bg| bg.as_ref())
-                            };
-                            self.renderer_2d_pure.render_sprites_range(
-                                &mut rpass,
+                        if let Some(bg) = self.renderer_2d_pure.view_shape_bg(i) {
+                            let start = v.shape_start.min(shape_upload_len) as u32;
+                            let end = v.shape_end.min(shape_upload_len) as u32;
+                            self.renderer_2d_pure
+                                .render_shapes_range_bg(&mut rpass, bg, start, end.saturating_sub(start));
+                        }
+                    }
+                    // Sprites are not segmented by view yet; draw them once in
+                    // the first view so they still appear.
+                    if let Some(bg) = self.renderer_2d_pure.view_sprite_bg(0) {
+                        let sprite_bgs = &self.sprite_bind_groups;
+                        for draw in &coalesced {
+                            if let Coalesced2dDraw::Sprites { texture_id, start, count } = *draw {
+                                let bg_fn = |id: u32| -> Option<&wgpu::BindGroup> {
+                                    sprite_bgs.get(&id).map(|b| b.as_ref())
+                                };
+                                self.renderer_2d_pure.render_sprites_range_bg(
+                                    &mut rpass, bg, texture_id, start, count, bg_fn,
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    // Procedural background grid: one full-screen triangle right
+                    // after Clear, before any retained/immediate geometry.
+                    self.renderer_2d_pure.render_grid(&mut rpass);
+
+                    // Retained static batches first: one instanced draw call each,
+                    // no per-frame upload.  They are drawn before the immediate
+                    // stream (the cross-layer z-ordering contract is documented in
+                    // `brain/2d_static_batch.md`).  No-op when the config flag is
+                    // off or when there are no active batches.
+                    self.emit_static_2d_batches(&mut rpass, None, false);
+
+                    // Emit the runs in painter order.  Texture bind groups are
+                    // resolved per sprite run.
+                    let sprite_bgs = &self.sprite_bind_groups;
+                    for draw in &coalesced {
+                        match *draw {
+                            Coalesced2dDraw::Shapes { start, count } => {
+                                self.renderer_2d_pure
+                                    .render_shapes_range(&mut rpass, start, count);
+                            }
+                            Coalesced2dDraw::Sprites {
                                 texture_id,
                                 start,
                                 count,
-                                bg_fn,
-                            );
+                            } => {
+                                let bg_fn = |id: u32| -> Option<&wgpu::BindGroup> {
+                                    sprite_bgs.get(&id).map(|bg| bg.as_ref())
+                                };
+                                self.renderer_2d_pure.render_sprites_range(
+                                    &mut rpass,
+                                    texture_id,
+                                    start,
+                                    count,
+                                    bg_fn,
+                                );
+                            }
                         }
                     }
                 }
@@ -2321,6 +2598,8 @@ impl Renderer {
                                 2.0,                // Slightly smoother AA
                                 1.0,
                             ],
+                            ext0: [0.0; 4],
+                            ext1: 0.0,
                         });
                     }
                     cursor = end;
@@ -2517,5 +2796,7 @@ impl Renderer {
     pub fn clear_2d(&mut self) {
         self.shape_batcher.clear();
         self.sprite_batcher_2d.clear();
+        self.views_2d.clear();
+        self.view_2d_open = false;
     }
 }
