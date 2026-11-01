@@ -42,10 +42,24 @@ const DASH_MASK: u32 = 15u;
 const MIN_PX_MASK: u32 = 65535u;
 const MAX_MIN_PX: f32 = 8.0;
 
+// Rasteriser subpixel grid for the hard-edge fill rule.  D3D12, Vulkan and
+// Metal flatten clip coordinates to framebuffer coordinates with at least 8
+// fractional bits (Metal guarantees 8; D3D/Vulkan use a fixed 1/256 grid), so
+// snapping triangle endpoints to 1/256 reproduces the hardware's own edge
+// positions exactly.  Chosen as the minimum guaranteed precision on purpose.
+const SUBPIXEL: f32 = 256.0;
+
 // 1-pixel box filter: coverage goes from 1 at half a pixel inside the edge to
 // 0 at half a pixel outside. `d` and `px` are both in world units.
 fn coverage(d: f32, px: f32) -> f32 {
     return clamp(0.5 - d / max(px, 1e-9), 0.0, 1.0);
+}
+
+// Premultiplied fragment output. `ShapeInstance::color` stays straight linear
+// RGBA in the public API; every Pure2D pipeline blends premultiplied.
+fn premultiply(color: vec4<f32>, alpha: f32) -> vec4<f32> {
+    let a = color.a * alpha;
+    return vec4<f32>(color.rgb * a, a);
 }
 
 // How far the quad must extend past an endpoint so it covers the join/cap:
@@ -98,6 +112,11 @@ struct VertexOutput {
     @location(6) @interpolate(flat) tri_c: vec2<f32>,
     // Joined segment: (n_start.xy, n_end.xy) joint plane normals.
     @location(7) @interpolate(flat) seg_planes: vec4<f32>,
+    // Triangle family: the three snapped framebuffer-space vertices used by the
+    // exact hard-edge fill rule. `tri_fb_ab` = (a.xy, b.xy), `tri_fb_c` =
+    // (c.xy, framebuffer winding sign, 0).
+    @location(8) @interpolate(flat) tri_fb_ab: vec4<f32>,
+    @location(9) @interpolate(flat) tri_fb_c: vec4<f32>,
 };
 
 @vertex
@@ -129,6 +148,9 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     var joined_ab = vec4<f32>(in.c3, in.c3);
     var joined_len = 1.0;
     var joined_width = in.dims.x;
+    // Triangle family only; zero for every other path.
+    var tri_fb_ab = vec4<f32>(0.0);
+    var tri_fb_c = vec4<f32>(0.0);
 
     if (is_arc) {
         // Analytic arc/circle: c3 = centre, dims.x = radius, dims.y = width.
@@ -199,6 +221,37 @@ fn vs_main(in: VertexInput) -> VertexOutput {
             local = (corner - centroid) * expansion + centroid;
         }
         world = in.c3 + in.c0 * local.x + in.c1 * local.y;
+
+        // Exact hard-edge fill rule needs the *unexpanded* triangle in
+        // framebuffer space, snapped to the rasteriser's subpixel grid.
+        //
+        // The rasteriser flattens clip coordinates to framebuffer coordinates
+        // with at least 8 fractional bits on D3D12, Vulkan and Metal (Metal
+        // guarantees 8; D3D/Vulkan use a fixed 1/256 subpixel grid).  Snapping
+        // the endpoints here to that same 1/256 grid lets the fragment shader
+        // reproduce the rasteriser's decision with exact integer arithmetic.
+        let va = in.c3;
+        let vb = in.c3 + in.c0;
+        let vc = in.c3 + in.c1;
+        let ca = camera.view_proj * vec4<f32>(va, 0.0, 1.0);
+        let cb = camera.view_proj * vec4<f32>(vb, 0.0, 1.0);
+        let cc = camera.view_proj * vec4<f32>(vc, 0.0, 1.0);
+        let res_fb = max(camera.resolution, vec2<f32>(1.0, 1.0));
+        let na = ca.xy / ca.w;
+        let nb = cb.xy / cb.w;
+        let nc = cc.xy / cc.w;
+        let fa = vec2<f32>((na.x * 0.5 + 0.5) * res_fb.x, (1.0 - (na.y * 0.5 + 0.5)) * res_fb.y);
+        let fb = vec2<f32>((nb.x * 0.5 + 0.5) * res_fb.x, (1.0 - (nb.y * 0.5 + 0.5)) * res_fb.y);
+        let fc = vec2<f32>((nc.x * 0.5 + 0.5) * res_fb.x, (1.0 - (nc.y * 0.5 + 0.5)) * res_fb.y);
+        let sa = round(fa * SUBPIXEL) / SUBPIXEL;
+        let sb = round(fb * SUBPIXEL) / SUBPIXEL;
+        let sc = round(fc * SUBPIXEL) / SUBPIXEL;
+        // Framebuffer-space winding sign (Y down), matching the rasteriser's
+        // own traversal after the viewport Y flip.
+        let signed_area = (sb.x - sa.x) * (sc.y - sa.y) - (sb.y - sa.y) * (sc.x - sa.x);
+        let winding = select(-1.0, 1.0, signed_area >= 0.0);
+        tri_fb_ab = vec4<f32>(sa, sb);
+        tri_fb_c = vec4<f32>(sc, winding, 0.0);
     } else {
         if (legacy) {
             // Cap the expansion so the quad never grows more than 100% per axis.
@@ -259,6 +312,8 @@ fn vs_main(in: VertexInput) -> VertexOutput {
         world_pixel_size,
     );
     out.flags = in.flags;
+    out.tri_fb_ab = tri_fb_ab;
+    out.tri_fb_c = tri_fb_c;
     return out;
 }
 
@@ -297,45 +352,138 @@ fn sd_edge_segment(p: vec2<f32>, u: vec2<f32>, v: vec2<f32>, w: f32) -> f32 {
     return select(dist, -dist, inside > 0.0);
 }
 
-// Half-plane test for a hard (non-AA) edge.
+// --- Exact hard-edge fill rule ---------------------------------------------
 //
-// Two neighbouring triangles see their shared edge in opposite directions, so
-// the side test has opposite signs. On the line itself both would include the
-// pixel, double-blending translucent fills into a darker diagonal. The
-// direction tie-break makes exactly one of the two copies own the line.
+// Hard triangle edges must reproduce the rasteriser's own top-left fill rule;
+// a world-space tolerance band cannot do that (it either leaves a one-pixel
+// hole or double-blends a shared edge).  The vertex stage snaps the triangle's
+// three framebuffer-space vertices to the 1/256 subpixel grid the hardware uses
+// (8 fractional bits is the minimum guaranteed by D3D12 / Vulkan / Metal) and
+// passes them `flat`.  Pixel centres are exact k + 0.5, so every edge cross
+// product is an exact integer multiple of 1/256 / 256 = 1/65536.
 //
-// The interpolated world position of a pixel whose centre lies exactly on the
-// shared edge is not bit-exactly on the line: each triangle gets a slightly
-// different rounding, so a strict `c == 0` test almost never fires and the two
-// copies can both decide "outside", leaving a one-pixel hole.  Treat a band of
-// `EDGE_EPS` world units around the edge as "on the line" and let the
-// deterministic tie-break own it.  1e-3 world units is far below a pixel and
-// far above f32 interpolation noise at ordinary scene scales.
-const EDGE_EPS: f32 = 1e-3;
+// f32 loses the low bits of those products for large framebuffer coordinates
+// (products of ~22-bit integers), so the sign is computed with exact 64-bit
+// integer arithmetic built from 16-bit limbs instead of a tolerance.
+struct EdgeProduct {
+    neg: bool,
+    hi: u32,
+    lo: u32,
+};
 
-fn edge_inside(p: vec2<f32>, u: vec2<f32>, v: vec2<f32>, w: f32) -> bool {
-    let e = v - u;
-    let c = w * (e.x * (p.y - u.y) - e.y * (p.x - u.x));
-    // `c / |e|` is the signed distance to the edge.
-    let tol = EDGE_EPS * length(e);
-    if (c > tol) {
+// Unsigned 32x32 -> 64-bit product as (hi, lo), using 16-bit limbs.
+fn mul_u32_wide(a: u32, b: u32) -> vec2<u32> {
+    let a0 = a & 0xFFFFu;
+    let a1 = a >> 16u;
+    let b0 = b & 0xFFFFu;
+    let b1 = b >> 16u;
+    let p0 = a0 * b0;
+    let p1 = a0 * b1;
+    let p2 = a1 * b0;
+    let p3 = a1 * b1;
+    let lo0 = p0 & 0xFFFFu;
+    // The low halves of p1/p2 plus p0's carry: each term is < 2^16, so the sum
+    // fits in 18 bits.
+    let mid = (p1 & 0xFFFFu) + (p2 & 0xFFFFu) + (p0 >> 16u);
+    let hi = p3 + (p1 >> 16u) + (p2 >> 16u) + (mid >> 16u);
+    return vec2<u32>(hi, ((mid & 0xFFFFu) << 16u) | lo0);
+}
+
+// i32 * i32 -> sign + 64-bit magnitude.  Converting the magnitude through u32
+// also handles i32::MIN without signed overflow.
+fn edge_product(a: i32, b: i32) -> EdgeProduct {
+    let neg = (a < 0) != (b < 0);
+    let ua = select(u32(a), 0u - u32(a), a < 0);
+    let ub = select(u32(b), 0u - u32(b), b < 0);
+    let m = mul_u32_wide(ua, ub);
+    return EdgeProduct(neg, m.x, m.y);
+}
+
+fn wide_gt(ah: u32, al: u32, bh: u32, bl: u32) -> bool {
+    return ah > bh || (ah == bh && al > bl);
+}
+
+fn wide_eq(ah: u32, al: u32, bh: u32, bl: u32) -> bool {
+    return ah == bh && al == bl;
+}
+
+// Sign (-1, 0, +1) of `dx * ay - dy * bx`, evaluated exactly as a 64-bit
+// two's-complement difference.
+fn edge_sign(dx: i32, ay: i32, dy: i32, bx: i32) -> i32 {
+    let p = edge_product(dx, ay);
+    let q = edge_product(dy, bx);
+    let p_zero = p.hi == 0u && p.lo == 0u;
+    let q_zero = q.hi == 0u && q.lo == 0u;
+    if (p_zero && q_zero) {
+        return 0;
+    }
+    let p_neg = p.neg && !p_zero;
+    let q_neg = q.neg && !q_zero;
+    if (!p_neg && q_neg) {
+        return 1;
+    }
+    if (p_neg && !q_neg) {
+        return -1;
+    }
+    if (!p_neg) {
+        if (wide_gt(p.hi, p.lo, q.hi, q.lo)) { return 1; }
+        if (wide_eq(p.hi, p.lo, q.hi, q.lo)) { return 0; }
+        return -1;
+    }
+    // Both terms are negative: P - Q = |Q| - |P|.
+    if (wide_gt(q.hi, q.lo, p.hi, p.lo)) { return 1; }
+    if (wide_eq(q.hi, q.lo, p.hi, p.lo)) { return 0; }
+    return -1;
+}
+
+// Framebuffer coordinates (pixels) -> signed 1/256 subpixel units.
+fn fb_units(v: vec2<f32>) -> vec2<i32> {
+    return vec2<i32>(i32(round(v.x * 256.0)), i32(round(v.y * 256.0)));
+}
+
+// Top-left fill rule for hard edge u -> v of a triangle whose framebuffer
+// winding sign is `winding`.  `E = dx*(p.y-u.y) - dy*(p.x-u.x)` and
+// `F = winding*E`; the pixel is covered when F > 0, or F == 0 and the edge is
+// a top edge (winding*dy == 0 && winding*dx > 0) or a left edge
+// (winding*dy < 0) in the Y-down framebuffer.
+fn hard_edge_inside(
+    p_fb: vec2<f32>,
+    u_fb: vec2<f32>,
+    v_fb: vec2<f32>,
+    winding: f32,
+) -> bool {
+    let p = fb_units(p_fb);
+    let u = fb_units(u_fb);
+    let v = fb_units(v_fb);
+    let dx = v.x - u.x;
+    let dy = v.y - u.y;
+    let e = edge_sign(dx, p.y - u.y, dy, p.x - u.x);
+    let f = select(-e, e, winding > 0.0);
+    if (f > 0) {
         return true;
     }
-    if (c < -tol) {
+    if (f < 0) {
         return false;
     }
-    // On the edge: pick the copy whose edge points in the -x direction.  The
-    // viewport's Y flip mirrors the intended winding, so this is the side the
-    // rasteriser assigns the pixel to; picking the other side leaves a hole.
-    return (e.x < 0.0) || (e.x == 0.0 && e.y < 0.0);
+    // On the line: only the top/left copy owns it.
+    var sx = dx;
+    var sy = dy;
+    if (winding < 0.0) {
+        sx = -dx;
+        sy = -dy;
+    }
+    return (sy == 0 && sx > 0) || (sy < 0);
 }
 
 // Selective-AA coverage: hard-clip unmarked edges, fade only near marked ones.
 fn triangle_masked_alpha(
     p: vec2<f32>,
+    p_fb: vec2<f32>,
     a: vec2<f32>,
     b: vec2<f32>,
     c: vec2<f32>,
+    fb_ab: vec4<f32>,
+    fb_c: vec4<f32>,
     mask: u32,
     px: f32,
     legacy: bool,
@@ -344,10 +492,17 @@ fn triangle_masked_alpha(
     if (w == 0.0) {
         return 0.0;
     }
-    if ((mask & 1u) == 0u && !edge_inside(p, a, b, w)) { return 0.0; }
-    if ((mask & 2u) == 0u && !edge_inside(p, b, c, w)) { return 0.0; }
-    if ((mask & 4u) == 0u && !edge_inside(p, c, a, w)) { return 0.0; }
+    let fa = fb_ab.xy;
+    let fb = fb_ab.zw;
+    let fc = fb_c.xy;
+    let winding = fb_c.z;
+    // Hard edges clip exactly with the rasteriser's rule.
+    if ((mask & 1u) == 0u && !hard_edge_inside(p_fb, fa, fb, winding)) { return 0.0; }
+    if ((mask & 2u) == 0u && !hard_edge_inside(p_fb, fb, fc, winding)) { return 0.0; }
+    if ((mask & 4u) == 0u && !hard_edge_inside(p_fb, fc, fa, winding)) { return 0.0; }
 
+    // The SDF min is built from soft edges only, so a hard edge can never bleed
+    // anti-aliasing into the neighbour it is shared with.
     var best_abs = -1.0;
     var best = 0.0;
     if ((mask & 1u) != 0u) {
@@ -486,7 +641,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         if (alpha < 0.01) {
             discard;
         }
-        return vec4<f32>(in.color.rgb, in.color.a * alpha);
+        return premultiply(in.color, alpha);
     }
 
     // --- Joined segment path ---
@@ -563,7 +718,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         if (alpha < 0.01) {
             discard;
         }
-        return vec4<f32>(in.color.rgb, in.color.a * alpha);
+        return premultiply(in.color, alpha);
     }
 
     // --- Triangle path ---
@@ -572,7 +727,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         if (mask == 0u) {
             // Hard-edged fill (e.g. wall interiors): the rasterised triangle is
             // exactly the coverage, so this is a plain colour write.
-            return in.color;
+            return premultiply(in.color, 1.0);
         }
         let a = in.tri_ab.xy;
         let b = in.tri_ab.zw;
@@ -583,12 +738,23 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let d = sd_triangle(p, a, b, c);
             alpha = select(coverage(d, px), 1.0 - smoothstep(-filter_width, filter_width, d), legacy);
         } else {
-            alpha = triangle_masked_alpha(p, a, b, c, mask, px, legacy);
+            alpha = triangle_masked_alpha(
+                p,
+                in.clip_position.xy,
+                a,
+                b,
+                c,
+                in.tri_fb_ab,
+                in.tri_fb_c,
+                mask,
+                px,
+                legacy,
+            );
         }
         if (alpha < 0.01) {
             discard;
         }
-        return vec4<f32>(in.color.rgb, in.color.a * alpha);
+        return premultiply(in.color, alpha);
     }
 
     // --- Rounded-rectangle / circle / line path ---
@@ -671,5 +837,5 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         discard;
     }
 
-    return vec4<f32>(in.color.rgb, in.color.a * final_alpha);
+    return premultiply(in.color, final_alpha);
 }

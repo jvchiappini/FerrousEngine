@@ -81,23 +81,61 @@ pub struct LayoutFont<'a> {
     pub font: FontMetrics,
 }
 
-/// Lay out one line of text, reusing `out`'s allocation.
+/// Sink for the shared single-line layout loop.
 ///
-/// Whitespace advances the pen without emitting a quad.  Missing characters use
-/// the `.notdef` glyph when available, otherwise they are skipped and counted
-/// in [`LineMetrics::missing_glyphs`].  Kerning (if the font has a `kern`
-/// table) is applied between adjacent non-whitespace glyphs.
-///
-/// The function is deterministic: the same inputs always produce the same
-/// quads, and no hidden state is read.
-pub fn layout_line(
+/// [`layout_line`] pushes quads and shifts them for alignment; [`measure_line`]
+/// only counts them, so measuring never allocates.
+trait LayoutSink {
+    /// Receives one laid-out glyph.
+    fn glyph(&mut self, quad: GlyphQuad);
+    /// Shifts every glyph already emitted by `dx` pixels (alignment).
+    fn shift(&mut self, dx: f32);
+    /// Number of glyphs emitted so far.
+    fn quad_count(&self) -> u32;
+}
+
+impl LayoutSink for Vec<GlyphQuad> {
+    fn glyph(&mut self, quad: GlyphQuad) {
+        self.push(quad);
+    }
+
+    fn shift(&mut self, dx: f32) {
+        for quad in self.iter_mut() {
+            quad.bounds[0] += dx;
+            quad.bounds[2] += dx;
+        }
+    }
+
+    fn quad_count(&self) -> u32 {
+        self.len() as u32
+    }
+}
+
+/// Counting sink used by [`measure_line`]; it deliberately drops the quads.
+struct MeasureSink {
+    count: u32,
+}
+
+impl LayoutSink for MeasureSink {
+    fn glyph(&mut self, _quad: GlyphQuad) {
+        self.count += 1;
+    }
+
+    fn shift(&mut self, _dx: f32) {}
+
+    fn quad_count(&self) -> u32 {
+        self.count
+    }
+}
+
+/// The single layout loop shared by [`layout_line`] and [`measure_line`].
+fn layout_line_impl<S: LayoutSink>(
     font: LayoutFont<'_>,
     text: &str,
     size_px: f32,
     align: TextAlign,
-    out: &mut Vec<GlyphQuad>,
+    sink: &mut S,
 ) -> LineMetrics {
-    out.clear();
     let size = if size_px.is_finite() && size_px > 0.0 {
         size_px
     } else {
@@ -131,7 +169,7 @@ pub fn layout_line(
                     // Draw `.notdef`, but keep the advance of glyph 0.
                     let advance = notdef.advance;
                     let bounds = notdef.plane_bounds;
-                    out.push(GlyphQuad {
+                    sink.glyph(GlyphQuad {
                         bounds: [
                             pen + bounds[0] * size,
                             bounds[1] * size,
@@ -157,7 +195,7 @@ pub fn layout_line(
         }
 
         let bounds = metric.plane_bounds;
-        out.push(GlyphQuad {
+        sink.glyph(GlyphQuad {
             bounds: [
                 pen + bounds[0] * size,
                 bounds[1] * size,
@@ -176,10 +214,7 @@ pub fn layout_line(
         TextAlign::Right => -pen,
     };
     if shift != 0.0 {
-        for quad in out.iter_mut() {
-            quad.bounds[0] += shift;
-            quad.bounds[2] += shift;
-        }
+        sink.shift(shift);
     }
 
     LineMetrics {
@@ -187,9 +222,44 @@ pub fn layout_line(
         ascender: font.font.ascender * size,
         descender: font.font.descender * size,
         line_gap: font.font.line_gap * size,
-        quad_count: out.len() as u32,
+        quad_count: sink.quad_count(),
         missing_glyphs: missing,
     }
+}
+
+/// Lay out one line of text, reusing `out`'s allocation.
+///
+/// Whitespace advances the pen without emitting a quad.  Missing characters use
+/// the `.notdef` glyph when available, otherwise they are skipped and counted
+/// in [`LineMetrics::missing_glyphs`].  Kerning (if the font has a `kern`
+/// table) is applied between adjacent non-whitespace glyphs.
+///
+/// The function is deterministic: the same inputs always produce the same
+/// quads, and no hidden state is read.
+pub fn layout_line(
+    font: LayoutFont<'_>,
+    text: &str,
+    size_px: f32,
+    align: TextAlign,
+    out: &mut Vec<GlyphQuad>,
+) -> LineMetrics {
+    out.clear();
+    layout_line_impl(font, text, size_px, align, out)
+}
+
+/// Measure one line of text without producing any quads.
+///
+/// Returns exactly the same [`LineMetrics`] as [`layout_line`] for the same
+/// inputs (including `quad_count` and `missing_glyphs`), but runs the shared
+/// layout loop through a counting sink and therefore allocates nothing.
+pub fn measure_line(
+    font: LayoutFont<'_>,
+    text: &str,
+    size_px: f32,
+    align: TextAlign,
+) -> LineMetrics {
+    let mut sink = MeasureSink { count: 0 };
+    layout_line_impl(font, text, size_px, align, &mut sink)
 }
 
 #[cfg(test)]
@@ -344,5 +414,58 @@ mod tests {
         assert!((m.ascender - 40.0).abs() < 1e-4);
         assert!((m.descender + 10.0).abs() < 1e-4);
         assert!((m.line_gap - 5.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn measure_line_matches_layout_line_exactly() {
+        let (metrics, indices, mut kerning) = simple_maps();
+        kerning.insert((36, 57), -0.087); // A -> V
+        kerning.insert((57, 36), -0.04); // V -> A
+        let notdef = metric(0.4, 0.9);
+
+        let strings = [
+            "",
+            "A",
+            "AV",
+            "AVA",
+            "AVATAR",
+            "o",
+            "AoV",
+            "hello world",
+            " A",
+            "A ",
+            "A  ",
+            "  A",
+            "AV AV",
+            "A V",
+            "A\tA",
+            "A\nA",
+            "A☃",
+            "☃",
+            "A☃V",
+            "Ferrous Engine",
+        ];
+        let sizes = [1.0f32, 16.0, 100.0];
+        let aligns = [TextAlign::Left, TextAlign::Center, TextAlign::Right];
+        let mut out = Vec::new();
+
+        for notdef_ref in [None, Some(&notdef)] {
+            let font = font_with(&metrics, &indices, &kerning, notdef_ref);
+            for &text in &strings {
+                for &size in &sizes {
+                    for &align in &aligns {
+                        let laid_out = layout_line(font, text, size, align, &mut out);
+                        let measured = measure_line(font, text, size, align);
+                        assert_eq!(
+                            laid_out,
+                            measured,
+                            "text={text:?} size={size} align={align:?} \
+                             notdef={}",
+                            notdef_ref.is_some()
+                        );
+                    }
+                }
+            }
+        }
     }
 }

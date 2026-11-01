@@ -1,6 +1,6 @@
 //! Atlas packing and GPU texture management for glyph MSDFs.
 
-use super::layout::{layout_line, LayoutFont, LineMetrics, TextAlign};
+use super::layout::{layout_line, measure_line, LayoutFont, LineMetrics, TextAlign};
 use super::msdf_gen::{generate_msdf, CELL_MAX, CELL_MIN, PIXEL_RANGE};
 use super::parser::FontMetrics;
 use anyhow::Result;
@@ -241,5 +241,11 @@ impl FontAtlas {
         out: &mut Vec<super::layout::GlyphQuad>,
     ) -> LineMetrics {
         layout_line(self.layout_font(), text, size_px, align, out)
+    }
+
+    /// Measure a single line using this atlas without allocating any quads
+    /// (see [`measure_line`]).
+    pub fn measure_line(&self, text: &str, size_px: f32, align: TextAlign) -> LineMetrics {
+        measure_line(self.layout_font(), text, size_px, align)
     }
 }

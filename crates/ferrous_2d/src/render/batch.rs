@@ -1,7 +1,17 @@
 use crate::render::types::SpriteInstance;
+use crate::render::BlendMode2d;
 // BTreeMap: orden deterministico por texture_id + cache-friendly en iteración.
 // A diferencia de HashMap, no hay hashing overhead ni reordering entre frames.
 use std::collections::BTreeMap;
+
+/// One queued sprite: the instance plus its per-draw [`BlendMode2d`].
+#[derive(Debug, Clone, Copy)]
+pub struct SpriteBatchEntry {
+    /// The sprite instance (straight linear RGBA tint, see `SpriteInstance`).
+    pub instance: SpriteInstance,
+    /// Blend mode used when this sprite is drawn.
+    pub blend: BlendMode2d,
+}
 
 /// Agrupa sprites por Texture ID: 1 draw call por textura.
 /// Usa `BTreeMap` para orden deterministico (reproducible entre frames).
@@ -9,7 +19,7 @@ use std::collections::BTreeMap;
 pub struct SpriteBatcher {
     // texture_id → lista de instancias. BTreeMap mantiene el orden por texture_id.
     /// Instances grouped by texture id; iterated in ascending id order.
-    pub batches: BTreeMap<u32, Vec<SpriteInstance>>,
+    pub batches: BTreeMap<u32, Vec<SpriteBatchEntry>>,
 }
 
 impl SpriteBatcher {
@@ -20,9 +30,23 @@ impl SpriteBatcher {
         }
     }
 
-    /// Append one sprite instance to the bucket for `texture_id`.
+    /// Append one sprite instance to the bucket for `texture_id` with the
+    /// default [`BlendMode2d::Normal`] blend.
     pub fn push_sprite(&mut self, texture_id: u32, instance: SpriteInstance) {
-        self.batches.entry(texture_id).or_default().push(instance);
+        self.push_sprite_blend(texture_id, instance, BlendMode2d::Normal);
+    }
+
+    /// Append one sprite instance with an explicit blend mode.
+    pub fn push_sprite_blend(
+        &mut self,
+        texture_id: u32,
+        instance: SpriteInstance,
+        blend: BlendMode2d,
+    ) {
+        self.batches
+            .entry(texture_id)
+            .or_default()
+            .push(SpriteBatchEntry { instance, blend });
     }
 
     /// Drop the bucket (key included) for a freed texture id.
@@ -90,10 +114,14 @@ impl ShapeBatcher {
 /// Indices refer to the *flat GPU upload layouts* produced each frame by
 /// `Renderer2d::prepare_shapes` / `Renderer2d::prepare` / the engine's text
 /// upload:
-/// - `Shape(i)` → `ShapeBatcher.instances[i]`.
-/// - `Sprite(tex_id, i)` → i-th instance of the flattened sprite upload, which
-///   is `SpriteBatcher` iterated in `BTreeMap` (ascending `texture_id`) order.
-/// - `Text(i)` → i-th entry of the engine's text batch (one per glyph quad).
+/// - `Shape { index, .. }` → `ShapeBatcher.instances[index]`.
+/// - `Sprite { texture_id, index, .. }` → i-th instance of the flattened sprite
+///   upload, which is `SpriteBatcher` iterated in `BTreeMap` (ascending
+///   `texture_id`) order.
+/// - `Text { index, .. }` → i-th entry of the engine's text batch.
+///
+/// Each command carries its [`BlendMode2d`], so a run of commands only
+/// coalesces into one draw call when kind, bind group *and* blend mode match.
 ///
 /// The z value used for sorting is read from the instance's own transform
 /// (`transform_c3[2]`).  `Ord`/`PartialOrd` are derived so the command itself
@@ -102,7 +130,7 @@ impl ShapeBatcher {
 /// 1. ascending `z`;
 /// 2. for equal `z`: shapes, then sprites, then text (variant order);
 /// 3. within a kind: submission order (shape index / texture id + sprite
-///    offset / text index).
+///    offset / text index), then blend mode.
 ///
 /// Text therefore interleaves with shapes and sprites by `z`, and glyphs of one
 /// `draw_text` call stay in submission order, so consecutive glyphs of the same
@@ -110,12 +138,29 @@ impl ShapeBatcher {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DrawCommand2d {
     /// Draw `ShapeBatcher.instances[index]` with the shape (SDF) pipeline.
-    Shape(usize),
+    Shape {
+        /// Index into the painter-ordered shape upload.
+        index: usize,
+        /// Per-draw blend mode.
+        blend: BlendMode2d,
+    },
     /// Draw the sprite after `SpriteBatcher` flattening: `texture_id` selects
     /// the texture bind group, `index` is the offset in the flattened upload.
-    Sprite(u32, usize),
+    Sprite {
+        /// Registered sprite texture id.
+        texture_id: u32,
+        /// Offset in the flattened sprite upload.
+        index: usize,
+        /// Per-draw blend mode.
+        blend: BlendMode2d,
+    },
     /// Draw the text-batch entry `index` with the MSDF text pipeline.
-    Text(usize),
+    Text {
+        /// Index into the text batch.
+        index: usize,
+        /// Per-draw blend mode.
+        blend: BlendMode2d,
+    },
 }
 
 #[cfg(test)]

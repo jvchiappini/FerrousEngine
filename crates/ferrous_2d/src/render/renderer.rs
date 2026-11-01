@@ -1,6 +1,6 @@
 use crate::render::{
-    Grid2dParams, GridPipeline, ShapeGpu, ShapePipeline, SpriteBatcher, SpriteInstance,
-    SpritePipeline, Text2dPipeline, TextInstance,
+    BlendMode2d, Grid2dParams, GridPipeline, ShapeGpu, ShapePipeline, SpriteBatcher,
+    SpriteInstance, SpritePipeline, Text2dPipeline, TextInstance,
 };
 use glam::Mat4;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -713,16 +713,16 @@ impl Renderer2d {
         let bytes_written = if self.scratch_reuse {
             let scratch = &mut self.scratch_sprites;
             scratch.clear();
-            for instances in batcher.batches.values() {
-                scratch.extend_from_slice(instances.as_slice());
+            for entries in batcher.batches.values() {
+                scratch.extend(entries.iter().map(|entry| entry.instance));
             }
             let uploaded = bytemuck::cast_slice(scratch.as_slice());
             queue.write_buffer(&self.instance_buffer, 0, uploaded);
             uploaded.len() as u64
         } else {
             let mut flat: Vec<SpriteInstance> = Vec::with_capacity(total_instances);
-            for instances in batcher.batches.values() {
-                flat.extend_from_slice(instances.as_slice());
+            for entries in batcher.batches.values() {
+                flat.extend(entries.iter().map(|entry| entry.instance));
             }
             let uploaded = bytemuck::cast_slice(&flat);
             queue.write_buffer(&self.instance_buffer, 0, uploaded);
@@ -863,6 +863,9 @@ impl Renderer2d {
 
     /// Draw `[offset, offset + count)` text instances with `font_bg` bound at
     /// group 1 (one glyph atlas per draw call, coalesced by the caller).
+    ///
+    /// Uses [`BlendMode2d::Normal`]; the coalesced Pure2D stream calls
+    /// [`Self::render_text_range_blend`] with the command's mode.
     pub fn render_text_range(
         &self,
         render_pass: &mut wgpu::RenderPass<'_>,
@@ -870,10 +873,22 @@ impl Renderer2d {
         offset: u32,
         count: u32,
     ) {
+        self.render_text_range_blend(render_pass, font_bg, offset, count, BlendMode2d::Normal);
+    }
+
+    /// [`Self::render_text_range`] with an explicit per-draw blend mode.
+    pub fn render_text_range_blend(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        font_bg: &wgpu::BindGroup,
+        offset: u32,
+        count: u32,
+        mode: BlendMode2d,
+    ) {
         if count == 0 {
             return;
         }
-        render_pass.set_pipeline(&self.text_pipeline.wgpu_pipeline);
+        render_pass.set_pipeline(self.text_pipeline.pipeline(mode));
         render_pass.set_bind_group(0, &self.text_camera_bind_group, &[]);
         render_pass.set_bind_group(1, font_bg, &[]);
         render_pass.set_vertex_buffer(0, self.text_instance_buffer.slice(..));
@@ -890,10 +905,31 @@ impl Renderer2d {
         offset: u32,
         count: u32,
     ) {
+        self.render_text_range_bg_blend(
+            render_pass,
+            camera_bg,
+            font_bg,
+            offset,
+            count,
+            BlendMode2d::Normal,
+        );
+    }
+
+    /// [`Self::render_text_range_bg`] with an explicit per-draw blend mode.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_text_range_bg_blend(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        camera_bg: &wgpu::BindGroup,
+        font_bg: &wgpu::BindGroup,
+        offset: u32,
+        count: u32,
+        mode: BlendMode2d,
+    ) {
         if count == 0 {
             return;
         }
-        render_pass.set_pipeline(&self.text_pipeline.wgpu_pipeline);
+        render_pass.set_pipeline(self.text_pipeline.pipeline(mode));
         render_pass.set_bind_group(0, camera_bg, &[]);
         render_pass.set_bind_group(1, font_bg, &[]);
         render_pass.set_vertex_buffer(0, self.text_instance_buffer.slice(..));
@@ -902,47 +938,69 @@ impl Renderer2d {
     }
 
     /// Renders the prepared sprite instances.
+    ///
+    /// Entries of one texture bucket are split into maximal runs of equal
+    /// [`BlendMode2d`]; the pipeline is re-bound when the mode changes.  The
+    /// Pure2D immediate path uses the coalesced stream instead
+    /// ([`Self::render_sprites_range_blend`]); this helper serves the legacy
+    /// ECS batcher path.
     pub fn render<'a>(
         &'a self,
         render_pass: &mut wgpu::RenderPass<'a>,
         batcher: &'a SpriteBatcher,
         mut get_texture_bind_group: impl FnMut(u32) -> Option<&'a wgpu::BindGroup>,
     ) {
-        render_pass.set_pipeline(&self.pipeline.wgpu_pipeline);
         render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
 
-        let mut current_offset = 0;
-
-        // Draw each batch (grouped by texture ID)
-        for (&tex_id, instances) in &batcher.batches {
-            let count = instances.len() as u32;
-            if count == 0 {
+        let mut current_offset = 0u32;
+        for (&tex_id, entries) in &batcher.batches {
+            let bucket_len = entries.len() as u32;
+            let Some(bg) = get_texture_bind_group(tex_id) else {
+                current_offset += bucket_len;
                 continue;
-            }
-
-            // Bind the unique texture for this batch
-            if let Some(bg) = get_texture_bind_group(tex_id) {
-                render_pass.set_bind_group(1, bg, &[]);
-                // We draw 4 vertices (quad) per instance
-                render_pass.draw(0..4, current_offset..(current_offset + count));
+            };
+            render_pass.set_bind_group(1, bg, &[]);
+            let mut run_start = 0usize;
+            while run_start < entries.len() {
+                let mode = entries[run_start].blend;
+                let mut run_end = run_start + 1;
+                while run_end < entries.len() && entries[run_end].blend == mode {
+                    run_end += 1;
+                }
+                render_pass.set_pipeline(self.pipeline.pipeline(mode));
+                let start = current_offset + run_start as u32;
+                let count = (run_end - run_start) as u32;
+                render_pass.draw(0..4, start..(start + count));
                 self.record_sprite_draw();
+                run_start = run_end;
             }
-
-            current_offset += count;
+            current_offset += bucket_len;
         }
     }
 
     /// Draw every shape in `batcher` as a single instanced draw call.
+    ///
+    /// Uses [`BlendMode2d::Normal`]; see [`Self::render_shapes_blend`].
     pub fn render_shapes<'a>(
         &'a self,
         render_pass: &mut wgpu::RenderPass<'a>,
         batcher: &'a crate::render::ShapeBatcher,
     ) {
+        self.render_shapes_blend(render_pass, batcher, BlendMode2d::Normal);
+    }
+
+    /// [`Self::render_shapes`] with an explicit per-draw blend mode.
+    pub fn render_shapes_blend<'a>(
+        &'a self,
+        render_pass: &mut wgpu::RenderPass<'a>,
+        batcher: &'a crate::render::ShapeBatcher,
+        mode: BlendMode2d,
+    ) {
         if batcher.instances.is_empty() {
             return;
         }
-        render_pass.set_pipeline(&self.shape_pipeline.wgpu_pipeline);
+        render_pass.set_pipeline(self.shape_pipeline.pipeline(mode));
         render_pass.set_bind_group(0, &self.shape_camera_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.shape_instance_buffer.slice(..));
         render_pass.draw(0..4, 0..batcher.instances.len() as u32);
@@ -958,10 +1016,21 @@ impl Renderer2d {
         offset: u32,
         count: u32,
     ) {
+        self.render_shapes_range_blend(render_pass, offset, count, BlendMode2d::Normal);
+    }
+
+    /// [`Self::render_shapes_range`] with an explicit per-draw blend mode.
+    pub fn render_shapes_range_blend(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        offset: u32,
+        count: u32,
+        mode: BlendMode2d,
+    ) {
         if count == 0 {
             return;
         }
-        render_pass.set_pipeline(&self.shape_pipeline.wgpu_pipeline);
+        render_pass.set_pipeline(self.shape_pipeline.pipeline(mode));
         render_pass.set_bind_group(0, &self.shape_camera_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.shape_instance_buffer.slice(..));
         render_pass.draw(0..4, offset..(offset + count));
@@ -977,10 +1046,22 @@ impl Renderer2d {
         offset: u32,
         count: u32,
     ) {
+        self.render_shapes_range_bg_blend(render_pass, bg, offset, count, BlendMode2d::Normal);
+    }
+
+    /// [`Self::render_shapes_range_bg`] with an explicit per-draw blend mode.
+    pub fn render_shapes_range_bg_blend(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        bg: &wgpu::BindGroup,
+        offset: u32,
+        count: u32,
+        mode: BlendMode2d,
+    ) {
         if count == 0 {
             return;
         }
-        render_pass.set_pipeline(&self.shape_pipeline.wgpu_pipeline);
+        render_pass.set_pipeline(self.shape_pipeline.pipeline(mode));
         render_pass.set_bind_group(0, bg, &[]);
         render_pass.set_vertex_buffer(0, self.shape_instance_buffer.slice(..));
         render_pass.draw(0..4, offset..(offset + count));
@@ -994,6 +1075,8 @@ impl Renderer2d {
     /// the batch and is uploaded only on create/update, so calling this every
     /// frame does **no** upload.  `count` must not exceed the buffer capacity.
     /// Records one shape draw plus the static-batch telemetry counters.
+    ///
+    /// Retained batches always blend with [`BlendMode2d::Normal`].
     pub fn render_static_shapes(
         &self,
         render_pass: &mut wgpu::RenderPass<'_>,
@@ -1003,7 +1086,7 @@ impl Renderer2d {
         if count == 0 {
             return;
         }
-        render_pass.set_pipeline(&self.shape_pipeline.wgpu_pipeline);
+        render_pass.set_pipeline(self.shape_pipeline.pipeline(BlendMode2d::Normal));
         render_pass.set_bind_group(0, &self.shape_camera_bind_group, &[]);
         render_pass.set_vertex_buffer(0, buffer.slice(..));
         render_pass.draw(0..4, 0..count);
@@ -1030,7 +1113,7 @@ impl Renderer2d {
         if count == 0 {
             return;
         }
-        render_pass.set_pipeline(&self.shape_pipeline.wgpu_pipeline);
+        render_pass.set_pipeline(self.shape_pipeline.pipeline(BlendMode2d::Normal));
         render_pass.set_bind_group(0, &self.shape_camera_bind_group, &[]);
         render_pass.set_vertex_buffer(0, buffer.slice(..));
         render_pass.draw(0..4, start..(start + count));
@@ -1051,7 +1134,7 @@ impl Renderer2d {
         if count == 0 {
             return;
         }
-        render_pass.set_pipeline(&self.shape_pipeline.wgpu_pipeline);
+        render_pass.set_pipeline(self.shape_pipeline.pipeline(BlendMode2d::Normal));
         render_pass.set_bind_group(0, bg, &[]);
         render_pass.set_vertex_buffer(0, buffer.slice(..));
         render_pass.draw(0..4, start..(start + count));
@@ -1070,6 +1153,9 @@ impl Renderer2d {
     /// Renders a contiguous range `[offset, offset + count)` of sprite instances
     /// for a single `texture_id`, binding its texture bind group first.  Same
     /// usage as `render` but scoped to an arbitrary slice of the flat upload.
+    ///
+    /// Uses [`BlendMode2d::Normal`]; see
+    /// [`Self::render_sprites_range_blend`].
     pub fn render_sprites_range<'a>(
         &'a self,
         render_pass: &mut wgpu::RenderPass<'a>,
@@ -1078,13 +1164,34 @@ impl Renderer2d {
         count: u32,
         get_texture_bind_group: impl Fn(u32) -> Option<&'a wgpu::BindGroup>,
     ) {
+        self.render_sprites_range_blend(
+            render_pass,
+            tex_id,
+            offset,
+            count,
+            get_texture_bind_group,
+            BlendMode2d::Normal,
+        );
+    }
+
+    /// [`Self::render_sprites_range`] with an explicit per-draw blend mode.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_sprites_range_blend<'a>(
+        &'a self,
+        render_pass: &mut wgpu::RenderPass<'a>,
+        tex_id: u32,
+        offset: u32,
+        count: u32,
+        get_texture_bind_group: impl Fn(u32) -> Option<&'a wgpu::BindGroup>,
+        mode: BlendMode2d,
+    ) {
         if count == 0 {
             return;
         }
         let Some(bg) = get_texture_bind_group(tex_id) else {
             return;
         };
-        render_pass.set_pipeline(&self.pipeline.wgpu_pipeline);
+        render_pass.set_pipeline(self.pipeline.pipeline(mode));
         render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
         render_pass.set_bind_group(1, bg, &[]);
         render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
@@ -1102,17 +1209,110 @@ impl Renderer2d {
         count: u32,
         get_texture_bind_group: impl Fn(u32) -> Option<&'a wgpu::BindGroup>,
     ) {
+        self.render_sprites_range_bg_blend(
+            render_pass,
+            camera_bg,
+            tex_id,
+            offset,
+            count,
+            get_texture_bind_group,
+            BlendMode2d::Normal,
+        );
+    }
+
+    /// [`Self::render_sprites_range_bg`] with an explicit per-draw blend mode.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_sprites_range_bg_blend<'a>(
+        &'a self,
+        render_pass: &mut wgpu::RenderPass<'a>,
+        camera_bg: &'a wgpu::BindGroup,
+        tex_id: u32,
+        offset: u32,
+        count: u32,
+        get_texture_bind_group: impl Fn(u32) -> Option<&'a wgpu::BindGroup>,
+        mode: BlendMode2d,
+    ) {
         if count == 0 {
             return;
         }
         let Some(bg) = get_texture_bind_group(tex_id) else {
             return;
         };
-        render_pass.set_pipeline(&self.pipeline.wgpu_pipeline);
+        render_pass.set_pipeline(self.pipeline.pipeline(mode));
         render_pass.set_bind_group(0, camera_bg, &[]);
         render_pass.set_bind_group(1, bg, &[]);
         render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
         render_pass.draw(0..4, offset..(offset + count));
         self.record_sprite_draw();
+    }
+}
+
+impl Renderer2d {
+    /// Draws a shape range with an explicit pipeline (offscreen layer format).
+    ///
+    /// The camera bind group, instance buffer and counters are the renderer's
+    /// own; only the compiled pipeline differs, which is what lets the layered
+    /// path render into `Rgba16Float` targets.
+    pub fn render_shapes_range_blend_on(
+        &self,
+        shape: &ShapePipeline,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        offset: u32,
+        count: u32,
+        mode: BlendMode2d,
+    ) {
+        if count == 0 {
+            return;
+        }
+        render_pass.set_pipeline(shape.pipeline(mode));
+        render_pass.set_bind_group(0, &self.shape_camera_bind_group, &[]);
+        render_pass.set_vertex_buffer(0, self.shape_instance_buffer.slice(..));
+        render_pass.draw(0..4, offset..(offset + count));
+        self.record_shape_draw();
+    }
+
+    /// Draws a sprite range with an explicit pipeline and texture bind group.
+    ///
+    /// The camera bind group is the renderer's own; an independently created
+    /// (but structurally identical) pipeline has a compatible layout.
+    pub fn render_sprites_range_blend_on<'a>(
+        &'a self,
+        sprite: &'a SpritePipeline,
+        render_pass: &mut wgpu::RenderPass<'a>,
+        texture_bg: &'a wgpu::BindGroup,
+        offset: u32,
+        count: u32,
+        mode: BlendMode2d,
+    ) {
+        if count == 0 {
+            return;
+        }
+        render_pass.set_pipeline(sprite.pipeline(mode));
+        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+        render_pass.set_bind_group(1, texture_bg, &[]);
+        render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
+        render_pass.draw(0..4, offset..(offset + count));
+        self.record_sprite_draw();
+    }
+
+    /// Draws a text range with an explicit pipeline and font bind group.
+    pub fn render_text_range_blend_on<'a>(
+        &'a self,
+        text: &'a Text2dPipeline,
+        render_pass: &mut wgpu::RenderPass<'a>,
+        font_bg: &'a wgpu::BindGroup,
+        offset: u32,
+        count: u32,
+        mode: BlendMode2d,
+    ) {
+        if count == 0 {
+            return;
+        }
+        render_pass.set_pipeline(text.pipeline(mode));
+        render_pass.set_bind_group(0, &self.text_camera_bind_group, &[]);
+        render_pass.set_bind_group(1, font_bg, &[]);
+        render_pass.set_vertex_buffer(0, self.text_instance_buffer.slice(..));
+        render_pass.draw(0..4, offset..(offset + count));
+        self.record_text_draw();
     }
 }

@@ -462,5 +462,86 @@ fn fonts_can_be_freed_and_recycled() {
     assert_eq!(report.text_draw_calls, 0);
 
     let recycled = h.register_font(&bytes, charset::ascii()).expect("font");
-    assert_eq!(recycled, font, "the freed id must be recycled");
+    assert_eq!(
+        recycled.index(),
+        font.index(),
+        "the freed slot index must be recycled"
+    );
+    assert_ne!(
+        recycled, font,
+        "the recycled handle must carry a new generation"
+    );
+}
+
+#[test]
+fn stale_font_handle_after_recycle_draws_nothing() {
+    let _guard = GPU_LOCK.lock().unwrap();
+    let Some(bytes) = roboto_bytes() else { return };
+    let Some(mut h) = harness(64, 64, TextureFormat::Rgba8Unorm) else {
+        return;
+    };
+    let font = h.register_font(&bytes, charset::ascii()).expect("font");
+
+    h.begin_frame();
+    h.render_frame();
+    let empty = h.read_pixels();
+
+    h.free_font(font);
+    let recycled = h.register_font(&bytes, charset::ascii()).expect("font");
+    assert_eq!(recycled.index(), font.index());
+    assert_ne!(recycled, font);
+
+    h.begin_frame();
+    h.draw_text(font, "H", Mat4::IDENTITY, 32.0, TextAlign::Left, WHITE);
+    let report = h.render_frame();
+    assert_eq!(report.text_draw_calls, 0, "a stale font must not draw");
+    assert_eq!(
+        h.read_pixels(),
+        empty,
+        "a stale font must leave the frame unchanged"
+    );
+    assert!(
+        h.measure_text(font, "H", 32.0, TextAlign::Left).is_none(),
+        "measuring with a stale font must return None"
+    );
+    assert!(
+        h.measure_text(recycled, "H", 32.0, TextAlign::Left)
+            .is_some(),
+        "the recycled handle must still be live"
+    );
+}
+
+/// Measurement and layout must agree on the same string, so the draw path and
+/// the measure path cannot drift. The allocation-free property is measured by
+/// the `text_measure_no_alloc` divan benchmark (its `allocs` column must be 0).
+#[test]
+fn measure_text_matches_the_drawn_glyph_count() {
+    let _guard = GPU_LOCK.lock().unwrap();
+    let Some(bytes) = roboto_bytes() else { return };
+    let Some(mut h) = harness(64, 64, TextureFormat::Rgba8Unorm) else {
+        return;
+    };
+    let Some(font) = register_font(&mut h, &bytes) else {
+        return;
+    };
+
+    let metrics = h
+        .measure_text(font, "Ferrous AV", 24.0, TextAlign::Center)
+        .expect("live font must measure");
+    assert_eq!(metrics.quad_count, 9, "ASCII letters are one quad each");
+
+    h.begin_frame();
+    h.draw_text(
+        font,
+        "Ferrous AV",
+        Mat4::IDENTITY,
+        24.0,
+        TextAlign::Center,
+        WHITE,
+    );
+    let report = h.render_frame();
+    assert_eq!(
+        report.instances_uploaded, metrics.quad_count,
+        "the draw path must upload exactly the measured glyph count"
+    );
 }

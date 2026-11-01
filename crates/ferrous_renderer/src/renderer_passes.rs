@@ -14,10 +14,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use wgpu::{CommandEncoder, TextureView};
+#[cfg(feature = "gui")]
+use wgpu::CommandEncoder;
+use wgpu::TextureView;
 
 use crate::frame_builder::FrameBuilder;
 use crate::gizmo_system::GizmoSystem;
+#[cfg(feature = "gui")]
 use crate::graph::frame_packet::CameraPacket;
 use crate::graph::RenderPass;
 use crate::render_stats::RenderStats;
@@ -814,6 +817,7 @@ impl RendererPasses {
     }
 
     /// Propagates a new instance-buffer bind group to all active style passes.
+    #[cfg(feature = "gui")]
     fn sync_style_instance_buffer(&mut self, bg: Arc<wgpu::BindGroup>) {
         if let Some(p) = &mut self.cel_pass {
             p.set_instance_buffer(bg.clone());

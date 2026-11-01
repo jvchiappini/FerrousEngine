@@ -9,10 +9,26 @@
 //! in display-referred sRGB must be converted to linear before being passed
 //! here (apply the sRGB EOTF: a display mid-grey of `0.5` becomes `~0.214`
 //! linear). This is the single colour semantic shared by shapes and sprites.
+//!
+//! # Alpha contract
+//!
+//! Instance colours are **straight** (non-premultiplied) linear RGBA.  The
+//! fragment shaders premultiply on output (`vec4(rgb * a, a)`) and every
+//! Pure2D pipeline blends with a premultiplied state, so callers never pass
+//! premultiplied colours.  Over an opaque destination this is mathematically
+//! identical to straight-alpha blending; on a transparent target it is the
+//! correct compositing result (see [`crate::render::BlendMode2d`]).
 
 use bytemuck::{Pod, Zeroable};
 
+use crate::handle::Handle;
+
 /// Matches the `InstanceInput` struct in `sprite.wgsl`.
+///
+/// `color` is a **straight** linear RGBA tint (not premultiplied); the sprite
+/// shader premultiplies after sampling and tinting.  `properties.w` is the
+/// per-texture premultiplied-data flag, filled in by the renderer from the
+/// texture registry (0 = straight alpha data, 1 = premultiplied data).
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct SpriteInstance {
@@ -80,12 +96,55 @@ impl SpriteInstance {
     }
 }
 
-/// Stable handle to a font registered with [`crate::render::Renderer2d`]'s
-/// owner (the engine `Renderer`), used by [`TextInstance`] draw calls.
+/// Stable, generation-tracked handle to a font registered with
+/// [`crate::render::Renderer2d`]'s owner (the engine `Renderer`), used by
+/// [`TextInstance`] draw calls.
+///
+/// The index identifies the font slot and the generation makes handles issued
+/// before a [`crate::handle::SlotRegistry::remove`] stale, so a recycled font
+/// can never be addressed by an old handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct FontId2d(pub u32);
+pub struct FontId2d {
+    index: u32,
+    generation: u32,
+}
+
+impl FontId2d {
+    /// Returns the font slot index.
+    pub const fn index(&self) -> u32 {
+        self.index
+    }
+
+    /// Returns the generation of the font slot when the handle was issued.
+    pub const fn generation(&self) -> u32 {
+        self.generation
+    }
+
+    /// Returns the underlying generational `Handle`.
+    pub const fn handle(&self) -> Handle {
+        Handle::from_parts(self.index, self.generation)
+    }
+}
+
+impl From<Handle> for FontId2d {
+    fn from(handle: Handle) -> Self {
+        Self {
+            index: handle.index(),
+            generation: handle.generation(),
+        }
+    }
+}
+
+impl From<FontId2d> for Handle {
+    fn from(font: FontId2d) -> Self {
+        font.handle()
+    }
+}
 
 /// GPU instance for one MSDF glyph quad (Pure2D text path).
+///
+/// `color` is a **straight** linear RGBA colour (not premultiplied); the text
+/// shader premultiplies when it writes the fragment.
 ///
 /// The model matrix maps the canonical local quad `[0, 1]²` (Y up) to the
 /// glyph's pixel rectangle, exactly like [`SpriteInstance`] maps its own quad,
@@ -240,6 +299,9 @@ pub const TRIANGLE_EDGE_CA: u8 = 1 << 2;
 pub const TRIANGLE_EDGES_ALL: u8 = TRIANGLE_EDGE_AB | TRIANGLE_EDGE_BC | TRIANGLE_EDGE_CA;
 
 /// Instance data for non-textured 2D shapes (technical drawing).
+///
+/// `color` is **straight** linear RGBA (not premultiplied) for every shape
+/// kind; the shape shader premultiplies its output.
 ///
 /// The four transform columns encode a full model matrix. The shader supports
 /// the rounded-rectangle SDF family (rectangle, circle, stroked segment) and,
@@ -1378,4 +1440,132 @@ pub struct Uniform2d {
     /// uniform array is 16-byte aligned. Slot `0` is unused (continuous).
     /// Pattern `i` uses `dash[i*2]` (lengths 0..3) and `dash[i*2+1]` (4..7).
     pub dash: [[f32; 4]; 32],
+}
+
+/// Maximum nesting depth of Pure2D offscreen layers.
+///
+/// Pushing a layer when this many are already open returns
+/// [`LayerError::TooDeep`] and changes nothing.
+pub const MAX_LAYER_DEPTH_2D: u32 = 8;
+
+/// Description of one offscreen compositing layer (see
+/// `Renderer::push_layer_2d`).
+///
+/// Draws between [`Layer2d`]'s push and pop are z-sorted among themselves and
+/// rendered into a transparent offscreen texture; the whole layer is then
+/// composited into its parent as one command at `depth`, with `blend` and
+/// group `opacity` (`colour× opacity`, all four premultiplied channels).
+///
+/// Group opacity differs from per-child opacity: two overlapping opaque
+/// children inside a 50 % layer show no internal overlap, because they are
+/// composited inside the layer at full opacity and the layer as a whole is
+/// faded once.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Layer2d {
+    /// Group opacity applied once to the finished layer, in `0.0..=1.0`.
+    pub opacity: f32,
+    /// Blend mode used to composite the finished layer into its parent.
+    pub blend: crate::render::pipeline::BlendMode2d,
+    /// Depth of the whole layer in the parent's painter order.
+    pub depth: f32,
+}
+
+impl Layer2d {
+    /// Builds a layer description.
+    ///
+    /// `opacity` is clamped to `0.0..=1.0` at push time; non-finite values are
+    /// rejected with [`LayerError::InvalidOpacity`].
+    pub const fn new(
+        opacity: f32,
+        blend: crate::render::pipeline::BlendMode2d,
+        depth: f32,
+    ) -> Self {
+        Self {
+            opacity,
+            blend,
+            depth,
+        }
+    }
+}
+
+impl Default for Layer2d {
+    fn default() -> Self {
+        Self {
+            opacity: 1.0,
+            blend: crate::render::pipeline::BlendMode2d::Normal,
+            depth: 0.0,
+        }
+    }
+}
+
+/// Typed errors for the Pure2D offscreen-layer API.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LayerError {
+    /// A push exceeded [`MAX_LAYER_DEPTH_2D`] open layers.
+    TooDeep {
+        /// Maximum supported nesting depth.
+        max: u32,
+        /// Depth requested by the rejected push.
+        requested: u32,
+    },
+    /// A frame ended (or a resize/render finished) with layers still open.
+    ///
+    /// The renderer closes them automatically and logs a warning; this error
+    /// reports how many were closed.
+    Unbalanced {
+        /// Number of layers that were still open when the frame ended.
+        open: u32,
+    },
+    /// [`crate::render::types::Layer2d::opacity`] was NaN or infinite.
+    InvalidOpacity {
+        /// The rejected value.
+        opacity: f32,
+    },
+    /// A pop was requested with no layer open.
+    Underflow,
+}
+
+impl std::fmt::Display for LayerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooDeep { max, requested } => write!(
+                f,
+                "layer nesting depth {requested} exceeds the maximum of {max}"
+            ),
+            Self::Unbalanced { open } => write!(
+                f,
+                "{open} offscreen layer(s) were still open at the end of the frame; they were closed automatically"
+            ),
+            Self::InvalidOpacity { opacity } => {
+                write!(f, "layer opacity must be finite, got {opacity}")
+            }
+            Self::Underflow => write!(f, "pop_layer_2d called with no open layer"),
+        }
+    }
+}
+
+impl std::error::Error for LayerError {}
+
+/// One instance of the full-target composite quad used to draw a finished
+/// offscreen layer into its parent (see `composite_2d.wgsl`).
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, Pod, Zeroable)]
+pub struct CompositeInstance {
+    /// Group opacity multiplied into the premultiplied layer colour.
+    pub opacity: f32,
+}
+
+impl CompositeInstance {
+    /// Vertex-buffer layout describing this instance type to wgpu.
+    pub const fn descriptor() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<CompositeInstance>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[wgpu::VertexAttribute {
+                offset: 0,
+                shader_location: 0,
+                format: wgpu::VertexFormat::Float32,
+            }],
+        }
+    }
 }

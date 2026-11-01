@@ -151,5 +151,6 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     if (out.a < 0.002) {
         discard;
     }
-    return out;
+    // Premultiplied output (see the Pure2D alpha contract).
+    return vec4<f32>(out.rgb * out.a, out.a);
 }

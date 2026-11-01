@@ -6,8 +6,8 @@
 // shapes and sprites.
 //
 // The MSDF decode helpers live in `msdf_common.wgsl`, prepended to this module
-// by the pipeline.  Output is straight-alpha linear colour, matching the shape
-// and sprite pipelines (the target format is `*Srgb` in production).
+// by the pipeline.  The fragment writes premultiplied linear colour
+// (`vec4(rgb * a, a)`), matching the shape and sprite pipelines.
 
 struct CameraUniform {
     view_proj: mat4x4<f32>,
@@ -104,6 +104,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let quad_px = in.quad_world / max(world_px, 1e-9);
     let screen_px_range = msdf_screen_px_range(quad_px, cell, in.px_range);
     let opacity = msdf_opacity(sig_dist, screen_px_range);
+    let alpha = in.color.a * opacity;
 
-    return vec4<f32>(in.color.rgb, in.color.a * opacity);
+    return vec4<f32>(in.color.rgb * alpha, alpha);
 }

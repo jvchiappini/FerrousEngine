@@ -127,18 +127,34 @@ fn pipelined_readback_returns_frames_in_submission_order() {
 #[test]
 fn pipelined_readback_rejects_a_third_submit_while_two_are_pending() {
     let _guard = GPU_LOCK.lock().unwrap();
-    let Some(mut h) = harness(16, 16, TextureFormat::Rgba8Unorm) else {
-        return;
+    // A deliberately small two-slot ring: the default ring is three slots.
+    let mut h = match Pure2dHarness::with_readback_ring(16, 16, TextureFormat::Rgba8Unorm, 2) {
+        Ok(h) => h,
+        Err(err) => {
+            println!("[skip] headless GPU unavailable: {err}");
+            return;
+        }
     };
     render_rect(&mut h, RED);
-    h.submit_readback().expect("first submit");
-    h.submit_readback().expect("second submit");
+    assert_eq!(h.submit_readback().expect("first submit"), 0);
+    assert_eq!(h.submit_readback().expect("second submit"), 1);
+    let pending = h.pending_readbacks();
+    let next = h.next_frame_index();
     assert_eq!(
         h.submit_readback(),
         Err(ReadbackError::Busy),
         "the two-slot ring must report Busy, not silently drop a frame"
     );
-    assert_eq!(h.pending_readbacks(), 2);
+    assert_eq!(
+        h.pending_readbacks(),
+        pending,
+        "a rejected submit must not change the pending queue"
+    );
+    assert_eq!(
+        h.next_frame_index(),
+        next,
+        "a rejected submit must not consume a frame index"
+    );
 
     let mut out = Vec::new();
     assert!(h.take_readback(&mut out).expect("take oldest"));

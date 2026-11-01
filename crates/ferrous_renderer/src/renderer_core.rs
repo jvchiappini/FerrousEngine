@@ -61,7 +61,12 @@ use camera::controller::OrbitState;
 pub use pipeline::InstancingPipeline;
 use pipeline::PbrPipeline;
 
-use ferrous_2d::render::{DrawCommand2d, FontId2d, Renderer2d, ShapeBatcher, TextInstance};
+use ferrous_2d::handle::SlotRegistry;
+use ferrous_2d::render::{
+    BlendMode2d, CompositeInstance, CompositePipeline, DrawCommand2d, FontId2d, Layer2d,
+    LayerError, Renderer2d, ShapeBatcher, ShapePipeline, SpriteBatchEntry, SpritePipeline,
+    Text2dPipeline, TextInstance, MAX_LAYER_DEPTH_2D,
+};
 use ferrous_font::{FontError, GlyphQuad, TextAlign};
 
 use crate::render_config::Render2dConfig;
@@ -87,13 +92,18 @@ enum RenderDest<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Coalesced2dDraw {
     /// `ShapeBatcher` SDF pipeline, `[start, start+count)` in the shape upload.
-    Shapes { start: u32, count: u32 },
+    Shapes {
+        start: u32,
+        count: u32,
+        blend: BlendMode2d,
+    },
     /// Sprite pipeline bound to `texture_id`, `[start, start+count)` in the
     /// sprite upload.
     Sprites {
         texture_id: u32,
         start: u32,
         count: u32,
+        blend: BlendMode2d,
     },
     /// Text pipeline bound to `font`'s atlas, `[start, start+count)` in the
     /// text upload.
@@ -101,10 +111,309 @@ enum Coalesced2dDraw {
         font: FontId2d,
         start: u32,
         count: u32,
+        blend: BlendMode2d,
     },
 }
 
-/// A registered 2D font: its baked atlas and the bind group that samples it.
+/// One recording-order command in the layered Pure2D path.
+///
+/// The non-layered path keeps using the batchers and the coalesced stream; this
+/// log is only built once a frame uses [`Renderer::push_layer_2d`].  Instances
+/// are copied by value so the log is self-contained and can be z-sorted per
+/// layer at render time.
+enum FrameCmd2d {
+    /// One shape instance.
+    Shape {
+        /// Shape instance (straight linear RGBA).
+        instance: ferrous_2d::render::ShapeInstance,
+        /// Per-draw blend mode.
+        blend: BlendMode2d,
+    },
+    /// One sprite instance.
+    Sprite {
+        /// Registered texture id.
+        texture_id: u32,
+        /// Sprite instance.
+        instance: ferrous_2d::render::SpriteInstance,
+        /// Per-draw blend mode.
+        blend: BlendMode2d,
+    },
+    /// One MSDF glyph quad.
+    Text {
+        /// Font the glyph belongs to.
+        font: FontId2d,
+        /// Glyph instance.
+        instance: TextInstance,
+        /// Per-draw blend mode.
+        blend: BlendMode2d,
+    },
+    /// A finished child layer, composited at its `depth` in this stream.
+    Layer {
+        /// Index into `Renderer::layers_2d`.
+        index: u32,
+    },
+}
+
+impl FrameCmd2d {
+    /// Painter-order key.
+    fn depth(&self, layers: &[LayerRecord]) -> f32 {
+        match self {
+            Self::Shape { instance, .. } => instance.transform_c3[2],
+            Self::Sprite { instance, .. } => instance.transform_c3[2],
+            Self::Text { instance, .. } => instance.depth(),
+            Self::Layer { index } => layers[*index as usize].desc.depth,
+        }
+    }
+
+    /// Variant tie-break for equal depth (shapes, sprites, text, layers).
+    fn kind_order(&self) -> u8 {
+        match self {
+            Self::Shape { .. } => 0,
+            Self::Sprite { .. } => 1,
+            Self::Text { .. } => 2,
+            Self::Layer { .. } => 3,
+        }
+    }
+}
+
+/// One recorded layer: its description and its own command stream.
+struct LayerRecord {
+    desc: Layer2d,
+    cmds: Vec<FrameCmd2d>,
+}
+
+/// A pooled offscreen layer texture plus the bind group used to composite it.
+struct LayerTexture {
+    view: wgpu::TextureView,
+    bind_group: std::sync::Arc<wgpu::BindGroup>,
+}
+
+/// Per-format pipelines and the pooled textures for the layered Pure2D path.
+struct LayerResources {
+    /// Format the layer textures actually use (`Rgba16Float`, or the target
+    /// format when the adapter cannot blend `Rgba16Float`).
+    format: wgpu::TextureFormat,
+    /// Pipeline set for the layer format.
+    sprite: SpritePipeline,
+    shape: ShapePipeline,
+    text: Text2dPipeline,
+    /// Pipeline set for the target format (root stream drawn after the layers).
+    root_sprite: SpritePipeline,
+    root_shape: ShapePipeline,
+    root_text: Text2dPipeline,
+    /// Composite pipeline writing into a layer-format texture (nested layers).
+    composite_layer: CompositePipeline,
+    /// Composite pipeline writing into the target format.
+    composite_target: CompositePipeline,
+    /// Linear (or nearest) clamp sampler shared by all layer textures.
+    sampler: wgpu::Sampler,
+    /// Pooled textures, indexed by layer index (`None` = never used/empty).
+    textures: Vec<Option<LayerTexture>>,
+    /// Total textures created since the pool was last invalidated.
+    textures_allocated: u64,
+    /// Target size the pool was built for; a resize invalidates it.
+    width: u32,
+    height: u32,
+}
+
+/// One draw in a layer's render plan, with ranges into the shared uploads.
+enum PlanItem {
+    /// `[start, start+count)` of the shape upload.
+    Shapes {
+        start: u32,
+        count: u32,
+        blend: BlendMode2d,
+    },
+    /// `[start, start+count)` of the sprite upload for one texture.
+    Sprites {
+        texture_id: u32,
+        start: u32,
+        count: u32,
+        blend: BlendMode2d,
+    },
+    /// `[start, start+count)` of the text upload for one font.
+    Text {
+        font: FontId2d,
+        start: u32,
+        count: u32,
+        blend: BlendMode2d,
+    },
+    /// Composite `layer` into the current destination.
+    Composite {
+        layer: u32,
+        blend: BlendMode2d,
+        /// Index of the opacity instance in the composite instance buffer.
+        instance: u32,
+    },
+}
+
+/// `true` when a layer contains no draw call, directly or through nested layers.
+fn layer_subtree_is_empty(layers: &[LayerRecord], index: u32) -> bool {
+    let record = &layers[index as usize];
+    record.cmds.iter().all(|cmd| match cmd {
+        FrameCmd2d::Layer { index } => layer_subtree_is_empty(layers, *index),
+        _ => false,
+    })
+}
+
+/// Builds the z-sorted, run-coalesced plan for one command stream and appends
+/// its instances to the shared uploads.
+///
+/// Nested layers are planned first (post-order) into `plans` (indexed by layer
+/// index) and their indices appended to `order`; `out` receives this stream's
+/// own items. The per-layer `Vec`s live in `plans` across frames, so steady
+/// state does not allocate for them.
+#[allow(clippy::too_many_arguments)]
+fn build_layer_plan(
+    cmds: &[FrameCmd2d],
+    layers: &[LayerRecord],
+    empty: &[bool],
+    shapes: &mut Vec<ferrous_2d::render::ShapeGpu>,
+    sprites: &mut Vec<ferrous_2d::render::SpriteInstance>,
+    texts: &mut Vec<TextInstance>,
+    premultiplied: &std::collections::HashSet<u32>,
+    plans: &mut Vec<Vec<PlanItem>>,
+    order: &mut Vec<u32>,
+    composites: &mut Vec<CompositeInstance>,
+    sort_buffers: &mut Vec<Vec<usize>>,
+    depth: usize,
+    out: &mut Vec<PlanItem>,
+) {
+    while sort_buffers.len() <= depth {
+        sort_buffers.push(Vec::new());
+    }
+    let mut sort_order = std::mem::take(&mut sort_buffers[depth]);
+    sort_order.clear();
+    sort_order.extend(0..cmds.len());
+    sort_order.sort_by(|&a, &b| {
+        cmds[a]
+            .depth(layers)
+            .total_cmp(&cmds[b].depth(layers))
+            .then_with(|| cmds[a].kind_order().cmp(&cmds[b].kind_order()))
+            .then_with(|| a.cmp(&b))
+    });
+
+    let mut i = 0usize;
+    while i < sort_order.len() {
+        match &cmds[sort_order[i]] {
+            FrameCmd2d::Shape { blend, .. } => {
+                let start = shapes.len() as u32;
+                let blend = *blend;
+                while i < sort_order.len() {
+                    match &cmds[sort_order[i]] {
+                        FrameCmd2d::Shape {
+                            instance,
+                            blend: command_blend,
+                        } if *command_blend == blend => {
+                            shapes.push(ferrous_2d::render::ShapeGpu::pack(instance));
+                            i += 1;
+                        }
+                        _ => break,
+                    }
+                }
+                out.push(PlanItem::Shapes {
+                    start,
+                    count: shapes.len() as u32 - start,
+                    blend,
+                });
+            }
+            FrameCmd2d::Sprite {
+                texture_id, blend, ..
+            } => {
+                let start = sprites.len() as u32;
+                let texture_id = *texture_id;
+                let blend = *blend;
+                while i < sort_order.len() {
+                    match &cmds[sort_order[i]] {
+                        FrameCmd2d::Sprite {
+                            texture_id: command_texture,
+                            instance,
+                            blend: command_blend,
+                        } if *command_texture == texture_id && *command_blend == blend => {
+                            let mut instance = *instance;
+                            if premultiplied.contains(&texture_id) {
+                                instance.properties[3] = 1.0;
+                            }
+                            sprites.push(instance);
+                            i += 1;
+                        }
+                        _ => break,
+                    }
+                }
+                out.push(PlanItem::Sprites {
+                    texture_id,
+                    start,
+                    count: sprites.len() as u32 - start,
+                    blend,
+                });
+            }
+            FrameCmd2d::Text { font, blend, .. } => {
+                let start = texts.len() as u32;
+                let font = *font;
+                let blend = *blend;
+                while i < sort_order.len() {
+                    match &cmds[sort_order[i]] {
+                        FrameCmd2d::Text {
+                            font: command_font,
+                            instance,
+                            blend: command_blend,
+                        } if *command_font == font && *command_blend == blend => {
+                            texts.push(*instance);
+                            i += 1;
+                        }
+                        _ => break,
+                    }
+                }
+                out.push(PlanItem::Text {
+                    font,
+                    start,
+                    count: texts.len() as u32 - start,
+                    blend,
+                });
+            }
+            FrameCmd2d::Layer { index } => {
+                let index = *index;
+                if !empty[index as usize] {
+                    while plans.len() <= index as usize {
+                        plans.push(Vec::new());
+                    }
+                    let mut child_items = std::mem::take(&mut plans[index as usize]);
+                    child_items.clear();
+                    build_layer_plan(
+                        &layers[index as usize].cmds,
+                        layers,
+                        empty,
+                        shapes,
+                        sprites,
+                        texts,
+                        premultiplied,
+                        plans,
+                        order,
+                        composites,
+                        sort_buffers,
+                        depth + 1,
+                        &mut child_items,
+                    );
+                    plans[index as usize] = child_items;
+                    order.push(index);
+                    let instance = composites.len() as u32;
+                    composites.push(CompositeInstance {
+                        opacity: layers[index as usize].desc.opacity,
+                    });
+                    out.push(PlanItem::Composite {
+                        layer: index,
+                        blend: layers[index as usize].desc.blend,
+                        instance,
+                    });
+                }
+                i += 1;
+            }
+        }
+    }
+    sort_buffers[depth] = sort_order;
+}
+
+/// A registered 2D font: its baked atlas and the bind group that samples it./// A registered 2D font: its baked atlas and the bind group that samples it.
 struct Font2dEntry {
     font: ferrous_font::Font,
     bind_group: std::sync::Arc<wgpu::BindGroup>,
@@ -351,10 +660,10 @@ pub struct Renderer {
     /// [`Render2dConfig::scratch_reuse`] is set (default), avoiding one heap
     /// allocation + grow per frame (audit H8/H3).
     draw_list_scratch: Vec<(f32, DrawCommand2d)>,
-    /// Reusable bucket-order flat copy of the sprite instances, used to resolve
-    /// the flat indices stored in `DrawCommand2d::Sprite` while the coalesced
-    /// painter-order upload is built.
-    sprite_flat_scratch: Vec<ferrous_2d::render::SpriteInstance>,
+    /// Reusable bucket-order flat copy of the queued sprite entries, used to
+    /// resolve the flat indices stored in `DrawCommand2d::Sprite` while the
+    /// coalesced painter-order upload is built.
+    sprite_flat_scratch: Vec<SpriteBatchEntry>,
     /// Reusable painter-ordered shape upload for the coalesced Pure2D path.
     shape_upload_scratch: Vec<ferrous_2d::render::ShapeGpu>,
     /// Reusable painter-ordered sprite upload for the coalesced Pure2D path.
@@ -383,16 +692,59 @@ pub struct Renderer {
     pub freed_sprite_texture_ids: Vec<u32>,
 
     // -- Pure2D text ----------------------------------------------------------
-    /// Registered 2D fonts (atlas + sampling bind group), keyed by handle.
-    fonts_2d: HashMap<FontId2d, Font2dEntry>,
-    /// High-water mark for [`FontId2d`] allocation.
-    next_font_2d_id: u32,
-    /// Font ids returned by [`Self::free_font_2d`], reused before allocating.
-    freed_font_2d_ids: Vec<u32>,
-    /// Per-frame glyph instances plus the font each one belongs to.
-    /// `DrawCommand2d::Text(i)` indexes this vector directly, so submission
-    /// order is preserved for equal `z`.
-    pub text_batcher_2d: Vec<(FontId2d, TextInstance)>,
+    /// Registered 2D fonts (atlas + sampling bind group) in a generational
+    /// slot registry, so freed font handles can never address a recycled font.
+    fonts_2d: SlotRegistry<Font2dEntry>,
+    /// Per-frame glyph instances plus the font and blend mode each one belongs
+    /// to. `DrawCommand2d::Text { index, .. }` indexes this vector directly, so
+    /// submission order is preserved for equal `z`.
+    pub text_batcher_2d: Vec<(FontId2d, TextInstance, BlendMode2d)>,
+    /// Per-shape blend mode, parallel to [`Self::shape_batcher`].
+    pub shape_blend_2d: Vec<BlendMode2d>,
+    /// Blend mode applied to subsequent 2D draws until changed; reset to
+    /// [`BlendMode2d::Normal`] by [`Self::clear_2d`] every frame.
+    current_blend_2d: BlendMode2d,
+    /// Sprite texture ids whose texels are already premultiplied (opt-in).
+    premultiplied_textures: std::collections::HashSet<u32>,
+
+    // -- Pure2D offscreen layers ----------------------------------------------
+    /// Layer records; their command `Vec`s are reused across frames.
+    layers_2d: Vec<LayerRecord>,
+    /// Number of layer records used this frame (indices `0..layer_next_index`).
+    layer_next_index: u32,
+    /// Indices of currently open layers; the last one is the draw target.
+    layer_stack_2d: Vec<u32>,
+    /// Root command log used once the frame uses layers.
+    frame_cmds_2d: Vec<FrameCmd2d>,
+    /// `true` once the first layer is pushed this frame; every later draw is
+    /// recorded in the command log (and no longer in the global batchers).
+    frame_uses_layers: bool,
+    /// Last typed layer error (unbalanced frame, rejected push, ...).
+    layer_error_2d: Option<LayerError>,
+    /// Per-format layer pipelines and the pooled offscreen textures.
+    layer_res: Option<LayerResources>,
+    /// Reusable composite instance staging.
+    composite_instances: Vec<CompositeInstance>,
+    /// Persistent GPU buffer for [`Self::composite_instances`].
+    composite_buffer: Option<wgpu::Buffer>,
+    /// Capacity of [`Self::composite_buffer`] in instances.
+    composite_capacity: u32,
+    /// Number of offscreen passes encoded this frame.
+    layer_passes_drawn: u32,
+    /// Reusable uploads for the layered path.
+    layer_shapes_scratch: Vec<ferrous_2d::render::ShapeGpu>,
+    layer_sprites_scratch: Vec<ferrous_2d::render::SpriteInstance>,
+    layer_texts_scratch: Vec<TextInstance>,
+    /// Reusable per-layer plans, indexed by layer index.
+    layer_plans: Vec<Vec<PlanItem>>,
+    /// Post-order list of the layers used this frame.
+    layer_plan_order: Vec<u32>,
+    /// Reusable root plan.
+    layer_root_plan: Vec<PlanItem>,
+    /// Reusable emptiness flags per layer.
+    layer_empty: Vec<bool>,
+    /// Per-recursion-depth index sort buffers for the layered plan builder.
+    layer_sort_buffers: Vec<Vec<usize>>,
     /// Reusable CPU layout output for [`Self::draw_text_2d`].
     text_layout_scratch: Vec<GlyphQuad>,
     /// Reusable painter-ordered text upload for the coalesced Pure2D path.
@@ -702,10 +1054,30 @@ impl Renderer {
             sprite_bind_groups: std::collections::HashMap::new(),
             next_sprite_texture_id: 0,
             freed_sprite_texture_ids: Vec::new(),
-            fonts_2d: HashMap::new(),
-            next_font_2d_id: 0,
-            freed_font_2d_ids: Vec::new(),
+            fonts_2d: SlotRegistry::new(),
             text_batcher_2d: Vec::new(),
+            shape_blend_2d: Vec::new(),
+            current_blend_2d: BlendMode2d::Normal,
+            premultiplied_textures: std::collections::HashSet::new(),
+            layers_2d: Vec::new(),
+            layer_next_index: 0,
+            layer_stack_2d: Vec::new(),
+            frame_cmds_2d: Vec::new(),
+            frame_uses_layers: false,
+            layer_error_2d: None,
+            layer_res: None,
+            composite_instances: Vec::new(),
+            composite_buffer: None,
+            composite_capacity: 0,
+            layer_passes_drawn: 0,
+            layer_shapes_scratch: Vec::new(),
+            layer_sprites_scratch: Vec::new(),
+            layer_texts_scratch: Vec::new(),
+            layer_plans: Vec::new(),
+            layer_plan_order: Vec::new(),
+            layer_root_plan: Vec::new(),
+            layer_empty: Vec::new(),
+            layer_sort_buffers: Vec::new(),
             text_layout_scratch: Vec::new(),
             text_upload_scratch: Vec::new(),
             readback_manager: None,
@@ -729,6 +1101,9 @@ impl Renderer {
 
         self.width = new_width;
         self.height = new_height;
+        // Offscreen layer textures are target-sized; a resize invalidates the
+        // pool (the next layered frame recreates it at the new size).
+        self.layer_res = None;
 
         // Built-in passes
         self.world_pass.on_resize(
@@ -1876,402 +2251,470 @@ impl Renderer {
             // frames when `render_2d_config.scratch_reuse` (default).  With it
             // disabled, fresh `Vec`s reproduce the pre-optimization behaviour
             // for A/B comparison.
-            let n_shapes = self.shape_batcher.instances.len();
-            let n_sprites = self.sprite_batcher_2d.total_instances();
-            let n_text = self.text_batcher_2d.len();
-            let total = n_shapes + n_sprites + n_text;
-            let scratch_reuse = self.render_2d_config.scratch_reuse;
-            // Two or more recorded views switch to the per-view camera path.
-            let multi_view = self.views_2d.len() > 1;
+            self.layer_passes_drawn = 1;
+            if self.frame_uses_layers || !self.layers_2d.is_empty() {
+                self.render_layered_2d(encoder, target_view);
+            } else {
+                let n_shapes = self.shape_batcher.instances.len();
+                let n_sprites = self.sprite_batcher_2d.total_instances();
+                let n_text = self.text_batcher_2d.len();
+                let total = n_shapes + n_sprites + n_text;
+                let scratch_reuse = self.render_2d_config.scratch_reuse;
+                // Two or more recorded views switch to the per-view camera path.
+                let multi_view = self.views_2d.len() > 1;
 
-            // ── 2D viewport culling rect ────────────────────────────────────
-            // Instances whose world AABB is fully outside the visible camera
-            // rect (expanded by the AA-safe margin) are dropped *before* the
-            // sort and the run walk, so they cost neither sorting nor upload,
-            // and surviving same-key runs that were separated by them
-            // coalesce.  Gated by `Render2dConfig::cull_2d`.
-            // Per-view culling is not applied yet; skip global culling when the
-            // frame is split so shapes meant for another view are not dropped
-            // using the primary camera.
-            let cull = self.render_2d_config.cull_2d && !multi_view;
-            let (rmin, rmax) = if cull {
-                self.pure2d_cull_rect()
-            } else {
-                (
-                    glam::Vec2::splat(f32::NEG_INFINITY),
-                    glam::Vec2::splat(f32::INFINITY),
-                )
-            };
+                // ── 2D viewport culling rect ────────────────────────────────────
+                // Instances whose world AABB is fully outside the visible camera
+                // rect (expanded by the AA-safe margin) are dropped *before* the
+                // sort and the run walk, so they cost neither sorting nor upload,
+                // and surviving same-key runs that were separated by them
+                // coalesce.  Gated by `Render2dConfig::cull_2d`.
+                // Per-view culling is not applied yet; skip global culling when the
+                // frame is split so shapes meant for another view are not dropped
+                // using the primary camera.
+                let cull = self.render_2d_config.cull_2d && !multi_view;
+                let (rmin, rmax) = if cull {
+                    self.pure2d_cull_rect()
+                } else {
+                    (
+                        glam::Vec2::splat(f32::NEG_INFINITY),
+                        glam::Vec2::splat(f32::INFINITY),
+                    )
+                };
 
-            let mut draw_list: Vec<(f32, DrawCommand2d)> = if scratch_reuse {
-                let mut v = std::mem::take(&mut self.draw_list_scratch);
-                v.clear();
-                v
-            } else {
-                Vec::new()
-            };
-            // Bucket-order flat copy, used to resolve `Sprite(tex, flat_idx)`.
-            let mut sprite_flat: Vec<ferrous_2d::render::SpriteInstance> = if scratch_reuse {
-                let mut v = std::mem::take(&mut self.sprite_flat_scratch);
-                v.clear();
-                v.reserve(n_sprites);
-                v
-            } else {
-                Vec::with_capacity(n_sprites)
-            };
-            let mut shape_upload: Vec<ferrous_2d::render::ShapeGpu> = if scratch_reuse {
-                let mut v = std::mem::take(&mut self.shape_upload_scratch);
-                v.clear();
-                v.reserve(n_shapes);
-                v
-            } else {
-                Vec::with_capacity(n_shapes)
-            };
-            let mut sprite_upload: Vec<ferrous_2d::render::SpriteInstance> = if scratch_reuse {
-                let mut v = std::mem::take(&mut self.sprite_upload_scratch);
-                v.clear();
-                v.reserve(n_sprites);
-                v
-            } else {
-                Vec::with_capacity(n_sprites)
-            };
-            let mut text_upload: Vec<TextInstance> = if scratch_reuse {
-                let mut v = std::mem::take(&mut self.text_upload_scratch);
-                v.clear();
-                v.reserve(n_text);
-                v
-            } else {
-                Vec::with_capacity(n_text)
-            };
-            let mut coalesced: Vec<Coalesced2dDraw> = if scratch_reuse {
-                let mut v = std::mem::take(&mut self.coalesced_2d_scratch);
-                v.clear();
-                v
-            } else {
-                Vec::new()
-            };
+                let mut draw_list: Vec<(f32, DrawCommand2d)> = if scratch_reuse {
+                    let mut v = std::mem::take(&mut self.draw_list_scratch);
+                    v.clear();
+                    v
+                } else {
+                    Vec::new()
+                };
+                // Bucket-order flat copy, used to resolve `Sprite(tex, flat_idx)`.
+                let mut sprite_flat: Vec<SpriteBatchEntry> = if scratch_reuse {
+                    let mut v = std::mem::take(&mut self.sprite_flat_scratch);
+                    v.clear();
+                    v.reserve(n_sprites);
+                    v
+                } else {
+                    Vec::with_capacity(n_sprites)
+                };
+                let mut shape_upload: Vec<ferrous_2d::render::ShapeGpu> = if scratch_reuse {
+                    let mut v = std::mem::take(&mut self.shape_upload_scratch);
+                    v.clear();
+                    v.reserve(n_shapes);
+                    v
+                } else {
+                    Vec::with_capacity(n_shapes)
+                };
+                let mut sprite_upload: Vec<ferrous_2d::render::SpriteInstance> = if scratch_reuse {
+                    let mut v = std::mem::take(&mut self.sprite_upload_scratch);
+                    v.clear();
+                    v.reserve(n_sprites);
+                    v
+                } else {
+                    Vec::with_capacity(n_sprites)
+                };
+                let mut text_upload: Vec<TextInstance> = if scratch_reuse {
+                    let mut v = std::mem::take(&mut self.text_upload_scratch);
+                    v.clear();
+                    v.reserve(n_text);
+                    v
+                } else {
+                    Vec::with_capacity(n_text)
+                };
+                let mut coalesced: Vec<Coalesced2dDraw> = if scratch_reuse {
+                    let mut v = std::mem::take(&mut self.coalesced_2d_scratch);
+                    v.clear();
+                    v
+                } else {
+                    Vec::new()
+                };
 
-            // Fast path: shapes only, already in painter (z) order — the usual
-            // CAD case (callers submit in layer order).  No command list and no
-            // sort: cull and pack straight into the upload as a single run.
-            // In multi-view the shape vector is already grouped per view in
-            // submission order; never reorder across view boundaries.
-            let shapes_in_order = multi_view
-                || (n_sprites == 0
-                    && n_text == 0
-                    && self.shape_batcher.instances.windows(2).all(|w| {
-                        w[1].transform_c3[2].partial_cmp(&w[0].transform_c3[2])
-                            != Some(std::cmp::Ordering::Less)
-                    }));
+                // Fast path: shapes only, already in painter (z) order — the usual
+                // CAD case (callers submit in layer order).  No command list and no
+                // sort: cull and pack straight into the upload as a single run.
+                // In multi-view the shape vector is already grouped per view in
+                // submission order; never reorder across view boundaries.
+                let shapes_in_order = multi_view
+                    || (n_sprites == 0
+                        && n_text == 0
+                        && self
+                            .shape_blend_2d
+                            .iter()
+                            .all(|blend| *blend == BlendMode2d::Normal)
+                        && self.shape_batcher.instances.windows(2).all(|w| {
+                            w[1].transform_c3[2].partial_cmp(&w[0].transform_c3[2])
+                                != Some(std::cmp::Ordering::Less)
+                        }));
 
-            if shapes_in_order {
-                for shape in &self.shape_batcher.instances {
-                    if cull {
-                        let (amin, amax) = shape_world_aabb(shape);
-                        if !aabb_intersects(amin, amax, rmin, rmax) {
-                            continue;
-                        }
-                    }
-                    shape_upload.push(ferrous_2d::render::ShapeGpu::pack(shape));
-                }
-                self.renderer_2d_pure
-                    .add_culled_instances((n_shapes - shape_upload.len()) as u32);
-                if !shape_upload.is_empty() {
-                    coalesced.push(Coalesced2dDraw::Shapes {
-                        start: 0,
-                        count: shape_upload.len() as u32,
-                    });
-                }
-            } else {
-                // ── Painter-order batcher (audit H3) ────────────────────────
-                // Build a painter-order command list without mutating the
-                // batchers, then reorder the instances into the uploads so
-                // every (pipeline, texture) run is a contiguous GPU range.
-                // `sort_unstable_by` on the total-order `(z, command)` key is
-                // deterministic (the command is a unique tie-break) and
-                // allocation-free.
-                draw_list.reserve(total);
-                let mut culled = 0u32;
-                for (i, shape) in self.shape_batcher.instances.iter().enumerate() {
-                    if cull {
-                        let (amin, amax) = shape_world_aabb(shape);
-                        if !aabb_intersects(amin, amax, rmin, rmax) {
-                            culled += 1;
-                            continue;
-                        }
-                    }
-                    draw_list.push((shape.transform_c3[2], DrawCommand2d::Shape(i)));
-                }
-                for (&tex_id, instances) in &self.sprite_batcher_2d.batches {
-                    for inst in instances {
-                        sprite_flat.push(*inst);
+                if shapes_in_order {
+                    for shape in &self.shape_batcher.instances {
                         if cull {
-                            let (amin, amax) = sprite_world_aabb(inst);
+                            let (amin, amax) = shape_world_aabb(shape);
+                            if !aabb_intersects(amin, amax, rmin, rmax) {
+                                continue;
+                            }
+                        }
+                        shape_upload.push(ferrous_2d::render::ShapeGpu::pack(shape));
+                    }
+                    self.renderer_2d_pure
+                        .add_culled_instances((n_shapes - shape_upload.len()) as u32);
+                    if !shape_upload.is_empty() {
+                        coalesced.push(Coalesced2dDraw::Shapes {
+                            start: 0,
+                            count: shape_upload.len() as u32,
+                            blend: BlendMode2d::Normal,
+                        });
+                    }
+                } else {
+                    // ── Painter-order batcher (audit H3) ────────────────────────
+                    // Build a painter-order command list without mutating the
+                    // batchers, then reorder the instances into the uploads so
+                    // every (pipeline, texture) run is a contiguous GPU range.
+                    // `sort_unstable_by` on the total-order `(z, command)` key is
+                    // deterministic (the command is a unique tie-break) and
+                    // allocation-free.
+                    draw_list.reserve(total);
+                    let mut culled = 0u32;
+                    for (i, shape) in self.shape_batcher.instances.iter().enumerate() {
+                        if cull {
+                            let (amin, amax) = shape_world_aabb(shape);
+                            if !aabb_intersects(amin, amax, rmin, rmax) {
+                                culled += 1;
+                                continue;
+                            }
+                        }
+                        let blend = self
+                            .shape_blend_2d
+                            .get(i)
+                            .copied()
+                            .unwrap_or(BlendMode2d::Normal);
+                        draw_list.push((
+                            shape.transform_c3[2],
+                            DrawCommand2d::Shape { index: i, blend },
+                        ));
+                    }
+                    for (&tex_id, entries) in &self.sprite_batcher_2d.batches {
+                        for entry in entries {
+                            sprite_flat.push(*entry);
+                            let inst = &entry.instance;
+                            if cull {
+                                let (amin, amax) = sprite_world_aabb(inst);
+                                if !aabb_intersects(amin, amax, rmin, rmax) {
+                                    culled += 1;
+                                    continue;
+                                }
+                            }
+                            draw_list.push((
+                                inst.transform_c3[2],
+                                DrawCommand2d::Sprite {
+                                    texture_id: tex_id,
+                                    index: sprite_flat.len() - 1,
+                                    blend: entry.blend,
+                                },
+                            ));
+                        }
+                    }
+                    for (i, (_, inst, blend)) in self.text_batcher_2d.iter().enumerate() {
+                        if cull {
+                            let (amin, amax) = inst.world_aabb();
                             if !aabb_intersects(amin, amax, rmin, rmax) {
                                 culled += 1;
                                 continue;
                             }
                         }
                         draw_list.push((
-                            inst.transform_c3[2],
-                            DrawCommand2d::Sprite(tex_id, sprite_flat.len() - 1),
+                            inst.depth(),
+                            DrawCommand2d::Text {
+                                index: i,
+                                blend: *blend,
+                            },
                         ));
                     }
-                }
-                for (i, (_, inst)) in self.text_batcher_2d.iter().enumerate() {
-                    if cull {
-                        let (amin, amax) = inst.world_aabb();
-                        if !aabb_intersects(amin, amax, rmin, rmax) {
-                            culled += 1;
-                            continue;
-                        }
-                    }
-                    draw_list.push((inst.depth(), DrawCommand2d::Text(i)));
-                }
-                self.renderer_2d_pure.add_culled_instances(culled);
+                    self.renderer_2d_pure.add_culled_instances(culled);
 
-                draw_list.sort_unstable_by(|a, b| {
-                    a.0.partial_cmp(&b.0)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                        .then_with(|| a.1.cmp(&b.1))
-                });
+                    draw_list.sort_unstable_by(|a, b| {
+                        a.0.partial_cmp(&b.0)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                            .then_with(|| a.1.cmp(&b.1))
+                    });
 
-                // Split the painter-order stream into maximal same-key runs.
-                let mut i = 0usize;
-                while i < draw_list.len() {
-                    match draw_list[i].1 {
-                        DrawCommand2d::Shape(_) => {
-                            let run_start = shape_upload.len() as u32;
-                            while i < draw_list.len() {
-                                match draw_list[i].1 {
-                                    DrawCommand2d::Shape(idx) => {
-                                        shape_upload.push(ferrous_2d::render::ShapeGpu::pack(
-                                            &self.shape_batcher.instances[idx],
-                                        ));
-                                        i += 1;
+                    // Split the painter-order stream into maximal same-key runs.
+                    let mut i = 0usize;
+                    while i < draw_list.len() {
+                        match draw_list[i].1 {
+                            DrawCommand2d::Shape { blend, .. } => {
+                                let run_start = shape_upload.len() as u32;
+                                while i < draw_list.len() {
+                                    match draw_list[i].1 {
+                                        DrawCommand2d::Shape { index, blend: b } if b == blend => {
+                                            shape_upload.push(ferrous_2d::render::ShapeGpu::pack(
+                                                &self.shape_batcher.instances[index],
+                                            ));
+                                            i += 1;
+                                        }
+                                        _ => break,
                                     }
-                                    _ => break,
                                 }
+                                coalesced.push(Coalesced2dDraw::Shapes {
+                                    start: run_start,
+                                    count: shape_upload.len() as u32 - run_start,
+                                    blend,
+                                });
                             }
-                            coalesced.push(Coalesced2dDraw::Shapes {
-                                start: run_start,
-                                count: shape_upload.len() as u32 - run_start,
-                            });
-                        }
-                        DrawCommand2d::Sprite(tex_id, _) => {
-                            let run_start = sprite_upload.len() as u32;
-                            while i < draw_list.len() {
-                                match draw_list[i].1 {
-                                    DrawCommand2d::Sprite(t, idx) if t == tex_id => {
-                                        sprite_upload.push(sprite_flat[idx]);
-                                        i += 1;
-                                    }
-                                    _ => break,
-                                }
-                            }
-                            coalesced.push(Coalesced2dDraw::Sprites {
+                            DrawCommand2d::Sprite {
                                 texture_id: tex_id,
-                                start: run_start,
-                                count: sprite_upload.len() as u32 - run_start,
-                            });
-                        }
-                        DrawCommand2d::Text(first) => {
-                            let font = self.text_batcher_2d[first].0;
-                            let run_start = text_upload.len() as u32;
-                            while i < draw_list.len() {
-                                match draw_list[i].1 {
-                                    DrawCommand2d::Text(idx)
-                                        if self.text_batcher_2d[idx].0 == font =>
-                                    {
-                                        text_upload.push(self.text_batcher_2d[idx].1);
-                                        i += 1;
+                                blend,
+                                ..
+                            } => {
+                                let run_start = sprite_upload.len() as u32;
+                                while i < draw_list.len() {
+                                    match draw_list[i].1 {
+                                        DrawCommand2d::Sprite {
+                                            texture_id: t,
+                                            index,
+                                            blend: b,
+                                        } if t == tex_id && b == blend => {
+                                            let mut inst = sprite_flat[index].instance;
+                                            if self.premultiplied_textures.contains(&tex_id) {
+                                                inst.properties[3] = 1.0;
+                                            }
+                                            sprite_upload.push(inst);
+                                            i += 1;
+                                        }
+                                        _ => break,
                                     }
-                                    _ => break,
                                 }
+                                coalesced.push(Coalesced2dDraw::Sprites {
+                                    texture_id: tex_id,
+                                    start: run_start,
+                                    count: sprite_upload.len() as u32 - run_start,
+                                    blend,
+                                });
                             }
-                            coalesced.push(Coalesced2dDraw::Text {
-                                font,
-                                start: run_start,
-                                count: text_upload.len() as u32 - run_start,
-                            });
+                            DrawCommand2d::Text {
+                                index: first,
+                                blend,
+                                ..
+                            } => {
+                                let font = self.text_batcher_2d[first].0;
+                                let run_start = text_upload.len() as u32;
+                                while i < draw_list.len() {
+                                    match draw_list[i].1 {
+                                        DrawCommand2d::Text { index, blend: b }
+                                            if self.text_batcher_2d[index].0 == font
+                                                && b == blend =>
+                                        {
+                                            text_upload.push(self.text_batcher_2d[index].1);
+                                            i += 1;
+                                        }
+                                        _ => break,
+                                    }
+                                }
+                                coalesced.push(Coalesced2dDraw::Text {
+                                    font,
+                                    start: run_start,
+                                    count: text_upload.len() as u32 - run_start,
+                                    blend,
+                                });
+                            }
                         }
                     }
                 }
-            }
 
-            // Upload the painter-ordered coalesced buffers (one write_buffer each).
-            self.renderer_2d_pure
-                .prepare_shape_gpu_slice(&self.context.queue, &shape_upload);
-            self.renderer_2d_pure
-                .prepare_sprite_slice(&self.context.queue, &sprite_upload);
-            self.renderer_2d_pure
-                .prepare_text_slice(&self.context.queue, &text_upload);
+                // Upload the painter-ordered coalesced buffers (one write_buffer each).
+                self.renderer_2d_pure
+                    .prepare_shape_gpu_slice(&self.context.queue, &shape_upload);
+                self.renderer_2d_pure
+                    .prepare_sprite_slice(&self.context.queue, &sprite_upload);
+                self.renderer_2d_pure
+                    .prepare_text_slice(&self.context.queue, &text_upload);
 
-            // Multi-view: upload one camera + grid uniform per view (before the
-            // pass; uniform buffers cannot be written while encoding).
-            if multi_view {
-                let views = self.views_2d.clone();
-                for (i, v) in views.iter().enumerate() {
-                    let rw = v.rect[2].max(1.0);
-                    let world_per_px = if v.view_proj.x_axis.x.abs() > 1e-9 {
-                        2.0 / (v.view_proj.x_axis.x.abs() * rw)
-                    } else {
-                        1.0
-                    };
-                    self.renderer_2d_pure.prepare_view(
-                        i,
-                        &self.context.queue,
-                        v.view_proj,
-                        v.rect,
-                        v.view_proj.inverse(),
-                        world_per_px,
-                    );
-                }
-            }
-
-            let shape_upload_len = shape_upload.len();
-
-            // Un único render pass: Clear → Shapes → Sprites
-            {
-                let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Pure2D Main Pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: target_view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            // Clear con el color de fondo configurado
-                            load: wgpu::LoadOp::Clear(self.world_pass.clear_color),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    // Sin depth en Pure2D: el Z-ordering es CPU-side vía z_index
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-
+                // Multi-view: upload one camera + grid uniform per view (before the
+                // pass; uniform buffers cannot be written while encoding).
                 if multi_view {
-                    // Draw each view into its own scissor with its own camera.
                     let views = self.views_2d.clone();
                     for (i, v) in views.iter().enumerate() {
-                        let x = v.rect[0].max(0.0) as u32;
-                        let y = v.rect[1].max(0.0) as u32;
-                        let w = (v.rect[2].max(1.0)) as u32;
-                        let h = (v.rect[3].max(1.0)) as u32;
-                        rpass.set_viewport(x as f32, y as f32, w as f32, h as f32, 0.0, 1.0);
-                        rpass.set_scissor_rect(x, y, w, h);
-
-                        if v.background {
-                            if let Some(gb) = self.renderer_2d_pure.view_grid_bg(i) {
-                                self.renderer_2d_pure.render_grid_bg(&mut rpass, gb);
-                            }
-                            self.emit_static_2d_batches(&mut rpass, Some(i), true);
-                        }
-                        if let Some(bg) = self.renderer_2d_pure.view_shape_bg(i) {
-                            let start = v.shape_start.min(shape_upload_len) as u32;
-                            let end = v.shape_end.min(shape_upload_len) as u32;
-                            self.renderer_2d_pure.render_shapes_range_bg(
-                                &mut rpass,
-                                bg,
-                                start,
-                                end.saturating_sub(start),
-                            );
-                        }
+                        let rw = v.rect[2].max(1.0);
+                        let world_per_px = if v.view_proj.x_axis.x.abs() > 1e-9 {
+                            2.0 / (v.view_proj.x_axis.x.abs() * rw)
+                        } else {
+                            1.0
+                        };
+                        self.renderer_2d_pure.prepare_view(
+                            i,
+                            &self.context.queue,
+                            v.view_proj,
+                            v.rect,
+                            v.view_proj.inverse(),
+                            world_per_px,
+                        );
                     }
-                    // Sprites are not segmented by view yet; draw them once in
-                    // the first view so they still appear.
-                    if let Some(bg) = self.renderer_2d_pure.view_sprite_bg(0) {
-                        let sprite_bgs = &self.sprite_bind_groups;
-                        for draw in &coalesced {
-                            if let Coalesced2dDraw::Sprites {
-                                texture_id,
-                                start,
-                                count,
-                            } = *draw
-                            {
-                                let bg_fn = |id: u32| -> Option<&wgpu::BindGroup> {
-                                    sprite_bgs.get(&id).map(|b| b.as_ref())
-                                };
-                                self.renderer_2d_pure.render_sprites_range_bg(
-                                    &mut rpass, bg, texture_id, start, count, bg_fn,
+                }
+
+                let shape_upload_len = shape_upload.len();
+
+                // Un único render pass: Clear → Shapes → Sprites
+                {
+                    let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("Pure2D Main Pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: target_view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                // Clear con el color de fondo configurado
+                                load: wgpu::LoadOp::Clear(self.world_pass.clear_color),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        // Sin depth en Pure2D: el Z-ordering es CPU-side vía z_index
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+
+                    if multi_view {
+                        // Draw each view into its own scissor with its own camera.
+                        let views = self.views_2d.clone();
+                        for (i, v) in views.iter().enumerate() {
+                            let x = v.rect[0].max(0.0) as u32;
+                            let y = v.rect[1].max(0.0) as u32;
+                            let w = (v.rect[2].max(1.0)) as u32;
+                            let h = (v.rect[3].max(1.0)) as u32;
+                            rpass.set_viewport(x as f32, y as f32, w as f32, h as f32, 0.0, 1.0);
+                            rpass.set_scissor_rect(x, y, w, h);
+
+                            if v.background {
+                                if let Some(gb) = self.renderer_2d_pure.view_grid_bg(i) {
+                                    self.renderer_2d_pure.render_grid_bg(&mut rpass, gb);
+                                }
+                                self.emit_static_2d_batches(&mut rpass, Some(i), true);
+                            }
+                            if let Some(bg) = self.renderer_2d_pure.view_shape_bg(i) {
+                                let start = v.shape_start.min(shape_upload_len) as u32;
+                                let end = v.shape_end.min(shape_upload_len) as u32;
+                                self.renderer_2d_pure.render_shapes_range_bg(
+                                    &mut rpass,
+                                    bg,
+                                    start,
+                                    end.saturating_sub(start),
                                 );
                             }
                         }
-                    }
-                    // Text is not segmented by view yet either; draw it once in
-                    // the first view.
-                    if let Some(cam_bg) = self.renderer_2d_pure.view_text_bg(0) {
-                        for draw in &coalesced {
-                            if let Coalesced2dDraw::Text { font, start, count } = *draw {
-                                if let Some(entry) = self.fonts_2d.get(&font) {
-                                    self.renderer_2d_pure.render_text_range_bg(
-                                        &mut rpass,
-                                        cam_bg,
-                                        &entry.bind_group,
-                                        start,
-                                        count,
+                        // Sprites are not segmented by view yet; draw them once in
+                        // the first view so they still appear.
+                        if let Some(bg) = self.renderer_2d_pure.view_sprite_bg(0) {
+                            let sprite_bgs = &self.sprite_bind_groups;
+                            for draw in &coalesced {
+                                if let Coalesced2dDraw::Sprites {
+                                    texture_id,
+                                    start,
+                                    count,
+                                    blend,
+                                } = *draw
+                                {
+                                    let bg_fn = |id: u32| -> Option<&wgpu::BindGroup> {
+                                        sprite_bgs.get(&id).map(|b| b.as_ref())
+                                    };
+                                    self.renderer_2d_pure.render_sprites_range_bg_blend(
+                                        &mut rpass, bg, texture_id, start, count, bg_fn, blend,
                                     );
                                 }
                             }
                         }
-                    }
-                } else {
-                    // Procedural background grid: one full-screen triangle right
-                    // after Clear, before any retained/immediate geometry.
-                    self.renderer_2d_pure.render_grid(&mut rpass);
-
-                    // Retained static batches first: one instanced draw call each,
-                    // no per-frame upload.  They are drawn before the immediate
-                    // stream (the cross-layer z-ordering contract is documented in
-                    // `brain/2d_static_batch.md`).  No-op when the config flag is
-                    // off or when there are no active batches.
-                    self.emit_static_2d_batches(&mut rpass, None, false);
-
-                    // Emit the runs in painter order.  Texture bind groups are
-                    // resolved per sprite run.
-                    let sprite_bgs = &self.sprite_bind_groups;
-                    for draw in &coalesced {
-                        match *draw {
-                            Coalesced2dDraw::Shapes { start, count } => {
-                                self.renderer_2d_pure
-                                    .render_shapes_range(&mut rpass, start, count);
+                        // Text is not segmented by view yet either; draw it once in
+                        // the first view.
+                        if let Some(cam_bg) = self.renderer_2d_pure.view_text_bg(0) {
+                            for draw in &coalesced {
+                                if let Coalesced2dDraw::Text {
+                                    font,
+                                    start,
+                                    count,
+                                    blend,
+                                } = *draw
+                                {
+                                    if let Some(entry) = self.fonts_2d.get(font.handle()) {
+                                        self.renderer_2d_pure.render_text_range_bg_blend(
+                                            &mut rpass,
+                                            cam_bg,
+                                            &entry.bind_group,
+                                            start,
+                                            count,
+                                            blend,
+                                        );
+                                    }
+                                }
                             }
-                            Coalesced2dDraw::Sprites {
-                                texture_id,
-                                start,
-                                count,
-                            } => {
-                                let bg_fn = |id: u32| -> Option<&wgpu::BindGroup> {
-                                    sprite_bgs.get(&id).map(|bg| bg.as_ref())
-                                };
-                                self.renderer_2d_pure.render_sprites_range(
-                                    &mut rpass, texture_id, start, count, bg_fn,
-                                );
-                            }
-                            Coalesced2dDraw::Text { font, start, count } => {
-                                if let Some(entry) = self.fonts_2d.get(&font) {
-                                    self.renderer_2d_pure.render_text_range(
-                                        &mut rpass,
-                                        &entry.bind_group,
-                                        start,
-                                        count,
+                        }
+                    } else {
+                        // Procedural background grid: one full-screen triangle right
+                        // after Clear, before any retained/immediate geometry.
+                        self.renderer_2d_pure.render_grid(&mut rpass);
+
+                        // Retained static batches first: one instanced draw call each,
+                        // no per-frame upload.  They are drawn before the immediate
+                        // stream (the cross-layer z-ordering contract is documented in
+                        // `brain/2d_static_batch.md`).  No-op when the config flag is
+                        // off or when there are no active batches.
+                        self.emit_static_2d_batches(&mut rpass, None, false);
+
+                        // Emit the runs in painter order.  Texture bind groups are
+                        // resolved per sprite run.
+                        let sprite_bgs = &self.sprite_bind_groups;
+                        for draw in &coalesced {
+                            match *draw {
+                                Coalesced2dDraw::Shapes {
+                                    start,
+                                    count,
+                                    blend,
+                                } => {
+                                    self.renderer_2d_pure
+                                        .render_shapes_range_blend(&mut rpass, start, count, blend);
+                                }
+                                Coalesced2dDraw::Sprites {
+                                    texture_id,
+                                    start,
+                                    count,
+                                    blend,
+                                } => {
+                                    let bg_fn = |id: u32| -> Option<&wgpu::BindGroup> {
+                                        sprite_bgs.get(&id).map(|bg| bg.as_ref())
+                                    };
+                                    self.renderer_2d_pure.render_sprites_range_blend(
+                                        &mut rpass, texture_id, start, count, bg_fn, blend,
                                     );
+                                }
+                                Coalesced2dDraw::Text {
+                                    font,
+                                    start,
+                                    count,
+                                    blend,
+                                } => {
+                                    if let Some(entry) = self.fonts_2d.get(font.handle()) {
+                                        self.renderer_2d_pure.render_text_range_blend(
+                                            &mut rpass,
+                                            &entry.bind_group,
+                                            start,
+                                            count,
+                                            blend,
+                                        );
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
 
-            // Hand the scratch buffers back for reuse next frame.
-            if scratch_reuse {
-                self.draw_list_scratch = draw_list;
-                self.sprite_flat_scratch = sprite_flat;
-                self.shape_upload_scratch = shape_upload;
-                self.sprite_upload_scratch = sprite_upload;
-                self.text_upload_scratch = text_upload;
-                self.coalesced_2d_scratch = coalesced;
-            }
+                // Hand the scratch buffers back for reuse next frame.
+                if scratch_reuse {
+                    self.draw_list_scratch = draw_list;
+                    self.sprite_flat_scratch = sprite_flat;
+                    self.shape_upload_scratch = shape_upload;
+                    self.sprite_upload_scratch = sprite_upload;
+                    self.text_upload_scratch = text_upload;
+                    self.coalesced_2d_scratch = coalesced;
+                }
+            } // end non-layered Pure2D path
 
             // Limpiar el sprite batcher para el siguiente frame
             self.sprite_batcher_2d.clear();
@@ -2785,6 +3228,8 @@ impl Renderer {
     }
 
     pub fn set_font_atlas(&mut self, view: &wgpu::TextureView, sampler: &wgpu::Sampler) {
+        #[cfg(not(feature = "gui"))]
+        let _ = (view, sampler);
         #[cfg(feature = "gui")]
         crate::renderer_api::set_font_atlas(&mut self.ui_pass, view, sampler);
         self.mark_dirty();
@@ -2813,8 +3258,43 @@ impl Renderer {
     }
 
     /// Push a technical 2D shape for rendering this frame.
+    ///
+    /// The shape uses the current [`BlendMode2d`] (see
+    /// [`Self::set_blend_mode_2d`]); the default is `Normal`.
     pub fn draw_2d_shape(&mut self, instance: ferrous_2d::render::types::ShapeInstance) {
+        if self.frame_uses_layers {
+            self.record_frame_cmd(FrameCmd2d::Shape {
+                instance,
+                blend: self.current_blend_2d,
+            });
+            return;
+        }
         self.shape_batcher.push_shape(instance);
+        self.shape_blend_2d.push(self.current_blend_2d);
+    }
+
+    /// Records one command in the innermost open layer, or in the root stream.
+    fn record_frame_cmd(&mut self, cmd: FrameCmd2d) {
+        match self.layer_stack_2d.last().copied() {
+            Some(layer) => self.layers_2d[layer as usize].cmds.push(cmd),
+            None => self.frame_cmds_2d.push(cmd),
+        }
+    }
+
+    /// Select the blend mode applied to every subsequent 2D draw call in this
+    /// frame, until changed.
+    ///
+    /// The state is reset to [`BlendMode2d::Normal`] by [`Self::clear_2d`], so
+    /// callers that draw once per frame do not need to reset it themselves.
+    /// Setting the mode between two draws of the same kind splits their
+    /// coalesced run (one extra draw call) but never reorders them.
+    pub fn set_blend_mode_2d(&mut self, mode: BlendMode2d) {
+        self.current_blend_2d = mode;
+    }
+
+    /// The blend mode that applies to the next 2D draw call.
+    pub fn blend_mode_2d(&self) -> BlendMode2d {
+        self.current_blend_2d
     }
 
     /// Push a slice of technical 2D shapes for rendering this frame.
@@ -2828,7 +3308,18 @@ impl Renderer {
     /// This is the fast path for consumers that approximate a filled polygon
     /// with many instances (e.g. a triangle fan or a scan-line fill).
     pub fn draw_2d_shapes(&mut self, shapes: &[ferrous_2d::render::types::ShapeInstance]) {
+        if self.frame_uses_layers {
+            for instance in shapes {
+                self.record_frame_cmd(FrameCmd2d::Shape {
+                    instance: *instance,
+                    blend: self.current_blend_2d,
+                });
+            }
+            return;
+        }
         self.shape_batcher.instances.extend_from_slice(shapes);
+        let end = self.shape_blend_2d.len() + shapes.len();
+        self.shape_blend_2d.resize(end, self.current_blend_2d);
     }
 
     /// Push a technical 2D path for rendering this frame.
@@ -2847,7 +3338,16 @@ impl Renderer {
         texture_id: u32,
         instance: ferrous_2d::render::SpriteInstance,
     ) {
-        self.sprite_batcher_2d.push_sprite(texture_id, instance);
+        if self.frame_uses_layers {
+            self.record_frame_cmd(FrameCmd2d::Sprite {
+                texture_id,
+                instance,
+                blend: self.current_blend_2d,
+            });
+            return;
+        }
+        self.sprite_batcher_2d
+            .push_sprite_blend(texture_id, instance, self.current_blend_2d);
     }
 
     /// Dibuja un path 2D (líneas, polígonos) para este frame.
@@ -3004,12 +3504,32 @@ impl Renderer {
     /// El sampler usa `FilterMode::Nearest` por defecto para pixel-art perfecto.
     /// Para texturas de alta resolución con suavizado, usa `register_sprite_texture_linear`.
     pub fn register_sprite_texture(&mut self, width: u32, height: u32, data: &[u8]) -> u32 {
-        self.register_sprite_texture_inner(width, height, data, wgpu::FilterMode::Nearest)
+        self.register_sprite_texture_inner(width, height, data, wgpu::FilterMode::Nearest, false)
     }
 
     /// Igual que `register_sprite_texture` pero con filtro bilineal (para sprites HD).
     pub fn register_sprite_texture_linear(&mut self, width: u32, height: u32, data: &[u8]) -> u32 {
-        self.register_sprite_texture_inner(width, height, data, wgpu::FilterMode::Linear)
+        self.register_sprite_texture_inner(width, height, data, wgpu::FilterMode::Linear, false)
+    }
+
+    /// Registers an RGBA8 sprite texture whose texels are **premultiplied**.
+    ///
+    /// The texture format and public upload API are unchanged: `data` is
+    /// straight RGBA8 bytes in sRGB encoding space, but each texel's RGB is
+    /// already multiplied by its alpha (and then sRGB-encoded, so wgpu's sRGB
+    /// decode recovers the premultiplied linear value). The sprite shader skips
+    /// the straight-alpha premultiply for this texture, which removes the dark
+    /// fringes bilinear filtering produces when straight-alpha texels are
+    /// interpolated. Uses nearest filtering; see
+    /// [`Self::register_sprite_texture_linear`] for the straight-alpha bilinear
+    /// variant.
+    pub fn register_sprite_texture_premultiplied(
+        &mut self,
+        width: u32,
+        height: u32,
+        data: &[u8],
+    ) -> u32 {
+        self.register_sprite_texture_inner(width, height, data, wgpu::FilterMode::Nearest, true)
     }
 
     fn register_sprite_texture_inner(
@@ -3018,6 +3538,7 @@ impl Renderer {
         height: u32,
         data: &[u8],
         filter: wgpu::FilterMode,
+        premultiplied: bool,
     ) -> u32 {
         use wgpu::util::DeviceExt;
 
@@ -3082,6 +3603,11 @@ impl Renderer {
             }
         };
         self.sprite_bind_groups.insert(id, bind_group);
+        if premultiplied {
+            self.premultiplied_textures.insert(id);
+        } else {
+            self.premultiplied_textures.remove(&id);
+        }
         id
     }
 
@@ -3095,6 +3621,7 @@ impl Renderer {
     /// huérfanas crezcan indefinidamente al recargar planos.
     pub fn free_sprite_texture(&mut self, texture_id: u32) {
         let existed = self.sprite_bind_groups.remove(&texture_id).is_some();
+        self.premultiplied_textures.remove(&texture_id);
         self.sprite_batcher_2d.remove_texture(texture_id);
         if existed && !self.freed_sprite_texture_ids.contains(&texture_id) {
             self.freed_sprite_texture_ids.push(texture_id);
@@ -3137,18 +3664,8 @@ impl Renderer {
                     ],
                 }),
         );
-        let id = match self.freed_font_2d_ids.pop() {
-            Some(recycled) => recycled,
-            None => {
-                let fresh = self.next_font_2d_id;
-                self.next_font_2d_id += 1;
-                fresh
-            }
-        };
-        let font_id = FontId2d(id);
-        self.fonts_2d
-            .insert(font_id, Font2dEntry { font, bind_group });
-        Ok(font_id)
+        let handle = self.fonts_2d.insert(Font2dEntry { font, bind_group });
+        Ok(FontId2d::from(handle))
     }
 
     /// Free a 2D font and recycle its handle.
@@ -3156,11 +3673,8 @@ impl Renderer {
     /// Pending glyphs of that font are dropped from the current frame's text
     /// batch; later draws with the stale handle are ignored with a warning.
     pub fn free_font_2d(&mut self, font_id: FontId2d) {
-        if self.fonts_2d.remove(&font_id).is_some() {
-            self.text_batcher_2d.retain(|(f, _)| *f != font_id);
-            if !self.freed_font_2d_ids.contains(&font_id.0) {
-                self.freed_font_2d_ids.push(font_id.0);
-            }
+        if self.fonts_2d.remove(font_id.handle()).is_some() {
+            self.text_batcher_2d.retain(|(f, _, _)| *f != font_id);
         }
     }
 
@@ -3188,10 +3702,11 @@ impl Renderer {
         align: TextAlign,
         color: [f32; 4],
     ) {
-        let Some(entry) = self.fonts_2d.get(&font_id) else {
+        let Some(entry) = self.fonts_2d.get(font_id.handle()) else {
             log::warn!(
-                "draw_text_2d called with an unknown FontId2d({})",
-                font_id.0
+                "draw_text_2d called with a stale FontId2d (index {}, generation {})",
+                font_id.index(),
+                font_id.generation()
             );
             return;
         };
@@ -3210,8 +3725,17 @@ impl Renderer {
             let placement = glam::Mat4::from_translation(glam::Vec3::new(left, bottom, 0.0))
                 * glam::Mat4::from_scale(glam::Vec3::new(width, height, 1.0));
             let model = transform * placement;
-            self.text_batcher_2d
-                .push((font_id, TextInstance::new(model, quad.uv, color, px_range)));
+            let glyph = TextInstance::new(model, quad.uv, color, px_range);
+            if self.frame_uses_layers {
+                self.record_frame_cmd(FrameCmd2d::Text {
+                    font: font_id,
+                    instance: glyph,
+                    blend: self.current_blend_2d,
+                });
+            } else {
+                self.text_batcher_2d
+                    .push((font_id, glyph, self.current_blend_2d));
+            }
         }
 
         self.text_layout_scratch = layout;
@@ -3219,9 +3743,9 @@ impl Renderer {
 
     /// Measure one line of Pure2D text without drawing it.
     ///
-    /// Returns the line's total advance, vertical metrics and glyph count.
-    /// Measurement allocates a small local buffer; the draw path itself reuses
-    /// its scratch buffer instead.
+    /// Returns the line's total advance, vertical metrics and glyph count, or
+    /// `None` when `font_id` is stale. Measurement allocates nothing: it runs
+    /// the atlas layout loop through a counting sink and never builds a `Vec`.
     pub fn measure_text_2d(
         &self,
         font_id: FontId2d,
@@ -3229,23 +3753,587 @@ impl Renderer {
         size_px: f32,
         align: TextAlign,
     ) -> Option<ferrous_font::LineMetrics> {
-        let entry = self.fonts_2d.get(&font_id)?;
-        let mut quads = Vec::new();
-        Some(
-            entry
-                .font
-                .atlas
-                .layout_line(text, size_px, align, &mut quads),
-        )
+        let Some(entry) = self.fonts_2d.get(font_id.handle()) else {
+            log::warn!(
+                "measure_text_2d called with a stale FontId2d (index {}, generation {})",
+                font_id.index(),
+                font_id.generation()
+            );
+            return None;
+        };
+        Some(entry.font.atlas.measure_line(text, size_px, align))
+    }
+
+    // -- Pure2D offscreen layers ---------------------------------------------
+
+    /// Opens an offscreen compositing layer for the rest of the frame.
+    ///
+    /// Draws between this call and [`Self::pop_layer_2d`] are z-sorted among
+    /// themselves and rendered into a transparent offscreen texture; the layer
+    /// as a whole is then composited into its parent at [`Layer2d::depth`] with
+    /// [`Layer2d::blend`] and group [`Layer2d::opacity`].  Group opacity is
+    /// applied once to the finished layer, so overlapping opaque children show
+    /// no internal overlap.
+    ///
+    /// Layers may be nested up to [`MAX_LAYER_DEPTH_2D`] (8) levels; deeper
+    /// pushes return [`LayerError::TooDeep`] and change nothing.  A non-finite
+    /// opacity returns [`LayerError::InvalidOpacity`]; a finite opacity is
+    /// clamped to `0.0..=1.0`.
+    ///
+    /// The first push of a frame switches the Pure2D path from the coalesced
+    /// batcher stream to the layered command log for the rest of the frame.
+    /// Draws already batched before that first push are migrated to the root
+    /// stream in kind order (shapes, then sprites, then text).
+    pub fn push_layer_2d(&mut self, desc: Layer2d) -> Result<(), LayerError> {
+        if !desc.opacity.is_finite() {
+            let err = LayerError::InvalidOpacity {
+                opacity: desc.opacity,
+            };
+            self.layer_error_2d = Some(err);
+            log::warn!("push_layer_2d rejected: {err}");
+            return Err(err);
+        }
+        let depth = self.layer_stack_2d.len() as u32;
+        if depth >= MAX_LAYER_DEPTH_2D {
+            let err = LayerError::TooDeep {
+                max: MAX_LAYER_DEPTH_2D,
+                requested: depth + 1,
+            };
+            self.layer_error_2d = Some(err);
+            log::warn!("push_layer_2d rejected: {err}");
+            return Err(err);
+        }
+        if !self.frame_uses_layers {
+            self.migrate_batchers_to_frame_cmds();
+            self.frame_uses_layers = true;
+        }
+        let mut desc = desc;
+        desc.opacity = desc.opacity.clamp(0.0, 1.0);
+        let index = self.layer_next_index;
+        if index as usize == self.layers_2d.len() {
+            self.layers_2d.push(LayerRecord {
+                desc,
+                cmds: Vec::new(),
+            });
+        } else {
+            let record = &mut self.layers_2d[index as usize];
+            record.desc = desc;
+            record.cmds.clear();
+        }
+        self.layer_next_index += 1;
+        self.layer_stack_2d.push(index);
+        Ok(())
+    }
+
+    /// Closes the innermost open layer and records it into its parent stream.
+    ///
+    /// Returns [`LayerError::Underflow`] when no layer is open (and changes
+    /// nothing).
+    pub fn pop_layer_2d(&mut self) -> Result<(), LayerError> {
+        let Some(index) = self.layer_stack_2d.pop() else {
+            let err = LayerError::Underflow;
+            self.layer_error_2d = Some(err);
+            log::warn!("pop_layer_2d called with no open layer");
+            return Err(err);
+        };
+        self.record_frame_cmd(FrameCmd2d::Layer { index });
+        Ok(())
+    }
+
+    /// Number of currently open layers.
+    pub fn layer_depth_2d(&self) -> u32 {
+        self.layer_stack_2d.len() as u32
+    }
+
+    /// The most recent layer error, if any (unbalanced frame, rejected push,
+    /// underflow).  It is cleared by [`Self::clear_2d`] or by
+    /// [`Self::take_layer_error_2d`].
+    pub fn layer_error_2d(&self) -> Option<LayerError> {
+        self.layer_error_2d
+    }
+
+    /// Takes the most recent layer error, leaving `None`.
+    pub fn take_layer_error_2d(&mut self) -> Option<LayerError> {
+        self.layer_error_2d.take()
+    }
+
+    /// The texture format the layered path used on the last layered frame
+    /// (`Rgba16Float`, or the target format when the adapter cannot blend it).
+    pub fn layer_texture_format_2d(&self) -> Option<wgpu::TextureFormat> {
+        self.layer_res.as_ref().map(|res| res.format)
+    }
+
+    /// Total offscreen layer textures created since the pool was last
+    /// invalidated (target resize or format change).  Constant across
+    /// steady-state frames.
+    pub fn layer_textures_allocated_2d(&self) -> u64 {
+        self.layer_res
+            .as_ref()
+            .map(|res| res.textures_allocated)
+            .unwrap_or(0)
+    }
+
+    /// Offscreen render passes encoded on the last layered frame (one per
+    /// non-empty layer plus the final target pass).
+    pub fn layer_passes_2d(&self) -> u32 {
+        self.layer_passes_drawn
+    }
+
+    /// Moves anything already in the immediate batchers into the layer command
+    /// log, preserving per-kind submission order.
+    fn migrate_batchers_to_frame_cmds(&mut self) {
+        let mut migrated: Vec<FrameCmd2d> = Vec::new();
+        for (i, instance) in self.shape_batcher.instances.iter().enumerate() {
+            migrated.push(FrameCmd2d::Shape {
+                instance: *instance,
+                blend: self
+                    .shape_blend_2d
+                    .get(i)
+                    .copied()
+                    .unwrap_or(BlendMode2d::Normal),
+            });
+        }
+        for (&texture_id, entries) in &self.sprite_batcher_2d.batches {
+            for entry in entries {
+                migrated.push(FrameCmd2d::Sprite {
+                    texture_id,
+                    instance: entry.instance,
+                    blend: entry.blend,
+                });
+            }
+        }
+        for (font, instance, blend) in &self.text_batcher_2d {
+            migrated.push(FrameCmd2d::Text {
+                font: *font,
+                instance: *instance,
+                blend: *blend,
+            });
+        }
+        self.frame_cmds_2d.append(&mut migrated);
+        self.shape_batcher.clear();
+        self.shape_blend_2d.clear();
+        self.sprite_batcher_2d.clear();
+        self.text_batcher_2d.clear();
+    }
+
+    /// Closes every still-open layer, reporting one [`LayerError::Unbalanced`].
+    fn close_open_layers_2d(&mut self) {
+        if self.layer_stack_2d.is_empty() {
+            return;
+        }
+        let open = self.layer_stack_2d.len() as u32;
+        log::warn!("Pure2D frame ended with {open} open layer(s); closing them automatically");
+        while let Some(index) = self.layer_stack_2d.pop() {
+            match self.layer_stack_2d.last().copied() {
+                Some(parent) => self.layers_2d[parent as usize]
+                    .cmds
+                    .push(FrameCmd2d::Layer { index }),
+                None => self.frame_cmds_2d.push(FrameCmd2d::Layer { index }),
+            }
+        }
+        self.layer_error_2d = Some(LayerError::Unbalanced { open });
+    }
+
+    /// Builds (or rebuilds) the per-format layer pipelines and invalidates the
+    /// texture pool when the target size changed.
+    fn ensure_layer_resources(&mut self) {
+        let size_changed = match &self.layer_res {
+            Some(res) => res.width != self.width || res.height != self.height,
+            None => true,
+        };
+        if !size_changed {
+            return;
+        }
+        let device = self.context.device.clone();
+        let target_format = self.format;
+        let sample_count = self.sample_count.max(1);
+
+        let features = self
+            .context
+            .adapter
+            .get_texture_format_features(wgpu::TextureFormat::Rgba16Float);
+        let wanted = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+        let blendable = features.allowed_usages.contains(wanted)
+            && features
+                .flags
+                .contains(wgpu::TextureFormatFeatureFlags::BLENDABLE);
+        let format = if blendable {
+            wgpu::TextureFormat::Rgba16Float
+        } else {
+            target_format
+        };
+
+        let layer_features = self.context.adapter.get_texture_format_features(format);
+        let filterable = layer_features
+            .flags
+            .contains(wgpu::TextureFormatFeatureFlags::FILTERABLE);
+        let filter = if filterable {
+            wgpu::FilterMode::Linear
+        } else {
+            wgpu::FilterMode::Nearest
+        };
+        log::info!(
+            "Pure2D layers: offscreen format {format:?} (Rgba16Float blendable: {blendable}, filterable: {filterable})"
+        );
+
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Pure2D Layer Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: filter,
+            min_filter: filter,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        let sprite = SpritePipeline::new(device.clone(), format, None, 1);
+        let shape = ShapePipeline::new(device.clone(), format, None, 1);
+        let text = Text2dPipeline::new(device.clone(), format, None, 1);
+        let root_sprite = SpritePipeline::new(device.clone(), target_format, None, sample_count);
+        let root_shape = ShapePipeline::new(device.clone(), target_format, None, sample_count);
+        let root_text = Text2dPipeline::new(device.clone(), target_format, None, sample_count);
+        let composite_layer = CompositePipeline::new(device.clone(), format, 1, None);
+        let composite_target =
+            CompositePipeline::new(device.clone(), target_format, sample_count, None);
+
+        self.layer_res = Some(LayerResources {
+            format,
+            sprite,
+            shape,
+            text,
+            root_sprite,
+            root_shape,
+            root_text,
+            composite_layer,
+            composite_target,
+            sampler,
+            textures: Vec::new(),
+            textures_allocated: 0,
+            width: self.width,
+            height: self.height,
+        });
+    }
+
+    /// Ensures the pooled offscreen texture for `index` exists.
+    fn ensure_layer_texture(&mut self, index: u32) {
+        let device = self.context.device.clone();
+        let Some(res) = self.layer_res.as_mut() else {
+            return;
+        };
+        while res.textures.len() <= index as usize {
+            res.textures.push(None);
+        }
+        if res.textures[index as usize].is_some() {
+            return;
+        }
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Pure2D Layer Texture"),
+            size: wgpu::Extent3d {
+                width: res.width.max(1),
+                height: res.height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: res.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group =
+            std::sync::Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Pure2D Layer Composite Bind Group"),
+                layout: &res.composite_layer.texture_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&res.sampler),
+                    },
+                ],
+            }));
+        res.textures[index as usize] = Some(LayerTexture { view, bind_group });
+        res.textures_allocated += 1;
+    }
+
+    /// Renders the layered Pure2D frame: every non-empty layer in post-order
+    /// into its pooled texture, then the root stream into `target_view`.
+    fn render_layered_2d(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        target_view: &wgpu::TextureView,
+    ) {
+        self.close_open_layers_2d();
+        self.ensure_layer_resources();
+
+        let mut empty = std::mem::take(&mut self.layer_empty);
+        empty.clear();
+        empty.resize(self.layer_next_index as usize, false);
+        for index in 0..self.layer_next_index {
+            empty[index as usize] = layer_subtree_is_empty(&self.layers_2d, index);
+        }
+
+        let mut shapes = std::mem::take(&mut self.layer_shapes_scratch);
+        let mut sprites = std::mem::take(&mut self.layer_sprites_scratch);
+        let mut texts = std::mem::take(&mut self.layer_texts_scratch);
+        shapes.clear();
+        sprites.clear();
+        texts.clear();
+        let mut plans = std::mem::take(&mut self.layer_plans);
+        let mut plan_order = std::mem::take(&mut self.layer_plan_order);
+        plan_order.clear();
+        let mut root_plan = std::mem::take(&mut self.layer_root_plan);
+        root_plan.clear();
+        let mut composites = std::mem::take(&mut self.composite_instances);
+        composites.clear();
+        let mut sort_buffers = std::mem::take(&mut self.layer_sort_buffers);
+
+        build_layer_plan(
+            &self.frame_cmds_2d,
+            &self.layers_2d,
+            &empty,
+            &mut shapes,
+            &mut sprites,
+            &mut texts,
+            &self.premultiplied_textures,
+            &mut plans,
+            &mut plan_order,
+            &mut composites,
+            &mut sort_buffers,
+            0,
+            &mut root_plan,
+        );
+
+        if !shapes.is_empty() {
+            self.renderer_2d_pure
+                .prepare_shape_gpu_slice(&self.context.queue, &shapes);
+        }
+        if !sprites.is_empty() {
+            self.renderer_2d_pure
+                .prepare_sprite_slice(&self.context.queue, &sprites);
+        }
+        if !texts.is_empty() {
+            self.renderer_2d_pure
+                .prepare_text_slice(&self.context.queue, &texts);
+        }
+
+        for layer_index in &plan_order {
+            self.ensure_layer_texture(*layer_index);
+        }
+
+        if !composites.is_empty() {
+            let needed = composites.len() as u32;
+            if self.composite_capacity < needed {
+                let capacity = needed.next_power_of_two().max(16);
+                self.composite_buffer =
+                    Some(self.context.device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("Pure2D Composite Instance Buffer"),
+                        size: capacity as u64 * std::mem::size_of::<CompositeInstance>() as u64,
+                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    }));
+                self.composite_capacity = capacity;
+            }
+            if let Some(buffer) = &self.composite_buffer {
+                self.context.queue.write_buffer(
+                    buffer,
+                    0,
+                    bytemuck::cast_slice(composites.as_slice()),
+                );
+            }
+        }
+
+        let res = self
+            .layer_res
+            .take()
+            .expect("ensure_layer_resources must create the layer resources");
+        let mut passes = 0u32;
+
+        for layer_index in &plan_order {
+            let plan = &plans[*layer_index as usize];
+            let Some(texture) = res
+                .textures
+                .get(*layer_index as usize)
+                .and_then(|entry| entry.as_ref())
+            else {
+                continue;
+            };
+            {
+                let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Pure2D Layer Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &texture.view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: 0.0,
+                                g: 0.0,
+                                b: 0.0,
+                                a: 0.0,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                self.draw_layer_plan(
+                    &mut rpass,
+                    plan,
+                    &res,
+                    (&res.shape, &res.sprite, &res.text),
+                    &res.composite_layer,
+                    self.composite_buffer.as_ref(),
+                );
+            }
+            passes += 1;
+        }
+
+        {
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Pure2D Layered Main Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(self.world_pass.clear_color),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            self.renderer_2d_pure.render_grid(&mut rpass);
+            self.emit_static_2d_batches(&mut rpass, None, false);
+            self.draw_layer_plan(
+                &mut rpass,
+                &root_plan,
+                &res,
+                (&res.root_shape, &res.root_sprite, &res.root_text),
+                &res.composite_target,
+                self.composite_buffer.as_ref(),
+            );
+        }
+        passes += 1;
+
+        self.layer_res = Some(res);
+        self.composite_instances = composites;
+        self.layer_shapes_scratch = shapes;
+        self.layer_sprites_scratch = sprites;
+        self.layer_texts_scratch = texts;
+        self.layer_plans = plans;
+        self.layer_plan_order = plan_order;
+        self.layer_root_plan = root_plan;
+        self.layer_empty = empty;
+        self.layer_sort_buffers = sort_buffers;
+        self.layer_passes_drawn = passes;
+        self.frame_cmds_2d.clear();
+        self.layer_stack_2d.clear();
+        self.layer_next_index = 0;
+        self.frame_uses_layers = false;
+    }
+
+    /// Draws one layer plan (or the root plan) into the current pass.
+    fn draw_layer_plan<'a>(
+        &'a self,
+        rpass: &mut wgpu::RenderPass<'a>,
+        plan: &[PlanItem],
+        res: &'a LayerResources,
+        pipes: (&'a ShapePipeline, &'a SpritePipeline, &'a Text2dPipeline),
+        composite: &'a CompositePipeline,
+        composite_buffer: Option<&'a wgpu::Buffer>,
+    ) {
+        for item in plan {
+            match *item {
+                PlanItem::Shapes {
+                    start,
+                    count,
+                    blend,
+                } => self
+                    .renderer_2d_pure
+                    .render_shapes_range_blend_on(pipes.0, rpass, start, count, blend),
+                PlanItem::Sprites {
+                    texture_id,
+                    start,
+                    count,
+                    blend,
+                } => {
+                    if let Some(bind_group) = self.sprite_bind_groups.get(&texture_id) {
+                        self.renderer_2d_pure.render_sprites_range_blend_on(
+                            pipes.1,
+                            rpass,
+                            bind_group.as_ref(),
+                            start,
+                            count,
+                            blend,
+                        );
+                    }
+                }
+                PlanItem::Text {
+                    font,
+                    start,
+                    count,
+                    blend,
+                } => {
+                    if let Some(entry) = self.fonts_2d.get(font.handle()) {
+                        self.renderer_2d_pure.render_text_range_blend_on(
+                            pipes.2,
+                            rpass,
+                            entry.bind_group.as_ref(),
+                            start,
+                            count,
+                            blend,
+                        );
+                    }
+                }
+                PlanItem::Composite {
+                    layer,
+                    blend,
+                    instance,
+                } => {
+                    let Some(texture) = res
+                        .textures
+                        .get(layer as usize)
+                        .and_then(|entry| entry.as_ref())
+                    else {
+                        continue;
+                    };
+                    let Some(buffer) = composite_buffer else {
+                        continue;
+                    };
+                    rpass.set_pipeline(composite.pipeline(blend));
+                    rpass.set_bind_group(0, texture.bind_group.as_ref(), &[]);
+                    rpass.set_vertex_buffer(0, buffer.slice(..));
+                    rpass.draw(0..3, instance..(instance + 1));
+                }
+            }
+        }
     }
 
     /// Clears 2D batchers (shapes, sprites and text). Call this at the start of
     /// every frame to avoid "ghosting" (accumulation of geometry).
     pub fn clear_2d(&mut self) {
         self.shape_batcher.clear();
+        self.shape_blend_2d.clear();
         self.sprite_batcher_2d.clear();
         self.text_batcher_2d.clear();
         self.views_2d.clear();
         self.view_2d_open = false;
+        // Per-draw blend state does not leak across frames.
+        self.current_blend_2d = BlendMode2d::Normal;
+        // Layer state is per-frame; an unbalanced frame reports once and is
+        // reset here rather than carried into the next frame.
+        self.layer_next_index = 0;
+        self.layer_stack_2d.clear();
+        self.frame_cmds_2d.clear();
+        self.frame_uses_layers = false;
+        self.layer_error_2d = None;
     }
 }

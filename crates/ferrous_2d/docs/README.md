@@ -68,3 +68,72 @@ is unified.
 return a `u32` id consumed by `draw_sprite_2d`. One texture means one bind group
 and one draw call; there is no atlas packer yet, and `free_sprite_texture` does
 not release the batcher's per-texture bucket.
+
+## Compositing: premultiplied alpha
+
+Pure2D renders in **linear light** with **premultiplied alpha** end to end:
+
+- `ShapeInstance::color`, `SpriteInstance::color` and `TextInstance::color` stay
+  **straight** linear RGBA in the public API.
+- Every Pure2D fragment shader premultiplies on output (`vec4(rgb * a, a)`).
+- Every Pure2D pipeline uses `wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING`
+  (or the per-mode state below). Over an opaque destination this is
+  mathematically identical to straight alpha; over a transparent target it is
+  the correct compositing result.
+- Sprite textures are uploaded as straight-alpha `Rgba8UnormSrgb` by default.
+  Bilinear filtering of straight texels produces dark fringes at translucent
+  edges; `Renderer::register_sprite_texture_premultiplied` accepts data whose
+  RGB is already multiplied by alpha (in linear light, then sRGB-encoded for
+  storage) and the shader skips the second premultiply.
+
+## Blend modes per draw
+
+`BlendMode2d` is a per-draw property. In premultiplied linear light
+(`Cs`/`As` source, `Cd`/`Ad` destination):
+
+| mode | colour | alpha | wgpu colour factors |
+|---|---|---|---|
+| `Normal` | `Cs + Cd*(1-As)` | `As + Ad*(1-As)` | `One`, `OneMinusSrcAlpha` |
+| `Add` | `Cs + Cd` | `As + Ad*(1-As)` | `One`, `One` |
+| `Screen` | `Cs + Cd*(1-Cs)` | `As + Ad*(1-As)` | `One`, `OneMinusSrc` |
+| `Multiply` | `Cs*Cd + Cd*(1-As)` | `As + Ad*(1-As)` | `Dst`, `OneMinusSrcAlpha` |
+
+`Multiply` is exact over an opaque backdrop; over a transparent one it omits
+the `Cs*(1-Ad)` term. Advanced modes (overlay, soft light, colour dodge, hue)
+need the backdrop in the shader and are out of scope for this path.
+
+The API is a state: `Renderer::set_blend_mode_2d(mode)` applies to every
+subsequent 2D draw until changed, and `Renderer::clear_2d` (called at the start
+of every frame) resets it to `Normal`. A mode change between two draws of the
+same kind splits their coalesced run into a second draw call but never reorders
+them: painter order is `z`, then shape/sprite/text, then submission/blend.
+
+## Offscreen layers
+
+```rust
+renderer.push_layer_2d(Layer2d {
+    opacity: 0.5,
+    blend: BlendMode2d::Normal,
+    depth: 2.0,
+})?;
+// draws go into the layer, z-sorted among themselves
+renderer.pop_layer_2d()?;
+```
+
+- The layer content is rendered into a transparent target-sized texture and
+  composited into its parent as one command at `depth`, with group `opacity`
+  (all four premultiplied channels scaled) and `blend`.
+- Group opacity differs from per-child opacity: two overlapping opaque children
+  inside a 50 % layer show no internal overlap.
+- Nesting is supported up to `MAX_LAYER_DEPTH_2D` (8). Deeper pushes return
+  `LayerError::TooDeep`. An unbalanced push at frame end is reported once as
+  `LayerError::Unbalanced`, closed automatically and logged; the frame still
+  renders.
+- Layer textures prefer `Rgba16Float` (linear, premultiplied, more precision
+  than 8-bit sRGB). If the adapter cannot blend that format, the target format
+  is used instead. Textures are pooled per target size and reused across
+  frames, so a steady-state 3-layer frame creates no textures; resizing the
+  target invalidates the pool.
+- Encoding order is post-order: inner layers first, each in its own render
+  pass, then the parent pass. A frame without layers keeps the original single
+  pass and creates no textures.

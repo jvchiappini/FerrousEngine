@@ -22,10 +22,58 @@
 //!
 //! [`OffscreenTarget::read_rgba8_into`] reuses a persistent staging buffer and
 //! the caller's `Vec` allocation, so steady-state reads allocate no GPU buffer
-//! and do not grow the output buffer.  [`Pure2dHarness::submit_readback`] /
-//! [`Pure2dHarness::take_readback`] implement a two-slot ring so the copy of
-//! frame N is overlapped with the rendering of frame N+1; results come out in
-//! submission order with one frame of latency.
+//! and do not grow the output buffer.
+//!
+//! [`Pure2dHarness`] adds an overlapping **N-slot readback ring** (three slots
+//! by default, two minimum).  Each slot owns a persistent, row-padded staging
+//! buffer and runs an explicit state machine:
+//!
+//! * `Free` — idle; [`Pure2dHarness::submit_readback`] may claim the slot.
+//! * `Copying { submission }` — `copy_texture_to_buffer` was submitted and
+//!   `map_async` was queued *immediately* after it, so the GPU copy overlaps the
+//!   next frame's CPU-side work.
+//! * `Ready` — the map completed and the bytes are copied out on take.
+//! * `Failed` — the map failed; the buffer is unmapped, the pending frame is
+//!   dropped and the slot returns to `Free` so a single bad map can never wedge
+//!   the ring.
+//!
+//! [`Pure2dHarness::submit_readback`] claims the next `Free` slot in
+//! round-robin order and returns a harness-assigned frame index starting at
+//! `0`.  [`Pure2dHarness::take_readback`] always consumes the **oldest** pending
+//! frame, so results come out in submission order.  A map error is reported
+//! exactly once for the affected frame; the slot is recycled and later frames
+//! are unaffected.  When every slot is in flight `submit_readback` returns
+//! [`ReadbackError::Busy`] and changes no state.
+//!
+//! Typical exporter loop (one frame in, at most one frame out per iteration):
+//!
+//! ```no_run
+//! # use ferrous_renderer::headless::{Pure2dHarness, DEFAULT_FORMAT};
+//! # fn draw(_h: &mut Pure2dHarness, _frame: u64) {}
+//! let mut h = Pure2dHarness::new(640, 480, DEFAULT_FORMAT).unwrap();
+//! let mut frame = Vec::new();
+//! let mut encoded = 0u64;
+//!
+//! for i in 0..240u64 {
+//!     h.begin_frame();
+//!     draw(&mut h, i);
+//!     h.render_frame();
+//!     if let Some(frame_index) = h.readback_frame(&mut frame).unwrap() {
+//!         assert_eq!(frame_index, encoded);
+//!         encoded += 1;
+//!         // `frame` now holds tightly packed RGBA8 for `frame_index`.
+//!     }
+//! }
+//!
+//! // Drain the frames still in flight at the end of the clip.
+//! h.flush_readbacks(|frame_index, bytes| {
+//!     assert_eq!(frame_index, encoded);
+//!     encoded += 1;
+//!     let _ = bytes;
+//! })
+//! .unwrap();
+//! # assert_eq!(encoded, 240);
+//! ```
 //!
 //! # Metrics origin
 //!
@@ -45,6 +93,8 @@
 
 use std::collections::VecDeque;
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
 use ferrous_2d::render::{FontId2d, ShapeInstance, SpriteInstance};
@@ -94,6 +144,10 @@ pub enum ReadbackError {
     MapFailed {
         /// The error message reported by wgpu.
         message: String,
+        /// Harness-assigned frame index when the failure came from the
+        /// pipelined ring; `None` for the immediate
+        /// [`OffscreenTarget`] readback helpers.
+        frame_index: Option<u64>,
     },
     /// The map callback was dropped (typically because the device was lost).
     ChannelClosed,
@@ -115,8 +169,9 @@ pub enum ReadbackError {
         /// Target height.
         height: u32,
     },
-    /// Both pipelined readback slots are in use; call
-    /// [`Pure2dHarness::take_readback`] first.
+    /// All ring slots are in flight.  Take one frame (or call
+    /// [`Pure2dHarness::readback_frame`] /
+    /// [`Pure2dHarness::flush_readbacks`]) before submitting another.
     Busy,
 }
 
@@ -129,7 +184,13 @@ impl fmt::Display for ReadbackError {
                     "readback only supports Rgba8Unorm/Rgba8UnormSrgb, got {format:?}"
                 )
             }
-            Self::MapFailed { message } => write!(f, "buffer map failed: {message}"),
+            Self::MapFailed {
+                message,
+                frame_index,
+            } => match frame_index {
+                Some(index) => write!(f, "buffer map failed for frame {index}: {message}"),
+                None => write!(f, "buffer map failed: {message}"),
+            },
             Self::ChannelClosed => {
                 write!(f, "readback channel closed (device lost?)")
             }
@@ -145,7 +206,7 @@ impl fmt::Display for ReadbackError {
             } => write!(f, "pixel ({x}, {y}) is outside the {width}x{height} target"),
             Self::Busy => write!(
                 f,
-                "both pipelined readback slots are busy; call take_readback first"
+                "all readback ring slots are in flight; take a frame first"
             ),
         }
     }
@@ -166,6 +227,11 @@ pub enum HarnessError {
         /// The unsupported target format.
         format: TextureFormat,
     },
+    /// A ring resize was requested while readback frames are still pending.
+    ReadbackPending {
+        /// Number of submitted frames that have not been taken yet.
+        pending: usize,
+    },
 }
 
 impl fmt::Display for HarnessError {
@@ -177,6 +243,10 @@ impl fmt::Display for HarnessError {
             Self::UnsupportedFormat { format } => {
                 write!(f, "unsupported headless Pure2D format: {format:?}")
             }
+            Self::ReadbackPending { pending } => write!(
+                f,
+                "cannot resize the readback ring while {pending} frame(s) are still pending"
+            ),
         }
     }
 }
@@ -321,29 +391,9 @@ impl OffscreenTarget {
             let _ = tx.send(result);
         });
         device.poll(Maintain::Wait);
-        wait_for_map(rx)?;
-
-        let mapped = slice.get_mapped_range();
-        let actual = mapped.len();
-        let required = padded as usize * self.height as usize;
-        if actual < required {
-            drop(mapped);
-            self.staging.unmap();
-            return Err(ReadbackError::SizeMismatch {
-                expected: required,
-                actual,
-            });
-        }
 
         out.resize(expected, 0);
-        let unpadded = unpadded_bytes_per_row as usize;
-        for row in 0..self.height as usize {
-            let src = row * padded as usize;
-            let dst = row * unpadded;
-            out[dst..dst + unpadded].copy_from_slice(&mapped[src..src + unpadded]);
-        }
-        drop(mapped);
-        self.staging.unmap();
+        finish_mapped_read(&self.staging, rx, padded, self.width, self.height, out)?;
 
         // Return the origin-top-left convention row order that the GPU produced;
         // wgpu render targets store row 0 at the top, matching image-space Y-down.
@@ -419,12 +469,16 @@ impl OffscreenTarget {
             let _ = tx.send(result);
         });
         device.poll(Maintain::Wait);
-        wait_for_map(rx)?;
 
-        let mapped = slice.get_mapped_range();
-        let pixel = [mapped[0], mapped[1], mapped[2], mapped[3]];
-        drop(mapped);
-        self.pixel_staging.unmap();
+        let mut pixel = [0u8; 4];
+        finish_mapped_read(
+            &self.pixel_staging,
+            rx,
+            wgpu::COPY_BYTES_PER_ROW_ALIGNMENT,
+            1,
+            1,
+            &mut pixel,
+        )?;
         Ok(pixel)
     }
 
@@ -444,30 +498,113 @@ impl OffscreenTarget {
 }
 
 /// Wait for a `map_async` result delivered through a channel.
-fn wait_for_map(
-    rx: std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>,
-) -> Result<(), ReadbackError> {
+fn wait_for_map(rx: Receiver<Result<(), wgpu::BufferAsyncError>>) -> Result<(), ReadbackError> {
     match rx.recv() {
         Ok(Ok(())) => Ok(()),
         Ok(Err(err)) => Err(ReadbackError::MapFailed {
             message: err.to_string(),
+            frame_index: None,
         }),
         Err(_) => Err(ReadbackError::ChannelClosed),
     }
 }
 
-/// One pipelined readback slot (a persistent staging buffer).
+/// Copies the padded rows of a mapped staging buffer into a tightly packed
+/// destination slice.
+///
+/// Returns [`ReadbackError::SizeMismatch`] when either the mapped range is
+/// smaller than `padded_bytes_per_row * height` or `out` cannot hold
+/// `width * 4 * height` bytes.
+fn copy_padded_rows_into(
+    mapped: &[u8],
+    padded_bytes_per_row: u32,
+    width: u32,
+    height: u32,
+    out: &mut [u8],
+) -> Result<(), ReadbackError> {
+    let unpadded = (width * 4) as usize;
+    let required_mapped = padded_bytes_per_row as usize * height as usize;
+    let actual_mapped = mapped.len();
+    if actual_mapped < required_mapped {
+        return Err(ReadbackError::SizeMismatch {
+            expected: required_mapped,
+            actual: actual_mapped,
+        });
+    }
+
+    let required_out = unpadded * height as usize;
+    if out.len() < required_out {
+        return Err(ReadbackError::SizeMismatch {
+            expected: required_out,
+            actual: out.len(),
+        });
+    }
+
+    for row in 0..height as usize {
+        let src = row * padded_bytes_per_row as usize;
+        let dst = row * unpadded;
+        out[dst..dst + unpadded].copy_from_slice(&mapped[src..src + unpadded]);
+    }
+    Ok(())
+}
+
+/// Waits for a queued `map_async`, copies the padded rows out and always
+/// unmaps the buffer, including on error.
+///
+/// `out` must already be sized for `width * 4 * height` bytes (the immediate
+/// readback helpers resize their `Vec` before calling this).
+fn finish_mapped_read(
+    buffer: &wgpu::Buffer,
+    rx: Receiver<Result<(), wgpu::BufferAsyncError>>,
+    padded_bytes_per_row: u32,
+    width: u32,
+    height: u32,
+    out: &mut [u8],
+) -> Result<(), ReadbackError> {
+    let slice = buffer.slice(..);
+    let result = (|| {
+        wait_for_map(rx)?;
+        let mapped = slice.get_mapped_range();
+        copy_padded_rows_into(&mapped, padded_bytes_per_row, width, height, out)?;
+        drop(mapped);
+        Ok(())
+    })();
+    // Calling `unmap` after a failed map is harmless and guarantees the buffer
+    // never stays in a half-mapped state that would wedge the next submit.
+    buffer.unmap();
+    result
+}
+
+/// State of one readback ring slot.
+enum SlotState {
+    /// Idle and available for [`Pure2dHarness::submit_readback`].
+    Free,
+    /// A copy was submitted and `map_async` was queued right after it.
+    Copying {
+        /// Submission that must complete before the mapping is valid.
+        submission: wgpu::SubmissionIndex,
+    },
+    /// The map completed; the bytes are copied out on the next take.
+    Ready,
+    /// The map failed; the slot is unmapped and returned to `Free`.
+    Failed,
+}
+
+/// One N-slot ring slot: a persistent, row-padded staging buffer plus its state.
 struct ReadbackSlot {
     buffer: wgpu::Buffer,
     padded_bytes_per_row: u32,
+    state: SlotState,
 }
 
 /// A submitted, not-yet-consumed pipelined readback.
-#[derive(Debug, Clone, Copy)]
 struct PendingReadback {
     slot: usize,
+    frame_index: u64,
+    submission: wgpu::SubmissionIndex,
     width: u32,
     height: u32,
+    rx: Receiver<Result<(), wgpu::BufferAsyncError>>,
 }
 
 /// Hardware-independent metrics for a single rendered frame.
@@ -501,10 +638,19 @@ pub struct FrameReport {
     pub bind_groups_created: u32,
     /// Total sprite bind groups currently registered (including setup).
     pub bind_groups_total: u32,
-    /// Wall-clock duration of `render_frame`, **including** software
-    /// rasterisation because `device.poll(Maintain::Wait)` blocks until the
-    /// software rasteriser finishes.  Use only as a relative delta on the same
-    /// machine — never as an absolute fps figure.
+    /// Offscreen layer passes encoded this frame (one per non-empty layer plus
+    /// the final target pass; `1` when no layer was used).
+    pub layer_passes: u32,
+    /// Layer error reported by this frame (unbalanced push/pop, rejected push),
+    /// if any.  The frame still renders; unclosed layers are closed
+    /// automatically.
+    pub layer_error: Option<ferrous_2d::render::LayerError>,
+    /// Wall-clock duration of the submit call.  For
+    /// [`Pure2dHarness::render_frame`] this **excludes** GPU completion (the
+    /// call returns as soon as the command buffer is submitted); use
+    /// [`Pure2dHarness::render_frame_blocking`] when the figure should include
+    /// software rasterisation.  Either way this is only meaningful as a
+    /// relative delta on the same machine — never as an absolute fps figure.
     pub cpu_ms: f64,
 }
 
@@ -527,17 +673,53 @@ pub struct Pure2dHarness {
     width: u32,
     height: u32,
     last_bind_group_count: u32,
-    readback_slots: [ReadbackSlot; 2],
+    readback_slots: Vec<ReadbackSlot>,
     pending_readbacks: VecDeque<PendingReadback>,
     next_readback_slot: usize,
+    next_frame_index: u64,
+    readback_scratch: Vec<u8>,
+    blocking_polls: AtomicU64,
+    slots_allocated: u64,
+    inject_map_failure: bool,
 }
+
+/// Minimum number of staging buffers in the pipelined readback ring.
+const MIN_READBACK_SLOTS: usize = 2;
+/// Default number of staging buffers in the pipelined readback ring.
+const DEFAULT_READBACK_SLOTS: usize = 3;
 
 impl Pure2dHarness {
     /// Creates a headless device (fallback software adapter if needed) and a
     /// Pure2D renderer with an opaque-black clear colour.  No window and no
     /// `Surface` are created.
+    ///
+    /// The readback ring has three slots (the default).
     pub fn new(width: u32, height: u32, format: TextureFormat) -> Result<Self, HarnessError> {
-        Self::with_clear_color(
+        Self::with_readback_ring(width, height, format, DEFAULT_READBACK_SLOTS)
+    }
+
+    /// Same as [`Self::new`] but with an explicit clear colour.
+    pub fn with_clear_color(
+        width: u32,
+        height: u32,
+        format: TextureFormat,
+        clear: wgpu::Color,
+    ) -> Result<Self, HarnessError> {
+        Self::create(width, height, format, clear, DEFAULT_READBACK_SLOTS)
+    }
+
+    /// Same as [`Self::new`] but with an explicit readback ring size.
+    ///
+    /// `slots` is clamped to a minimum of two: with fewer than two staging
+    /// buffers there is nothing to overlap and the ring could never pipeline.
+    /// Use [`Self::set_readback_ring_size`] to change the size later.
+    pub fn with_readback_ring(
+        width: u32,
+        height: u32,
+        format: TextureFormat,
+        slots: usize,
+    ) -> Result<Self, HarnessError> {
+        Self::create(
             width,
             height,
             format,
@@ -547,15 +729,17 @@ impl Pure2dHarness {
                 b: 0.0,
                 a: 1.0,
             },
+            slots,
         )
     }
 
-    /// Same as [`Self::new`] but with an explicit clear colour.
-    pub fn with_clear_color(
+    /// Shared constructor: creates the device, target, renderer and ring.
+    fn create(
         width: u32,
         height: u32,
         format: TextureFormat,
         clear: wgpu::Color,
+        slots: usize,
     ) -> Result<Self, HarnessError> {
         if !is_supported_readback_format(format) {
             return Err(HarnessError::UnsupportedFormat { format });
@@ -570,20 +754,9 @@ impl Pure2dHarness {
         let mut renderer = Renderer::new(context, width, height, format, 1, None);
         renderer.enable_pure_2d(clear);
 
-        let padded = padded_bytes_per_row(width.max(1));
-        let make_slot = |label: &str| ReadbackSlot {
-            buffer: renderer.context.device.create_buffer(&BufferDescriptor {
-                label: Some(label),
-                size: (padded as u64 * height.max(1) as u64).max(1),
-                usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            }),
-            padded_bytes_per_row: padded,
-        };
-        let readback_slots = [
-            make_slot("2D Headless Pipelined Staging 0"),
-            make_slot("2D Headless Pipelined Staging 1"),
-        ];
+        let (readback_slots, slots_allocated) =
+            Self::allocate_slots(&renderer.context.device, width, height, slots);
+        let capacity = readback_slots.len();
 
         Ok(Self {
             renderer,
@@ -592,9 +765,68 @@ impl Pure2dHarness {
             height,
             last_bind_group_count: 0,
             readback_slots,
-            pending_readbacks: VecDeque::with_capacity(2),
+            pending_readbacks: VecDeque::with_capacity(capacity),
             next_readback_slot: 0,
+            next_frame_index: 0,
+            readback_scratch: Vec::new(),
+            blocking_polls: AtomicU64::new(0),
+            slots_allocated,
+            inject_map_failure: false,
         })
+    }
+
+    /// Allocates `slots.max(MIN_READBACK_SLOTS)` persistent staging buffers and
+    /// returns them with the number of buffers actually created.
+    fn allocate_slots(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+        slots: usize,
+    ) -> (Vec<ReadbackSlot>, u64) {
+        let count = slots.max(MIN_READBACK_SLOTS);
+        let padded = padded_bytes_per_row(width.max(1));
+        let size = (padded as u64 * height.max(1) as u64).max(1);
+        let mut buffers = Vec::with_capacity(count);
+        for index in 0..count {
+            let label = format!("2D Headless Readback Ring Staging {index}");
+            let buffer = device.create_buffer(&BufferDescriptor {
+                label: Some(&label),
+                size,
+                usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            buffers.push(ReadbackSlot {
+                buffer,
+                padded_bytes_per_row: padded,
+                state: SlotState::Free,
+            });
+        }
+        (buffers, count as u64)
+    }
+
+    /// Resizes the readback ring, allocating new staging buffers.
+    ///
+    /// The ring never has fewer than two slots.  This may only be called when
+    /// no readback frame is pending; otherwise it returns
+    /// [`HarnessError::ReadbackPending`] and leaves the ring untouched.
+    pub fn set_readback_ring_size(&mut self, slots: usize) -> Result<(), HarnessError> {
+        if !self.pending_readbacks.is_empty() {
+            return Err(HarnessError::ReadbackPending {
+                pending: self.pending_readbacks.len(),
+            });
+        }
+        let (readback_slots, allocated) = Self::allocate_slots(
+            &self.renderer.context.device,
+            self.width,
+            self.height,
+            slots,
+        );
+        let capacity = readback_slots.len();
+        self.readback_slots = readback_slots;
+        self.pending_readbacks = VecDeque::with_capacity(capacity);
+        self.next_readback_slot = 0;
+        self.slots_allocated = self.slots_allocated.saturating_add(allocated);
+        Ok(())
     }
 
     /// Target width in pixels.
@@ -659,6 +891,49 @@ impl Pure2dHarness {
         self.renderer.draw_2d_shape(instance);
     }
 
+    /// Selects the blend mode for subsequent 2D draws until changed.
+    ///
+    /// Mirrors [`Renderer::set_blend_mode_2d`]; [`Self::begin_frame`] resets the
+    /// state to [`ferrous_2d::render::BlendMode2d::Normal`].
+    pub fn set_blend_mode(&mut self, mode: ferrous_2d::render::BlendMode2d) {
+        self.renderer.set_blend_mode_2d(mode);
+    }
+
+    /// The blend mode that applies to the next 2D draw call.
+    pub fn blend_mode(&self) -> ferrous_2d::render::BlendMode2d {
+        self.renderer.blend_mode_2d()
+    }
+
+    /// Opens an offscreen compositing layer (see
+    /// [`Renderer::push_layer_2d`]).
+    pub fn push_layer(
+        &mut self,
+        desc: ferrous_2d::render::Layer2d,
+    ) -> Result<(), ferrous_2d::render::LayerError> {
+        self.renderer.push_layer_2d(desc)
+    }
+
+    /// Closes the innermost offscreen layer.
+    pub fn pop_layer(&mut self) -> Result<(), ferrous_2d::render::LayerError> {
+        self.renderer.pop_layer_2d()
+    }
+
+    /// Number of currently open offscreen layers.
+    pub fn layer_depth(&self) -> u32 {
+        self.renderer.layer_depth_2d()
+    }
+
+    /// Texture format used by the layered path on this adapter (`None` before
+    /// the first layered frame).
+    pub fn layer_texture_format(&self) -> Option<wgpu::TextureFormat> {
+        self.renderer.layer_texture_format_2d()
+    }
+
+    /// Total offscreen layer textures created since the pool was invalidated.
+    pub fn layer_textures_allocated(&self) -> u64 {
+        self.renderer.layer_textures_allocated_2d()
+    }
+
     /// Queues one sprite for this frame.
     pub fn draw_sprite(&mut self, texture_id: u32, instance: SpriteInstance) {
         self.renderer.draw_sprite_2d(texture_id, instance);
@@ -669,6 +944,18 @@ impl Pure2dHarness {
     /// group (plus one texture + sampler).
     pub fn register_texture_rgba8(&mut self, width: u32, height: u32, data: &[u8]) -> u32 {
         self.renderer.register_sprite_texture(width, height, data)
+    }
+
+    /// Registers an RGBA8 sprite texture whose texels are already premultiplied
+    /// (see [`Renderer::register_sprite_texture_premultiplied`]).
+    pub fn register_texture_rgba8_premultiplied(
+        &mut self,
+        width: u32,
+        height: u32,
+        data: &[u8],
+    ) -> u32 {
+        self.renderer
+            .register_sprite_texture_premultiplied(width, height, data)
     }
 
     /// Bakes and registers a 2D font atlas (see
@@ -715,7 +1002,27 @@ impl Pure2dHarness {
     }
 
     /// Renders one frame into the off-screen target and returns metrics.
+    ///
+    /// This **only submits** the command buffer; it never calls
+    /// `device.poll(Maintain::Wait)`, so [`FrameReport::cpu_ms`] measures the
+    /// CPU-side submit path and the GPU work overlaps the caller's next frame.
+    /// Use [`Self::render_frame_blocking`] when the measurement must include
+    /// rasterisation.
     pub fn render_frame(&mut self) -> FrameReport {
+        self.render_frame_inner(false)
+    }
+
+    /// Renders one frame and blocks until the submission completes.
+    ///
+    /// Equivalent to the historical `render_frame` behaviour: it polls with
+    /// `Maintain::Wait`, so [`FrameReport::cpu_ms`] includes software
+    /// rasterisation.  Increments [`Self::blocking_polls`].
+    pub fn render_frame_blocking(&mut self) -> FrameReport {
+        self.render_frame_inner(true)
+    }
+
+    /// Shared render implementation; `blocking` selects the old wait semantics.
+    fn render_frame_inner(&mut self, blocking: bool) -> FrameReport {
         let start = Instant::now();
 
         let device = self.renderer.context.device.clone();
@@ -725,9 +1032,12 @@ impl Pure2dHarness {
         self.renderer
             .render_to_view(&mut encoder, &self.target.view, None);
         self.renderer.context.queue.submit(Some(encoder.finish()));
-        // Software rasterisers execute on the CPU; this blocks until
-        // rasterisation is done so that the measured time is a relative signal.
-        device.poll(Maintain::Wait);
+        if blocking {
+            self.blocking_polls.fetch_add(1, Ordering::Relaxed);
+            // Software rasterisers execute on the CPU; this blocks until
+            // rasterisation is done so the measured time is a relative signal.
+            device.poll(Maintain::Wait);
+        }
 
         let cpu_ms = start.elapsed().as_secs_f64() * 1000.0;
         let counters = self.renderer.renderer_2d_pure.frame_counters();
@@ -749,6 +1059,8 @@ impl Pure2dHarness {
             buffer_reallocations: counters.buffer_reallocations,
             bind_groups_created: created,
             bind_groups_total,
+            layer_passes: self.renderer.layer_passes_2d(),
+            layer_error: self.renderer.layer_error_2d(),
             cpu_ms,
         }
     }
@@ -789,18 +1101,37 @@ impl Pure2dHarness {
         )
     }
 
-    /// Records a copy of the current target into the next pipelined slot.
+    /// Records a copy of the current target into the next free ring slot.
     ///
-    /// The copy is submitted immediately, so it overlaps the next frame's
-    /// rendering.  At most two copies may be in flight; returns
-    /// [`ReadbackError::Busy`] when both slots are occupied.
-    pub fn submit_readback(&mut self) -> Result<(), ReadbackError> {
-        if self.pending_readbacks.len() >= 2 {
-            return Err(ReadbackError::Busy);
+    /// # Ring state machine
+    ///
+    /// The ring starts with every slot `Free`.  This method claims the next
+    /// `Free` slot in round-robin order, meaning the slot transitions
+    /// `Free -> Copying { submission }`.  The copy is submitted and
+    /// `map_async` is queued **immediately**, so the GPU copy overlaps the
+    /// caller's next frame.  When the oldest pending frame is taken the state
+    /// moves `Copying -> Ready -> Free` (or `Copying -> Failed -> Free` on a
+    /// map error, see [`Self::take_readback`]).
+    ///
+    /// Returns the harness-assigned frame index (starting at `0`, strictly
+    /// increasing per successful submit).  If **all** slots are in flight this
+    /// returns [`ReadbackError::Busy`] and changes no state: the pending queue,
+    /// the next slot and [`Self::next_frame_index`] are untouched.
+    pub fn submit_readback(&mut self) -> Result<u64, ReadbackError> {
+        let slot_count = self.readback_slots.len();
+        let mut chosen = None;
+        for offset in 0..slot_count {
+            let index = (self.next_readback_slot + offset) % slot_count;
+            if matches!(self.readback_slots[index].state, SlotState::Free) {
+                chosen = Some(index);
+                break;
+            }
         }
-        let slot_index = self.next_readback_slot;
-        let slot = &self.readback_slots[slot_index];
+        let Some(slot_index) = chosen else {
+            return Err(ReadbackError::Busy);
+        };
 
+        let frame_index = self.next_frame_index;
         let mut encoder =
             self.renderer
                 .context
@@ -808,85 +1139,283 @@ impl Pure2dHarness {
                 .create_command_encoder(&CommandEncoderDescriptor {
                     label: Some("2D Headless Pipelined Readback Encoder"),
                 });
-        encoder.copy_texture_to_buffer(
-            ImageCopyTexture {
-                texture: &self.target.texture,
-                mip_level: 0,
-                origin: Origin3d::ZERO,
-                aspect: TextureAspect::All,
-            },
-            ImageCopyBuffer {
-                buffer: &slot.buffer,
-                layout: ImageDataLayout {
-                    offset: 0,
-                    bytes_per_row: Some(slot.padded_bytes_per_row),
-                    rows_per_image: Some(self.height),
+        {
+            let slot = &self.readback_slots[slot_index];
+            encoder.copy_texture_to_buffer(
+                ImageCopyTexture {
+                    texture: &self.target.texture,
+                    mip_level: 0,
+                    origin: Origin3d::ZERO,
+                    aspect: TextureAspect::All,
                 },
-            },
-            Extent3d {
-                width: self.width,
-                height: self.height,
-                depth_or_array_layers: 1,
-            },
-        );
-        self.renderer.context.queue.submit(Some(encoder.finish()));
+                ImageCopyBuffer {
+                    buffer: &slot.buffer,
+                    layout: ImageDataLayout {
+                        offset: 0,
+                        bytes_per_row: Some(slot.padded_bytes_per_row),
+                        rows_per_image: Some(self.height),
+                    },
+                },
+                Extent3d {
+                    width: self.width,
+                    height: self.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        let submission = self.renderer.context.queue.submit(Some(encoder.finish()));
 
-        self.pending_readbacks.push_back(PendingReadback {
-            slot: slot_index,
-            width: self.width,
-            height: self.height,
-        });
-        self.next_readback_slot = (slot_index + 1) % self.readback_slots.len();
-        Ok(())
-    }
-
-    /// Maps and returns the oldest submitted readback into `out`.
-    ///
-    /// Returns `Ok(false)` when nothing is pending.  Results come out in
-    /// submission order; the first frame's bytes are available one submit
-    /// later (one frame of latency).
-    pub fn take_readback(&mut self, out: &mut Vec<u8>) -> Result<bool, ReadbackError> {
-        let Some(pending) = self.pending_readbacks.front().copied() else {
-            return Ok(false);
-        };
-        let slot = &self.readback_slots[pending.slot];
-        let device = &self.renderer.context.device;
-
-        let slice = slot.buffer.slice(..);
+        // Map as soon as the copy is submitted so the callback can fire while
+        // the caller renders the next frame; nothing is mapped synchronously.
+        let slice = self.readback_slots[slot_index].buffer.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(MapMode::Read, move |result| {
             let _ = tx.send(result);
         });
-        device.poll(Maintain::Wait);
-        wait_for_map(rx)?;
 
-        let mapped = slice.get_mapped_range();
-        let actual = mapped.len();
-        let unpadded = (pending.width * 4) as usize;
-        let required = slot.padded_bytes_per_row as usize * pending.height as usize;
-        if actual < required {
-            drop(mapped);
-            slot.buffer.unmap();
-            return Err(ReadbackError::SizeMismatch {
-                expected: required,
-                actual,
-            });
-        }
+        self.readback_slots[slot_index].state = SlotState::Copying {
+            submission: submission.clone(),
+        };
+        self.pending_readbacks.push_back(PendingReadback {
+            slot: slot_index,
+            frame_index,
+            submission,
+            width: self.width,
+            height: self.height,
+            rx,
+        });
+        self.next_readback_slot = (slot_index + 1) % slot_count;
+        self.next_frame_index = self.next_frame_index.saturating_add(1);
+        Ok(frame_index)
+    }
 
-        out.resize(unpadded * pending.height as usize, 0);
-        for row in 0..pending.height as usize {
-            let src = row * slot.padded_bytes_per_row as usize;
-            let dst = row * unpadded;
-            out[dst..dst + unpadded].copy_from_slice(&mapped[src..src + unpadded]);
+    /// Maps and returns the oldest submitted readback into `out`.
+    ///
+    /// # Ring state machine
+    ///
+    /// Returns `Ok(false)` when nothing is pending.  Otherwise it polls with
+    /// `Maintain::WaitForSubmissionIndex` for the oldest frame (incrementing
+    /// [`Self::blocking_polls`]), copies the tight rows into `out`, unmaps the
+    /// buffer and transitions the slot `Copying -> Ready -> Free`.  Results come
+    /// out in submission order.
+    ///
+    /// On a map error the buffer is still unmapped, the pending entry is
+    /// removed and the slot is recycled (`Copying -> Failed -> Free`), so the
+    /// error is reported **exactly once** as
+    /// [`ReadbackError::MapFailed`] with `frame_index: Some(index)` and the next
+    /// call returns the next frame normally instead of repeating the failure.
+    pub fn take_readback(&mut self, out: &mut Vec<u8>) -> Result<bool, ReadbackError> {
+        Ok(self.take_readback_indexed(out)?.is_some())
+    }
+
+    /// Same as [`Self::take_readback`] but returns the frame index.
+    ///
+    /// Returns `Ok(None)` when no frame is pending.  The returned index is the
+    /// harness-assigned value from [`Self::submit_readback`], so callers can
+    /// detect dropped or reordered frames without maintaining their own counter.
+    fn take_readback_indexed(&mut self, out: &mut Vec<u8>) -> Result<Option<u64>, ReadbackError> {
+        let Some(pending) = self.pending_readbacks.pop_front() else {
+            return Ok(None);
+        };
+        let PendingReadback {
+            slot: slot_index,
+            frame_index,
+            submission,
+            width,
+            height,
+            rx,
+        } = pending;
+
+        // Prefer the slot's own submission index; fall back to the pending
+        // entry if the state was already moved on (defensive only).
+        let submission = match &self.readback_slots[slot_index].state {
+            SlotState::Copying { submission } => submission.clone(),
+            _ => submission,
+        };
+
+        self.blocking_polls.fetch_add(1, Ordering::Relaxed);
+        self.renderer
+            .context
+            .device
+            .poll(Maintain::WaitForSubmissionIndex(submission));
+
+        let padded = self.readback_slots[slot_index].padded_bytes_per_row;
+        out.resize((width * 4 * height) as usize, 0);
+
+        let result = finish_mapped_read(
+            &self.readback_slots[slot_index].buffer,
+            rx,
+            padded,
+            width,
+            height,
+            out,
+        );
+
+        // Consume the injection flag on every completed map so a natural map
+        // failure cannot leak the flag into a later, healthy frame.
+        let injected = std::mem::take(&mut self.inject_map_failure);
+        match result {
+            Ok(()) => {
+                self.readback_slots[slot_index].state = SlotState::Ready;
+                self.readback_slots[slot_index].state = SlotState::Free;
+                if injected {
+                    Err(ReadbackError::MapFailed {
+                        message: "injected map failure (test only)".to_string(),
+                        frame_index: Some(frame_index),
+                    })
+                } else {
+                    Ok(Some(frame_index))
+                }
+            }
+            Err(err) => {
+                self.readback_slots[slot_index].state = SlotState::Failed;
+                self.readback_slots[slot_index].state = SlotState::Free;
+                Err(match err {
+                    ReadbackError::MapFailed { message, .. } => ReadbackError::MapFailed {
+                        message,
+                        frame_index: Some(frame_index),
+                    },
+                    other => other,
+                })
+            }
         }
-        drop(mapped);
-        slot.buffer.unmap();
-        self.pending_readbacks.pop_front();
-        Ok(true)
+    }
+
+    /// Submits the current frame's readback and, once the ring is full, returns
+    /// the oldest completed frame.
+    ///
+    /// Call this once per frame **after** [`Self::render_frame`]:
+    ///
+    /// ```no_run
+    /// # use ferrous_renderer::headless::{Pure2dHarness, DEFAULT_FORMAT};
+    /// # fn draw(_h: &mut Pure2dHarness, _frame: u64) {}
+    /// let mut h = Pure2dHarness::new(320, 240, DEFAULT_FORMAT).unwrap();
+    /// let mut buf = Vec::new();
+    /// let mut expected = 0u64;
+    /// for i in 0..90u64 {
+    ///     h.begin_frame();
+    ///     draw(&mut h, i);
+    ///     h.render_frame();
+    ///     if let Some(frame_index) = h.readback_frame(&mut buf).unwrap() {
+    ///         assert_eq!(frame_index, expected);
+    ///         expected += 1;
+    ///         let _ = &buf;
+    ///     }
+    /// }
+    /// h.flush_readbacks(|frame_index, _bytes| {
+    ///     assert_eq!(frame_index, expected);
+    ///     expected += 1;
+    /// })
+    /// .unwrap();
+    /// # assert_eq!(expected, 90);
+    /// ```
+    ///
+    /// # Ring state machine
+    ///
+    /// If at least one slot is `Free`, the current frame only transitions a
+    /// slot `Free -> Copying` and `Ok(None)` is returned.  If every slot is in
+    /// flight, the oldest frame is taken first (`Copying -> Ready -> Free`,
+    /// possibly reporting [`ReadbackError::MapFailed`] once) and then the
+    /// current frame claims the recycled slot; its index is `Some(index)`.
+    /// Thus the first `N-1` frames return `Ok(None)` and every later call
+    /// returns one frame.
+    pub fn readback_frame(&mut self, out: &mut Vec<u8>) -> Result<Option<u64>, ReadbackError> {
+        let all_busy = self
+            .readback_slots
+            .iter()
+            .all(|slot| !matches!(slot.state, SlotState::Free));
+        if all_busy {
+            let taken = self.take_readback_indexed(out);
+            let submitted = self.submit_readback();
+            match taken {
+                Ok(index) => {
+                    submitted?;
+                    Ok(index)
+                }
+                Err(err) => {
+                    // The failed slot was recycled, so the current frame is
+                    // still submitted; the map error wins because it belongs to
+                    // the frame the caller expected here.
+                    let _ = submitted;
+                    Err(err)
+                }
+            }
+        } else {
+            self.submit_readback()?;
+            Ok(None)
+        }
+    }
+
+    /// Drains every pending frame in submission order, calling
+    /// `f(frame_index, bytes)` for each.
+    ///
+    /// A map failure is logged with [`log::warn!`] and the drain continues, so
+    /// every slot ends up `Free`; the first error is returned at the end.
+    /// The bytes buffer is an internal scratch `Vec` reused across frames and
+    /// across calls, so steady-state flushing allocates no GPU buffer and does
+    /// not grow the scratch allocation.
+    pub fn flush_readbacks(&mut self, mut f: impl FnMut(u64, &[u8])) -> Result<(), ReadbackError> {
+        let mut first_error = None;
+        let mut scratch = std::mem::take(&mut self.readback_scratch);
+        loop {
+            match self.take_readback_indexed(&mut scratch) {
+                Ok(Some(frame_index)) => f(frame_index, &scratch),
+                Ok(None) => break,
+                Err(err) => {
+                    log::warn!("headless readback failed while flushing: {err}");
+                    if first_error.is_none() {
+                        first_error = Some(err);
+                    }
+                }
+            }
+        }
+        self.readback_scratch = scratch;
+        match first_error {
+            Some(err) => Err(err),
+            None => Ok(()),
+        }
     }
 
     /// Number of readbacks submitted but not yet taken.
     pub fn pending_readbacks(&self) -> usize {
         self.pending_readbacks.len()
+    }
+
+    /// The harness-assigned index that the next successful
+    /// [`Self::submit_readback`] will return.
+    ///
+    /// Starts at `0` and increases by one per successful submit; a rejected
+    /// submit (for example [`ReadbackError::Busy`]) does not advance it.
+    pub fn next_frame_index(&self) -> u64 {
+        self.next_frame_index
+    }
+
+    /// Number of `Maintain::Wait` / `Maintain::WaitForSubmissionIndex` polls
+    /// this harness has performed.
+    ///
+    /// `submit_readback` and the non-blocking [`Self::render_frame`] never
+    /// increment it; taking a frame and [`Self::render_frame_blocking`] do.
+    /// Tests use it to prove that submission and rendering overlap.
+    pub fn blocking_polls(&self) -> u64 {
+        self.blocking_polls.load(Ordering::Relaxed)
+    }
+
+    /// Total number of readback staging buffers this harness has ever created.
+    ///
+    /// This is a monotonic high-water mark, not the current ring size, so tests
+    /// can prove that a steady-state loop creates no new buffers.
+    pub fn readback_slots_allocated(&self) -> u64 {
+        self.slots_allocated
+    }
+
+    /// Test-only hook: report the next completed map as
+    /// [`ReadbackError::MapFailed`].
+    ///
+    /// The affected frame is still unmapped, popped and its slot recycled, so
+    /// this exercises the error-recovery path without touching any other
+    /// pending frame.  The flag is consumed by the next completed map.
+    #[doc(hidden)]
+    pub fn inject_map_failure_for_test(&mut self) {
+        self.inject_map_failure = true;
     }
 }

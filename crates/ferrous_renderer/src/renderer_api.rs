@@ -386,6 +386,8 @@ pub fn set_mode(
     world_pass: &mut crate::passes::WorldPass,
     #[cfg(feature = "gui")] ui_pass: &mut crate::passes::UiPass,
 ) {
+    #[cfg(not(feature = "gui"))]
+    let _ = world_pass;
     if *mode == new_mode {
         return;
     }
@@ -568,6 +570,8 @@ pub fn set_clear_color(
     mode: crate::RendererMode,
     color: wgpu::Color,
 ) {
+    #[cfg(not(feature = "gui"))]
+    let _ = mode;
     world_pass.clear_color = color;
     #[cfg(feature = "gui")]
     if mode == crate::RendererMode::Flat2D {

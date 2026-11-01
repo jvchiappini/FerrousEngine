@@ -32,6 +32,8 @@ jobs:
         run: |
           rustfmt --edition 2021 --config skip_children=true --check \
             crates/ferrous_2d/src/components/path.rs \
+            crates/ferrous_2d/src/handle.rs \
+            crates/ferrous_2d/src/lib.rs \
             crates/ferrous_2d/src/render/batch.rs \
             crates/ferrous_2d/src/render/pipeline.rs \
             crates/ferrous_2d/src/render/renderer.rs \
@@ -61,6 +63,7 @@ jobs:
             crates/ferrous_renderer/src/passes/ssao_blur_pass.rs \
             crates/ferrous_renderer/src/passes/world_pass.rs \
             crates/ferrous_renderer/src/renderer_api.rs \
+            crates/ferrous_renderer/src/renderer_passes.rs \
             crates/ferrous_renderer/src/renderer_core.rs \
             crates/ferrous_renderer/src/renderer_passes.rs \
             crates/ferrous_renderer/src/renderer_resource.rs \
@@ -70,8 +73,13 @@ jobs:
             crates/ferrous_renderer/src/resources/texture.rs \
             crates/ferrous_renderer/src/resources/texture_registry.rs \
             crates/ferrous_renderer/tests/headless_readback.rs \
+            crates/ferrous_renderer/tests/headless_ring.rs \
             crates/ferrous_renderer/tests/headless_text.rs \
+            crates/ferrous_renderer/tests/pure2d_blend_modes.rs \
+            crates/ferrous_renderer/tests/pure2d_hard_edges.rs \
             crates/ferrous_renderer/tests/pure2d_headless.rs \
+            crates/ferrous_renderer/tests/pure2d_layers.rs \
+            crates/ferrous_renderer/tests/pure2d_premultiplied.rs \
             crates/ferrous_ui_core/src/render_collector.rs \
             crates/ferrous_ui_render/src/gui_batch.rs \
             crates/ferrous_ui_render/src/gui_renderer.rs \
@@ -82,6 +90,16 @@ jobs:
       # change; unrelated workspace crates still carry pre-existing warnings.
       - name: clippy (ferrous_font / ferrous_2d / ferrous_renderer)
         run: cargo clippy -p ferrous_font -p ferrous_2d -p ferrous_renderer --all-targets --no-deps -- -D warnings
+
+      # Same crates without the GUI stack: the headless/Pure2D consumers build
+      # `ferrous_renderer` with `default-features = false`, so lint and test
+      # that configuration too (it caught eight warnings that the default
+      # feature set hid).
+      - name: clippy (ferrous_renderer, no default features)
+        run: cargo clippy -p ferrous_renderer --no-default-features --all-targets --no-deps -- -D warnings
+
+      - name: tests (ferrous_renderer, no default features)
+        run: cargo test -p ferrous_renderer --no-default-features --tests -j 2
 
       - name: tests (ferrous_font / ferrous_2d / ferrous_renderer)
         run: cargo test -p ferrous_font -p ferrous_2d -p ferrous_renderer -j 2

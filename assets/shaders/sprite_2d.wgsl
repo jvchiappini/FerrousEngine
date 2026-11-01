@@ -18,13 +18,15 @@ struct InstanceInput {
     @location(3) transform_c3: vec4<f32>,
     @location(4) color: vec4<f32>,
     @location(5) uv_rect: vec4<f32>,     // x, y, w, h
-    @location(6) properties: vec4<f32>,  // x=flip_x, y=flip_y, z=is_lit, w=reserved
+    @location(6) properties: vec4<f32>,  // x=flip_x, y=flip_y, z=is_lit, w=premultiplied data flag
 };
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
+    // Instance properties.w: 1 = the sampled texels are premultiplied.
+    @location(2) @interpolate(flat) premultiplied: f32,
 };
 
 // Generates simple quad in XY range [0.0 ... 1.0] with UVs
@@ -61,6 +63,7 @@ fn vs_main(
     // UV Rect mapping (Sprite sheet logic)
     out.uv = instance.uv_rect.xy + (final_uv * instance.uv_rect.zw);
     out.color = instance.color;
+    out.premultiplied = instance.properties.w;
 
     // Shift to origin [-0.5, -0.5] if anchor is center
     let local_pos = vec4<f32>(base_pos.x - 0.5, base_pos.y - 0.5, 0.0, 1.0);
@@ -73,14 +76,23 @@ fn vs_main(
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let tex_color = textureSample(sprite_texture, sprite_sampler, in.uv);
-    let out_color = tex_color * in.color;
+    let tint = in.color;
+    let alpha = tex_color.a * tint.a;
+    // Output premultiplied colour. Straight-alpha texels (the default) are
+    // premultiplied here; premultiplied texels only need the tint alpha.
+    var rgb = tex_color.rgb * tint.rgb;
+    if (in.premultiplied > 0.5) {
+        rgb = rgb * tint.a;
+    } else {
+        rgb = rgb * alpha;
+    }
     
     // Discard transparent pixels to preserve Z-buffer ordering properly!
     // Threshold ~1/255: avoids hard "jagged" edges on soft-fade sprites,
     // while still skipping nearly-invisible fragments for fill-rate.
-    if out_color.a < 0.004 {
+    if alpha < 0.004 {
         discard;
     }
 
-    return out_color;
+    return vec4<f32>(rgb, alpha);
 }
