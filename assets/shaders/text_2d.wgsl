@@ -14,6 +14,9 @@ struct CameraUniform {
     resolution: vec2<f32>,
     // x = device pixels per logical pixel, y = legacy flag (unused here).
     padding: vec2<f32>,
+    // Physical-pixel viewport origin (0,0 for the single main camera).
+    viewport_origin: vec2<f32>,
+    _pad: vec2<f32>,
 };
 
 @group(0) @binding(0)

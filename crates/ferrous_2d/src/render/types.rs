@@ -1206,6 +1206,18 @@ mod gpu_pack_tests {
         assert_eq!(std::mem::size_of::<ShapeGpu>(), 64);
     }
 
+    /// `CameraUniform` in the 2D shaders must match this layout exactly:
+    /// mat4 (64) + resolution (8) + padding (8) + viewport_origin (8) + _pad
+    /// (8) + 32 `vec4` dash slots (512) = 608 bytes, 16-byte aligned.
+    #[test]
+    fn uniform2d_matches_the_wgsl_camera_layout() {
+        assert_eq!(std::mem::size_of::<Uniform2d>(), 608);
+        assert_eq!(std::mem::align_of::<Uniform2d>(), 4);
+        let origin = std::mem::offset_of!(Uniform2d, viewport_origin);
+        assert_eq!(origin, 80);
+        assert_eq!(std::mem::offset_of!(Uniform2d, dash), 96);
+    }
+
     #[test]
     fn f16_known_values() {
         assert_eq!(f32_to_f16(0.0), 0x0000);
@@ -1436,6 +1448,14 @@ pub struct Uniform2d {
     pub resolution: [f32; 2],
     /// `[device_px_per_logical_px, legacy_2d_flag]`.
     pub padding: [f32; 2], // 16-byte alignment
+    /// Physical-pixel origin `[x, y]` of the viewport inside the framebuffer.
+    ///
+    /// The single main camera uses `[0, 0]`; multi-view uses the sub-rect
+    /// origin so the fragment shader can map clip coordinates (which are in
+    /// full framebuffer space) onto the view's own resolution.
+    pub viewport_origin: [f32; 2],
+    /// Keeps `dash` (a `vec4` array) 16-byte aligned after the origin above.
+    pub _pad: [f32; 2],
     /// Dash table: 16 patterns × 8 lengths, stored as 32 `vec4` so the WGSL
     /// uniform array is 16-byte aligned. Slot `0` is unused (continuous).
     /// Pattern `i` uses `dash[i*2]` (lengths 0..3) and `dash[i*2+1]` (4..7).

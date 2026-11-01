@@ -29,13 +29,13 @@
 //! buffer and runs an explicit state machine:
 //!
 //! * `Free` — idle; [`Pure2dHarness::submit_readback`] may claim the slot.
-//! * `Copying { submission }` — `copy_texture_to_buffer` was submitted and
-//!   `map_async` was queued *immediately* after it, so the GPU copy overlaps the
-//!   next frame's CPU-side work.
-//! * `Ready` — the map completed and the bytes are copied out on take.
-//! * `Failed` — the map failed; the buffer is unmapped, the pending frame is
-//!   dropped and the slot returns to `Free` so a single bad map can never wedge
-//!   the ring.
+//! * `InFlight` — `copy_texture_to_buffer` was submitted and `map_async` was
+//!   queued *immediately* after it, so the GPU copy overlaps the next frame's
+//!   CPU-side work.  The submission index lives on the pending entry.
+//!
+//! Taking a frame always unmaps the buffer and returns the slot to `Free`,
+//! whether the map succeeded or failed, so a single bad map can never wedge the
+//! ring.
 //!
 //! [`Pure2dHarness::submit_readback`] claims the next `Free` slot in
 //! round-robin order and returns a harness-assigned frame index starting at
@@ -576,18 +576,15 @@ fn finish_mapped_read(
 }
 
 /// State of one readback ring slot.
+///
+/// The ring only needs to know whether a slot is available; everything else
+/// about the in-flight frame lives in the matching [`PendingReadback`] entry.
 enum SlotState {
     /// Idle and available for [`Pure2dHarness::submit_readback`].
     Free,
-    /// A copy was submitted and `map_async` was queued right after it.
-    Copying {
-        /// Submission that must complete before the mapping is valid.
-        submission: wgpu::SubmissionIndex,
-    },
-    /// The map completed; the bytes are copied out on the next take.
-    Ready,
-    /// The map failed; the slot is unmapped and returned to `Free`.
-    Failed,
+    /// A copy was submitted and `map_async` was queued right after it.  The
+    /// submission index is stored on the [`PendingReadback`] entry.
+    InFlight,
 }
 
 /// One N-slot ring slot: a persistent, row-padded staging buffer plus its state.
@@ -1107,11 +1104,10 @@ impl Pure2dHarness {
     ///
     /// The ring starts with every slot `Free`.  This method claims the next
     /// `Free` slot in round-robin order, meaning the slot transitions
-    /// `Free -> Copying { submission }`.  The copy is submitted and
-    /// `map_async` is queued **immediately**, so the GPU copy overlaps the
-    /// caller's next frame.  When the oldest pending frame is taken the state
-    /// moves `Copying -> Ready -> Free` (or `Copying -> Failed -> Free` on a
-    /// map error, see [`Self::take_readback`]).
+    /// `Free -> InFlight`.  The copy is submitted and `map_async` is queued
+    /// **immediately**, so the GPU copy overlaps the caller's next frame.
+    /// Taking the oldest pending frame returns the slot to `Free`, whether the
+    /// map succeeded or failed (see [`Self::take_readback`]).
     ///
     /// Returns the harness-assigned frame index (starting at `0`, strictly
     /// increasing per successful submit).  If **all** slots are in flight this
@@ -1173,9 +1169,7 @@ impl Pure2dHarness {
             let _ = tx.send(result);
         });
 
-        self.readback_slots[slot_index].state = SlotState::Copying {
-            submission: submission.clone(),
-        };
+        self.readback_slots[slot_index].state = SlotState::InFlight;
         self.pending_readbacks.push_back(PendingReadback {
             slot: slot_index,
             frame_index,
@@ -1196,11 +1190,11 @@ impl Pure2dHarness {
     /// Returns `Ok(false)` when nothing is pending.  Otherwise it polls with
     /// `Maintain::WaitForSubmissionIndex` for the oldest frame (incrementing
     /// [`Self::blocking_polls`]), copies the tight rows into `out`, unmaps the
-    /// buffer and transitions the slot `Copying -> Ready -> Free`.  Results come
-    /// out in submission order.
+    /// buffer and returns the slot to `Free`.  Results come out in submission
+    /// order.
     ///
     /// On a map error the buffer is still unmapped, the pending entry is
-    /// removed and the slot is recycled (`Copying -> Failed -> Free`), so the
+    /// removed and the slot is recycled to `Free`, so the
     /// error is reported **exactly once** as
     /// [`ReadbackError::MapFailed`] with `frame_index: Some(index)` and the next
     /// call returns the next frame normally instead of repeating the failure.
@@ -1226,13 +1220,6 @@ impl Pure2dHarness {
             rx,
         } = pending;
 
-        // Prefer the slot's own submission index; fall back to the pending
-        // entry if the state was already moved on (defensive only).
-        let submission = match &self.readback_slots[slot_index].state {
-            SlotState::Copying { submission } => submission.clone(),
-            _ => submission,
-        };
-
         self.blocking_polls.fetch_add(1, Ordering::Relaxed);
         self.renderer
             .context
@@ -1256,7 +1243,6 @@ impl Pure2dHarness {
         let injected = std::mem::take(&mut self.inject_map_failure);
         match result {
             Ok(()) => {
-                self.readback_slots[slot_index].state = SlotState::Ready;
                 self.readback_slots[slot_index].state = SlotState::Free;
                 if injected {
                     Err(ReadbackError::MapFailed {
@@ -1268,7 +1254,6 @@ impl Pure2dHarness {
                 }
             }
             Err(err) => {
-                self.readback_slots[slot_index].state = SlotState::Failed;
                 self.readback_slots[slot_index].state = SlotState::Free;
                 Err(match err {
                     ReadbackError::MapFailed { message, .. } => ReadbackError::MapFailed {
@@ -1313,8 +1298,8 @@ impl Pure2dHarness {
     /// # Ring state machine
     ///
     /// If at least one slot is `Free`, the current frame only transitions a
-    /// slot `Free -> Copying` and `Ok(None)` is returned.  If every slot is in
-    /// flight, the oldest frame is taken first (`Copying -> Ready -> Free`,
+    /// slot `Free -> InFlight` and `Ok(None)` is returned.  If every slot is in
+    /// flight, the oldest frame is taken first (returning its slot to `Free`,
     /// possibly reporting [`ReadbackError::MapFailed`] once) and then the
     /// current frame claims the recycled slot; its index is `Some(index)`.
     /// Thus the first `N-1` frames return `Ok(None)` and every later call

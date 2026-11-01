@@ -371,6 +371,7 @@ impl Renderer2d {
         &self,
         proj_view: Mat4,
         resolution: glam::Vec2,
+        viewport_origin: glam::Vec2,
     ) -> crate::render::types::Uniform2d {
         let mut dash = [[0.0f32; 4]; 32];
         {
@@ -393,6 +394,8 @@ impl Renderer2d {
             view_proj: proj_view.to_cols_array(),
             resolution: resolution.to_array(),
             padding: [self.pixel_ratio(), if self.legacy_2d() { 1.0 } else { 0.0 }],
+            viewport_origin: viewport_origin.to_array(),
+            _pad: [0.0; 2],
             dash,
         }
     }
@@ -464,7 +467,8 @@ impl Renderer2d {
     ) {
         self.ensure_view_slots(index);
         let res = glam::Vec2::new(rect_px[2].max(1.0), rect_px[3].max(1.0));
-        let u = self.camera_uniform(view_proj, res);
+        let origin = glam::Vec2::new(rect_px[0], rect_px[1]);
+        let u = self.camera_uniform(view_proj, res, origin);
         queue.write_buffer(&self.view_camera_buffers[index], 0, bytemuck::bytes_of(&u));
         if let Some(p) = self.grid_params {
             let gu = crate::render::types::Grid2dUniform {
@@ -678,6 +682,9 @@ impl Renderer2d {
             // x = device px per logical px (min_px resolution),
             // y = legacy stabiliser flag (>0.5 = on).
             padding: [self.pixel_ratio(), if self.legacy_2d() { 1.0 } else { 0.0 }],
+            // The single main camera fills the whole target.
+            viewport_origin: [0.0, 0.0],
+            _pad: [0.0; 2],
             dash,
         };
         queue.write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&uniform));

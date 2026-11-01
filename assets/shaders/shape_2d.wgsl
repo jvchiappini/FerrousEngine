@@ -19,6 +19,12 @@ struct CameraUniform {
     // x = device pixels per logical pixel (resolves min_px to world units),
     // y = legacy line-stabiliser A/B flag (>0.5 = old behaviour).
     padding: vec2<f32>,
+    // Physical-pixel origin of this viewport inside the framebuffer.  The
+    // single main camera uses (0, 0); the multi-view path passes the sub-rect
+    // origin because `@builtin(position)` is always in full framebuffer space.
+    viewport_origin: vec2<f32>,
+    // Keeps `dash` (a vec4 array) 16-byte aligned.
+    _pad: vec2<f32>,
     // 16 dash patterns × 8 lengths (two vec4 each); pattern 0 is unused.
     dash: array<vec4<f32>, 32>,
 };
@@ -237,12 +243,17 @@ fn vs_main(in: VertexInput) -> VertexOutput {
         let cb = camera.view_proj * vec4<f32>(vb, 0.0, 1.0);
         let cc = camera.view_proj * vec4<f32>(vc, 0.0, 1.0);
         let res_fb = max(camera.resolution, vec2<f32>(1.0, 1.0));
+        let origin = camera.viewport_origin;
         let na = ca.xy / ca.w;
         let nb = cb.xy / cb.w;
         let nc = cc.xy / cc.w;
-        let fa = vec2<f32>((na.x * 0.5 + 0.5) * res_fb.x, (1.0 - (na.y * 0.5 + 0.5)) * res_fb.y);
-        let fb = vec2<f32>((nb.x * 0.5 + 0.5) * res_fb.x, (1.0 - (nb.y * 0.5 + 0.5)) * res_fb.y);
-        let fc = vec2<f32>((nc.x * 0.5 + 0.5) * res_fb.x, (1.0 - (nc.y * 0.5 + 0.5)) * res_fb.y);
+        // NDC -> the view's own pixel rect, then shift by its framebuffer
+        // origin.  The rasteriser's clip positions are in full framebuffer
+        // coordinates, so a sub-viewport whose origin is not (0, 0) must be
+        // offset here for the hard-edge fill rule to compare like with like.
+        let fa = origin + vec2<f32>((na.x * 0.5 + 0.5) * res_fb.x, (1.0 - (na.y * 0.5 + 0.5)) * res_fb.y);
+        let fb = origin + vec2<f32>((nb.x * 0.5 + 0.5) * res_fb.x, (1.0 - (nb.y * 0.5 + 0.5)) * res_fb.y);
+        let fc = origin + vec2<f32>((nc.x * 0.5 + 0.5) * res_fb.x, (1.0 - (nc.y * 0.5 + 0.5)) * res_fb.y);
         let sa = round(fa * SUBPIXEL) / SUBPIXEL;
         let sb = round(fb * SUBPIXEL) / SUBPIXEL;
         let sc = round(fc * SUBPIXEL) / SUBPIXEL;

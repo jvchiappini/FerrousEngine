@@ -4148,10 +4148,27 @@ impl Renderer {
             }
         }
 
-        let res = self
-            .layer_res
-            .take()
-            .expect("ensure_layer_resources must create the layer resources");
+        // `ensure_layer_resources` above always populates `layer_res`, but the
+        // render path must never panic: if it is somehow absent, log and skip
+        // the layered frame, returning the scratch buffers to the pool.
+        let Some(res) = self.layer_res.take() else {
+            log::error!("Pure2D layered frame skipped: layer resources are unavailable");
+            self.composite_instances = composites;
+            self.layer_shapes_scratch = shapes;
+            self.layer_sprites_scratch = sprites;
+            self.layer_texts_scratch = texts;
+            self.layer_plans = plans;
+            self.layer_plan_order = plan_order;
+            self.layer_root_plan = root_plan;
+            self.layer_empty = empty;
+            self.layer_sort_buffers = sort_buffers;
+            self.layer_passes_drawn = 0;
+            self.frame_cmds_2d.clear();
+            self.layer_stack_2d.clear();
+            self.layer_next_index = 0;
+            self.frame_uses_layers = false;
+            return;
+        };
         let mut passes = 0u32;
 
         for layer_index in &plan_order {
