@@ -287,6 +287,12 @@ impl GuiBatch {
         self.update_last_segment();
     }
 
+    /// Pushes an outline quad: the rounded-rect border is drawn inside `w`×`h`
+    /// with `width` physical pixels of stroke.
+    ///
+    /// Packing follows `assets/shaders/gui.wgsl`, which reads the border width
+    /// from `uv0.x`; `uv1` is unused by the border path (it is set to
+    /// `[0, 0]` so the interpolated `uv` cannot leak gradient data).
     pub fn border(
         &mut self,
         x: f32,
@@ -300,8 +306,8 @@ impl GuiBatch {
         self.push_quad(GuiQuad {
             pos: [x, y],
             size: [w, h],
-            uv0: [0.0, 0.0],
-            uv1: [width, 0.0], // uv1.x se usa como border_width en el shader
+            uv0: [width, 0.0], // gui.wgsl: border width (uv0.x)
+            uv1: [0.0, 0.0],
             color,
             color_b: [0.0; 4],
             radii,
@@ -313,6 +319,14 @@ impl GuiBatch {
         self.update_last_segment();
     }
 
+    /// Pushes a soft drop shadow for the rectangle at `(x, y, w, h)`.
+    ///
+    /// `gui.wgsl` computes the shadow SDF from the **unexpanded** rectangle
+    /// size in `color_b.xy` and the blur radius in `uv0.x`, centred on the
+    /// quad.  The quad is therefore expanded by `blur * 2 + |spread| + the
+    /// larger offset` around the *offset* rectangle, so the unexpanded rect
+    /// lands where the shadow belongs.  `uv1` keeps the offset for debugging;
+    /// the shader does not read it.
     pub fn shadow(
         &mut self,
         x: f32,
@@ -325,16 +339,17 @@ impl GuiBatch {
         offset: [f32; 2],
         radii: [f32; 4],
     ) {
-        // To include the shadow in the SDF, the quad must be expanded
+        // To include the shadow in the SDF, the quad must be expanded around
+        // the offset rectangle.
         let expand = blur_radius * 2.0 + spread.abs() + offset[0].abs().max(offset[1].abs());
 
         self.push_quad(GuiQuad {
-            pos: [x - expand, y - expand],
+            pos: [x + offset[0] - expand, y + offset[1] - expand],
             size: [w + expand * 2.0, h + expand * 2.0],
-            uv0: [spread, blur_radius],  // uv0.x = spread, uv0.y = blur
-            uv1: [offset[0], offset[1]], // uv1 = dx, dy
+            uv0: [blur_radius, 0.0],     // gui.wgsl: blur radius (uv0.x)
+            uv1: [offset[0], offset[1]], // informational only
             color,
-            color_b: [0.0; 4],
+            color_b: [w, h, 0.0, 0.0], // gui.wgsl: unexpanded size (color_b.xy)
             radii,
             tex_index: 0,
             flags: crate::SHADOW_BIT,
@@ -440,5 +455,60 @@ impl GuiBatch {
         self.scissor_stack.pop();
         self.current_scissor = self.scissor_stack.last().copied();
         self.ensure_segment();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn quad_of(build: impl FnOnce(&mut GuiBatch)) -> GuiQuad {
+        let mut batch = GuiBatch::new();
+        build(&mut batch);
+        assert_eq!(batch.quads.len(), 1);
+        batch.quads[0]
+    }
+
+    #[test]
+    fn border_puts_width_in_uv0_where_the_shader_reads_it() {
+        let quad = quad_of(|b| {
+            b.border(10.0, 20.0, 100.0, 40.0, [1.0; 4], [4.0; 4], 2.5);
+        });
+        assert_eq!(
+            quad.uv0,
+            [2.5, 0.0],
+            "gui.wgsl reads border_width from uv0.x"
+        );
+        assert_eq!(quad.uv1, [0.0, 0.0], "uv1 must not carry the width");
+        assert_eq!(quad.flags, crate::BORDER_BIT);
+        assert_eq!(quad.pos, [10.0, 20.0]);
+        assert_eq!(quad.size, [100.0, 40.0]);
+    }
+
+    #[test]
+    fn shadow_packs_blur_and_unexpanded_size_where_the_shader_reads_them() {
+        let quad = quad_of(|b| {
+            b.shadow(
+                100.0,
+                200.0,
+                300.0,
+                150.0,
+                [0.0, 0.0, 0.0, 0.5],
+                8.0,
+                0.0,
+                [0.0, 4.0],
+                [6.0; 4],
+            );
+        });
+        assert_eq!(quad.uv0[0], 8.0, "gui.wgsl reads the blur from uv0.x");
+        assert_eq!(quad.color_b[0], 300.0, "unexpanded width in color_b.x");
+        assert_eq!(quad.color_b[1], 150.0, "unexpanded height in color_b.y");
+        // The quad is expanded by blur * 2 + |offset| and moved by the offset,
+        // so the shader's centred, unexpanded rect lands on the offset rect.
+        let expand = 8.0 * 2.0 + 4.0;
+        assert!((quad.pos[0] - (100.0 + 0.0 - expand)).abs() < 1e-4);
+        assert!((quad.pos[1] - (200.0 + 4.0 - expand)).abs() < 1e-4);
+        assert!((quad.size[0] - (300.0 + expand * 2.0)).abs() < 1e-4);
+        assert_eq!(quad.flags, crate::SHADOW_BIT);
     }
 }

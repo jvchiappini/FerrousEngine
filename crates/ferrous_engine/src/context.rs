@@ -126,6 +126,11 @@ pub struct AppContext<'a> {
     /// Set via [`AppContext::keep_awake`]: counts this frame as activity so
     /// the idle timeout does not throttle an ongoing animation.
     pub(crate) keep_awake_requested: bool,
+
+    /// Set via [`AppContext::request_screenshot`]: the runner copies the
+    /// frame it presents and delivers it to
+    /// [`FerrousApp::on_screenshot`](crate::FerrousApp::on_screenshot).
+    pub(crate) screenshot_requested: bool,
 }
 
 impl<'a> AppContext<'a> {
@@ -139,6 +144,18 @@ impl<'a> AppContext<'a> {
     /// while something animates without user input.
     pub fn keep_awake(&mut self) {
         self.keep_awake_requested = true;
+    }
+
+    /// Ask the runner to copy the frame it is about to present and deliver it
+    /// to [`FerrousApp::on_screenshot`](crate::FerrousApp::on_screenshot) as
+    /// tight RGBA8.
+    ///
+    /// The copy needs `COPY_SRC` on the window surface.  The runner enables it
+    /// when the adapter advertises support; otherwise the request is accepted
+    /// and never delivered (`on_screenshot` is simply not called), so callers
+    /// need no capability check of their own.
+    pub fn request_screenshot(&mut self) {
+        self.screenshot_requested = true;
     }
 
     /// Request a new render scale (engine surface = `css × dpr × scale`).

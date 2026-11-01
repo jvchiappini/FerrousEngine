@@ -1,8 +1,8 @@
 use ferrous_gpu::EngineContext;
 use ferrous_renderer::Renderer;
-use winit::window::Window;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast;
+use winit::window::Window;
 
 pub struct GraphicsState {
     pub surface: wgpu::Surface<'static>,
@@ -24,9 +24,12 @@ impl GraphicsState {
             let win = web_sys::window().expect("no window");
             let nav = win.navigator();
             let is_secure_context = win.is_secure_context();
-            
-            web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!("[WGPU-Init] Secure Context: {}", is_secure_context)));
-            
+
+            web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
+                "[WGPU-Init] Secure Context: {}",
+                is_secure_context
+            )));
+
             // Si el origen no es seguro (IP sin HTTPS), Chrome bloquea WebGPU.
             if !is_secure_context {
                 web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str("[WGPU-Init] Origin is insecure. WebGPU will be disabled by the browser. Falling back to WebGL2..."));
@@ -50,9 +53,11 @@ impl GraphicsState {
             let canvas = window
                 .canvas()
                 .expect("winit window has no canvas in wasm32");
-            
-            web_sys::console::log_1(&wasm_bindgen::JsValue::from_str("[WGPU-Init] Got canvas from winit window"));
-            
+
+            web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(
+                "[WGPU-Init] Got canvas from winit window",
+            ));
+
             let web_window = web_sys::window().expect("no window");
             let document = web_window.document().expect("no document");
 
@@ -68,24 +73,27 @@ impl GraphicsState {
                 "[WGPU-Init] Canvas buffer = {}x{} physical pixels (DPR={:.2})",
                 width, height, dpr
             )));
-            
+
             // Si el usuario proporcionó un contenedor específico, mover la canvas ahí
             if let Some(container) = document.get_element_by_id("ferrous-container") {
-                 container.append_child(&canvas).ok();
+                container.append_child(&canvas).ok();
             } else {
-                 let body = document.body().expect("no body");
-                 if canvas.parent_element().is_none() {
-                     body.append_child(&canvas).expect("failed to append canvas to document body");
-                     web_sys::console::log_1(&wasm_bindgen::JsValue::from_str("[WGPU-Init] Appended canvas to document body (Fallback)"));
-                     
-                     // Si cae al body, forzamos posición fija arriba para que no se desplace abajo
-                     canvas.style().set_property("position", "fixed").ok();
-                     canvas.style().set_property("top", "0").ok();
-                     canvas.style().set_property("left", "0").ok();
-                     canvas.style().set_property("z-index", "0").ok();
-                 }
+                let body = document.body().expect("no body");
+                if canvas.parent_element().is_none() {
+                    body.append_child(&canvas)
+                        .expect("failed to append canvas to document body");
+                    web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(
+                        "[WGPU-Init] Appended canvas to document body (Fallback)",
+                    ));
+
+                    // Si cae al body, forzamos posición fija arriba para que no se desplace abajo
+                    canvas.style().set_property("position", "fixed").ok();
+                    canvas.style().set_property("top", "0").ok();
+                    canvas.style().set_property("left", "0").ok();
+                    canvas.style().set_property("z-index", "0").ok();
+                }
             }
-            
+
             // CSS size = 100% of container. The browser scales our physical-pixel
             // buffer back down to CSS pixels, producing a crisp HiDPI image.
             canvas.style().set_property("width", "100%").ok();
@@ -93,8 +101,8 @@ impl GraphicsState {
             canvas.style().set_property("image-rendering", "auto").ok();
             canvas.style().set_property("display", "block").ok();
             canvas.style().set_property("outline", "none").ok();
-            
-            // Critical for keyboard input in the browser: 
+
+            // Critical for keyboard input in the browser:
             // the canvas needs a tabindex to be focusable.
             canvas.set_attribute("tabindex", "0").ok();
             canvas.focus().ok();
@@ -106,52 +114,74 @@ impl GraphicsState {
             // middle/right-drag pan tracks the cursor 1:1 instead of dropping
             // events (or being hijacked) when the cursor leaves the canvas.
             let focus_canvas = canvas.clone();
-            let on_pointer_down = wasm_bindgen::prelude::Closure::<dyn FnMut(web_sys::PointerEvent)>::new(move |e: web_sys::PointerEvent| {
-                focus_canvas.focus().ok();
-                e.prevent_default();
-                let _ = focus_canvas.set_pointer_capture(e.pointer_id());
-            });
-            canvas.add_event_listener_with_callback("pointerdown", on_pointer_down.as_ref().unchecked_ref()).ok();
+            let on_pointer_down =
+                wasm_bindgen::prelude::Closure::<dyn FnMut(web_sys::PointerEvent)>::new(
+                    move |e: web_sys::PointerEvent| {
+                        focus_canvas.focus().ok();
+                        e.prevent_default();
+                        let _ = focus_canvas.set_pointer_capture(e.pointer_id());
+                    },
+                );
+            canvas
+                .add_event_listener_with_callback(
+                    "pointerdown",
+                    on_pointer_down.as_ref().unchecked_ref(),
+                )
+                .ok();
             on_pointer_down.forget();
 
             // Stop the page/trackpad default for wheel gestures (macOS back/
             // forward, overscroll) so wheel-zoom stays smooth.
-            let on_wheel = wasm_bindgen::prelude::Closure::<dyn FnMut(web_sys::Event)>::new(|e: web_sys::Event| {
-                e.prevent_default();
-            });
+            let on_wheel = wasm_bindgen::prelude::Closure::<dyn FnMut(web_sys::Event)>::new(
+                |e: web_sys::Event| {
+                    e.prevent_default();
+                },
+            );
             canvas
                 .add_event_listener_with_callback("wheel", on_wheel.as_ref().unchecked_ref())
                 .ok();
             on_wheel.forget();
 
             // Disable browser context menu to allow right-click interaction in 3D
-            let on_context_menu = wasm_bindgen::prelude::Closure::<dyn FnMut(web_sys::MouseEvent)>::new(|e: web_sys::MouseEvent| {
-                e.prevent_default();
-            });
-            canvas.add_event_listener_with_callback("contextmenu", on_context_menu.as_ref().unchecked_ref()).ok();
+            let on_context_menu =
+                wasm_bindgen::prelude::Closure::<dyn FnMut(web_sys::MouseEvent)>::new(
+                    |e: web_sys::MouseEvent| {
+                        e.prevent_default();
+                    },
+                );
+            canvas
+                .add_event_listener_with_callback(
+                    "contextmenu",
+                    on_context_menu.as_ref().unchecked_ref(),
+                )
+                .ok();
             on_context_menu.forget();
 
             // Keep the browser from stealing Ctrl/Alt + number (tab switching /
             // menu access), so Koncreta's viewport-layout shortcuts reach winit.
-            let on_key_down = wasm_bindgen::prelude::Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(
-                |e: web_sys::KeyboardEvent| {
-                    let code = e.code();
-                    let layout_digit = matches!(
-                        code.as_str(),
-                        "Digit1" | "Digit2" | "Digit3" | "Digit4"
-                            | "Numpad1" | "Numpad2" | "Numpad3" | "Numpad4"
-                    );
-                    if layout_digit && (e.ctrl_key() || e.alt_key()) {
-                        e.prevent_default();
-                        e.stop_propagation();
-                    }
-                },
-            );
+            let on_key_down =
+                wasm_bindgen::prelude::Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(
+                    |e: web_sys::KeyboardEvent| {
+                        let code = e.code();
+                        let layout_digit = matches!(
+                            code.as_str(),
+                            "Digit1"
+                                | "Digit2"
+                                | "Digit3"
+                                | "Digit4"
+                                | "Numpad1"
+                                | "Numpad2"
+                                | "Numpad3"
+                                | "Numpad4"
+                        );
+                        if layout_digit && (e.ctrl_key() || e.alt_key()) {
+                            e.prevent_default();
+                            e.stop_propagation();
+                        }
+                    },
+                );
             canvas
-                .add_event_listener_with_callback(
-                    "keydown",
-                    on_key_down.as_ref().unchecked_ref(),
-                )
+                .add_event_listener_with_callback("keydown", on_key_down.as_ref().unchecked_ref())
                 .ok();
             on_key_down.forget();
         }
@@ -186,13 +216,18 @@ impl GraphicsState {
 
         let surface = instance.create_surface(window).unwrap_or_else(|e| {
             #[cfg(target_arch = "wasm32")]
-            web_sys::console::error_1(&wasm_bindgen::JsValue::from_str(&format!("Failed to create surface: {:?}", e)));
+            web_sys::console::error_1(&wasm_bindgen::JsValue::from_str(&format!(
+                "Failed to create surface: {:?}",
+                e
+            )));
             panic!("Failed to create surface: {:?}", e);
         });
-        
+
         #[cfg(target_arch = "wasm32")]
-        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str("[WGPU-Init] Surface created perfectly"));
-        
+        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(
+            "[WGPU-Init] Surface created perfectly",
+        ));
+
         let surface: wgpu::Surface<'static> = unsafe { std::mem::transmute(surface) };
 
         // Build the context with the surface so the adapter selection is
@@ -201,13 +236,19 @@ impl GraphicsState {
             Ok(c) => c,
             Err(e) => {
                 #[cfg(target_arch = "wasm32")]
-                web_sys::console::error_1(&wasm_bindgen::JsValue::from_str(&format!("EngineContext init failed: {:?}", e)));
+                web_sys::console::error_1(&wasm_bindgen::JsValue::from_str(&format!(
+                    "EngineContext init failed: {:?}",
+                    e
+                )));
                 panic!("EngineContext init failed: {:?}", e);
             }
         };
 
         #[cfg(target_arch = "wasm32")]
-        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!("[WGPU-Init] Engine context created! Adapter: {:?}", context.adapter.get_info().name)));
+        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
+            "[WGPU-Init] Engine context created! Adapter: {:?}",
+            context.adapter.get_info().name
+        )));
 
         let caps = surface.get_capabilities(&context.adapter);
         // Colour-space policy (audit #12): the engine renders in **linear**
@@ -236,7 +277,15 @@ impl GraphicsState {
         };
 
         let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            // `COPY_SRC` lets `AppContext::request_screenshot` read the
+            // presented frame back; adapters that cannot expose it keep the
+            // old attachment-only usage and simply never deliver a shot.
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | if crate::screenshot::supports_copy_src(&caps) {
+                    wgpu::TextureUsages::COPY_SRC
+                } else {
+                    wgpu::TextureUsages::empty()
+                },
             format,
             width: width.max(1),
             height: height.max(1),
@@ -245,14 +294,19 @@ impl GraphicsState {
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
-        
+
         #[cfg(target_arch = "wasm32")]
-        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!("[WGPU-Init] Configuring surface: {}x{} format={:?}", config.width, config.height, config.format)));
-        
+        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
+            "[WGPU-Init] Configuring surface: {}x{} format={:?}",
+            config.width, config.height, config.format
+        )));
+
         surface.configure(&context.device, &config);
 
         #[cfg(target_arch = "wasm32")]
-        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str("[WGPU-Init] Surface configured. Creating Renderer..."));
+        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(
+            "[WGPU-Init] Surface configured. Creating Renderer...",
+        ));
 
         let renderer = Box::new(Renderer::new(
             context,
@@ -265,7 +319,9 @@ impl GraphicsState {
         ));
 
         #[cfg(target_arch = "wasm32")]
-        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str("[WGPU-Init] Renderer created successfully!"));
+        web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(
+            "[WGPU-Init] Renderer created successfully!",
+        ));
 
         Self {
             surface,

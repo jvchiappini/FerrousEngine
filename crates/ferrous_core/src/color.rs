@@ -16,7 +16,7 @@
 //! let [r, g, b, a] = sky.to_array();
 //! ```
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// Linear-space RGBA colour.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -79,6 +79,13 @@ impl Color {
     /// Construct from a CSS-style hex string: `"#RGB"`, `"#RRGGBB"`, or
     /// `"#RRGGBBAA"`.  The leading `#` is optional.
     ///
+    /// **No transfer function is applied.**  Each byte is divided by 255 and
+    /// stored as-is, so `"#808080"` yields `0.5019` in the linear-light
+    /// fields even though sRGB `0x80` is `0.2159` in linear light.  This is
+    /// historical behaviour that existing callers depend on; use
+    /// [`Color::from_srgb_hex`] when the string is an sRGB colour (what a
+    /// design tool shows).
+    ///
     /// Invalid digits are treated as `0`; an unrecognised length returns
     /// magenta (`#FF00FF`) as a visible error sentinel.
     ///
@@ -116,10 +123,51 @@ impl Color {
     }
 
     /// Construct from a CSS-style hex string, assuming sRGB (gamma) space.
-    /// This is what you almost always want when copying colors from a design tool.
+    ///
+    /// Equivalent to [`Color::hex`] followed by [`Color::srgba`]: the bytes
+    /// are gamma-decoded with the **2.2 power approximation**, not the exact
+    /// piecewise sRGB curve, so `"#808080"` becomes `0.2195` instead of the
+    /// correct `0.2159`.  Prefer [`Color::from_srgb_hex`] for exact decoding.
     pub fn hex_srgb(s: &str) -> Self {
         let linear = Self::hex(s);
         Self::srgba(linear.r, linear.g, linear.b, linear.a)
+    }
+
+    /// Construct from a CSS-style hex string using the exact sRGB EOTF
+    /// (IEC 61966-2-1), including the linear segment near black.
+    ///
+    /// Accepts `"#RGB"`, `"#RRGGBB"` and `"#RRGGBBAA"` (the `#` is
+    /// optional) and returns a colour whose stored fields are linear light,
+    /// ready for the renderer.  `"#808080"` decodes to `0.2159`, where
+    /// [`Color::hex`] returns `0.5019` and [`Color::hex_srgb`] returns
+    /// `0.2195`.
+    ///
+    /// Invalid digits are treated as `0`; an unrecognised length returns
+    /// magenta (`#FF00FF`), matching [`Color::hex`].
+    ///
+    /// ```rust,ignore
+    /// let ui = Color::from_srgb_hex("#5B8CFF");
+    /// let bg = Color::from_srgb_hex("#17181C");
+    /// ```
+    pub fn from_srgb_hex(s: &str) -> Self {
+        let c = Self::hex(s);
+        Self::rgba(
+            srgb_channel_to_linear(c.r),
+            srgb_channel_to_linear(c.g),
+            srgb_channel_to_linear(c.b),
+            c.a,
+        )
+    }
+
+    /// Construct from 8-bit sRGB components, decoded with the exact sRGB
+    /// EOTF.  Alpha stays gamma-encoded-free: it is simply divided by 255.
+    ///
+    /// ```rust,ignore
+    /// let accent = Color::from_srgb8(0x5B, 0x8C, 0xFF, 0xFF);
+    /// ```
+    pub fn from_srgb8(r: u8, g: u8, b: u8, a: u8) -> Self {
+        let decode = |v: u8| srgb_channel_to_linear(v as f32 / 255.0);
+        Self::rgba(decode(r), decode(g), decode(b), a as f32 / 255.0)
     }
 
     /// Construct from a packed `0xRRGGBBAA` hexadecimal `u32`.
@@ -138,8 +186,12 @@ impl Color {
     /// Returns `[r, g, b, a]` in linear f32 — ready to pass directly to the
     /// renderer (e.g. `dc.gui.rect` colour arrays).
     ///
-    /// This is identical to [`to_array`] but communicates intent clearly:
-    /// the values are already in linear light, no gamma conversion is needed.
+    /// This is a **plain field read** identical to [`to_array`]: no gamma
+    /// conversion happens here.  The fields are treated as linear light, so
+    /// converting an sRGB colour means using [`Color::from_srgb_hex`],
+    /// [`Color::from_srgb8`] or [`Color::srgb`] *before* storing it.  Values
+    /// that arrived through [`Color::hex`] are not linearised and look
+    /// washed out on an sRGB surface.
     #[inline]
     pub fn to_linear_f32(self) -> [f32; 4] {
         [self.r, self.g, self.b, self.a]
@@ -255,6 +307,22 @@ impl Color {
     /// Warm white sunlight — slightly yellow‑orange tint.
     /// Equivalent to ~5500 K colour temperature in linear space.
     pub const WARM_WHITE: Self = Self::rgb(1.0, 0.97, 0.90);
+}
+
+/// sRGB electro-optical transfer function (IEC 61966-2-1) for one channel in
+/// `0.0..=1.0`, including the linear segment below the `0.04045` breakpoint.
+/// Inputs outside the range are clamped first.
+fn srgb_channel_to_linear(v: f32) -> f32 {
+    let v = if v.is_finite() {
+        v.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    if v <= 0.040_45 {
+        v / 12.92
+    } else {
+        ((v + 0.055) / 1.055).powf(2.4)
+    }
 }
 
 impl From<[f32; 4]> for Color {
@@ -398,5 +466,42 @@ mod tests {
     fn to_linear_f32_matches_to_array() {
         let c = Color::rgba(0.1, 0.2, 0.3, 0.4);
         assert_eq!(c.to_linear_f32(), c.to_array());
+    }
+
+    #[test]
+    fn exact_srgb_decode_of_mid_gray() {
+        // sRGB 0x80 is 0.50196 gamma-encoded; linear light is 0.21586.
+        let c = Color::from_srgb_hex("#808080");
+        assert!((c.r - 0.215_861).abs() < 1e-5, "r={}", c.r);
+        assert!((c.g - c.r).abs() < 1e-7 && (c.b - c.r).abs() < 1e-7);
+        assert!((c.a - 1.0).abs() < 1e-6);
+        // The old constructors are unchanged: hex() stores the gamma byte and
+        // hex_srgb() uses the 2.2 approximation.
+        assert!((Color::hex("#808080").r - 0.501_961).abs() < 1e-5);
+        assert!((Color::hex_srgb("#808080").r - 0.501_961_f32.powf(2.2)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn exact_srgb_decode_endpoints_and_black_segment() {
+        let white = Color::from_srgb_hex("#FFFFFF");
+        assert!((white.r - 1.0).abs() < 1e-6);
+        let black = Color::from_srgb_hex("#000000");
+        assert_eq!(black.r, 0.0);
+        // Below the 0.04045 breakpoint the curve is linear, not a power.
+        let near_black = Color::from_srgb8(2, 2, 2, 255);
+        assert!((near_black.r - (2.0 / 255.0) / 12.92).abs() < 1e-7);
+        // Alpha is not gamma-decoded.
+        let half = Color::from_srgb8(255, 255, 255, 128);
+        assert!((half.a - 128.0 / 255.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn from_srgb8_matches_from_srgb_hex() {
+        let a = Color::from_srgb8(0x5B, 0x8C, 0xFF, 0x80);
+        let b = Color::from_srgb_hex("#5B8CFF80");
+        assert!((a.r - b.r).abs() < 1e-7);
+        assert!((a.g - b.g).abs() < 1e-7);
+        assert!((a.b - b.b).abs() < 1e-7);
+        assert!((a.a - b.a).abs() < 1e-7);
     }
 }

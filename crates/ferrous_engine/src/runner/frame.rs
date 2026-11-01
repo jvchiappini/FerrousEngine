@@ -22,7 +22,11 @@ use super::types::Runner;
 
 impl<A: FerrousApp + 'static> Runner<A> {
     /// Executes one full update + render cycle relying on external absolute time or clock elapsed time if interactive.
-    pub fn render_frame(&mut self, event_loop: Option<&ActiveEventLoop>, t: f64) -> Option<Vec<u8>> {
+    pub fn render_frame(
+        &mut self,
+        event_loop: Option<&ActiveEventLoop>,
+        t: f64,
+    ) -> Option<Vec<u8>> {
         // wasm32: drain async GPU init result before anything else.
         #[cfg(target_arch = "wasm32")]
         {
@@ -33,10 +37,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
                         self.gfx_pending = None;
                         if let (Some(gfx), Some(window)) = (&mut self.graphics, &self.window) {
                             #[cfg(target_arch = "wasm32")]
-                            let (w, h) = super::canvas_physical_size(
-                                window,
-                                self.config.resolution_scale,
-                            );
+                            let (w, h) =
+                                super::canvas_physical_size(window, self.config.resolution_scale);
                             #[cfg(not(target_arch = "wasm32"))]
                             let (w, h) = {
                                 let size = window.inner_size();
@@ -66,6 +68,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
                                 exit_requested: false,
                                 requested_resolution_scale: None,
                                 keep_awake_requested: false,
+                                screenshot_requested: false,
                                 _gpu_backend: gfx.renderer.context.backend,
                                 render: RenderContext::new(&mut gfx.renderer),
                                 asset_server: &mut self.asset_server,
@@ -181,7 +184,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
             0.016
         };
         self.last_deterministic_t = Some(t);
-        
+
         let mut time_snapshot = self.clock.at_tick();
         time_snapshot.delta = dt;
         time_snapshot.elapsed = t;
@@ -191,7 +194,6 @@ impl<A: FerrousApp + 'static> Runner<A> {
         self.systems
             .run_all(&mut self.world.ecs, &mut self.resources);
         let time = time_snapshot;
-
 
         // ── 1. UPDATE ───────────────────────────────────────────────────────
         {
@@ -211,6 +213,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 exit_requested: false,
                 requested_resolution_scale: None,
                 keep_awake_requested: false,
+                screenshot_requested: false,
                 _gpu_backend: backend,
                 asset_server: &mut self.asset_server,
             };
@@ -251,8 +254,10 @@ impl<A: FerrousApp + 'static> Runner<A> {
         // OR if the renderer has been explicitly switched to Full3D (hybrid mode).
         let dt = time.delta;
         let renderer_mode = gfx.renderer.mode;
-        
-        if self.config.mode == AppMode::Game3D || renderer_mode == ferrous_renderer::RendererMode::Full3D {
+
+        if self.config.mode == AppMode::Game3D
+            || renderer_mode == ferrous_renderer::RendererMode::Full3D
+        {
             self.app.on_sync_world(&self.world);
             gfx.renderer.sync_world(&self.world);
 
@@ -290,14 +295,14 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 exit_requested: false,
                 requested_resolution_scale: None,
                 keep_awake_requested: false,
+                screenshot_requested: false,
                 _gpu_backend: backend,
                 asset_server: &mut self.asset_server,
             };
 
-            if self.viewport.width > 0
-                && self.config.mode == AppMode::Game3D {
-                    self.app.draw_3d(&mut ctx);
-                }
+            if self.viewport.width > 0 && self.config.mode == AppMode::Game3D {
+                self.app.draw_3d(&mut ctx);
+            }
 
             for gizmo in ctx.gizmos.drain(..) {
                 ctx.render.inner.queue_gizmo(gizmo);
@@ -323,6 +328,15 @@ impl<A: FerrousApp + 'static> Runner<A> {
             let ui_render_batch = self.ui.render(viewport_rect, self.font.as_ref());
             gui_batch.extend(ui_render_batch);
 
+            // A screenshot asked for during `update` or `draw_ui` is copied on
+            // the frame that is about to be presented, so it shows exactly
+            // what the user sees.  Blocking readback is desktop-only.
+            #[cfg(target_arch = "wasm32")]
+            let want_screenshot = false;
+            #[cfg(not(target_arch = "wasm32"))]
+            let want_screenshot = ctx.screenshot_requested
+                && gfx.config.usage.contains(wgpu::TextureUsages::COPY_SRC);
+
             // ── 3. RENDER FINAL ─────────────────────────────────────────────
             let frame = match gfx.surface.get_current_texture() {
                 Ok(f) => f,
@@ -346,9 +360,52 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 readback.copy_to_buffer(&mut encoder, &frame.texture);
             }
 
+            let capture = want_screenshot.then(|| {
+                let (width, height) = self.window_size;
+                let buffer =
+                    crate::screenshot::capture_buffer(&gfx.renderer.context.device, width, height);
+                let padded = crate::screenshot::padded_bytes_per_row(width);
+                encoder.copy_texture_to_buffer(
+                    wgpu::ImageCopyTexture {
+                        texture: &frame.texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::ImageCopyBuffer {
+                        buffer: &buffer,
+                        layout: wgpu::ImageDataLayout {
+                            offset: 0,
+                            bytes_per_row: Some(padded),
+                            rows_per_image: Some(height.max(1)),
+                        },
+                    },
+                    wgpu::Extent3d {
+                        width: width.max(1),
+                        height: height.max(1),
+                        depth_or_array_layers: 1,
+                    },
+                );
+                buffer
+            });
             gfx.renderer.context.queue.submit(Some(encoder.finish()));
-            
+
             frame.present();
+            if let Some(buffer) = capture {
+                let (width, height) = self.window_size;
+                let bgra = crate::screenshot::is_bgra(gfx.config.format);
+                if let Some(shot) = crate::screenshot::read_capture(
+                    &gfx.renderer.context.device,
+                    &buffer,
+                    width,
+                    height,
+                    bgra,
+                ) {
+                    self.app.on_screenshot(shot);
+                } else {
+                    log::warn!("screenshot: the presented frame could not be read back");
+                }
+            }
 
             // wasm32: keep a throttled copy of the REAL canvas. `present()`
             // has already copied the rendered frame to the canvas, and the
@@ -382,7 +439,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
             // returns the mapped bytes directly.
             gfx.renderer
                 .record_frame_time(frame_start.elapsed().as_secs_f32() * 1000.0);
-               
+
             // Important: Clear damage regions after rendering
             self.ui.clear_damage();
 
@@ -392,7 +449,10 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 #[cfg(not(target_arch = "wasm32"))]
                 {
                     use pollster::FutureExt;
-                    return readback.poll_and_map(&gfx.renderer.context.device).block_on().ok();
+                    return readback
+                        .poll_and_map(&gfx.renderer.context.device)
+                        .block_on()
+                        .ok();
                 }
                 #[cfg(target_arch = "wasm32")]
                 {
@@ -420,7 +480,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
             match self.config.idle_fps {
                 // Throttled idle: keep drawing at a low rate.
                 Some(fps) if fps > 0 => {
-                    let next = self.last_frame + std::time::Duration::from_secs_f64(1.0 / fps as f64);
+                    let next =
+                        self.last_frame + std::time::Duration::from_secs_f64(1.0 / fps as f64);
                     if now >= next {
                         window.request_redraw();
                     } else {

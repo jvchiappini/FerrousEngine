@@ -30,48 +30,50 @@ pub mod config;
 pub mod context;
 mod graphics;
 pub mod plugin;
-pub mod renderer;
 pub mod render_context;
+pub mod renderer;
 mod runner;
+pub mod screenshot;
 pub mod traits;
 
 // --- Re-exports Principales (SDK Facade) ---
-pub use renderer::{Renderer, RendererBuilder, RendererConfig, EngineError};
+pub use renderer::{EngineError, Renderer, RendererBuilder, RendererConfig};
 
 // --- Tipos de Escena y Transformación ---
 pub use ferrous_core::api::types::NodeId;
-pub use ferrous_core::{Color, Transform, World};
 pub use ferrous_core::scene::{
-    Camera3D, Camera3DBuilder, DirectionalLight, OrbitCamera,
-    Material, MaterialBuilder, BillboardMode,
-    AnimJob, Animator, EasingType, MaterialComponent
+    AnimJob, Animator, BillboardMode, Camera3D, Camera3DBuilder, DirectionalLight, EasingType,
+    Material, MaterialBuilder, MaterialComponent, OrbitCamera,
 };
+pub use ferrous_core::{Color, Transform, World};
 
 // --- Sistema de Exportación ---
-pub use ferrous_renderer::exporter::{FrameExporter, FFmpegExporter};
+pub use ferrous_renderer::exporter::{FFmpegExporter, FrameExporter};
 
 // --- Compatibilidad con Framework (Opcional) ---
-pub use traits::{DrawContext, FerrousApp};
 pub use builder::{App, AppConfig, AppMode};
 pub use context::{AppContext, WindowResizeDirection};
-pub use render_context::RenderContext;
 pub use ferrous_core::scene::camera::Projection as ProjectionType;
+pub use render_context::RenderContext;
+pub use screenshot::Screenshot;
+pub use traits::{DrawContext, FerrousApp};
 
 // --- Re-exports de Utilidad (ferrous_core / glam) ---
 pub use ferrous_core::glam;
 pub use ferrous_core::glam::{Mat4, Quat, Vec2, Vec3, Vec4};
-pub use ferrous_core::{Time, TimeClock, Handle, InputState, KeyCode, MouseButton, RenderQuality, RenderStats, Viewport};
-pub use ferrous_core::scene::world::types::{PathData, PathCommand};
+pub use ferrous_core::scene::world::types::{PathCommand, PathData};
+pub use ferrous_core::{
+    Handle, InputState, KeyCode, MouseButton, RenderQuality, RenderStats, Time, TimeClock, Viewport,
+};
 pub use ferrous_ecs::prelude::Entity;
 
 // --- Estilos de Renderizado ---
-pub use ferrous_renderer::{RenderStyle, RendererMode};
 pub use ferrous_renderer::{AntialiasingMode, FxaaParams};
+pub use ferrous_renderer::{RenderStyle, RendererMode};
 // Runtime 2D performance/config API (metrics + knobs).  Re-exported so a
 // consumer only needs to depend on `ferrous_engine`.
 pub use ferrous_renderer::{
-    Antialiasing2d, Frame2dCounters, Frame2dStats, Grid2dParams, Render2dConfig,
-    Static2dBatchId,
+    Antialiasing2d, Frame2dCounters, Frame2dStats, Grid2dParams, Render2dConfig, Static2dBatchId,
 };
 
 // --- Helpers de Assets ---

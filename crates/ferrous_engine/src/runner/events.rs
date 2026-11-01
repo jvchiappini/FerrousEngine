@@ -133,6 +133,7 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
                     exit_requested: false,
                     requested_resolution_scale: None,
                     keep_awake_requested: false,
+                    screenshot_requested: false,
                     _gpu_backend: backend,
                 };
                 self.app.setup(&mut ctx);

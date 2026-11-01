@@ -1,4 +1,5 @@
 use crate::context::AppContext;
+use crate::screenshot::Screenshot;
 use ferrous_assets::Font;
 use ferrous_gui::GuiBatch;
 
@@ -136,7 +137,11 @@ pub trait FerrousApp {
     /// Register persistent GUI widgets (called once, during `resumed`).
     ///
     /// Use `ui.add(widget)` / `ui.button(...)` here.
-    fn configure_ui(&mut self, ui: &mut ferrous_gui::UiSystem<Self>) where Self: Sized {}
+    fn configure_ui(&mut self, ui: &mut ferrous_gui::UiSystem<Self>)
+    where
+        Self: Sized,
+    {
+    }
 
     /// Emit 2-D draw commands for this frame.
     ///
@@ -164,6 +169,16 @@ pub trait FerrousApp {
     /// The new physical pixel dimensions are in `new_size`.  The runner
     /// already updates the swap-chain and camera aspect before calling this.
     fn on_resize(&mut self, new_size: (u32, u32), ctx: &mut AppContext<'_>) {}
+
+    /// Receives the frame requested with
+    /// [`AppContext::request_screenshot`], after it has been presented.
+    ///
+    /// The pixels are tight RGBA8 with a top-left origin, ready to be written
+    /// as a PNG.  The callback runs at most once per request and is not called
+    /// when the surface cannot be copied (the runner logs a warning instead).
+    fn on_screenshot(&mut self, screenshot: Screenshot) {
+        let _ = screenshot;
+    }
 
     /// Called for every raw winit `WindowEvent` (after it has been processed
     /// by the GUI system).
