@@ -196,6 +196,10 @@ impl<A: FerrousApp + 'static> Runner<A> {
         let time = time_snapshot;
 
         // ── 1. UPDATE ───────────────────────────────────────────────────────
+        // A screenshot asked for during `update` (or `setup`) must be copied
+        // on the frame that is about to be presented: the draw pass builds a
+        // fresh `AppContext`, so carry the flag across the two passes.
+        let update_screenshot;
         {
             let backend = gfx.renderer.context.backend;
             let mut ctx = AppContext {
@@ -219,6 +223,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
             };
 
             self.app.update(&mut ctx);
+            update_screenshot = ctx.screenshot_requested;
 
             if ctx.keep_awake_requested {
                 self.last_action_time = Instant::now();
@@ -334,8 +339,11 @@ impl<A: FerrousApp + 'static> Runner<A> {
             #[cfg(target_arch = "wasm32")]
             let want_screenshot = false;
             #[cfg(not(target_arch = "wasm32"))]
-            let want_screenshot = ctx.screenshot_requested
-                && gfx.config.usage.contains(wgpu::TextureUsages::COPY_SRC);
+            let want_screenshot = screenshot_wanted(
+                update_screenshot,
+                ctx.screenshot_requested,
+                gfx.config.usage.contains(wgpu::TextureUsages::COPY_SRC),
+            );
 
             // ── 3. RENDER FINAL ─────────────────────────────────────────────
             let frame = match gfx.surface.get_current_texture() {
@@ -513,5 +521,35 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 window.request_redraw();
             }
         }
+    }
+}
+
+/// Whether this frame must be copied for `FerrousApp::on_screenshot`.
+///
+/// A request made in `update` or in `draw_ui` both count; the copy also needs
+/// `COPY_SRC` on the window surface.
+#[cfg(not(target_arch = "wasm32"))]
+fn screenshot_wanted(update_requested: bool, draw_requested: bool, copy_src: bool) -> bool {
+    (update_requested || draw_requested) && copy_src
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::screenshot_wanted;
+
+    #[test]
+    fn a_screenshot_requested_in_update_is_copied() {
+        assert!(screenshot_wanted(true, false, true));
+    }
+
+    #[test]
+    fn a_screenshot_requested_in_draw_ui_is_copied() {
+        assert!(screenshot_wanted(false, true, true));
+    }
+
+    #[test]
+    fn no_request_or_no_copy_src_copies_nothing() {
+        assert!(!screenshot_wanted(false, false, true));
+        assert!(!screenshot_wanted(true, true, false));
     }
 }

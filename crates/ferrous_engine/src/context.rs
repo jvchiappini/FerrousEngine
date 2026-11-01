@@ -150,6 +150,10 @@ impl<'a> AppContext<'a> {
     /// to [`FerrousApp::on_screenshot`](crate::FerrousApp::on_screenshot) as
     /// tight RGBA8.
     ///
+    /// A request made in `update` or in `draw_ui` is honoured on the frame
+    /// presented after it: the runner carries the flag from the update pass
+    /// into the capture decision.
+    ///
     /// The copy needs `COPY_SRC` on the window surface.  The runner enables it
     /// when the adapter advertises support; otherwise the request is accepted
     /// and never delivered (`on_screenshot` is simply not called), so callers
