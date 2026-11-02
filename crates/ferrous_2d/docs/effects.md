@@ -40,7 +40,7 @@ For a drop shadow, with coverage `As` of the blurred image:
 ```text
 shadow.rgb = color.rgb * color.a * opacity * As
 shadow.a   = color.a * opacity * As
-out        = shadow + content * (1 - shadow.a)
+out        = content + shadow * (1 - content.a)
 ```
 
 `offset` is in pixels, Y down; a positive X moves the shadow right.  For a

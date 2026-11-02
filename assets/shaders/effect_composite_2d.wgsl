@@ -9,7 +9,7 @@
 // mode 0 (drop shadow): the tinted blur goes *behind* the content:
 //     shadow.rgb = color.rgb * color.a * strength * blur.a
 //     shadow.a   = color.a * strength * blur.a
-//     out        = shadow + content * (1 - shadow.a)
+//     out        = content + shadow * (1 - content.a)
 //
 // mode 1 (glow): the tinted blur is *added* as light around the content:
 //     glow.rgb   = color.rgb * color.a * strength * blur.a
@@ -63,7 +63,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (params.mode < 0.5) {
         // Drop shadow behind the content.
         let shadow = vec4<f32>(tint.rgb * coverage, coverage);
-        return shadow + content * (1.0 - shadow.a);
+        return content + shadow * (1.0 - content.a);
     }
     // Glow: additive light, no extra coverage.
     return content + vec4<f32>(tint.rgb * coverage, 0.0);

@@ -152,6 +152,38 @@ fn drop_shadow_is_tinted_offset_and_faded() {
 }
 
 #[test]
+fn drop_shadow_stays_behind_the_content() {
+    let mut harness = harness();
+    harness.set_clear_color(wgpu::Color::TRANSPARENT);
+    harness
+        .push_layer_with_effects(
+            Layer2d::new(1.0, CompositeMode2d::Normal, 0.0),
+            &[Effect2d::DropShadow {
+                color: [0.0, 0.0, 0.0, 1.0],
+                offset: [2.0, 0.0],
+                blur: 0.0,
+                opacity: 1.0,
+            }],
+        )
+        .expect("push");
+    harness.draw_shape(rect(Vec2::ZERO, Vec2::new(8.0, 8.0), [1.0; 4]));
+    harness.pop_layer().expect("pop");
+    harness.render_frame_blocking();
+
+    // Covered by both the opaque content and its offset shadow: the content
+    // must win, untouched.
+    let overlap = harness.read_pixel(SIZE / 2 + 1, SIZE / 2);
+    assert_eq!(
+        overlap,
+        [255, 255, 255, 255],
+        "the shadow must not darken the content: {overlap:?}"
+    );
+    // Past the content's right edge: only the black shadow.
+    let shadow = harness.read_pixel(SIZE / 2 + 5, SIZE / 2);
+    assert_eq!(shadow, [0, 0, 0, 255], "shadow: {shadow:?}");
+}
+
+#[test]
 fn glow_adds_a_tinted_light() {
     let mut harness = harness();
     harness.set_clear_color(wgpu::Color::TRANSPARENT);
