@@ -1,8 +1,11 @@
 //! Atlas packing and GPU texture management for glyph MSDFs.
 
-use super::layout::{layout_line, measure_line, LayoutFont, LineMetrics, TextAlign};
+use super::layout::{
+    layout_block, layout_line, measure_block, measure_line, GlyphLayout, LayoutFont, LineMetrics,
+    TextAlign, TextMetrics, TextStyle,
+};
 use super::msdf_gen::{generate_msdf, CELL_MAX, CELL_MIN, PIXEL_RANGE};
-use super::parser::FontMetrics;
+use super::parser::{FontMetrics, GposKerning};
 use anyhow::Result;
 use std::collections::HashMap;
 // rayon is used to parallelize glyph MSDF generation and metrics computation
@@ -33,6 +36,10 @@ pub struct GlyphMetrics {
     /// `[left, bottom, right, top]`, Y up.  This is the explicit em → cell
     /// mapping; it is the same for every glyph of an atlas.
     pub plane_bounds: [f32; 4],
+    /// Ink rectangle in em units relative to the pen position on the baseline:
+    /// `[left, bottom, right, top]`, Y up.  All zero for a glyph with no ink
+    /// (for example a space).
+    pub ink_bounds: [f32; 4],
 }
 
 /// A baked MSDF font atlas plus the data needed to lay text out on the CPU.
@@ -59,6 +66,8 @@ pub struct FontAtlas {
     pub glyph_indices: HashMap<char, u16>,
     /// `kern` format 0 pairs in em units keyed by glyph indices.
     pub kerning: HashMap<(u16, u16), f32>,
+    /// GPOS `PairPos` kerning; wins over [`Self::kerning`] for a covered pair.
+    pub gpos: GposKerning,
     /// The `.notdef` glyph cell, when the font has a non-empty glyph 0.
     pub notdef: Option<GlyphMetrics>,
 }
@@ -145,6 +154,7 @@ impl FontAtlas {
                     .copy_from_slice(&bmp[src..src + (glyph_size * 4) as usize]);
             }
 
+            let ink = parser.get_glyph_bounds_by_index(gid).unwrap_or_default();
             let glyph = GlyphMetrics {
                 uv: [
                     x as f32 / tex_size as f32,
@@ -155,6 +165,7 @@ impl FontAtlas {
                 size: [glyph_size as f32, glyph_size as f32],
                 advance,
                 plane_bounds: cell_bounds,
+                ink_bounds: [ink.left, ink.bottom, ink.right, ink.top],
             };
             if let Some(c) = c {
                 glyph_indices.insert(c, gid);
@@ -217,6 +228,7 @@ impl FontAtlas {
             font_metrics: parser.metrics(),
             glyph_indices,
             kerning: parser.kerning_pairs().clone(),
+            gpos: parser.gpos_kerning().clone(),
             notdef,
         })
     }
@@ -228,6 +240,7 @@ impl FontAtlas {
             notdef: self.notdef.as_ref(),
             glyph_indices: &self.glyph_indices,
             kerning: &self.kerning,
+            gpos: &self.gpos,
             font: self.font_metrics,
         }
     }
@@ -247,5 +260,22 @@ impl FontAtlas {
     /// (see [`measure_line`]).
     pub fn measure_line(&self, text: &str, size_px: f32, align: TextAlign) -> LineMetrics {
         measure_line(self.layout_font(), text, size_px, align)
+    }
+
+    /// Lay out a whole block (one or more `\n`-separated lines) into `out`
+    /// (see [`layout_block`]).
+    pub fn layout_block(
+        &self,
+        text: &str,
+        style: TextStyle,
+        out: &mut Vec<GlyphLayout>,
+    ) -> TextMetrics {
+        layout_block(self.layout_font(), text, style, out)
+    }
+
+    /// Measure a whole block without allocating glyph records (see
+    /// [`measure_block`]).
+    pub fn measure_block(&self, text: &str, style: TextStyle) -> TextMetrics {
+        measure_block(self.layout_font(), text, style)
     }
 }

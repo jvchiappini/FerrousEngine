@@ -34,6 +34,18 @@ let font = Font::load(
 // El objeto font.atlas ahora contiene la textura lista para usar en RenderCommands
 ```
 
+## Layout and kerning
+
+`ferrous_font::layout` is pure CPU code: `layout_line`/`measure_line` handle one
+line, `layout_block`/`measure_block` handle `\n`-separated blocks with tracking
+and a line-height multiplier. `LayoutFont` is a plain data view, so a caller can
+measure text without a GPU.
+
+Kerning comes from GPOS `PairPos` (formats 1 and 2, horizontal advance only) and
+falls back to the legacy `kern` format 0 table. There is no shaping engine: no
+ligatures, complex scripts or variable-font axes. See
+[../ferrous_2d/docs/text.md](../ferrous_2d/docs/text.md) for the full contract.
+
 ## Detalles Técnicos
 
 ### MSDF (Multi-channel Signed Distance Fields)

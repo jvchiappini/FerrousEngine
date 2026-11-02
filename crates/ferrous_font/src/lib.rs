@@ -20,8 +20,11 @@ pub mod tables;
 pub use atlas::{FontAtlas, GlyphMetrics, DEFAULT_GLYPH_SIZE};
 pub use charset::{ascii, cyrillic, from_str as charset_from_str, latin_extended, latin_western};
 pub use icons::{IconAtlas, IconMetrics};
-pub use layout::{layout_line, GlyphQuad, LayoutFont, LineMetrics, TextAlign};
-pub use parser::{FontMetrics, FontParser, GlyphBounds};
+pub use layout::{
+    layout_block, layout_line, measure_block, measure_line, GlyphLayout, GlyphQuad, LayoutFont,
+    LineMetrics, TextAlign, TextBounds, TextLineMetrics, TextMetrics, TextStyle,
+};
+pub use parser::{FontMetrics, FontParser, GlyphBounds, GposKerning, GposPair, ParseError};
 
 /// Errors returned by the typed font loading entry points.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +33,12 @@ pub enum FontError {
     Parse {
         /// Parser diagnostic (missing or malformed tables).
         message: String,
+    },
+    /// The font is valid but uses an outline format this parser does not read
+    /// (CFF/CFF2 outlines, CFF2 variable fonts).
+    Unsupported {
+        /// Why the font cannot be used.
+        reason: String,
     },
     /// The glyph atlas could not be built or uploaded.
     Atlas {
@@ -42,6 +51,7 @@ impl std::fmt::Display for FontError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Parse { message } => write!(f, "failed to parse font: {message}"),
+            Self::Unsupported { reason } => write!(f, "unsupported font: {reason}"),
             Self::Atlas { message } => write!(f, "failed to build font atlas: {message}"),
         }
     }
@@ -112,8 +122,10 @@ impl Font {
         chars: impl IntoIterator<Item = char>,
     ) -> Result<Self, FontError> {
         let char_list: Vec<char> = chars.into_iter().collect();
-        let parser = parser::FontParser::new(bytes.to_vec())
-            .map_err(|message| FontError::Parse { message })?;
+        let parser = parser::FontParser::new(bytes.to_vec()).map_err(|error| match error {
+            parser::ParseError::Parse(message) => FontError::Parse { message },
+            parser::ParseError::Unsupported(reason) => FontError::Unsupported { reason },
+        })?;
 
         // Fall back to the Latin Western set (ASCII + Latin-1 Supplement) so
         // that Spanish, French, German, and common symbols render out of the box.

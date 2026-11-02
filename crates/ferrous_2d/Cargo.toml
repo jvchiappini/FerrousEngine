@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 ferrous_ecs = { path = "../ferrous_ecs" }
+ferrous_font = { path = "../ferrous_font" }
 wgpu = { workspace = true }
 glam = { workspace = true, features = ["bytemuck"] }
 bytemuck = { version = "1.21", features = ["derive"] }

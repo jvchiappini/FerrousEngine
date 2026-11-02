@@ -65,11 +65,11 @@ use ferrous_2d::handle::SlotRegistry;
 use ferrous_2d::render::{
     BlendMode2d, BlurEffectPipeline, BlurKernel2d, BlurUniform2d, CompositeInstance,
     CompositePipeline, DrawCommand2d, Effect2d, EffectCompositePipeline, EffectUniform2d, FontId2d,
-    Layer2d, LayerError, Mask2d, MaskPipeline, MaskUniform2d, Renderer2d, ShapeBatcher,
-    ShapePipeline, SpriteBatchEntry, SpritePipeline, Text2dPipeline, TextInstance,
-    MAX_EFFECTS_PER_LAYER, MAX_LAYER_DEPTH_2D,
+    GlyphDraw2d, Layer2d, LayerError, Mask2d, MaskPipeline, MaskUniform2d, Renderer2d,
+    ShapeBatcher, ShapePipeline, SpriteBatchEntry, SpritePipeline, Text2dPipeline, TextInstance,
+    TextStyle2d, MAX_EFFECTS_PER_LAYER, MAX_LAYER_DEPTH_2D,
 };
-use ferrous_font::{FontError, GlyphQuad, TextAlign};
+use ferrous_font::{FontError, GlyphLayout, LineMetrics, TextAlign, TextMetrics};
 
 use crate::render_config::Render2dConfig;
 use crate::static_2d::{Static2dBatch, Static2dBatchId, Static2dBatchSlot};
@@ -918,7 +918,7 @@ pub struct Renderer {
     /// Per-recursion-depth index sort buffers for the layered plan builder.
     layer_sort_buffers: Vec<Vec<usize>>,
     /// Reusable CPU layout output for [`Self::draw_text_2d`].
-    text_layout_scratch: Vec<GlyphQuad>,
+    text_layout_scratch: Vec<GlyphLayout>,
     /// Reusable painter-ordered text upload for the coalesced Pure2D path.
     text_upload_scratch: Vec<TextInstance>,
 
@@ -1052,7 +1052,7 @@ impl Renderer {
         // built-in passes will be created after the GUI renderer below
         // create the world pass, forwarding the optional HDRI path from the
         // caller.  the pass will internally build its own shadow pipeline and
-        // texture (2048� depth map) and keep the cubemaps for image-based
+        // texture (2048² depth map) and keep the cubemaps for image-based
         // lighting if an HDRI was provided.
         let world_pass = WorldPass::new(
             pbr_pipeline,
@@ -1073,7 +1073,7 @@ impl Renderer {
             hdri_path,
         );
         // when the pass is created it will internally construct its own
-        // shadow pipeline and texture (2048� depth map).  no additional
+        // shadow pipeline and texture (2048² depth map).  no additional
         // arguments are necessary since those objects only depend on the
         // device and the common pipeline layouts that we already pass in.
         // create material registry (includes default white material)
@@ -3898,6 +3898,10 @@ impl Renderer {
     /// `transform`'s translation `z`, shared by every glyph of the call; glyphs
     /// keep submission order for equal `z`, so alternate fonts do not reorder.
     ///
+    /// This is [`Self::draw_text_2d_styled`] with no tracking, natural line
+    /// spacing and one line; an embedded `\n` is laid out as multiple lines by
+    /// the styled entry point.
+    ///
     /// Layout uses a reusable scratch buffer, so steady-state calls allocate
     /// nothing.
     pub fn draw_text_2d(
@@ -3909,7 +3913,13 @@ impl Renderer {
         align: TextAlign,
         color: [f32; 4],
     ) {
-        self.draw_text_2d_with_gradient(font_id, text, transform, size_px, align, color, None);
+        self.draw_text_2d_styled(
+            font_id,
+            text,
+            transform,
+            TextStyle2d::new(size_px, align),
+            color,
+        );
     }
 
     /// Like [`Self::draw_text_2d`], but fills the glyphs with a gradient.
@@ -3929,60 +3939,190 @@ impl Renderer {
         color: [f32; 4],
         gradient: Option<u32>,
     ) {
-        let Some(entry) = self.fonts_2d.get(font_id.handle()) else {
-            log::warn!(
-                "draw_text_2d called with a stale FontId2d (index {}, generation {})",
-                font_id.index(),
-                font_id.generation()
-            );
-            return;
+        self.draw_text_2d_with_gradient_styled(
+            font_id,
+            text,
+            transform,
+            TextStyle2d::new(size_px, align),
+            color,
+            gradient,
+        );
+    }
+
+    /// Lays out a whole text block with `style` and queues it with a flat colour.
+    ///
+    /// This is the general entry point: `style` carries tracking and line
+    /// height, and `\n` starts a new line.  [`Self::draw_text_2d`] is the
+    /// single-line wrapper.
+    pub fn draw_text_2d_styled(
+        &mut self,
+        font_id: FontId2d,
+        text: &str,
+        transform: glam::Mat4,
+        style: TextStyle2d,
+        color: [f32; 4],
+    ) {
+        self.draw_text_2d_with_gradient_styled(font_id, text, transform, style, color, None);
+    }
+
+    /// [`Self::draw_text_2d_styled`] with a gradient fill.
+    #[allow(clippy::too_many_arguments)] // the styled call plus the paint
+    pub fn draw_text_2d_with_gradient_styled(
+        &mut self,
+        font_id: FontId2d,
+        text: &str,
+        transform: glam::Mat4,
+        style: TextStyle2d,
+        color: [f32; 4],
+        gradient: Option<u32>,
+    ) {
+        let mut layout = std::mem::take(&mut self.text_layout_scratch);
+        let px_range = {
+            let Some(entry) = self.fonts_2d.get(font_id.handle()) else {
+                log::warn!(
+                    "draw_text_2d called with a stale FontId2d (index {}, generation {})",
+                    font_id.index(),
+                    font_id.generation()
+                );
+                return;
+            };
+            entry.font.atlas.layout_block(text, style, &mut layout);
+            entry.font.atlas.px_range
         };
 
-        let mut layout = std::mem::take(&mut self.text_layout_scratch);
-        entry
-            .font
-            .atlas
-            .layout_line(text, size_px, align, &mut layout);
-        let px_range = entry.font.atlas.px_range;
-
-        for quad in &layout {
-            let [left, bottom, right, top] = quad.bounds;
-            let width = (right - left).max(0.0);
-            let height = (top - bottom).max(0.0);
-            let placement = glam::Mat4::from_translation(glam::Vec3::new(left, bottom, 0.0))
-                * glam::Mat4::from_scale(glam::Vec3::new(width, height, 1.0));
-            let model = transform * placement;
-            let mut glyph = TextInstance::new(model, quad.uv, color, px_range);
-            if let Some(base) = gradient {
-                glyph = glyph.with_gradient(base);
-            }
-            if self.frame_uses_layers {
-                self.record_frame_cmd(FrameCmd2d::Text {
-                    font: font_id,
-                    instance: glyph,
-                    blend: self.current_blend_2d,
-                });
-            } else {
-                self.text_batcher_2d
-                    .push((font_id, glyph, self.current_blend_2d));
-            }
+        for glyph in &layout {
+            self.push_glyph_instance(font_id, glyph, transform, color, gradient, px_range);
         }
 
         self.text_layout_scratch = layout;
     }
 
-    /// Measure one line of Pure2D text without drawing it.
+    /// Queues pre-laid-out glyphs, each with its own transform and paint.
+    ///
+    /// This is the per-character animation entry point: take a buffer filled by
+    /// [`Self::layout_text_2d`], apply one transform and colour per glyph, and
+    /// pass them here.  A glyph with `glyph.visible == false` is skipped.
+    ///
+    /// With an identity transform for every glyph the result is pixel-identical
+    /// to [`Self::draw_text_2d_styled`] for the same text and style.
+    pub fn draw_glyphs_2d(&mut self, font_id: FontId2d, glyphs: &[GlyphDraw2d]) {
+        let px_range = {
+            let Some(entry) = self.fonts_2d.get(font_id.handle()) else {
+                log::warn!(
+                    "draw_glyphs_2d called with a stale FontId2d (index {}, generation {})",
+                    font_id.index(),
+                    font_id.generation()
+                );
+                return;
+            };
+            entry.font.atlas.px_range
+        };
+        for draw in glyphs {
+            self.push_glyph_instance(
+                font_id,
+                &draw.glyph,
+                draw.transform,
+                draw.color,
+                draw.gradient,
+                px_range,
+            );
+        }
+    }
+
+    /// Queues one glyph instance.  Shared by the text and per-glyph paths, so
+    /// they cannot drift apart.
+    fn push_glyph_instance(
+        &mut self,
+        font_id: FontId2d,
+        glyph: &GlyphLayout,
+        transform: glam::Mat4,
+        color: [f32; 4],
+        gradient: Option<u32>,
+        px_range: f32,
+    ) {
+        if !glyph.visible {
+            return;
+        }
+        let [left, bottom, right, top] = glyph.bounds();
+        let width = (right - left).max(0.0);
+        let height = (top - bottom).max(0.0);
+        let placement = glam::Mat4::from_translation(glam::Vec3::new(left, bottom, 0.0))
+            * glam::Mat4::from_scale(glam::Vec3::new(width, height, 1.0));
+        let model = transform * placement;
+        let mut instance = TextInstance::new(model, glyph.uv, color, px_range);
+        if let Some(base) = gradient {
+            instance = instance.with_gradient(base);
+        }
+        if self.frame_uses_layers {
+            self.record_frame_cmd(FrameCmd2d::Text {
+                font: font_id,
+                instance,
+                blend: self.current_blend_2d,
+            });
+        } else {
+            self.text_batcher_2d
+                .push((font_id, instance, self.current_blend_2d));
+        }
+    }
+
+    /// Lays out a whole text block without drawing it.
+    ///
+    /// Fills `out` with one [`GlyphLayout`] per character (whitespace included)
+    /// and returns the block metrics.  Returns `None` when `font_id` is stale.
+    pub fn layout_text_2d(
+        &self,
+        font_id: FontId2d,
+        text: &str,
+        style: TextStyle2d,
+        out: &mut Vec<GlyphLayout>,
+    ) -> Option<TextMetrics> {
+        let Some(entry) = self.fonts_2d.get(font_id.handle()) else {
+            log::warn!(
+                "layout_text_2d called with a stale FontId2d (index {}, generation {})",
+                font_id.index(),
+                font_id.generation()
+            );
+            return None;
+        };
+        Some(entry.font.atlas.layout_block(text, style, out))
+    }
+
+    /// Measures a whole text block without drawing or allocating glyph records.
+    ///
+    /// See [`ferrous_font::TextMetrics`] for the exact definitions of width,
+    /// height, ink and per-line advance.  Returns `None` when `font_id` is
+    /// stale.
+    pub fn measure_text_block_2d(
+        &self,
+        font_id: FontId2d,
+        text: &str,
+        style: TextStyle2d,
+    ) -> Option<TextMetrics> {
+        let Some(entry) = self.fonts_2d.get(font_id.handle()) else {
+            log::warn!(
+                "measure_text_block_2d called with a stale FontId2d (index {}, generation {})",
+                font_id.index(),
+                font_id.generation()
+            );
+            return None;
+        };
+        Some(entry.font.atlas.measure_block(text, style))
+    }
+
+    /// Measures one line of Pure2D text without drawing it.
     ///
     /// Returns the line's total advance, vertical metrics and glyph count, or
     /// `None` when `font_id` is stale. Measurement allocates nothing: it runs
     /// the atlas layout loop through a counting sink and never builds a `Vec`.
+    /// For multi-line text, tracking or line height see
+    /// [`Self::measure_text_block_2d`].
     pub fn measure_text_2d(
         &self,
         font_id: FontId2d,
         text: &str,
         size_px: f32,
         align: TextAlign,
-    ) -> Option<ferrous_font::LineMetrics> {
+    ) -> Option<LineMetrics> {
         let Some(entry) = self.fonts_2d.get(font_id.handle()) else {
             log::warn!(
                 "measure_text_2d called with a stale FontId2d (index {}, generation {})",

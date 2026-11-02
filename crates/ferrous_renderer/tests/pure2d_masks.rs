@@ -12,6 +12,8 @@ use ferrous_2d::render::{
 use ferrous_renderer::headless::{Pure2dHarness, DEFAULT_FORMAT};
 use glam::Vec2;
 
+mod common;
+
 const SIZE: u32 = 16;
 
 /// Linear component to the 8-bit sRGB code the `Rgba8UnormSrgb` target stores.
@@ -64,6 +66,7 @@ fn masked(
 
 #[test]
 fn alpha_mask_scales_coverage_exactly() {
+    let _gpu = common::lock();
     let mut harness = harness();
     harness.set_clear_color(wgpu::Color::TRANSPARENT);
     masked(
@@ -94,6 +97,7 @@ fn alpha_mask_scales_coverage_exactly() {
 
 #[test]
 fn luma_mask_uses_linear_luminance() {
+    let _gpu = common::lock();
     let mut harness = harness();
     harness.set_clear_color(wgpu::Color::TRANSPARENT);
     masked(
@@ -119,6 +123,7 @@ fn luma_mask_uses_linear_luminance() {
 
 #[test]
 fn inverted_alpha_and_luma_flip_the_coverage() {
+    let _gpu = common::lock();
     {
         let mut harness = harness();
         harness.set_clear_color(wgpu::Color::TRANSPARENT);
@@ -171,6 +176,7 @@ fn inverted_alpha_and_luma_flip_the_coverage() {
 
 #[test]
 fn mask_composes_with_opacity_and_a_non_normal_blend() {
+    let _gpu = common::lock();
     let backdrop = 0.5_f32;
     let mut harness = harness();
     harness.set_clear_color(wgpu::Color::TRANSPARENT);
@@ -198,6 +204,7 @@ fn mask_composes_with_opacity_and_a_non_normal_blend() {
 
 #[test]
 fn mask_clips_the_effect_chain() {
+    let _gpu = common::lock();
     let mut harness = harness();
     harness.set_clear_color(wgpu::Color::TRANSPARENT);
     harness
@@ -244,6 +251,7 @@ fn mask_clips_the_effect_chain() {
 
 #[test]
 fn a_blurred_mask_feathers_the_edge() {
+    let _gpu = common::lock();
     let mut harness = harness();
     harness.set_clear_color(wgpu::Color::TRANSPARENT);
     harness
@@ -287,6 +295,7 @@ fn a_blurred_mask_feathers_the_edge() {
 
 #[test]
 fn nested_masked_layers_multiply_their_coverage() {
+    let _gpu = common::lock();
     let mut harness = harness();
     harness.set_clear_color(wgpu::Color::TRANSPARENT);
     harness
@@ -317,6 +326,7 @@ fn nested_masked_layers_multiply_their_coverage() {
 
 #[test]
 fn mask_misuse_is_typed() {
+    let _gpu = common::lock();
     let mut harness = harness();
     assert_eq!(
         harness.begin_mask().expect_err("no masked layer"),

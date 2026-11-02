@@ -14,6 +14,8 @@ pub mod effects;
 pub mod gradient;
 /// wgpu render pipelines and bind-group layouts for sprites and shapes.
 pub mod pipeline;
+/// Text layout types and per-glyph draw requests.
+pub mod text;
 /// POD instance types for sprites, shapes and the camera uniform.
 pub mod types;
 
@@ -21,6 +23,7 @@ pub use batch::*;
 pub use effects::*;
 pub use gradient::*;
 pub use pipeline::*;
+pub use text::*;
 pub use types::*;
 /// The [`Renderer2d`] helper and its per-frame [`Frame2dCounters`].
 pub mod renderer;

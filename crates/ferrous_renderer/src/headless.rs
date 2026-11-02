@@ -1016,6 +1016,27 @@ impl Pure2dHarness {
         self.renderer.measure_text_2d(font, text, size_px, align)
     }
 
+    /// Measures a whole text block (see [`Renderer::measure_text_block_2d`]).
+    pub fn measure_text_block(
+        &self,
+        font: FontId2d,
+        text: &str,
+        style: ferrous_2d::render::TextStyle2d,
+    ) -> Option<ferrous_font::TextMetrics> {
+        self.renderer.measure_text_block_2d(font, text, style)
+    }
+
+    /// Lays out a whole text block (see [`Renderer::layout_text_2d`]).
+    pub fn layout_text(
+        &self,
+        font: FontId2d,
+        text: &str,
+        style: ferrous_2d::render::TextStyle2d,
+        out: &mut Vec<ferrous_font::GlyphLayout>,
+    ) -> Option<ferrous_font::TextMetrics> {
+        self.renderer.layout_text_2d(font, text, style, out)
+    }
+
     /// Queues one line of Pure2D text (see [`Renderer::draw_text_2d`]).
     pub fn draw_text(
         &mut self,
@@ -1045,6 +1066,41 @@ impl Pure2dHarness {
     ) {
         self.renderer
             .draw_text_2d_with_gradient(font, text, transform, size_px, align, color, gradient);
+    }
+
+    /// Queues a whole text block with a style (see
+    /// [`Renderer::draw_text_2d_styled`]).
+    pub fn draw_text_styled(
+        &mut self,
+        font: FontId2d,
+        text: &str,
+        transform: glam::Mat4,
+        style: ferrous_2d::render::TextStyle2d,
+        color: [f32; 4],
+    ) {
+        self.renderer
+            .draw_text_2d_styled(font, text, transform, style, color);
+    }
+
+    /// Queues a whole text block with a style and a gradient fill (see
+    /// [`Renderer::draw_text_2d_with_gradient_styled`]).
+    #[allow(clippy::too_many_arguments)] // same shape as the renderer method
+    pub fn draw_text_styled_with_gradient(
+        &mut self,
+        font: FontId2d,
+        text: &str,
+        transform: glam::Mat4,
+        style: ferrous_2d::render::TextStyle2d,
+        color: [f32; 4],
+        gradient: Option<u32>,
+    ) {
+        self.renderer
+            .draw_text_2d_with_gradient_styled(font, text, transform, style, color, gradient);
+    }
+
+    /// Queues pre-laid-out glyphs (see [`Renderer::draw_glyphs_2d`]).
+    pub fn draw_glyphs(&mut self, font: FontId2d, glyphs: &[ferrous_2d::render::GlyphDraw2d]) {
+        self.renderer.draw_glyphs_2d(font, glyphs);
     }
 
     /// Renders one frame into the off-screen target and returns metrics.

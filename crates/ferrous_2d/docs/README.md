@@ -35,6 +35,12 @@ The immediate batchers are **append-only across frames**. Call
 and "ghost"). `RenderContext` currently exposes neither `clear_2d` nor
 `enable_pure_2d`; reach them through `RenderContext::renderer_mut()`.
 
+## Text
+
+MSDF text drawing, styled layout (tracking, line height, `\n`), block
+measurement, per-glyph layouts and GPOS pair kerning are documented in
+[text.md](text.md).
+
 ## Shapes
 
 `ShapeInstance` is raw GPU instance data (four transform columns, a colour, and

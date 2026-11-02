@@ -14,6 +14,8 @@ use ferrous_2d::render::{
 use ferrous_renderer::headless::{Pure2dHarness, DEFAULT_FORMAT};
 use glam::Vec2;
 
+mod common;
+
 const SIZE: u32 = 16;
 
 /// Linear component to the 8-bit sRGB code the `Rgba8UnormSrgb` target stores.
@@ -43,6 +45,7 @@ fn rect(center: Vec2, size: Vec2, colour: [f32; 4]) -> ShapeInstance {
 
 #[test]
 fn zero_radius_blur_is_the_identity() {
+    let _gpu = common::lock();
     let mut harness = harness();
     harness.set_clear_color(wgpu::Color::TRANSPARENT);
     harness
@@ -63,6 +66,7 @@ fn zero_radius_blur_is_the_identity() {
 
 #[test]
 fn blur_spreads_a_hard_edge_and_stays_symmetric() {
+    let _gpu = common::lock();
     let mut harness = harness();
     harness.set_clear_color(wgpu::Color::TRANSPARENT);
     harness
@@ -107,6 +111,7 @@ fn blur_spreads_a_hard_edge_and_stays_symmetric() {
 
 #[test]
 fn drop_shadow_is_tinted_offset_and_faded() {
+    let _gpu = common::lock();
     let mut harness = harness();
     harness.set_clear_color(wgpu::Color::TRANSPARENT);
     harness
@@ -153,6 +158,7 @@ fn drop_shadow_is_tinted_offset_and_faded() {
 
 #[test]
 fn drop_shadow_stays_behind_the_content() {
+    let _gpu = common::lock();
     let mut harness = harness();
     harness.set_clear_color(wgpu::Color::TRANSPARENT);
     harness
@@ -185,6 +191,7 @@ fn drop_shadow_stays_behind_the_content() {
 
 #[test]
 fn glow_is_an_outer_halo_that_leaves_the_content_alone() {
+    let _gpu = common::lock();
     let mut harness = harness();
     harness.set_clear_color(wgpu::Color::TRANSPARENT);
     harness
@@ -222,6 +229,7 @@ fn glow_is_an_outer_halo_that_leaves_the_content_alone() {
 
 #[test]
 fn effects_compose_with_group_opacity() {
+    let _gpu = common::lock();
     let backdrop = 0.25_f32;
     let mut harness = harness();
     harness.set_clear_color(wgpu::Color::TRANSPARENT);
@@ -265,6 +273,7 @@ fn effects_compose_with_group_opacity() {
 
 #[test]
 fn invalid_parameters_and_overflow_are_typed() {
+    let _gpu = common::lock();
     let mut harness = harness();
     let err = harness
         .push_layer_with_effects(Layer2d::default(), &[Effect2d::Blur { radius: f32::NAN }])
