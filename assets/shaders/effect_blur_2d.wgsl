@@ -10,13 +10,13 @@
 //   direction: vec2<f32>        offset 0
 //   taps:      f32              offset 8
 //   radius:    f32 (unused)     offset 12
-//   weights:   array<vec4, 12>  offset 16   (48 scalar weights, packed 4 per vec4)
+//   weights:   array<vec4, 19>  offset 16   (76 scalar weights, packed 4 per vec4)
 
 struct BlurParams {
     direction: vec2<f32>,
     taps: f32,
     radius: f32,
-    weights: array<vec4<f32>, 12>,
+    weights: array<vec4<f32>, 19>,
 };
 
 @group(0) @binding(0) var source_tex: texture_2d<f32>;

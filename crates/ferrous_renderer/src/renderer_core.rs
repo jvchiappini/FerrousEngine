@@ -211,6 +211,13 @@ struct EffectTargets {
     views: [wgpu::TextureView; 2],
 }
 
+// Both effect uniforms must fit one pool slot.
+const _: () = assert!(
+    std::mem::size_of::<BlurUniform2d>() as u64 <= EffectUniformPool::SLOT_SIZE
+        && std::mem::size_of::<ferrous_2d::render::EffectUniform2d>() as u64
+            <= EffectUniformPool::SLOT_SIZE
+);
+
 /// Pooled uniform buffers for the effect passes of one frame.
 ///
 /// Each pass owns its buffer, because `queue.write_buffer` is ordered with
@@ -225,7 +232,7 @@ struct EffectUniformPool {
 impl EffectUniformPool {
     /// Uniform size each slot is created with (a wgpu alignment-friendly
     /// power of two; both effect uniforms fit).
-    const SLOT_SIZE: u64 = 256;
+    const SLOT_SIZE: u64 = 512;
 
     /// Returns the next free buffer, growing the pool on demand.
     fn next(&mut self, device: &wgpu::Device) -> &wgpu::Buffer {

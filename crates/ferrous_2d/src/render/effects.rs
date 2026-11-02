@@ -15,7 +15,8 @@
 //! - [`Effect2d::Blur`] replaces the image with its Gaussian blur.
 //! - [`Effect2d::DropShadow`] blurs the image, tints it, offsets it and puts it
 //!   behind the image.
-//! - [`Effect2d::Glow`] blurs the image, tints it and adds it around the image.
+//! - [`Effect2d::Glow`] blurs the image, tints it and adds it as light around
+//!   the image (an outer glow: the content itself is not lit).
 //!
 //! Textures are linear and premultiplied throughout, exactly like layer
 //! textures.
@@ -24,7 +25,10 @@
 ///
 /// The kernel is symmetric, so a blur performs `2 * taps - 1` samples per
 /// pixel and direction.  This bounds the cost of a single pass.
-pub const MAX_BLUR_TAPS: usize = 48;
+pub const MAX_BLUR_TAPS: usize = 76;
+
+// The blur uniform packs the weights four per `vec4`.
+const _: () = assert!(MAX_BLUR_TAPS.is_multiple_of(4));
 
 /// Largest finite blur radius supported by [`gaussian_kernel`], in pixels.
 ///
@@ -43,9 +47,11 @@ pub const MAX_EFFECTS_PER_LAYER: usize = 8;
 /// zero.  The weights sum to 1 (centre plus both wings), so a blur preserves
 /// the total coverage of the image.
 ///
-/// The radius maps to `sigma = radius / 3`, so three standard deviations cover
-/// the requested radius.  A radius of zero (or any non-finite value) yields the
-/// identity kernel: `taps == 1`, `weights[0] == 1`.
+/// The radius maps to `sigma = radius / 2`, the convention of CSS
+/// `box-shadow` and canvas `shadowBlur`, and the kernel spans three standard
+/// deviations (`taps = ceil(1.5 * radius) + 1`).  A radius of zero (or any
+/// non-finite value) yields the identity kernel: `taps == 1`,
+/// `weights[0] == 1`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlurKernel2d {
     /// One-sided tap count, including the centre.
@@ -66,13 +72,13 @@ impl BlurKernel2d {
         } else {
             0.0
         };
-        let taps = (radius.ceil() as usize).clamp(1, MAX_BLUR_TAPS);
+        let taps = ((radius * 1.5).ceil() as usize + 1).clamp(1, MAX_BLUR_TAPS);
         let mut weights = [0.0_f32; MAX_BLUR_TAPS];
         if taps <= 1 || radius <= 0.0 {
             weights[0] = 1.0;
             return Self { taps: 1, weights };
         }
-        let sigma = radius / 3.0;
+        let sigma = radius / 2.0;
         let two_sigma_squared = 2.0 * sigma * sigma;
         let mut total = 0.0_f32;
         for (i, slot) in weights.iter_mut().take(taps).enumerate() {
@@ -129,7 +135,8 @@ pub enum Effect2d {
         /// Extra opacity in `0.0..=1.0`, multiplied into the shadow's alpha.
         opacity: f32,
     },
-    /// A tinted, blurred copy of the layer added as light around it.
+    /// A tinted, blurred copy of the layer added as light around it (outer
+    /// glow: it lights only where the content is not opaque).
     Glow {
         /// Straight linear RGBA tint (alpha scales the glow).
         color: [f32; 4],
@@ -206,18 +213,22 @@ pub struct BlurUniform2d {
     /// Effective radius in pixels (diagnostic; the shader uses the weights).
     pub radius: f32,
     /// Kernel weights, four per `vec4`.
-    pub weights: [f32; MAX_BLUR_TAPS],
+    pub weights: [[f32; 4]; MAX_BLUR_TAPS / 4],
 }
 
 impl BlurUniform2d {
     /// Uniform for `kernel` in `direction`.
     #[must_use]
     pub fn new(kernel: &BlurKernel2d, direction: [f32; 2]) -> Self {
+        let mut weights = [[0.0_f32; 4]; MAX_BLUR_TAPS / 4];
+        for (i, weight) in kernel.weights.iter().enumerate() {
+            weights[i / 4][i % 4] = *weight;
+        }
         Self {
             direction,
             taps: kernel.taps as f32,
             radius: 0.0,
-            weights: kernel.weights,
+            weights,
         }
     }
 
@@ -309,11 +320,11 @@ mod tests {
 
     #[test]
     fn taps_scale_with_the_radius_and_clamp_at_the_limit() {
-        assert_eq!(gaussian_kernel(1.0).taps, 1);
-        assert_eq!(gaussian_kernel(2.0).taps, 2);
-        assert_eq!(gaussian_kernel(10.0).taps, 10);
-        assert_eq!(gaussian_kernel(48.0).taps, 48);
-        assert_eq!(gaussian_kernel(10_000.0).taps as usize, MAX_BLUR_TAPS);
+        assert_eq!(gaussian_kernel(1.0).taps, 3);
+        assert_eq!(gaussian_kernel(2.0).taps, 4);
+        assert_eq!(gaussian_kernel(10.0).taps, 16);
+        assert_eq!(gaussian_kernel(48.0).taps, 73);
+        assert!(gaussian_kernel(MAX_BLUR_RADIUS).taps as usize <= MAX_BLUR_TAPS);
         assert_eq!(gaussian_kernel(10_000.0), gaussian_kernel(MAX_BLUR_RADIUS));
     }
 

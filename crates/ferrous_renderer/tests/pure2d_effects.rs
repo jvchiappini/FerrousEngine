@@ -68,7 +68,7 @@ fn blur_spreads_a_hard_edge_and_stays_symmetric() {
     harness
         .push_layer_with_effects(
             Layer2d::new(1.0, CompositeMode2d::Normal, 0.0),
-            &[Effect2d::Blur { radius: 4.0 }],
+            &[Effect2d::Blur { radius: 2.0 }],
         )
         .expect("push");
     // Left half-plane: x from -8 to 0.
@@ -86,7 +86,7 @@ fn blur_spreads_a_hard_edge_and_stays_symmetric() {
     assert_eq!(deep_inside, 255, "blur must not fade the interior");
     assert_eq!(
         far_outside, 0,
-        "a 4 px blur must not reach the far side of the target"
+        "a 2 px blur must not reach the far side of the target"
     );
     assert!(
         (1..255).contains(&left_of_edge),
@@ -184,7 +184,7 @@ fn drop_shadow_stays_behind_the_content() {
 }
 
 #[test]
-fn glow_adds_a_tinted_light() {
+fn glow_is_an_outer_halo_that_leaves_the_content_alone() {
     let mut harness = harness();
     harness.set_clear_color(wgpu::Color::TRANSPARENT);
     harness
@@ -192,8 +192,8 @@ fn glow_adds_a_tinted_light() {
             Layer2d::new(1.0, CompositeMode2d::Normal, 0.0),
             &[Effect2d::Glow {
                 color: [0.0, 1.0, 0.0, 1.0],
-                radius: 0.0,
-                intensity: 0.5,
+                radius: 6.0,
+                intensity: 1.0,
             }],
         )
         .expect("push");
@@ -201,16 +201,23 @@ fn glow_adds_a_tinted_light() {
     harness.pop_layer().expect("pop");
     harness.render_frame_blocking();
 
+    // The opaque black content is not lit by its own glow.
     let centre = harness.read_pixel(SIZE / 2, SIZE / 2);
-    assert_eq!(centre[3], 255, "content coverage is preserved: {centre:?}");
-    assert!(
-        within(centre[1], encode(0.5)),
-        "glow green should be intensity: {centre:?}"
+    assert_eq!(
+        centre,
+        [0, 0, 0, 255],
+        "content must stay untouched: {centre:?}"
     );
+    // Just outside the content: green light, no coverage added.
+    let halo = harness.read_pixel(SIZE / 2 + 5, SIZE / 2);
+    assert!(halo[1] > 40, "the halo must be lit: {halo:?}");
     assert!(
-        centre[0] < 4 && centre[2] < 4,
-        "glow must stay green: {centre:?}"
+        halo[0] < 4 && halo[2] < 4,
+        "the halo must stay green: {halo:?}"
     );
+    // Light fades with distance.
+    let far = harness.read_pixel(SIZE / 2 + 7, SIZE / 2);
+    assert!(far[1] < halo[1], "the halo must fade: {far:?} vs {halo:?}");
 }
 
 #[test]

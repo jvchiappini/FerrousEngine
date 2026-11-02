@@ -11,9 +11,10 @@
 //     shadow.a   = color.a * strength * blur.a
 //     out        = content + shadow * (1 - content.a)
 //
-// mode 1 (glow): the tinted blur is *added* as light around the content:
+// mode 1 (glow): the tinted blur is *added* as light around the content
+// (outer glow; the opaque content is not lit):
 //     glow.rgb   = color.rgb * color.a * strength * blur.a
-//     out        = content + vec4(glow.rgb, 0)
+//     out        = content + vec4(glow.rgb, 0) * (1 - content.a)
 //
 // `strength` is the effect opacity (shadow) or intensity (glow), clamped to
 // `0..=1` for shadows; glows may exceed 1 because the layer target is HDR
@@ -65,6 +66,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let shadow = vec4<f32>(tint.rgb * coverage, coverage);
         return content + shadow * (1.0 - content.a);
     }
-    // Glow: additive light, no extra coverage.
-    return content + vec4<f32>(tint.rgb * coverage, 0.0);
+    // Outer glow: additive light behind the content, no extra coverage.
+    return content + vec4<f32>(tint.rgb * coverage, 0.0) * (1.0 - content.a);
 }
