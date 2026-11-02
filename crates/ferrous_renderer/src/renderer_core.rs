@@ -1521,6 +1521,14 @@ impl Renderer {
         self.renderer_2d_pure.set_dash_pattern(id, lengths);
     }
 
+    /// Uploads the per-view gradient table used by 2D shape instances
+    /// (D-0030). The table applies to both 2D renderers; see
+    /// [`ferrous_2d::render::Renderer2d::set_gradient_table`] for the layout.
+    pub fn set_2d_gradient_table(&mut self, table: &[[f32; 4]]) {
+        self.renderer_2d.set_gradient_table(table);
+        self.renderer_2d_pure.set_gradient_table(table);
+    }
+
     /// Snapshot of the hardware-independent per-frame 2D counters for the
     /// **live Pure2D path** (`renderer_2d_pure`).
     ///
@@ -3395,6 +3403,7 @@ impl Renderer {
                                 ],
                                 ext0: [0.0; 4],
                                 ext1: 0.0,
+                                gradient: 0,
                             });
                     }
                     cursor = end;

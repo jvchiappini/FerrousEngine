@@ -351,6 +351,11 @@ pub struct ShapeInstance {
     pub ext0: [f32; 4],
     /// Segment distance at the start point `a` along the polyline (dash phase).
     pub ext1: f32,
+    /// Gradient table base + 1, or 0 for a solid colour (D-0030).
+    ///
+    /// The table lives in the camera uniform (`gradients`), so one instance
+    /// references a header vec4 and the stops that follow it.
+    pub gradient: u32,
 }
 
 impl ShapeInstance {
@@ -406,6 +411,7 @@ impl ShapeInstance {
             params,
             ext0: [0.0; 4],
             ext1: 0.0,
+            gradient: 0,
         }
     }
 
@@ -579,6 +585,21 @@ impl ShapeInstance {
         Self::line_with_cap(from, to, width_world, color, cap_style).with_min_px(min_px)
     }
 
+    /// Fills this instance with a gradient from the per-frame table.
+    ///
+    /// `base` is the vec4 index of the gradient header written by
+    /// [`crate::render::types::Uniform2d::gradients`] (see
+    /// `Renderer2d::set_gradient_table`). `0` keeps the solid colour.
+    pub fn with_gradient(mut self, base: u32) -> Self {
+        self.gradient = base.saturating_add(1);
+        self
+    }
+
+    /// The gradient table base of this instance, if it has one.
+    pub fn gradient_base(&self) -> Option<u32> {
+        (self.gradient != 0).then(|| self.gradient - 1)
+    }
+
     /// Sets the minimum stroke width in logical pixels (`0.0` disables the
     /// floor). Only affects instances created by a `line*` constructor, since
     /// the shader gates the widening on `SHAPE_GPU_LINE`.
@@ -645,6 +666,7 @@ impl ShapeInstance {
             ],
             ext0: [n_start.x, n_start.y, n_end.x, n_end.y],
             ext1: s0,
+            gradient: 0,
         }
     }
 
@@ -711,6 +733,7 @@ impl ShapeInstance {
             ],
             ext0: [start, sweep, cap_style as f32, 0.0],
             ext1: s0,
+            gradient: 0,
         }
     }
 
@@ -998,6 +1021,8 @@ pub struct ShapeGpu {
     pub ext0: [f32; 4],
     /// Joined segment: accumulated polyline length at the start (dash phase).
     pub ext1: f32,
+    /// Gradient table base + 1; 0 = solid colour (D-0030).
+    pub gradient: u32,
 }
 
 /// `ShapeGpu::flags` bit: triangle kind.
@@ -1077,6 +1102,11 @@ impl ShapeGpu {
                     shader_location: 7,
                     format: wgpu::VertexFormat::Float32,
                 },
+                wgpu::VertexAttribute {
+                    offset: 64,
+                    shader_location: 8,
+                    format: wgpu::VertexFormat::Uint32,
+                },
             ],
         }
     }
@@ -1144,6 +1174,7 @@ impl ShapeGpu {
             flags,
             ext0: s.ext0,
             ext1: s.ext1,
+            gradient: s.gradient,
         }
     }
 }
@@ -1202,8 +1233,8 @@ mod gpu_pack_tests {
     use super::*;
 
     #[test]
-    fn shape_gpu_is_64_bytes() {
-        assert_eq!(std::mem::size_of::<ShapeGpu>(), 64);
+    fn shape_gpu_is_68_bytes() {
+        assert_eq!(std::mem::size_of::<ShapeGpu>(), 68);
     }
 
     /// `CameraUniform` in the 2D shaders must match this layout exactly:
@@ -1211,7 +1242,10 @@ mod gpu_pack_tests {
     /// (8) + 32 `vec4` dash slots (512) = 608 bytes, 16-byte aligned.
     #[test]
     fn uniform2d_matches_the_wgsl_camera_layout() {
-        assert_eq!(std::mem::size_of::<Uniform2d>(), 608);
+        assert_eq!(
+            std::mem::size_of::<Uniform2d>(),
+            608 + GRADIENT_TABLE_VEC4 * 16
+        );
         assert_eq!(std::mem::align_of::<Uniform2d>(), 4);
         let origin = std::mem::offset_of!(Uniform2d, viewport_origin);
         assert_eq!(origin, 80);
@@ -1460,7 +1494,19 @@ pub struct Uniform2d {
     /// uniform array is 16-byte aligned. Slot `0` is unused (continuous).
     /// Pattern `i` uses `dash[i*2]` (lengths 0..3) and `dash[i*2+1]` (4..7).
     pub dash: [[f32; 4]; 32],
+    /// Gradient table (D-0030): headers and stops, GRADIENT_TABLE_VEC4 vec4.
+    ///
+    /// A gradient occupies a header (kind, stop count, first stop, 0), one
+    /// geometry vec4 and two vec4 per stop (linear rgba, (offset,0,0,0)).
+    pub gradients: [[f32; 4]; GRADIENT_TABLE_VEC4],
 }
+
+/// Number of vec4 slots in the per-view gradient table.
+///
+/// A 2-stop gradient uses 6 slots, so this holds 85 full gradients or a mix
+/// of many smaller ramps. A document that needs more gets its extra
+/// gradients drawn with the solid fallback.
+pub const GRADIENT_TABLE_VEC4: usize = 512;
 
 /// Maximum nesting depth of Pure2D offscreen layers.
 ///

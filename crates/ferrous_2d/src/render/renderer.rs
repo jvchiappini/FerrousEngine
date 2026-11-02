@@ -109,10 +109,12 @@ pub struct Renderer2d {
     /// `1` = legacy line stabiliser (pre-Phase-1 A/B switch, `?render=legacy`).
     /// Sent to the shader in `Uniform2d::padding.y`.
     legacy_2d: AtomicU32,
-    /// Dash table (16 patterns × up to 8 lengths, metres). Index 0 is unused.
+    /// Dash table (16 patterns Ã— up to 8 lengths, metres). Index 0 is unused.
     /// Written rarely (pattern registration), read every frame when the
     /// camera uniform is uploaded.
     dash_table: Mutex<[[f32; 8]; 16]>,
+    /// Per-frame gradient table (D-0030), written into every view uniform.
+    gradient_table: Mutex<Vec<[f32; 4]>>,
 
     /// Procedural background grid (optional).
     pub grid_pipeline: GridPipeline,
@@ -289,6 +291,7 @@ impl Renderer2d {
             pixel_ratio_bits: AtomicU32::new(1.0f32.to_bits()),
             legacy_2d: AtomicU32::new(0),
             dash_table: Mutex::new([[0.0; 8]; 16]),
+            gradient_table: Mutex::new(Vec::new()),
             grid_pipeline,
             grid_uniform_buffer,
             grid_bind_group,
@@ -353,6 +356,44 @@ impl Renderer2d {
         }
     }
 
+    /// Uploads the per-view gradient table used by shape and text instances.
+    ///
+    /// A gradient is encoded as:
+    ///
+    /// ```text
+    /// [kind, stop_count, first_stop_slot, 0]      kind 0 = linear, 1 = radial
+    /// [start.xy, end.xy]  or  [center.xy, radius, 0]
+    /// [r, g, b, a] [offset, 0, 0, 0]  (one pair per stop, linear RGBA)
+    /// ```
+    ///
+    /// `first_stop_slot` is the absolute vec4 index of the first stop pair.
+    /// The table is copied into every view's camera uniform on the next
+    /// `prepare_view`/`update_camera`; entries past
+    /// [`crate::render::types::GRADIENT_TABLE_VEC4`] are dropped.
+    pub fn set_gradient_table(&mut self, table: &[[f32; 4]]) {
+        let mut stored = self
+            .gradient_table
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        stored.clear();
+        stored.extend_from_slice(
+            &table[..table.len().min(crate::render::types::GRADIENT_TABLE_VEC4)],
+        );
+    }
+
+    /// The gradient table padded to the uniform's fixed size.
+    fn gradient_slots(&self) -> [[f32; 4]; crate::render::types::GRADIENT_TABLE_VEC4] {
+        let mut slots = [[0.0f32; 4]; crate::render::types::GRADIENT_TABLE_VEC4];
+        let table = self
+            .gradient_table
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for (slot, value) in slots.iter_mut().zip(table.iter()) {
+            *slot = *value;
+        }
+        slots
+    }
+
     /// Enable/disable reuse of the internal sprite-staging scratch buffer.
     ///
     /// Defaults to `true`.  When disabled, [`Self::prepare`] allocates a fresh
@@ -397,6 +438,7 @@ impl Renderer2d {
             viewport_origin: viewport_origin.to_array(),
             _pad: [0.0; 2],
             dash,
+            gradients: self.gradient_slots(),
         }
     }
 
@@ -686,11 +728,12 @@ impl Renderer2d {
             viewport_origin: [0.0, 0.0],
             _pad: [0.0; 2],
             dash,
+            gradients: self.gradient_slots(),
         };
         queue.write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&uniform));
     }
 
-    /// Write all batched instances to the GPU Buffer — UN solo write_buffer (máximo rendimiento).
+    /// Write all batched instances to the GPU Buffer â€” UN solo write_buffer (mÃ¡ximo rendimiento).
     pub fn prepare(&mut self, queue: &wgpu::Queue, batcher: &SpriteBatcher) -> usize {
         let total_instances: usize = batcher.batches.values().map(|v| v.len()).sum();
         if total_instances == 0 {
@@ -710,11 +753,11 @@ impl Renderer2d {
                 .fetch_add(1, Ordering::Relaxed);
         }
 
-        // Consolidar TODOS los datos en un slice contiguo → UN SOLO write_buffer.
+        // Consolidar TODOS los datos en un slice contiguo â†’ UN SOLO write_buffer.
         // Evita N llamadas separadas a la GPU staging queue (una por textura).
         // Con `scratch_reuse` (default) el buffer de staging se reutiliza entre
         // frames: `clear()` conserva la capacidad y evita la alloc/grow que
-        // medía la auditoría (H8).  Con `scratch_reuse = false` se reproduce el
+        // medÃ­a la auditorÃ­a (H8).  Con `scratch_reuse = false` se reproduce el
         // comportamiento antiguo (un `Vec::with_capacity` por frame) para poder
         // comparar A/B en runtime.
         let bytes_written = if self.scratch_reuse {

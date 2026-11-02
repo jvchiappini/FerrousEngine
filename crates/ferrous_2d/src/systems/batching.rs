@@ -128,6 +128,7 @@ pub fn prepare_shapes_system(
             ],
             ext0: [0.0; 4],
             ext1: 0.0,
+            gradient: 0,
         });
     }
 }
@@ -256,6 +257,7 @@ pub fn prepare_paths_system(
                     params: [path.stroke_width, 0.0, 1.0, 1.0],
                     ext0: [0.0; 4],
                     ext1: 0.0,
+                    gradient: 0,
                 });
 
                 // Round caps: a disc on the outer endpoint only.
@@ -370,5 +372,6 @@ fn push_disc(
         params: [path.stroke_width, radius, 1.0, 1.0],
         ext0: [0.0; 4],
         ext1: 0.0,
+        gradient: 0,
     });
 }
