@@ -109,7 +109,7 @@ pub struct Renderer2d {
     /// `1` = legacy line stabiliser (pre-Phase-1 A/B switch, `?render=legacy`).
     /// Sent to the shader in `Uniform2d::padding.y`.
     legacy_2d: AtomicU32,
-    /// Dash table (16 patterns Ã— up to 8 lengths, metres). Index 0 is unused.
+    /// Dash table (16 patterns × up to 8 lengths, metres). Index 0 is unused.
     /// Written rarely (pattern registration), read every frame when the
     /// camera uniform is uploaded.
     dash_table: Mutex<[[f32; 8]; 16]>,
@@ -337,7 +337,7 @@ impl Renderer2d {
     }
 
     /// Registers a shader dash pattern. `id` must be `1..=15` (`0` = solid).
-    /// Lengths are alternating dash/gap in world units (metres in Koncreta);
+    /// Lengths are alternating dash/gap in world units (e.g. metres in a CAD scene);
     /// up to 8 values, zero-terminated. Registration is persistent.
     pub fn set_dash_pattern(&self, id: u8, lengths: &[f32]) {
         if id == 0 {
@@ -733,7 +733,8 @@ impl Renderer2d {
         queue.write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&uniform));
     }
 
-    /// Write all batched instances to the GPU Buffer â€” UN solo write_buffer (mÃ¡ximo rendimiento).
+    /// Write all batched instances to the GPU buffer in a single `write_buffer`
+    /// call (maximum throughput).
     pub fn prepare(&mut self, queue: &wgpu::Queue, batcher: &SpriteBatcher) -> usize {
         let total_instances: usize = batcher.batches.values().map(|v| v.len()).sum();
         if total_instances == 0 {
@@ -753,13 +754,13 @@ impl Renderer2d {
                 .fetch_add(1, Ordering::Relaxed);
         }
 
-        // Consolidar TODOS los datos en un slice contiguo â†’ UN SOLO write_buffer.
-        // Evita N llamadas separadas a la GPU staging queue (una por textura).
-        // Con `scratch_reuse` (default) el buffer de staging se reutiliza entre
-        // frames: `clear()` conserva la capacidad y evita la alloc/grow que
-        // medÃ­a la auditorÃ­a (H8).  Con `scratch_reuse = false` se reproduce el
-        // comportamiento antiguo (un `Vec::with_capacity` por frame) para poder
-        // comparar A/B en runtime.
+        // Pack every instance into one contiguous slice and issue one
+        // `write_buffer`, instead of N separate GPU staging-queue calls (one
+        // per texture). With `scratch_reuse` (the default) the staging vector
+        // is reused across frames: `clear()` keeps its capacity and avoids the
+        // alloc/grow measured by the H8 audit. With `scratch_reuse = false` the
+        // old behaviour (one `Vec::with_capacity` per frame) is reproduced so
+        // the two can be compared A/B at runtime.
         let bytes_written = if self.scratch_reuse {
             let scratch = &mut self.scratch_sprites;
             scratch.clear();

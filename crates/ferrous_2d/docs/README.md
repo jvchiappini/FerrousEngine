@@ -23,7 +23,7 @@ today:
 
 | Mode | Entry point | Status |
 |------|-------------|--------|
-| Immediate | `Renderer::draw_2d_shape` / `draw_sprite_2d` / `draw_2d_path`, called from `draw_ui` or `update` | Live — used by Koncreta |
+| Immediate | `Renderer::draw_2d_shape` / `draw_sprite_2d` / `draw_2d_path`, called from `draw_ui` or `update` | Live |
 | ECS | `ferrous_2d::systems::{prepare_shapes_system, prepare_sprites_system, prepare_paths_system}` | **Deprecated / dead** — no scheduler calls these; will be removed |
 
 If you spawn `Shape2d` / `Sprite` / `Path2d` components on a `World`, nothing
@@ -133,3 +133,7 @@ renderer.pop_layer_2d()?;
 - Encoding order is post-order: inner layers first, each in its own render
   pass, then the parent pass. A frame without layers keeps the original single
   pass and creates no textures.
+- A layer may carry an effect chain (`push_layer_2d_with_effects`): separable
+  Gaussian blur, drop shadow and glow, applied to the finished texture before
+  it composites. See [`effects.md`](effects.md); the kernel is a pure function
+  of the radius and the chain is deterministic.

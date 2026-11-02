@@ -1,4 +1,4 @@
-//! `ApplicationHandler` implementation for `Runner` â€” window lifecycle and events.
+//! `ApplicationHandler` implementation for `Runner` — window lifecycle and events.
 
 use ferrous_core::glam::{self};
 use std::sync::Arc;
@@ -28,40 +28,57 @@ use ferrous_assets::Font;
 
 use super::types::Runner;
 
+impl<A: FerrousApp> Runner<A> {
+    /// Window size in physical pixels for [`Self::resumed`].
+    ///
+    /// On the web the CSS size is multiplied by the device pixel ratio and the
+    /// configured resolution scale so the surface matches physical pixels; a
+    /// CSS-sized surface would be upscaled by the browser and look jagged.
+    #[cfg(target_arch = "wasm32")]
+    fn resumed_window_size(&self) -> (u32, u32) {
+        let mut window_size = (self.config.width, self.config.height);
+        if let Some(win) = web_sys::window() {
+            let dpr = win.device_pixel_ratio();
+            let scale = self.config.resolution_scale;
+            let css_w = win
+                .inner_width()
+                .ok()
+                .and_then(|v| v.as_f64())
+                .unwrap_or(window_size.0 as f64);
+            let css_h = win
+                .inner_height()
+                .ok()
+                .and_then(|v| v.as_f64())
+                .unwrap_or(window_size.1 as f64);
+            let phys_w = (css_w * dpr * scale).round() as u32;
+            let phys_h = (css_h * dpr * scale).round() as u32;
+            window_size = (phys_w.max(1), phys_h.max(1));
+            web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
+                "[WGPU-Init] DPR={:.2} Scale={:.2} CSS={}x{} Physical={}x{}",
+                dpr, scale, css_w as u32, css_h as u32, phys_w, phys_h
+            )));
+        }
+        window_size
+    }
+
+    /// Window size in physical pixels for [`Self::resumed`].
+    #[cfg(not(target_arch = "wasm32"))]
+    fn resumed_window_size(&self) -> (u32, u32) {
+        (self.config.width, self.config.height)
+    }
+}
+
 impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.app.configure_ui(&mut self.ui);
 
-        let mut window_size = (self.config.width, self.config.height);
-        
-        #[cfg(target_arch = "wasm32")]
-        {
-            if let Some(win) = web_sys::window() {
-                // Use devicePixelRatio so the WebGPU surface matches physical pixels.
-                // Without this, on HiDPI screens the canvas is rendered at CSS-pixel
-                // resolution and then scaled up by the browser → jagged/pixelated edges.
-                let dpr = win.device_pixel_ratio(); // e.g. 2.0 on Retina, 1.0 on standard
-                let scale = self.config.resolution_scale;
-                let css_w = win.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(window_size.0 as f64);
-                let css_h = win.inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(window_size.1 as f64);
-                let phys_w = (css_w * dpr * scale).round() as u32;
-                let phys_h = (css_h * dpr * scale).round() as u32;
-                window_size = (phys_w.max(1), phys_h.max(1));
-                web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
-                    "[WGPU-Init] DPR={:.2} Scale={:.2} CSS={}x{} Physical={}x{}",
-                    dpr, scale, css_w as u32, css_h as u32, phys_w, phys_h
-                )));
-            }
-        }
+        let window_size = self.resumed_window_size();
 
         let attributes = Window::default_attributes()
             .with_title(&self.config.title)
             .with_resizable(self.config.resizable)
             .with_decorations(self.config.decorations)
-            .with_inner_size(winit::dpi::PhysicalSize::new(
-                window_size.0,
-                window_size.1,
-            ));
+            .with_inner_size(winit::dpi::PhysicalSize::new(window_size.0, window_size.1));
 
         let window = Arc::new(event_loop.create_window(attributes).unwrap());
         self.window_size = window_size;
@@ -72,7 +89,7 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
             height: window_size.1,
         };
 
-        // â”€â”€ Desktop: synchronous blocking GPU init â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Desktop: synchronous blocking GPU init ───────────────────────────
         #[cfg(not(target_arch = "wasm32"))]
         {
             let mut gfx = {
@@ -84,13 +101,13 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
                     self.config.vsync,
                     self.config.sample_count,
                     self.config.hdri_path.clone(),
-                ).block_on()
+                )
+                .block_on()
             };
             gfx.renderer.set_viewport(self.viewport);
             gfx.renderer
                 .set_clear_color(self.config.background_color.to_wgpu());
-            gfx.renderer
-                .set_render_style(self.config.render_style);
+            gfx.renderer.set_render_style(self.config.render_style);
             // Propagate the app mode to the renderer
             if self.config.mode == AppMode::Flat2D {
                 gfx.renderer
@@ -143,7 +160,7 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
             self.window = Some(window);
         }
 
-        // â”€â”€ Web (WASM): asynchronous init â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Web (WASM): asynchronous init ───────────────────────────────────
         #[cfg(target_arch = "wasm32")]
         {
             let slot = Rc::new(RefCell::new(None));
@@ -285,55 +302,78 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
                 }
 
                 // Ctrl+combos y Shift+combos: despachar variantes especiales y retornar
-                if state == winit::event::ElementState::Pressed && (self.ctrl_held || self.shift_held) {
-                    let combo_key = match physical_key {
-                        // Ctrl+Shift+flechas
-                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::ArrowLeft)
-                            if self.ctrl_held && self.shift_held =>
-                            Some(ferrous_ui_core::GuiKey::CtrlShiftArrowLeft),
-                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::ArrowRight)
-                            if self.ctrl_held && self.shift_held =>
-                            Some(ferrous_ui_core::GuiKey::CtrlShiftArrowRight),
-                        // Ctrl+combos
-                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyA)
-                            if self.ctrl_held =>
-                            Some(ferrous_ui_core::GuiKey::CtrlA),
-                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyC)
-                            if self.ctrl_held =>
-                            Some(ferrous_ui_core::GuiKey::CtrlC),
-                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyX)
-                            if self.ctrl_held =>
-                            Some(ferrous_ui_core::GuiKey::CtrlX),
-                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyV)
-                            if self.ctrl_held =>
-                            Some(ferrous_ui_core::GuiKey::CtrlV),
-                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyZ)
-                            if self.ctrl_held =>
-                            Some(ferrous_ui_core::GuiKey::CtrlZ),
-                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyY)
-                            if self.ctrl_held =>
-                            Some(ferrous_ui_core::GuiKey::CtrlY),
-                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::ArrowLeft)
-                            if self.ctrl_held =>
-                            Some(ferrous_ui_core::GuiKey::CtrlArrowLeft),
-                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::ArrowRight)
-                            if self.ctrl_held =>
-                            Some(ferrous_ui_core::GuiKey::CtrlArrowRight),
-                        // Shift+flechas y Shift+Home/End
-                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::ArrowLeft)
-                            if self.shift_held =>
-                            Some(ferrous_ui_core::GuiKey::ShiftArrowLeft),
-                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::ArrowRight)
-                            if self.shift_held =>
-                            Some(ferrous_ui_core::GuiKey::ShiftArrowRight),
-                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::Home)
-                            if self.shift_held =>
-                            Some(ferrous_ui_core::GuiKey::ShiftHome),
-                        winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::End)
-                            if self.shift_held =>
-                            Some(ferrous_ui_core::GuiKey::ShiftEnd),
-                        _ => None,
-                    };
+                if state == winit::event::ElementState::Pressed
+                    && (self.ctrl_held || self.shift_held)
+                {
+                    let combo_key =
+                        match physical_key {
+                            // Ctrl+Shift+flechas
+                            winit::keyboard::PhysicalKey::Code(
+                                winit::keyboard::KeyCode::ArrowLeft,
+                            ) if self.ctrl_held && self.shift_held => {
+                                Some(ferrous_ui_core::GuiKey::CtrlShiftArrowLeft)
+                            }
+                            winit::keyboard::PhysicalKey::Code(
+                                winit::keyboard::KeyCode::ArrowRight,
+                            ) if self.ctrl_held && self.shift_held => {
+                                Some(ferrous_ui_core::GuiKey::CtrlShiftArrowRight)
+                            }
+                            // Ctrl+combos
+                            winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyA)
+                                if self.ctrl_held =>
+                            {
+                                Some(ferrous_ui_core::GuiKey::CtrlA)
+                            }
+                            winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyC)
+                                if self.ctrl_held =>
+                            {
+                                Some(ferrous_ui_core::GuiKey::CtrlC)
+                            }
+                            winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyX)
+                                if self.ctrl_held =>
+                            {
+                                Some(ferrous_ui_core::GuiKey::CtrlX)
+                            }
+                            winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyV)
+                                if self.ctrl_held =>
+                            {
+                                Some(ferrous_ui_core::GuiKey::CtrlV)
+                            }
+                            winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyZ)
+                                if self.ctrl_held =>
+                            {
+                                Some(ferrous_ui_core::GuiKey::CtrlZ)
+                            }
+                            winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyY)
+                                if self.ctrl_held =>
+                            {
+                                Some(ferrous_ui_core::GuiKey::CtrlY)
+                            }
+                            winit::keyboard::PhysicalKey::Code(
+                                winit::keyboard::KeyCode::ArrowLeft,
+                            ) if self.ctrl_held => Some(ferrous_ui_core::GuiKey::CtrlArrowLeft),
+                            winit::keyboard::PhysicalKey::Code(
+                                winit::keyboard::KeyCode::ArrowRight,
+                            ) if self.ctrl_held => Some(ferrous_ui_core::GuiKey::CtrlArrowRight),
+                            // Shift+flechas y Shift+Home/End
+                            winit::keyboard::PhysicalKey::Code(
+                                winit::keyboard::KeyCode::ArrowLeft,
+                            ) if self.shift_held => Some(ferrous_ui_core::GuiKey::ShiftArrowLeft),
+                            winit::keyboard::PhysicalKey::Code(
+                                winit::keyboard::KeyCode::ArrowRight,
+                            ) if self.shift_held => Some(ferrous_ui_core::GuiKey::ShiftArrowRight),
+                            winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::Home)
+                                if self.shift_held =>
+                            {
+                                Some(ferrous_ui_core::GuiKey::ShiftHome)
+                            }
+                            winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::End)
+                                if self.shift_held =>
+                            {
+                                Some(ferrous_ui_core::GuiKey::ShiftEnd)
+                            }
+                            _ => None,
+                        };
                     if let Some(key) = combo_key {
                         self.ui.dispatch_event(
                             &mut self.app,
@@ -372,10 +412,10 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
                 }
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                // When the browser zoom or display density changes, we must 
-                // recalculate the physical canvas size. 
+                // When the browser zoom or display density changes, we must
+                // recalculate the physical canvas size.
                 log::info!("[Ferrous] Scale factor changed: {}", scale_factor);
-                
+
                 #[cfg(target_arch = "wasm32")]
                 if let Some(window) = &self.window {
                     let (phys_w, phys_h) =

@@ -1,16 +1,16 @@
-use std::collections::HashMap;
-use ferrous_core::{World, Transform, Color};
+use ferrous_2d::render::types::ShapeInstance;
 use ferrous_core::api::types::NodeId;
+use ferrous_core::glam;
+use ferrous_core::scene::world::types::PathCommand;
+use ferrous_core::scene::world::types::PathData;
+use ferrous_core::scene::world::MaterialComponent;
+use ferrous_core::scene::{Billboard, BillboardMode, Element, ElementKind};
+use ferrous_core::{Color, Transform, World};
 use ferrous_ecs::prelude::Entity;
 use ferrous_ecs::system::System;
 use ferrous_gpu::EngineContext;
 use ferrous_renderer::{Renderer as GpuRenderer, RendererMode};
-use ferrous_core::scene::{Material, Billboard, BillboardMode, ShadowCaster, Element, ElementKind, AnimatorSystem};
-use ferrous_core::scene::world::MaterialComponent;
-use ferrous_core::scene::world::types::PathData;
-use ferrous_core::scene::world::types::PathCommand;
-use ferrous_core::glam;
-use ferrous_2d::render::types::ShapeInstance;
+use std::collections::HashMap;
 
 /// Error type for the Engine SDK.
 #[derive(Debug, thiserror::Error)]
@@ -22,17 +22,17 @@ pub enum EngineError {
 }
 
 /// Professional Render SDK entry point.
-/// 
+///
 /// The `Renderer` provides a high-level facade for managing a 3D scene,
 /// handling the underlying ECS world, GPU resources, and frame execution.
-/// 
+///
 /// # Example
 /// ```rust,ignore
 /// let mut renderer = Renderer::builder()
 ///     .with_dimensions(1280, 720)
 ///     .with_title("Professional App")
 ///     .build()?;
-/// 
+///
 /// let mesh = renderer.spawn_mesh("cube", Transform::identity());
 /// renderer.update_color(mesh, [1.0, 0.0, 0.0, 1.0]);
 /// ```
@@ -107,9 +107,8 @@ impl RendererBuilder {
     /// Initializes the GPU and returns a fully-functional `Renderer`.
     pub fn build(self) -> Result<Renderer, EngineError> {
         #[cfg(not(target_arch = "wasm32"))]
-        let context = pollster::block_on(EngineContext::new())
-            .map_err(EngineError::GpuContext)?;
-        
+        let context = pollster::block_on(EngineContext::new()).map_err(EngineError::GpuContext)?;
+
         #[cfg(target_arch = "wasm32")]
         let context = {
             log::error!("Async initialization on wasm32 not yet supported via Builder::build()");
@@ -159,7 +158,7 @@ impl Renderer {
     /// Spawns a 3D Mesh into the renderer.
     pub fn spawn_mesh(&mut self, mesh_name: &str, transform: Transform) -> NodeId {
         let id = self.generate_id();
-        
+
         let descriptor = ferrous_core::scene::MaterialDescriptor::default();
         let handle = self.gpu.material_registry.create(
             &self.gpu.context.device,
@@ -167,10 +166,7 @@ impl Renderer {
             &descriptor,
         );
 
-        let material = MaterialComponent {
-            handle,
-            descriptor,
-        };
+        let material = MaterialComponent { handle, descriptor };
 
         let element = Element {
             id: id.0,
@@ -178,10 +174,22 @@ impl Renderer {
             transform: transform.clone(),
             material: material.clone(),
             kind: match mesh_name {
-                "cube" => ElementKind::Cube { half_extents: glam::Vec3::splat(0.5) },
-                "sphere" => ElementKind::Sphere { radius: 1.0, latitudes: 32, longitudes: 32 },
-                "quad" => ElementKind::Quad { width: 1.0, height: 1.0, double_sided: false },
-                _ => ElementKind::Cube { half_extents: glam::Vec3::splat(0.5) },
+                "cube" => ElementKind::Cube {
+                    half_extents: glam::Vec3::splat(0.5),
+                },
+                "sphere" => ElementKind::Sphere {
+                    radius: 1.0,
+                    latitudes: 32,
+                    longitudes: 32,
+                },
+                "quad" => ElementKind::Quad {
+                    width: 1.0,
+                    height: 1.0,
+                    double_sided: false,
+                },
+                _ => ElementKind::Cube {
+                    half_extents: glam::Vec3::splat(0.5),
+                },
             },
             visible: true,
             screen_space: false,
@@ -201,16 +209,24 @@ impl Renderer {
     }
 
     /// Spawns a generic 2D path.
-    pub fn spawn_2d_path(&mut self, transform: Transform, path_data: ferrous_core::scene::world::types::PathData) -> NodeId {
+    pub fn spawn_2d_path(
+        &mut self,
+        transform: Transform,
+        path_data: ferrous_core::scene::world::types::PathData,
+    ) -> NodeId {
         let id = self.generate_id();
-        
+
         let descriptor = ferrous_core::scene::MaterialDescriptor {
             base_color: [1.0, 1.0, 1.0, 1.0],
             style_override: Some(ferrous_renderer::RenderStyle::FlatShaded),
             double_sided: true,
             ..Default::default()
         };
-        let handle = self.gpu.material_registry.create(&self.gpu.context.device, &self.gpu.context.queue, &descriptor);
+        let handle = self.gpu.material_registry.create(
+            &self.gpu.context.device,
+            &self.gpu.context.queue,
+            &descriptor,
+        );
         let mut material = MaterialComponent { handle, descriptor };
 
         let element = Element {
@@ -234,7 +250,10 @@ impl Renderer {
         // v15: 2D objects use FlatShaded (unlit) style by default so they work without lights
         material.descriptor.style_override = Some(ferrous_core::scene::RenderStyle::FlatShaded);
 
-        let entity = self.world.ecs.spawn((transform, element, material, path_data));
+        let entity = self
+            .world
+            .ecs
+            .spawn((transform, element, material, path_data));
         self.node_map.insert(id, entity);
         self.gpu.mark_dirty();
         id
@@ -242,47 +261,89 @@ impl Renderer {
 
     /// Spawns a filled 2D circle in the XY plane.
     pub fn spawn_2d_circle(&mut self, x: f32, y: f32, z: f32, radius: f32) -> NodeId {
-        use ferrous_core::scene::world::types::{PathData, PathCommand};
+        use ferrous_core::scene::world::types::{PathCommand, PathData};
         // Approximate circle with 4 bezier curves (Standard Manim/Vectorial approach)
         let c = 0.552284749831 * radius;
         let path = PathData {
             commands: vec![
                 PathCommand::MoveTo(glam::Vec2::new(radius, 0.0)),
-                PathCommand::CubicTo(glam::Vec2::new(radius, c), glam::Vec2::new(c, radius), glam::Vec2::new(0.0, radius)),
-                PathCommand::CubicTo(glam::Vec2::new(-c, radius), glam::Vec2::new(-radius, c), glam::Vec2::new(-radius, 0.0)),
-                PathCommand::CubicTo(glam::Vec2::new(-radius, -c), glam::Vec2::new(-c, -radius), glam::Vec2::new(0.0, -radius)),
-                PathCommand::CubicTo(glam::Vec2::new(c, -radius), glam::Vec2::new(radius, -c), glam::Vec2::new(radius, 0.0)),
+                PathCommand::CubicTo(
+                    glam::Vec2::new(radius, c),
+                    glam::Vec2::new(c, radius),
+                    glam::Vec2::new(0.0, radius),
+                ),
+                PathCommand::CubicTo(
+                    glam::Vec2::new(-c, radius),
+                    glam::Vec2::new(-radius, c),
+                    glam::Vec2::new(-radius, 0.0),
+                ),
+                PathCommand::CubicTo(
+                    glam::Vec2::new(-radius, -c),
+                    glam::Vec2::new(-c, -radius),
+                    glam::Vec2::new(0.0, -radius),
+                ),
+                PathCommand::CubicTo(
+                    glam::Vec2::new(c, -radius),
+                    glam::Vec2::new(radius, -c),
+                    glam::Vec2::new(radius, 0.0),
+                ),
                 PathCommand::Close,
-            ]
+            ],
         };
         self.spawn_2d_path(Transform::from_position(glam::Vec3::new(x, y, z)), path)
     }
 
     /// Spawns a filled 2D rectangle in the XY plane.
     pub fn spawn_2d_rect(&mut self, x: f32, y: f32, z: f32, width: f32, height: f32) -> NodeId {
-        use ferrous_core::scene::world::types::{PathData, PathCommand};
+        use ferrous_core::scene::world::types::{PathCommand, PathData};
         let hw = width * 0.5;
         let hh = height * 0.5;
         // v14: Structure normalization - Use 4 Cubics to allow morphing to Circle
         let path = PathData {
             commands: vec![
                 PathCommand::MoveTo(glam::Vec2::new(-hw, -hh)),
-                PathCommand::CubicTo(glam::Vec2::new(-hw, -hh), glam::Vec2::new(hw, -hh), glam::Vec2::new(hw, -hh)),
-                PathCommand::CubicTo(glam::Vec2::new(hw, -hh), glam::Vec2::new(hw, hh), glam::Vec2::new(hw, hh)),
-                PathCommand::CubicTo(glam::Vec2::new(hw, hh), glam::Vec2::new(-hw, hh), glam::Vec2::new(-hw, hh)),
-                PathCommand::CubicTo(glam::Vec2::new(-hw, hh), glam::Vec2::new(-hw, -hh), glam::Vec2::new(-hw, -hh)),
+                PathCommand::CubicTo(
+                    glam::Vec2::new(-hw, -hh),
+                    glam::Vec2::new(hw, -hh),
+                    glam::Vec2::new(hw, -hh),
+                ),
+                PathCommand::CubicTo(
+                    glam::Vec2::new(hw, -hh),
+                    glam::Vec2::new(hw, hh),
+                    glam::Vec2::new(hw, hh),
+                ),
+                PathCommand::CubicTo(
+                    glam::Vec2::new(hw, hh),
+                    glam::Vec2::new(-hw, hh),
+                    glam::Vec2::new(-hw, hh),
+                ),
+                PathCommand::CubicTo(
+                    glam::Vec2::new(-hw, hh),
+                    glam::Vec2::new(-hw, -hh),
+                    glam::Vec2::new(-hw, -hh),
+                ),
                 PathCommand::Close,
-            ]
+            ],
         };
         self.spawn_2d_path(Transform::from_position(glam::Vec3::new(x, y, z)), path)
     }
 
     /// Spawns a thick 2D line segment.
     pub fn spawn_2d_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, thickness: f32) -> NodeId {
-        let id = self.spawn_2d_shape("line", Transform::default(), ElementKind::Line2D { x0: x1, y0: y1, x1: x2, y1: y2, thickness });
+        let id = self.spawn_2d_shape(
+            "line",
+            Transform::default(),
+            ElementKind::Line2D {
+                x0: x1,
+                y0: y1,
+                x1: x2,
+                y1: y2,
+                thickness,
+            },
+        );
         // Important: Lines MUST NOT have fill_color or lyon produces empty meshes
         if let Some(entity) = self.node_map.get(&id) {
-            if let Some(mut el) = self.world.ecs.get_mut::<Element>(*entity) {
+            if let Some(el) = self.world.ecs.get_mut::<Element>(*entity) {
                 el.fill_color = None;
             }
         }
@@ -315,10 +376,7 @@ impl Renderer {
             &descriptor,
         );
 
-        let material = MaterialComponent {
-            handle,
-            descriptor,
-        };
+        let material = MaterialComponent { handle, descriptor };
 
         let element = Element {
             id: id.0,
@@ -414,7 +472,9 @@ impl Renderer {
         if casts_shadows {
             self.world.ecs.insert(*e, ferrous_core::scene::ShadowCaster);
         } else {
-            self.world.ecs.remove::<ferrous_core::scene::ShadowCaster>(*e);
+            self.world
+                .ecs
+                .remove::<ferrous_core::scene::ShadowCaster>(*e);
         }
         Ok(())
     }
@@ -431,7 +491,9 @@ impl Renderer {
             } else {
                 ferrous_core::scene::BillboardMode::Cylindrical
             };
-            self.world.ecs.insert(*e, ferrous_core::scene::Billboard { mode: bm });
+            self.world
+                .ecs
+                .insert(*e, ferrous_core::scene::Billboard { mode: bm });
         }
         Ok(())
     }
@@ -443,9 +505,11 @@ impl Renderer {
         if is_screen {
             self.world.ecs.insert(*e, ferrous_core::scene::ScreenSpace);
         } else {
-            self.world.ecs.remove::<ferrous_core::scene::ScreenSpace>(*e);
+            self.world
+                .ecs
+                .remove::<ferrous_core::scene::ScreenSpace>(*e);
         }
-        
+
         // 2. Direct flag in Element for 100% reliable rendering detection in FrameBuilder
         if let Some(elem) = self.world.ecs.get_mut::<ferrous_core::scene::Element>(*e) {
             elem.screen_space = is_screen;
@@ -454,7 +518,11 @@ impl Renderer {
     }
 
     /// Adds a billboard constraint to a node.
-    pub fn add_billboard_constraint(&mut self, node: NodeId, mode: BillboardMode) -> Result<(), ()> {
+    pub fn add_billboard_constraint(
+        &mut self,
+        node: NodeId,
+        mode: BillboardMode,
+    ) -> Result<(), ()> {
         if let Some(entity) = self.node_map.get(&node) {
             self.world.ecs.insert(*entity, Billboard { mode });
             return Ok(());
@@ -482,7 +550,13 @@ impl Renderer {
 
         for (entity, element, pos) in &batch {
             match &element.kind {
-                ElementKind::Line2D { x0, y0, x1, y1, thickness } => {
+                ElementKind::Line2D {
+                    x0,
+                    y0,
+                    x1,
+                    y1,
+                    thickness,
+                } => {
                     let color = element.stroke_color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
                     self.gpu.draw_2d_shape(ShapeInstance::line_with_cap(
                         glam::Vec2::new(pos.x + x0, pos.y + y0),
@@ -495,15 +569,20 @@ impl Renderer {
                 ElementKind::Circle2D { radius, .. } => {
                     if let Some(fill) = element.fill_color {
                         self.gpu.draw_2d_shape(ShapeInstance::circle_z(
-                            glam::Vec2::new(pos.x, pos.y), pos.z, *radius, fill,
+                            glam::Vec2::new(pos.x, pos.y),
+                            pos.z,
+                            *radius,
+                            fill,
                         ));
                     }
                 }
                 ElementKind::Rect2D { width, height } => {
                     if let Some(fill) = element.fill_color {
                         self.gpu.draw_2d_shape(ShapeInstance::rect_z(
-                            glam::Vec2::new(pos.x, pos.y), pos.z,
-                            glam::Vec2::new(*width, *height), fill,
+                            glam::Vec2::new(pos.x, pos.y),
+                            pos.z,
+                            glam::Vec2::new(*width, *height),
+                            fill,
                         ));
                     }
                 }
@@ -532,7 +611,10 @@ impl Renderer {
         if let Some(radius) = classify_circle_path(cmds) {
             if let Some(fill) = element.fill_color {
                 self.gpu.draw_2d_shape(ShapeInstance::circle_z(
-                    glam::Vec2::new(pos.x, pos.y), pos.z, radius, fill,
+                    glam::Vec2::new(pos.x, pos.y),
+                    pos.z,
+                    radius,
+                    fill,
                 ));
             }
             if let Some(stroke) = element.stroke_color {
@@ -543,7 +625,8 @@ impl Renderer {
                     let t1 = ((i + 1) as f32 / segments as f32) * std::f32::consts::TAU;
                     let from = center + glam::Vec2::new(t0.cos() * radius, t0.sin() * radius);
                     let to = center + glam::Vec2::new(t1.cos() * radius, t1.sin() * radius);
-                    self.gpu.draw_2d_shape(ShapeInstance::line(from, to, 2.0, stroke));
+                    self.gpu
+                        .draw_2d_shape(ShapeInstance::line(from, to, 2.0, stroke));
                 }
             }
             return;
@@ -553,8 +636,10 @@ impl Renderer {
         if let Some((width, height)) = classify_rect_path(cmds) {
             if let Some(fill) = element.fill_color {
                 self.gpu.draw_2d_shape(ShapeInstance::rect_z(
-                    glam::Vec2::new(pos.x, pos.y), pos.z,
-                    glam::Vec2::new(width, height), fill,
+                    glam::Vec2::new(pos.x, pos.y),
+                    pos.z,
+                    glam::Vec2::new(width, height),
+                    fill,
                 ));
             }
             if let Some(stroke) = element.stroke_color {
@@ -568,7 +653,8 @@ impl Renderer {
                     glam::Vec2::new(pos.x - hw, pos.y - hh),
                 ];
                 for i in 0..4 {
-                    self.gpu.draw_2d_shape(ShapeInstance::line(pts[i], pts[i + 1], 2.0, stroke));
+                    self.gpu
+                        .draw_2d_shape(ShapeInstance::line(pts[i], pts[i + 1], 2.0, stroke));
                 }
             }
             return;
@@ -580,13 +666,16 @@ impl Renderer {
             let mut prev: Option<glam::Vec2> = None;
             for cmd in cmds {
                 match cmd {
-                    PathCommand::MoveTo(p) => { prev = None; }
+                    PathCommand::MoveTo(_) => {
+                        prev = None;
+                    }
                     PathCommand::LineTo(p) => {
                         if let Some(start) = prev {
                             self.gpu.draw_2d_shape(ShapeInstance::line(
                                 glam::Vec2::new(pos.x + start.x, pos.y + start.y),
                                 glam::Vec2::new(pos.x + p.x, pos.y + p.y),
-                                thickness, stroke,
+                                thickness,
+                                stroke,
                             ));
                         }
                         prev = Some(*p);
@@ -596,12 +685,15 @@ impl Renderer {
                             self.gpu.draw_2d_shape(ShapeInstance::line(
                                 glam::Vec2::new(pos.x + start.x, pos.y + start.y),
                                 glam::Vec2::new(pos.x + end.x, pos.y + end.y),
-                                thickness, stroke,
+                                thickness,
+                                stroke,
                             ));
                         }
                         prev = Some(*end);
                     }
-                    PathCommand::Close => { prev = None; }
+                    PathCommand::Close => {
+                        prev = None;
+                    }
                 }
             }
         }
@@ -618,8 +710,9 @@ impl Renderer {
             frame_count: 0,
             fps: 0.0,
         });
-        
-        self.animator_system.run(&mut self.world.ecs, &mut resources);
+
+        self.animator_system
+            .run(&mut self.world.ecs, &mut resources);
 
         // 1. Sync ECS world to GPU (skip in Pure2D — 2D entities use shape batcher instead)
         if self.gpu.mode != RendererMode::Pure2D {
@@ -638,14 +731,17 @@ impl Renderer {
         // 4. Copy to readback buffer if available
         if let Some(readback) = &self.gpu.readback_manager {
             readback.copy_to_buffer(&mut encoder, self.gpu.render_target.color_texture());
-            
+
             self.gpu.context.queue.submit(Some(encoder.finish()));
 
             // 5. Poll and map (blocking)
             #[cfg(not(target_arch = "wasm32"))]
             {
                 use pollster::FutureExt;
-                return readback.poll_and_map(&self.gpu.context.device).block_on().ok();
+                return readback
+                    .poll_and_map(&self.gpu.context.device)
+                    .block_on()
+                    .ok();
             }
         }
 
@@ -663,7 +759,8 @@ impl Renderer {
             frame_count: 0,
             fps: 0.0,
         });
-        self.animator_system.run(&mut self.world.ecs, &mut resources);
+        self.animator_system
+            .run(&mut self.world.ecs, &mut resources);
 
         if self.gpu.mode != RendererMode::Pure2D {
             self.gpu.sync_world(&self.world);
@@ -680,7 +777,10 @@ impl Renderer {
             #[cfg(not(target_arch = "wasm32"))]
             {
                 use pollster::FutureExt;
-                return readback.poll_and_map_into(&self.gpu.context.device, out).block_on().is_ok();
+                return readback
+                    .poll_and_map_into(&self.gpu.context.device, out)
+                    .block_on()
+                    .is_ok();
             }
         }
         false
@@ -688,9 +788,16 @@ impl Renderer {
 
     /// Updates the endpoints of an existing 2D line without removing/re-spawning it.
     /// Useful for line-progress animations where the line grows from start to end.
-    pub fn update_line_endpoints(&mut self, node: NodeId, ax: f32, ay: f32, bx: f32, by: f32) -> Result<(), ()> {
+    pub fn update_line_endpoints(
+        &mut self,
+        node: NodeId,
+        ax: f32,
+        ay: f32,
+        bx: f32,
+        by: f32,
+    ) -> Result<(), ()> {
         if let Some(entity) = self.node_map.get(&node) {
-            if let Some(mut elem) = self.world.ecs.get_mut::<Element>(*entity) {
+            if let Some(elem) = self.world.ecs.get_mut::<Element>(*entity) {
                 if let ElementKind::Line2D { x0, y0, x1, y1, .. } = &mut elem.kind {
                     *x0 = ax;
                     *y0 = ay;
@@ -708,7 +815,7 @@ impl Renderer {
     /// cap: 0 = Flat, 1 = Round, 2 = Square.
     pub fn set_line_cap(&mut self, node: NodeId, cap: u8) -> Result<(), ()> {
         if let Some(entity) = self.node_map.get(&node) {
-            if let Some(mut elem) = self.world.ecs.get_mut::<Element>(*entity) {
+            if let Some(elem) = self.world.ecs.get_mut::<Element>(*entity) {
                 elem.line_cap_style = cap.min(2);
                 self.gpu.mark_dirty();
                 return Ok(());
@@ -721,7 +828,7 @@ impl Renderer {
     /// join: 0 = Miter, 1 = Bevel, 2 = Round.
     pub fn set_line_join(&mut self, node: NodeId, join: u8) -> Result<(), ()> {
         if let Some(entity) = self.node_map.get(&node) {
-            if let Some(mut elem) = self.world.ecs.get_mut::<Element>(*entity) {
+            if let Some(elem) = self.world.ecs.get_mut::<Element>(*entity) {
                 elem.line_join_style = join.min(2);
                 self.gpu.mark_dirty();
                 return Ok(());
@@ -733,18 +840,22 @@ impl Renderer {
     /// Sets the stroke style for a 2D entity.
     pub fn set_stroke(&mut self, node: NodeId, color: [f32; 4], thickness: f32) -> Result<(), ()> {
         if let Some(entity) = self.node_map.get(&node) {
-            if let Some(mut elem) = self.world.ecs.get_mut::<Element>(*entity) {
+            if let Some(elem) = self.world.ecs.get_mut::<Element>(*entity) {
                 elem.stroke_color = Some(color);
                 elem.stroke_thickness = thickness;
                 let is_path = matches!(elem.kind, ElementKind::Path);
-                if let ElementKind::Line2D { thickness: ref mut t, .. } = elem.kind {
+                if let ElementKind::Line2D {
+                    thickness: ref mut t,
+                    ..
+                } = elem.kind
+                {
                     *t = thickness;
                 }
                 // v15: Sync with material for proper rendering
                 // Only sync if not a Path, since Paths embed color in geometry.
                 if !is_path {
                     elem.material.descriptor.base_color = color;
-                    if let Some(mut m) = self.world.ecs.get_mut::<MaterialComponent>(*entity) {
+                    if let Some(m) = self.world.ecs.get_mut::<MaterialComponent>(*entity) {
                         m.descriptor.base_color = color;
                     }
                 }
@@ -758,7 +869,7 @@ impl Renderer {
     /// Removes fill color, useful for open paths like Plots
     pub fn remove_fill(&mut self, node: NodeId) -> Result<(), ()> {
         if let Some(entity) = self.node_map.get(&node) {
-            if let Some(mut elem) = self.world.ecs.get_mut::<Element>(*entity) {
+            if let Some(elem) = self.world.ecs.get_mut::<Element>(*entity) {
                 elem.fill_color = None;
                 self.gpu.mark_dirty();
                 return Ok(());
@@ -770,14 +881,14 @@ impl Renderer {
     /// Sets the fill color for a 2D entity.
     pub fn set_fill(&mut self, node: NodeId, color: [f32; 4]) -> Result<(), ()> {
         if let Some(entity) = self.node_map.get(&node) {
-            if let Some(mut elem) = self.world.ecs.get_mut::<Element>(*entity) {
+            if let Some(elem) = self.world.ecs.get_mut::<Element>(*entity) {
                 elem.fill_color = Some(color);
                 let is_path = matches!(elem.kind, ElementKind::Path);
                 // v15: Sync with material for proper rendering
                 // Only sync if not a Path, since Paths embed color in geometry.
                 if !is_path {
                     elem.material.descriptor.base_color = color;
-                    if let Some(mut m) = self.world.ecs.get_mut::<MaterialComponent>(*entity) {
+                    if let Some(m) = self.world.ecs.get_mut::<MaterialComponent>(*entity) {
                         m.descriptor.base_color = color;
                     }
                 }
@@ -839,7 +950,7 @@ impl Renderer {
     /// * `path_data` — New path commands
     pub fn set_path_data(&mut self, node: NodeId, path_data: PathData) -> Result<(), ()> {
         let entity = self.node_map.get(&node).ok_or(())?;
-        if let Some(mut pd) = self.world.ecs.get_mut::<PathData>(*entity) {
+        if let Some(pd) = self.world.ecs.get_mut::<PathData>(*entity) {
             *pd = path_data;
             self.gpu.mark_dirty();
             Ok(())
@@ -852,8 +963,12 @@ impl Renderer {
         self.gpu.resize(width, height);
     }
 
-    pub fn width(&self) -> u32 { self.gpu.width() }
-    pub fn height(&self) -> u32 { self.gpu.height() }
+    pub fn width(&self) -> u32 {
+        self.gpu.width()
+    }
+    pub fn height(&self) -> u32 {
+        self.gpu.height()
+    }
 }
 
 // ── Path classification helpers ───────────────────────────────────────────
@@ -861,13 +976,23 @@ impl Renderer {
 /// Detects a circle approximation path: MoveTo(r,0) + 4 CubicTo + Close.
 /// Returns the radius if the path matches.
 fn classify_circle_path(cmds: &[PathCommand]) -> Option<f32> {
-    if cmds.len() != 6 { return None; }
-    let PathCommand::MoveTo(start) = &cmds[0] else { return None };
-    let PathCommand::Close = &cmds[5] else { return None };
+    if cmds.len() != 6 {
+        return None;
+    }
+    let PathCommand::MoveTo(start) = &cmds[0] else {
+        return None;
+    };
+    let PathCommand::Close = &cmds[5] else {
+        return None;
+    };
 
     let r = start.x.abs();
-    if r < 0.001 { return None; }
-    if start.y.abs() > 0.001 { return None; }
+    if r < 0.001 {
+        return None;
+    }
+    if start.y.abs() > 0.001 {
+        return None;
+    }
 
     let expected_ends = [
         glam::Vec2::new(0.0, r),
@@ -893,13 +1018,21 @@ fn classify_circle_path(cmds: &[PathCommand]) -> Option<f32> {
 /// CubicTo (where start==end for each edge) + Close.
 /// Returns (width, height) if the path matches.
 fn classify_rect_path(cmds: &[PathCommand]) -> Option<(f32, f32)> {
-    if cmds.len() != 6 { return None; }
-    let PathCommand::MoveTo(start) = &cmds[0] else { return None };
-    let PathCommand::Close = &cmds[5] else { return None };
+    if cmds.len() != 6 {
+        return None;
+    }
+    let PathCommand::MoveTo(start) = &cmds[0] else {
+        return None;
+    };
+    let PathCommand::Close = &cmds[5] else {
+        return None;
+    };
 
     let hw = -start.x;
     let hh = -start.y;
-    if hw <= 0.001 || hh <= 0.001 { return None; }
+    if hw <= 0.001 || hh <= 0.001 {
+        return None;
+    }
 
     let expected_ends = [
         glam::Vec2::new(hw, -hh),

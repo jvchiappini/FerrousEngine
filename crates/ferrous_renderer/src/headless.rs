@@ -910,6 +910,16 @@ impl Pure2dHarness {
         self.renderer.push_layer_2d(desc)
     }
 
+    /// Opens an offscreen layer with an effect chain (see
+    /// [`Renderer::push_layer_2d_with_effects`]).
+    pub fn push_layer_with_effects(
+        &mut self,
+        desc: ferrous_2d::render::Layer2d,
+        effects: &[ferrous_2d::render::Effect2d],
+    ) -> Result<(), ferrous_2d::render::LayerError> {
+        self.renderer.push_layer_2d_with_effects(desc, effects)
+    }
+
     /// Closes the innermost offscreen layer.
     pub fn pop_layer(&mut self) -> Result<(), ferrous_2d::render::LayerError> {
         self.renderer.pop_layer_2d()

@@ -7,6 +7,9 @@
 /// Per-frame instance batchers ([`ShapeBatcher`], [`SpriteBatcher`]) and the
 /// unified [`DrawCommand2d`] command stream.
 pub mod batch;
+/// Layer effects: the Gaussian blur kernel and the drop-shadow, blur and glow
+/// descriptions ([`Effect2d`]).
+pub mod effects;
 /// CPU-side gradient encoding for the Pure2D shaders ([GradientTable2d]).
 pub mod gradient;
 /// wgpu render pipelines and bind-group layouts for sprites and shapes.
@@ -15,6 +18,7 @@ pub mod pipeline;
 pub mod types;
 
 pub use batch::*;
+pub use effects::*;
 pub use gradient::*;
 pub use pipeline::*;
 pub use types::*;

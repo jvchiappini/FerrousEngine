@@ -63,9 +63,10 @@ use pipeline::PbrPipeline;
 
 use ferrous_2d::handle::SlotRegistry;
 use ferrous_2d::render::{
-    BlendMode2d, CompositeInstance, CompositePipeline, DrawCommand2d, FontId2d, Layer2d,
-    LayerError, Renderer2d, ShapeBatcher, ShapePipeline, SpriteBatchEntry, SpritePipeline,
-    Text2dPipeline, TextInstance, MAX_LAYER_DEPTH_2D,
+    BlendMode2d, BlurEffectPipeline, BlurKernel2d, BlurUniform2d, CompositeInstance,
+    CompositePipeline, DrawCommand2d, Effect2d, EffectCompositePipeline, EffectUniform2d, FontId2d,
+    Layer2d, LayerError, Renderer2d, ShapeBatcher, ShapePipeline, SpriteBatchEntry, SpritePipeline,
+    Text2dPipeline, TextInstance, MAX_EFFECTS_PER_LAYER, MAX_LAYER_DEPTH_2D,
 };
 use ferrous_font::{FontError, GlyphQuad, TextAlign};
 
@@ -179,10 +180,13 @@ impl FrameCmd2d {
     }
 }
 
-/// One recorded layer: its description and its own command stream.
+/// One recorded layer: its description, its command stream and its effect
+/// chain.
 struct LayerRecord {
     desc: Layer2d,
     cmds: Vec<FrameCmd2d>,
+    /// Effects applied to the finished layer texture, in order.
+    effects: Vec<Effect2d>,
 }
 
 /// A pooled offscreen layer texture plus the bind group used to composite it.
@@ -196,6 +200,53 @@ struct LayerTexture {
 struct BackdropTexture {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
+}
+
+/// Two full-target scratch textures used by a layer's effect chain.
+///
+/// The chain ping-pongs between the layer texture and these two, so a pass
+/// never reads and writes the same texture.
+struct EffectTargets {
+    textures: [wgpu::Texture; 2],
+    views: [wgpu::TextureView; 2],
+}
+
+/// Pooled uniform buffers for the effect passes of one frame.
+///
+/// Each pass owns its buffer, because `queue.write_buffer` is ordered with
+/// respect to submission, not with respect to encoded passes: a single shared
+/// buffer would make every pass read the last write.
+#[derive(Default)]
+struct EffectUniformPool {
+    buffers: Vec<wgpu::Buffer>,
+    used: usize,
+}
+
+impl EffectUniformPool {
+    /// Uniform size each slot is created with (a wgpu alignment-friendly
+    /// power of two; both effect uniforms fit).
+    const SLOT_SIZE: u64 = 256;
+
+    /// Returns the next free buffer, growing the pool on demand.
+    fn next(&mut self, device: &wgpu::Device) -> &wgpu::Buffer {
+        if self.used == self.buffers.len() {
+            self.buffers
+                .push(device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("Pure2D Effect Uniform"),
+                    size: Self::SLOT_SIZE,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+        }
+        let index = self.used;
+        self.used += 1;
+        &self.buffers[index]
+    }
+
+    /// Rewinds the pool for a new frame.
+    fn reset(&mut self) {
+        self.used = 0;
+    }
 }
 
 /// Per-format pipelines and the pooled textures for the layered Pure2D path.
@@ -219,10 +270,16 @@ struct LayerResources {
     backdrop_layer: ferrous_2d::render::BackdropCompositePipeline,
     /// Backdrop-aware composite pipeline for the target format.
     backdrop_target: ferrous_2d::render::BackdropCompositePipeline,
+    /// Separable Gaussian blur pipeline (layer format).
+    blur_effect: BlurEffectPipeline,
+    /// Drop-shadow / glow composite pipeline (layer format).
+    composite_effect: EffectCompositePipeline,
     /// Destination snapshot for the root plan.
     root_backdrop: Option<BackdropTexture>,
     /// Destination snapshots for nested layers, indexed by layer index.
     layer_backdrops: Vec<Option<BackdropTexture>>,
+    /// Effect scratch textures, indexed by layer index.
+    effect_targets: Vec<Option<EffectTargets>>,
     /// Linear (or nearest) clamp sampler shared by all layer textures.
     sampler: wgpu::Sampler,
     /// Pooled textures, indexed by layer index (`None` = never used/empty).
@@ -749,6 +806,8 @@ pub struct Renderer {
     composite_buffer: Option<wgpu::Buffer>,
     /// Capacity of [`Self::composite_buffer`] in instances.
     composite_capacity: u32,
+    /// Per-frame uniform buffers for effect passes.
+    effect_uniforms: EffectUniformPool,
     /// Number of offscreen passes encoded this frame.
     layer_passes_drawn: u32,
     /// Reusable uploads for the layered path.
@@ -1089,6 +1148,7 @@ impl Renderer {
             composite_instances: Vec::new(),
             composite_buffer: None,
             composite_capacity: 0,
+            effect_uniforms: EffectUniformPool::default(),
             layer_passes_drawn: 0,
             layer_shapes_scratch: Vec::new(),
             layer_sprites_scratch: Vec::new(),
@@ -1466,7 +1526,7 @@ impl Renderer {
 
     /// A/B switch that restores the pre-Phase-1 2D line behaviour: 4 px
     /// `smoothstep` AA and the thin-line stabiliser that faded sub-1.8 px
-    /// strokes. Used by Koncreta's `?render=legacy` URL flag.
+    /// strokes. Useful as a fallback switch for comparing render paths.
     pub fn set_2d_legacy(&mut self, legacy: bool) {
         self.renderer_2d.set_legacy_2d(legacy);
         self.renderer_2d_pure.set_legacy_2d(legacy);
@@ -2302,7 +2362,10 @@ impl Renderer {
             // disabled, fresh `Vec`s reproduce the pre-optimization behaviour
             // for A/B comparison.
             self.layer_passes_drawn = 1;
-            if self.frame_uses_layers || !self.layers_2d.is_empty() {
+            // Only this frame's pushes decide the path: layers_2d keeps the
+            // pooled records between frames, so testing it would send a frame with
+            // no layers down the layered path and drop its batched draws.
+            if self.frame_uses_layers {
                 self.render_layered_2d(encoder, target_texture, target_view);
             } else {
                 let n_shapes = self.shape_batcher.instances.len();
@@ -3859,6 +3922,55 @@ impl Renderer {
     /// Draws already batched before that first push are migrated to the root
     /// stream in kind order (shapes, then sprites, then text).
     pub fn push_layer_2d(&mut self, desc: Layer2d) -> Result<(), LayerError> {
+        self.push_layer_2d_with_effects(desc, &[])
+    }
+
+    /// Like [`Self::push_layer_2d`], with an effect chain applied to the
+    /// finished layer before it composites into its parent.
+    ///
+    /// Effects run in slice order over the layer texture (see
+    /// [`Effect2d`](ferrous_2d::render::Effect2d)); the final image is then
+    /// composited with [`Layer2d::opacity`] and [`Layer2d::blend`] exactly as
+    /// an effect-free layer.  A layer may carry at most
+    /// [`MAX_EFFECTS_PER_LAYER`](ferrous_2d::render::MAX_EFFECTS_PER_LAYER)
+    /// effects; more returns [`LayerError::TooManyEffects`].  A non-finite or
+    /// negative parameter returns [`LayerError::InvalidEffect`] and changes
+    /// nothing.
+    pub fn push_layer_2d_with_effects(
+        &mut self,
+        desc: Layer2d,
+        effects: &[Effect2d],
+    ) -> Result<(), LayerError> {
+        if effects.len() > MAX_EFFECTS_PER_LAYER {
+            let err = LayerError::TooManyEffects {
+                max: MAX_EFFECTS_PER_LAYER,
+            };
+            self.layer_error_2d = Some(err);
+            log::warn!("push_layer_2d_with_effects rejected: {err}");
+            return Err(err);
+        }
+        if let Some((index, effect)) = effects
+            .iter()
+            .enumerate()
+            .find(|(_, effect)| !effect.is_valid())
+        {
+            let reason = match effect {
+                Effect2d::Blur { .. } => "blur radius must be finite and non-negative",
+                Effect2d::DropShadow { .. } => {
+                    "drop shadow color, offset and opacity must be finite, and the radius non-negative"
+                }
+                Effect2d::Glow { .. } => {
+                    "glow color, radius and intensity must be finite, and the radius non-negative"
+                }
+            };
+            let err = LayerError::InvalidEffect {
+                index: index as u32,
+                reason,
+            };
+            self.layer_error_2d = Some(err);
+            log::warn!("push_layer_2d_with_effects rejected: {err}");
+            return Err(err);
+        }
         if !desc.opacity.is_finite() {
             let err = LayerError::InvalidOpacity {
                 opacity: desc.opacity,
@@ -3888,11 +4000,14 @@ impl Renderer {
             self.layers_2d.push(LayerRecord {
                 desc,
                 cmds: Vec::new(),
+                effects: effects.to_vec(),
             });
         } else {
             let record = &mut self.layers_2d[index as usize];
             record.desc = desc;
             record.cmds.clear();
+            record.effects.clear();
+            record.effects.extend_from_slice(effects);
         }
         self.layer_next_index += 1;
         self.layer_stack_2d.push(index);
@@ -4078,6 +4193,8 @@ impl Renderer {
             sample_count,
             None,
         );
+        let blur_effect = BlurEffectPipeline::new(device.clone(), format, 1, None);
+        let composite_effect = EffectCompositePipeline::new(device.clone(), format, 1, None);
 
         self.layer_res = Some(LayerResources {
             format,
@@ -4091,8 +4208,11 @@ impl Renderer {
             composite_target,
             backdrop_layer,
             backdrop_target,
+            blur_effect,
+            composite_effect,
             root_backdrop: None,
             layer_backdrops: Vec::new(),
+            effect_targets: Vec::new(),
             sampler,
             textures: Vec::new(),
             textures_allocated: 0,
@@ -4126,7 +4246,8 @@ impl Renderer {
             format: res.format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -4151,6 +4272,49 @@ impl Renderer {
             bind_group,
         });
         res.textures_allocated += 1;
+    }
+
+    /// Ensures the two effect scratch textures for `index` exist.
+    fn ensure_effect_targets(&mut self, index: u32) {
+        let device = self.context.device.clone();
+        let Some(res) = self.layer_res.as_mut() else {
+            return;
+        };
+        while res.effect_targets.len() <= index as usize {
+            res.effect_targets.push(None);
+        }
+        if res.effect_targets[index as usize].is_some() {
+            return;
+        }
+        res.effect_targets[index as usize] = Some(create_effect_targets(
+            &device, res.format, res.width, res.height,
+        ));
+    }
+
+    /// Applies the effect chain of layer `index` to its finished texture.
+    ///
+    /// Runs after the layer's own plan and before its parent composites it, so
+    /// the parent sees the effected image.  Returns the number of passes
+    /// encoded.
+    fn apply_layer_effects(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        res: &LayerResources,
+        index: u32,
+    ) -> u32 {
+        let effects = match self.layers_2d.get(index as usize) {
+            Some(record) if !record.effects.is_empty() => record.effects.as_slice(),
+            _ => return 0,
+        };
+        run_effect_chain(
+            &self.context.device,
+            &self.context.queue,
+            encoder,
+            res,
+            index,
+            effects,
+            &mut self.effect_uniforms,
+        )
     }
 
     /// Renders the layered Pure2D frame: every non-empty layer in post-order
@@ -4217,6 +4381,9 @@ impl Renderer {
 
         for layer_index in &plan_order {
             self.ensure_layer_texture(*layer_index);
+            if !self.layers_2d[*layer_index as usize].effects.is_empty() {
+                self.ensure_effect_targets(*layer_index);
+            }
             if Self::plan_needs_backdrop(&plans[*layer_index as usize]) {
                 self.ensure_layer_backdrop(*layer_index);
             }
@@ -4308,6 +4475,7 @@ impl Renderer {
                     a: 0.0,
                 }),
             );
+            passes += self.apply_layer_effects(encoder, &res, *layer_index);
         }
 
         if root_backdrop_ok {
@@ -4693,6 +4861,7 @@ impl Renderer {
         self.frame_cmds_2d.clear();
         self.frame_uses_layers = false;
         self.layer_error_2d = None;
+        self.effect_uniforms.reset();
     }
 }
 
@@ -4720,4 +4889,273 @@ fn create_backdrop_texture(
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     BackdropTexture { texture, view }
+}
+
+/// Creates the two scratch textures an effect chain ping-pongs through.
+fn create_effect_targets(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+) -> EffectTargets {
+    let mut textures = Vec::with_capacity(2);
+    let mut views = Vec::with_capacity(2);
+    for label in ["Pure2D Effect Scratch A", "Pure2D Effect Scratch B"] {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        views.push(texture.create_view(&wgpu::TextureViewDescriptor::default()));
+        textures.push(texture);
+    }
+    EffectTargets {
+        textures: [textures.remove(0), textures.remove(0)],
+        views: [views.remove(0), views.remove(0)],
+    }
+}
+
+/// Runs effects over layer index's texture, ping-ponging through the two
+/// scratch textures and finishing with the result back in the layer texture.
+#[allow(clippy::too_many_arguments)]
+fn run_effect_chain(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    res: &LayerResources,
+    index: u32,
+    effects: &[Effect2d],
+    uniforms: &mut EffectUniformPool,
+) -> u32 {
+    let Some(layer) = res.textures.get(index as usize).and_then(Option::as_ref) else {
+        return 0;
+    };
+    let Some(targets) = res
+        .effect_targets
+        .get(index as usize)
+        .and_then(Option::as_ref)
+    else {
+        return 0;
+    };
+    let views = [&layer.view, &targets.views[0], &targets.views[1]];
+    let textures = [&layer.texture, &targets.textures[0], &targets.textures[1]];
+
+    let mut current = 0usize;
+    let mut passes = 0u32;
+    for effect in effects {
+        let kernel = BlurKernel2d::new(effect.blur_radius());
+        // With three textures, current + 1 and current + 2 are always free
+        // and distinct, so every pass reads and writes different textures.
+        let horizontal = (current + 1) % 3;
+        let vertical = (current + 2) % 3;
+        passes += encode_blur_pass(
+            device,
+            queue,
+            encoder,
+            res,
+            uniforms,
+            &kernel,
+            [1.0, 0.0],
+            views[current],
+            views[horizontal],
+        );
+        passes += encode_blur_pass(
+            device,
+            queue,
+            encoder,
+            res,
+            uniforms,
+            &kernel,
+            [0.0, 1.0],
+            views[horizontal],
+            views[vertical],
+        );
+        match *effect {
+            Effect2d::Blur { .. } => current = vertical,
+            Effect2d::DropShadow {
+                color,
+                offset,
+                blur: _,
+                opacity,
+            } => {
+                let uniform = EffectUniform2d {
+                    color,
+                    offset,
+                    mode: 0.0,
+                    strength: opacity,
+                };
+                passes += encode_effect_composite(
+                    device,
+                    queue,
+                    encoder,
+                    res,
+                    uniforms,
+                    &uniform,
+                    views[current],
+                    views[vertical],
+                    views[horizontal],
+                );
+                current = horizontal;
+            }
+            Effect2d::Glow {
+                color,
+                radius: _,
+                intensity,
+            } => {
+                let uniform = EffectUniform2d {
+                    color,
+                    offset: [0.0, 0.0],
+                    mode: 1.0,
+                    strength: intensity,
+                };
+                passes += encode_effect_composite(
+                    device,
+                    queue,
+                    encoder,
+                    res,
+                    uniforms,
+                    &uniform,
+                    views[current],
+                    views[vertical],
+                    views[horizontal],
+                );
+                current = horizontal;
+            }
+        }
+    }
+    if current != 0 {
+        encoder.copy_texture_to_texture(
+            textures[current].as_image_copy(),
+            textures[0].as_image_copy(),
+            textures[0].size(),
+        );
+    }
+    passes
+}
+
+/// Encodes one direction of a separable Gaussian blur into `target`.
+#[allow(clippy::too_many_arguments)]
+fn encode_blur_pass(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    res: &LayerResources,
+    uniforms: &mut EffectUniformPool,
+    kernel: &BlurKernel2d,
+    direction: [f32; 2],
+    source: &wgpu::TextureView,
+    target: &wgpu::TextureView,
+) -> u32 {
+    let uniform = BlurUniform2d::new(kernel, direction);
+    let buffer = uniforms.next(device);
+    queue.write_buffer(buffer, 0, uniform.as_bytes());
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Pure2D Blur Effect Bind Group"),
+        layout: &res.blur_effect.bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(source),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&res.sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: buffer.as_entire_binding(),
+            },
+        ],
+    });
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("Pure2D Blur Effect Pass"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: target,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+    });
+    pass.set_pipeline(res.blur_effect.pipeline());
+    pass.set_bind_group(0, &bind_group, &[]);
+    pass.draw(0..3, 0..1);
+    1
+}
+
+/// Encodes one drop-shadow or glow composite into `target`.
+#[allow(clippy::too_many_arguments)]
+fn encode_effect_composite(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    res: &LayerResources,
+    uniforms: &mut EffectUniformPool,
+    uniform: &EffectUniform2d,
+    content: &wgpu::TextureView,
+    blurred: &wgpu::TextureView,
+    target: &wgpu::TextureView,
+) -> u32 {
+    let buffer = uniforms.next(device);
+    queue.write_buffer(buffer, 0, uniform.as_bytes());
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Pure2D Effect Composite Bind Group"),
+        layout: &res.composite_effect.bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(content),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&res.sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(blurred),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::Sampler(&res.sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: buffer.as_entire_binding(),
+            },
+        ],
+    });
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("Pure2D Effect Composite Pass"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: target,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+    });
+    pass.set_pipeline(res.composite_effect.pipeline());
+    pass.set_bind_group(0, &bind_group, &[]);
+    pass.draw(0..3, 0..1);
+    1
 }

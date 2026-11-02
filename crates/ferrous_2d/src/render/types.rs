@@ -432,7 +432,7 @@ impl ShapeInstance {
         }
     }
 
-    // ── Constructores ergonómicos ──────────────────────────────────────────
+    // ── Ergonomic constructors ─────────────────────────────────────────────
 
     fn from_model(model: glam::Mat4, color: [f32; 4], params: [f32; 4]) -> Self {
         Self {
@@ -448,29 +448,30 @@ impl ShapeInstance {
         }
     }
 
-    /// Círculo relleno centrado en `center` con `radius` en unidades de mundo (pixels en Pure2D).
-    /// `z` controla la profundidad para Z-sorting: 0.0 = fondo, valores mayores = más al frente.
+    /// Filled circle centred on `center` with `radius` in world units (pixels
+    /// in Pure2D). `z` controls depth for Z-sorting: 0.0 = background, higher
+    /// values = further front.
     pub fn circle(center: glam::Vec2, radius: f32, color: [f32; 4]) -> Self {
         Self::circle_z(center, 0.0, radius, color)
     }
 
-    /// Igual que `circle()` pero con control de profundidad Z explícito.
+    /// Same as `circle()` but with an explicit Z depth.
     pub fn circle_z(center: glam::Vec2, z: f32, radius: f32, color: [f32; 4]) -> Self {
         let model = glam::Mat4::from_scale_rotation_translation(
             glam::Vec3::new(radius * 2.0, radius * 2.0, 1.0),
             glam::Quat::IDENTITY,
             glam::Vec3::new(center.x, center.y, z),
         );
-        // params: border=0, corner_radius=radius (círculo perfecto), min_px=0, filled=1
+        // params: border=0, corner_radius=radius (perfect circle), min_px=0, filled=1
         Self::from_model(model, color, [0.0, radius, 0.0, 1.0])
     }
 
-    /// Rectángulo relleno centrado en `center` con dimensiones `size` (ancho, alto).
+    /// Filled rectangle centred on `center` with `size` (width, height).
     pub fn rect(center: glam::Vec2, size: glam::Vec2, color: [f32; 4]) -> Self {
         Self::rect_z(center, 0.0, size, color)
     }
 
-    /// Igual que `rect()` pero con control de profundidad Z explícito.
+    /// Same as `rect()` but with an explicit Z depth.
     pub fn rect_z(center: glam::Vec2, z: f32, size: glam::Vec2, color: [f32; 4]) -> Self {
         let model = glam::Mat4::from_scale_rotation_translation(
             glam::Vec3::new(size.x, size.y, 1.0),
@@ -481,7 +482,7 @@ impl ShapeInstance {
         Self::from_model(model, color, [0.0, 0.0, 0.0, 1.0])
     }
 
-    /// Rectángulo con esquinas redondeadas relleno.
+    /// Filled rectangle with rounded corners.
     pub fn rounded_rect(
         center: glam::Vec2,
         size: glam::Vec2,
@@ -496,7 +497,7 @@ impl ShapeInstance {
         Self::from_model(model, color, [0.0, corner_radius, 0.0, 1.0])
     }
 
-    /// Solo el borde (outline) de un rectángulo, sin relleno.
+    /// Rectangle outline only, with no fill.
     pub fn rect_outline(
         center: glam::Vec2,
         size: glam::Vec2,
@@ -512,17 +513,18 @@ impl ShapeInstance {
         Self::from_model(model, color, [thickness, 0.0, 0.0, 0.0])
     }
 
-    /// Línea entre dos puntos 2D con grosor `width` y caps redondeados (por defecto).
+    /// Line between two 2D points with thickness `width` and round caps (the
+    /// default).
     pub fn line(from: glam::Vec2, to: glam::Vec2, width: f32, color: [f32; 4]) -> Self {
         Self::line_with_cap(from, to, width, color, 1) // 1 = Round
     }
 
-    /// Línea entre dos puntos 2D con estilo de punta configurable.
+    /// Line between two 2D points with a configurable cap style.
     ///
     /// `cap_style`:
-    /// - `0` = Flat (extremos rectos exactamente en los endpoints)
-    /// - `1` = Round (extremos redondeados, radio = width/2)
-    /// - `2` = Square (extremos rectos que sobresalen width/2 más allá de los endpoints)
+    /// - `0` = Flat (straight ends exactly at the endpoints)
+    /// - `1` = Round (rounded ends, radius = width/2)
+    /// - `2` = Square (straight ends that extend width/2 past the endpoints)
     ///
     /// Prefer the typed [`ShapeInstance::line_with_cap_style`] in new code: an
     /// out-of-range `u8` here is not rejected and silently falls back to `Round`.
@@ -536,30 +538,28 @@ impl ShapeInstance {
         Self::line_with_cap_aa(from, to, width, color, cap_style, true, true)
     }
 
-    /// Línea con control de AA **por extremo**, para teselar muros conectados
-    /// sin costura.
+    /// Line with **per-end** AA control, for tessellating connected walls
+    /// without a seam.
     ///
-    /// Es idéntica a [`ShapeInstance::line_with_cap`] salvo que `aa_start` /
-    /// `aa_end` desactivan el anti-aliasing del cap `from` / `to`
-    /// respectivamente:
+    /// Identical to [`ShapeInstance::line_with_cap`] except that `aa_start` /
+    /// `aa_end` disable anti-aliasing on the `from` / `to` cap respectively:
     ///
-    /// - `true` (default): el cap recibe AA normal (extremo libre).
-    /// - `false`: el cap es **duro** — el shader recorta exactamente en el
-    ///   plano del extremo, sin fade, y satura la cobertura hacia adentro. Dos
-    ///   segmentos contiguos que comparten un extremo, ambos con ese extremo en
-    ///   `false`, teselan borde con borde sin dejar hueco ni doble-blend.
+    /// - `true` (default): the cap gets normal AA (free end).
+    /// - `false`: the cap is **hard** — the shader clips exactly on the end
+    ///   plane, with no fade, and saturates coverage inwards. Two contiguous
+    ///   segments that share an end, both with that end set to `false`, tile
+    ///   edge to edge with neither a gap nor double blending.
     ///
-    /// `cap_style` usa el mismo `u8` que [`ShapeInstance::line_with_cap`]
+    /// `cap_style` uses the same `u8` as [`ShapeInstance::line_with_cap`]
     /// (`0` = Flat, `1` = Round, `2` = Square).
     ///
-    /// # Cómo marcar muros conectados (p.ej. Koncreta)
+    /// # Marking connected walls
     ///
-    /// Al construir una cadena/miter/T de segmentos, marcá `aa_start`/`aa_end`
-    /// en `false` para los extremos que se unen con otro segmento y en `true`
-    /// para los extremos libres (esquinas exteriores). La codificación de los
-    /// flags vive en `transform_c2.xy` (slot no usado por el shader 2D); el
-    /// resto de constructores lo dejan en `0`. Las funciones puramente
-    /// geométricas no cambian.
+    /// When building a chain/miter/T of segments, set `aa_start`/`aa_end` to
+    /// `false` for the ends that join another segment and to `true` for free
+    /// ends (outer corners). The flags live in `transform_c2.xy` (a slot the
+    /// 2D shader does not use); every other constructor leaves it at `0`. The
+    /// purely geometric functions are unchanged.
     pub fn line_with_cap_aa(
         from: glam::Vec2,
         to: glam::Vec2,
@@ -581,7 +581,7 @@ impl ShapeInstance {
             0 => (length, 0.0),                 // Flat
             1 => (length + width, width * 0.5), // Round
             2 => (length + width, 0.0),         // Square
-            _ => (length + width, width * 0.5), // Default a Round
+            _ => (length + width, width * 0.5), // Default to Round
         };
 
         let mut model = glam::Mat4::from_scale_rotation_translation(
@@ -603,10 +603,9 @@ impl ShapeInstance {
 
     /// Line with a fixed **minimum** width in logical pixels (`min_px`).
     ///
-    /// `width_world` is still the real width in world units (metres in
-    /// Koncreta); the shader renders `max(width_world, min_px · device px)`
-    /// without touching opacity. This is the constructor used by the CAD /
-    /// wall pipelines (hybrid lineweight mode).
+    /// `width_world` is still the real width in world units; the shader renders
+    /// `max(width_world, min_px · device px)` without touching opacity. This is
+    /// the constructor used by CAD and wall pipelines (hybrid lineweight mode).
     pub fn line_px(
         from: glam::Vec2,
         to: glam::Vec2,
@@ -797,13 +796,13 @@ impl ShapeInstance {
         Self::rect(center, size, color).with_ring(thickness, 1.0)
     }
 
-    /// Tipada de [`ShapeInstance::line_with_cap`] que acepta el enum
-    /// [`CapStyle`](crate::components::CapStyle) en vez del `u8` mágico.
+    /// Typed version of [`ShapeInstance::line_with_cap`] that takes the
+    /// [`CapStyle`](crate::components::CapStyle) enum instead of the magic
+    /// `u8`.
     ///
-    /// Es la forma recomendada de construir una línea con una punta concreta:
-    /// el compilador rechaza valores inválidos y la intención queda explícita.
-    /// Internamente delega en `line_with_cap` para que la geometría generada
-    /// sea idéntica.
+    /// This is the recommended way to build a line with a specific cap: the
+    /// compiler rejects invalid values and the intent is explicit. Internally
+    /// it delegates to `line_with_cap`, so the generated geometry is identical.
     ///
     /// ```rust
     /// use ferrous_2d::components::CapStyle;
@@ -828,18 +827,18 @@ impl ShapeInstance {
         Self::line_with_cap_style_aa(from, to, width, color, cap_style, true, true)
     }
 
-    /// Tipada de [`ShapeInstance::line_with_cap_aa`]: igual que
-    /// [`ShapeInstance::line_with_cap_style`] pero con `aa_start` / `aa_end`
-    /// para desactivar el AA de caps conectados (ver esa función para el
-    /// detalle y para cómo marcar cadenas de muros).
+    /// Typed version of [`ShapeInstance::line_with_cap_aa`]: like
+    /// [`ShapeInstance::line_with_cap_style`] but with `aa_start` / `aa_end`
+    /// to disable AA on connected caps (see that function for details and for
+    /// how to mark wall chains).
     ///
     /// ```rust
     /// use ferrous_2d::components::CapStyle;
     /// use ferrous_2d::render::ShapeInstance;
     /// use glam::Vec2;
     ///
-    /// // Cadena horizontal: el extremo derecho se une a otro muro (duro),
-    /// // el izquierdo queda libre (AA).
+    /// // Horizontal chain: the right end joins another wall (hard),
+    /// // the left end stays free (AA).
     /// let wall = ShapeInstance::line_with_cap_style_aa(
     ///     Vec2::ZERO,
     ///     Vec2::new(10.0, 0.0),
@@ -867,7 +866,7 @@ impl ShapeInstance {
         Self::line_with_cap_aa(from, to, width, color, raw, aa_start, aa_end)
     }
 
-    /// Rectángulo rotado, centrado en `center`, con ángulo en radianes.
+    /// Rotated rectangle centred on `center`, with the angle in radians.
     pub fn rect_rotated(
         center: glam::Vec2,
         size: glam::Vec2,
@@ -882,15 +881,14 @@ impl ShapeInstance {
         Self::from_model(model, color, [0.0, 0.0, 0.0, 1.0])
     }
 
-    /// Triángulo **relleno y anti-aliaseado** con vértices `a`, `b`, `c` en
-    /// unidades de mundo (píxeles en Pure2D, origen en el centro de pantalla,
-    /// Y hacia arriba).
+    /// **Filled, anti-aliased** triangle with vertices `a`, `b`, `c` in world
+    /// units (pixels in Pure2D, origin at the screen centre, Y up).
     ///
     /// # Encoding
     ///
-    /// Todo triángulo es la imagen afín del triángulo canónico de esquina
-    /// `(0,0)`, `(1,0)`, `(0,1)`, así que cabe en las cuatro columnas `Mat4`
-    /// existentes:
+    /// Every triangle is the affine image of the canonical corner triangle
+    /// `(0,0)`, `(1,0)`, `(0,1)`, so it fits in the existing four `Mat4`
+    /// columns:
     ///
     /// ```text
     /// c0 = b - a
@@ -899,51 +897,50 @@ impl ShapeInstance {
     /// c3 = a
     /// ```
     ///
-    /// El vertex shader de triángulos usa las esquinas del quad en `uv ∈
-    /// {0,1}²` (a diferencia del path rect, que las centra en `[-0.5, 0.5]²`),
-    /// de modo que `(0,0) → a`, `(1,0) → b`, `(0,1) → c`. El fragment shader
-    /// evalúa un SDF de triángulo en espacio de mundo, por lo que el relleno
-    /// es **two-sided**: el resultado es el mismo sin importar el winding.
+    /// The triangle vertex shader uses the quad corners at `uv ∈ {0,1}²`
+    /// (unlike the rect path, which centres them at `[-0.5, 0.5]²`), so
+    /// `(0,0) → a`, `(1,0) → b`, `(0,1) → c`. The fragment shader evaluates a
+    /// triangle SDF in world space, so the fill is **two-sided**: the result
+    /// is the same regardless of winding.
     ///
-    /// `params` emitido: `[edge_aa_mask=0b111, 0, min_px=0,
-    /// SHAPE_KIND_TRIANGLE]`. Equivalente a
-    /// [`ShapeInstance::polygon_triangle`] con [`TRIANGLE_EDGES_ALL`]. Usar
-    /// triángulos en abanico (fan) desde el centroide es la forma directa de
-    /// rellenar un polígono convexo con un vértice por lado, en vez de
-    /// aproximarlo con muchas instancias de rect.
+    /// Emitted `params`: `[edge_aa_mask=0b111, 0, min_px=0,
+    /// SHAPE_KIND_TRIANGLE]`. Equivalent to
+    /// [`ShapeInstance::polygon_triangle`] with [`TRIANGLE_EDGES_ALL`]. Fanning
+    /// triangles out from the centroid is the direct way to fill a convex
+    /// polygon with one vertex per side instead of approximating it with many
+    /// rect instances.
     pub fn triangle(a: glam::Vec2, b: glam::Vec2, c: glam::Vec2, color: [f32; 4]) -> Self {
         Self::polygon_triangle(a, b, c, color, TRIANGLE_EDGES_ALL)
     }
 
-    /// Triángulo **relleno** con anti-aliasing **selectivo por arista**, pensado
-    /// para triangulaciones que deben verse como un relleno continuo.
+    /// **Filled** triangle with **per-edge** anti-aliasing, for triangulations
+    /// that must read as one continuous fill.
     ///
-    /// `edge_aa_mask` bits (ver [`TRIANGLE_EDGE_AB`], [`TRIANGLE_EDGE_BC`],
+    /// `edge_aa_mask` bits (see [`TRIANGLE_EDGE_AB`], [`TRIANGLE_EDGE_BC`],
     /// [`TRIANGLE_EDGE_CA`]):
-    /// - bit 0 = arista `a → b`
-    /// - bit 1 = arista `b → c`
-    /// - bit 2 = arista `c → a`
+    /// - bit 0 = edge `a → b`
+    /// - bit 1 = edge `b → c`
+    /// - bit 2 = edge `c → a`
     ///
-    /// Bit en 1 = esa arista recibe AA (silueta exterior). Bit en 0 = arista
-    /// dura: el fragment shader recorta exactamente en la línea de la arista
-    /// sin atenuar cobertura. Para un borde **interno** compartido por dos
-    /// triángulos, ambos lo marcan en 0, de modo que cada uno rellena hasta la
-    /// línea a cobertura plena; los dos triángulos teselan sin dejar la costura
-    /// clara que produce el AA duplicado.
+    /// Set a bit to 1 to anti-alias that edge (outer silhouette). Clear it (0)
+    /// for a hard edge: the fragment shader clips exactly on the edge line
+    /// without attenuating coverage. For an **internal** edge shared by two
+    /// triangles, both clear it, so each fills up to the line at full coverage
+    /// and the two triangles tile without the light seam that duplicated AA
+    /// would produce.
     ///
-    /// El AA de los bordes marcados usa la distancia firmada al segmento
-    /// (con clamp a los vértices), de modo que dos bordes marcados concurrentes
-    /// redondean la esquina y el resultado sigue siendo winding-agnostic
-    /// (two-sided). `edge_aa_mask = 0` produce un triángulo de bordes duros
-    /// (sin AA); `edge_aa_mask = 0b111` es idéntico a
+    /// Marked edges use the signed distance to the segment (clamped at the
+    /// vertices), so two concurrent marked edges round the corner and the
+    /// result stays winding-agnostic (two-sided). `edge_aa_mask = 0` produces a
+    /// hard-edged triangle (no AA); `edge_aa_mask = 0b111` is identical to
     /// [`ShapeInstance::triangle`].
     ///
-    /// # Cómo marcar una triangulación (p.ej. Koncreta)
+    /// # Marking a triangulation
     ///
-    /// Una arista es **externa** si pertenece a un único triángulo de la
-    /// triangulación; es **interna** si dos triángulos la comparten. Marcá en 1
-    /// solo las aristas externas y en 0 las internas. El borde exterior queda
-    /// suavizado y las diagonales internas duras.
+    /// An edge is **external** when it belongs to a single triangle of the
+    /// triangulation; it is **internal** when two triangles share it. Set 1 on
+    /// external edges only and 0 on internal ones. The outer border stays
+    /// smooth and the internal diagonals stay hard.
     pub fn polygon_triangle(
         a: glam::Vec2,
         b: glam::Vec2,
@@ -1735,6 +1732,19 @@ pub enum LayerError {
     },
     /// A pop was requested with no layer open.
     Underflow,
+    /// An effect parameter was not finite or was negative.
+    InvalidEffect {
+        /// Index of the effect in the chain.
+        index: u32,
+        /// Human-readable reason.
+        reason: &'static str,
+    },
+    /// A layer was pushed with more effects than
+    /// [`MAX_EFFECTS_PER_LAYER`](crate::render::MAX_EFFECTS_PER_LAYER).
+    TooManyEffects {
+        /// Maximum number of effects per layer.
+        max: usize,
+    },
 }
 
 impl std::fmt::Display for LayerError {
@@ -1752,6 +1762,12 @@ impl std::fmt::Display for LayerError {
                 write!(f, "layer opacity must be finite, got {opacity}")
             }
             Self::Underflow => write!(f, "pop_layer_2d called with no open layer"),
+            Self::InvalidEffect { index, reason } => {
+                write!(f, "layer effect {index} is invalid: {reason}")
+            }
+            Self::TooManyEffects { max } => {
+                write!(f, "a layer supports at most {max} effects")
+            }
         }
     }
 }

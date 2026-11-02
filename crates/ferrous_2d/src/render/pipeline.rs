@@ -712,6 +712,157 @@ impl BackdropCompositePipeline {
     }
 }
 
+/// Render pipeline for one direction of the separable Gaussian blur.
+///
+/// Group 0 binds the source texture (`0`/`1`) and the per-pass uniform (`2`,
+/// see [`BlurUniform2d`](crate::render::BlurUniform2d)).  The pass is a
+/// full-target triangle with blending disabled: it replaces the destination
+/// with the blurred source.
+pub struct BlurEffectPipeline {
+    /// GPU device the pipeline was created on.
+    pub device: Arc<wgpu::Device>,
+    pipeline: wgpu::RenderPipeline,
+    /// Bind group 0: source texture + sampler + blur uniform.
+    pub bind_group_layout: wgpu::BindGroupLayout,
+}
+
+impl BlurEffectPipeline {
+    /// Builds the pipeline for `output_format`.
+    pub fn new(
+        device: Arc<wgpu::Device>,
+        output_format: wgpu::TextureFormat,
+        sample_count: u32,
+        cache: Option<&wgpu::PipelineCache>,
+    ) -> Self {
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("2D Blur Effect Bind Group Layout"),
+            entries: &[texture_entry(0), sampler_entry(1), uniform_entry(2)],
+        });
+        let shader = create_shader(
+            &device,
+            "2D Blur Effect Shader",
+            include_str!("../../../../assets/shaders/effect_blur_2d.wgsl").to_string(),
+        );
+        let bgls = [&bind_group_layout];
+        let pipeline = build_2d_pipeline(
+            &device,
+            Pipeline2dDesc {
+                label: "2D Blur Effect WGPU Pipeline",
+                format: output_format,
+                depth_format: None,
+                sample_count,
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                shader: &shader,
+                vertex_entry: "vs_main",
+                fragment_entry: "fs_main",
+                vertex_buffers: &[],
+                bind_group_layouts: &bgls,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Always,
+                blend: None,
+            },
+            cache,
+        );
+        Self {
+            device,
+            pipeline,
+            bind_group_layout,
+        }
+    }
+
+    /// The blur pipeline.
+    #[must_use]
+    pub const fn pipeline(&self) -> &wgpu::RenderPipeline {
+        &self.pipeline
+    }
+}
+
+/// Render pipeline that turns a layer image plus its blur into a drop shadow or
+/// a glow.
+///
+/// Group 0 binds the content texture (`0`/`1`), the blurred texture (`2`/`3`)
+/// and the per-pass uniform (`4`, see
+/// [`EffectUniform2d`](crate::render::EffectUniform2d)).  Blending is disabled:
+/// the fragment shader returns the combined premultiplied image.
+pub struct EffectCompositePipeline {
+    /// GPU device the pipeline was created on.
+    pub device: Arc<wgpu::Device>,
+    pipeline: wgpu::RenderPipeline,
+    /// Bind group 0: content + sampler, blurred + sampler, effect uniform.
+    pub bind_group_layout: wgpu::BindGroupLayout,
+}
+
+impl EffectCompositePipeline {
+    /// Builds the pipeline for `output_format`.
+    pub fn new(
+        device: Arc<wgpu::Device>,
+        output_format: wgpu::TextureFormat,
+        sample_count: u32,
+        cache: Option<&wgpu::PipelineCache>,
+    ) -> Self {
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("2D Effect Composite Bind Group Layout"),
+            entries: &[
+                texture_entry(0),
+                sampler_entry(1),
+                texture_entry(2),
+                sampler_entry(3),
+                uniform_entry(4),
+            ],
+        });
+        let shader = create_shader(
+            &device,
+            "2D Effect Composite Shader",
+            include_str!("../../../../assets/shaders/effect_composite_2d.wgsl").to_string(),
+        );
+        let bgls = [&bind_group_layout];
+        let pipeline = build_2d_pipeline(
+            &device,
+            Pipeline2dDesc {
+                label: "2D Effect Composite WGPU Pipeline",
+                format: output_format,
+                depth_format: None,
+                sample_count,
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                shader: &shader,
+                vertex_entry: "vs_main",
+                fragment_entry: "fs_main",
+                vertex_buffers: &[],
+                bind_group_layouts: &bgls,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Always,
+                blend: None,
+            },
+            cache,
+        );
+        Self {
+            device,
+            pipeline,
+            bind_group_layout,
+        }
+    }
+
+    /// The composite pipeline.
+    #[must_use]
+    pub const fn pipeline(&self) -> &wgpu::RenderPipeline {
+        &self.pipeline
+    }
+}
+
+/// Bind-group entry for a fragment-visible uniform buffer.
+pub(crate) const fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
+}
+
 const fn texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
