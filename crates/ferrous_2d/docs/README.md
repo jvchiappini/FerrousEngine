@@ -137,3 +137,6 @@ renderer.pop_layer_2d()?;
   Gaussian blur, drop shadow and glow, applied to the finished texture before
   it composites. See [`effects.md`](effects.md); the kernel is a pure function
   of the radius and the chain is deterministic.
+- A layer may be masked (push_layer_2d_masked plus egin_mask_2d /
+  end_mask_2d): alpha or luma coverage from a second offscreen layer
+  multiplies the finished, effected texture. See [masks.md](masks.md).

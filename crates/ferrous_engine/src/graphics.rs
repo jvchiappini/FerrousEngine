@@ -158,7 +158,7 @@ impl GraphicsState {
             on_context_menu.forget();
 
             // Keep the browser from stealing Ctrl/Alt + number (tab switching /
-            // menu access), so Koncreta's viewport-layout shortcuts reach winit.
+            // menu access), so an app's viewport-layout shortcuts reach winit.
             let on_key_down =
                 wasm_bindgen::prelude::Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(
                     |e: web_sys::KeyboardEvent| {

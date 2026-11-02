@@ -47,6 +47,7 @@ nav:
     - Gradients: ferrous_2d/gradients.md
     - Blending and Layers: ferrous_2d/blend.md
     - Layer Effects: ferrous_2d/effects.md
+    - Layer Masks: ferrous_2d/masks.md
   - ferrous_ui_core — UI Core:
     - Overview: ferrous_ui_core/README.md
     - Core API (Ui / Canvas / Widget): ferrous_ui_core/CORE.md

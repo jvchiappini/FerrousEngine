@@ -331,7 +331,7 @@ impl<'r> RenderContext<'r> {
 
     /// A/B switch for the pre-Phase-1 2D line rendering (4 px AA + thin-line
     /// alpha stabiliser). `false` uses the 1-pixel box coverage filter and the
-    /// opacity-preserving minimum width. Koncreta drives it with `?render=`.
+    /// opacity-preserving minimum width. Browsers drive it with `?render=`.
     pub fn set_2d_legacy(&mut self, legacy: bool) {
         self.inner.set_2d_legacy(legacy);
     }
@@ -339,7 +339,7 @@ impl<'r> RenderContext<'r> {
     /// Registers a shader dash pattern for joined 2D segments.
     ///
     /// `id` is `1..=15` (`0` = continuous); `lengths` alternate dash/gap in
-    /// world units (metres in Koncreta) and are zero-terminated (max 8).
+    /// world units and are zero-terminated (max 8).
     pub fn set_2d_dash_pattern(&mut self, id: u8, lengths: &[f32]) {
         self.inner.set_2d_dash_pattern(id, lengths);
     }
@@ -580,6 +580,7 @@ mod tests {
     fn render_context_is_send_sync_marker() {
         // Compile-time check: if RenderContext is not Send, this fn would not compile.
         fn assert_send<T: Send>() {}
+        assert_send::<RenderContext<'_>>();
         // RenderContext<'_> is Send iff &mut Renderer is Send.
         // We just check the type exists and can be named.
         let _ = std::any::TypeId::of::<RenderStyle>();

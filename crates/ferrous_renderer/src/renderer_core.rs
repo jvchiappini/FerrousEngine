@@ -65,8 +65,9 @@ use ferrous_2d::handle::SlotRegistry;
 use ferrous_2d::render::{
     BlendMode2d, BlurEffectPipeline, BlurKernel2d, BlurUniform2d, CompositeInstance,
     CompositePipeline, DrawCommand2d, Effect2d, EffectCompositePipeline, EffectUniform2d, FontId2d,
-    Layer2d, LayerError, Renderer2d, ShapeBatcher, ShapePipeline, SpriteBatchEntry, SpritePipeline,
-    Text2dPipeline, TextInstance, MAX_EFFECTS_PER_LAYER, MAX_LAYER_DEPTH_2D,
+    Layer2d, LayerError, Mask2d, MaskPipeline, MaskUniform2d, Renderer2d, ShapeBatcher,
+    ShapePipeline, SpriteBatchEntry, SpritePipeline, Text2dPipeline, TextInstance,
+    MAX_EFFECTS_PER_LAYER, MAX_LAYER_DEPTH_2D,
 };
 use ferrous_font::{FontError, GlyphQuad, TextAlign};
 
@@ -180,13 +181,30 @@ impl FrameCmd2d {
     }
 }
 
-/// One recorded layer: its description, its command stream and its effect
-/// chain.
+/// What an offscreen layer is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum LayerRole {
+    /// A normal layer that composites into its parent.
+    #[default]
+    Content,
+    /// The mask source of the enclosing masked layer: rendered into its own
+    /// texture and never composited directly.
+    MaskSource,
+}
+
+/// One recorded layer: its description, its command stream, its effect
+/// chain and its optional mask.
 struct LayerRecord {
     desc: Layer2d,
     cmds: Vec<FrameCmd2d>,
     /// Effects applied to the finished layer texture, in order.
     effects: Vec<Effect2d>,
+    /// Mask applied to the finished, effected texture before compositing.
+    mask: Option<Mask2d>,
+    /// Layer index of the mask source drawn for `mask`.
+    mask_source: Option<u32>,
+    /// Whether this record is content or a mask source.
+    role: LayerRole,
 }
 
 /// A pooled offscreen layer texture plus the bind group used to composite it.
@@ -218,7 +236,8 @@ const _: () = assert!(
             <= EffectUniformPool::SLOT_SIZE
 );
 
-/// Pooled uniform buffers for the effect passes of one frame.
+/// Pooled uniform buffers for the full-target pass of one frame (blur, effect
+/// composite, mask).
 ///
 /// Each pass owns its buffer, because `queue.write_buffer` is ordered with
 /// respect to submission, not with respect to encoded passes: a single shared
@@ -281,6 +300,8 @@ struct LayerResources {
     blur_effect: BlurEffectPipeline,
     /// Drop-shadow / glow composite pipeline (layer format).
     composite_effect: EffectCompositePipeline,
+    /// Alpha / luma mask multiply pipeline (layer format).
+    mask: MaskPipeline,
     /// Destination snapshot for the root plan.
     root_backdrop: Option<BackdropTexture>,
     /// Destination snapshots for nested layers, indexed by layer index.
@@ -336,6 +357,79 @@ fn layer_subtree_is_empty(layers: &[LayerRecord], index: u32) -> bool {
         FrameCmd2d::Layer { index } => layer_subtree_is_empty(layers, *index),
         _ => false,
     })
+}
+
+/// Plans one layer's own stream and its mask source (if any) into `plans`.
+///
+/// A masked layer's source is planned first and rendered before it, but is not
+/// composited into the layer; the layer multiplies its finished image by the
+/// source's coverage instead.  An empty source still gets an empty plan and an
+/// order entry, so its texture is cleared to a deterministic transparent black
+/// (coverage 0, or 1 when the mask is inverted).
+#[allow(clippy::too_many_arguments)]
+fn plan_layer_stream(
+    layers: &[LayerRecord],
+    empty: &[bool],
+    index: u32,
+    shapes: &mut Vec<ferrous_2d::render::ShapeGpu>,
+    sprites: &mut Vec<ferrous_2d::render::SpriteInstance>,
+    texts: &mut Vec<TextInstance>,
+    premultiplied: &std::collections::HashSet<u32>,
+    plans: &mut Vec<Vec<PlanItem>>,
+    order: &mut Vec<u32>,
+    composites: &mut Vec<CompositeInstance>,
+    sort_buffers: &mut Vec<Vec<usize>>,
+    depth: usize,
+) {
+    let record = &layers[index as usize];
+    if let Some(source) = record.mask_source {
+        while plans.len() <= source as usize {
+            plans.push(Vec::new());
+        }
+        let mut items = std::mem::take(&mut plans[source as usize]);
+        items.clear();
+        if !empty[source as usize] {
+            build_layer_plan(
+                &layers[source as usize].cmds,
+                layers,
+                empty,
+                shapes,
+                sprites,
+                texts,
+                premultiplied,
+                plans,
+                order,
+                composites,
+                sort_buffers,
+                depth + 1,
+                &mut items,
+            );
+        }
+        plans[source as usize] = items;
+        order.push(source);
+    }
+    while plans.len() <= index as usize {
+        plans.push(Vec::new());
+    }
+    let mut items = std::mem::take(&mut plans[index as usize]);
+    items.clear();
+    build_layer_plan(
+        &layers[index as usize].cmds,
+        layers,
+        empty,
+        shapes,
+        sprites,
+        texts,
+        premultiplied,
+        plans,
+        order,
+        composites,
+        sort_buffers,
+        depth + 1,
+        &mut items,
+    );
+    plans[index as usize] = items;
+    order.push(index);
 }
 
 /// Builds the z-sorted, run-coalesced plan for one command stream and appends
@@ -456,15 +550,10 @@ fn build_layer_plan(
             FrameCmd2d::Layer { index } => {
                 let index = *index;
                 if !empty[index as usize] {
-                    while plans.len() <= index as usize {
-                        plans.push(Vec::new());
-                    }
-                    let mut child_items = std::mem::take(&mut plans[index as usize]);
-                    child_items.clear();
-                    build_layer_plan(
-                        &layers[index as usize].cmds,
+                    plan_layer_stream(
                         layers,
                         empty,
+                        index,
                         shapes,
                         sprites,
                         texts,
@@ -473,11 +562,8 @@ fn build_layer_plan(
                         order,
                         composites,
                         sort_buffers,
-                        depth + 1,
-                        &mut child_items,
+                        depth,
                     );
-                    plans[index as usize] = child_items;
-                    order.push(index);
                     let instance = composites.len() as u32;
                     let blend = layers[index as usize].desc.blend;
                     composites.push(CompositeInstance {
@@ -3948,6 +4034,106 @@ impl Renderer {
         desc: Layer2d,
         effects: &[Effect2d],
     ) -> Result<(), LayerError> {
+        self.push_layer_record(desc, effects, None, LayerRole::Content)
+    }
+
+    /// Pushes a layer whose finished image is multiplied by the coverage of a
+    /// mask source (see [`Mask2d`]).
+    ///
+    /// The layer behaves like [`Self::push_layer_2d_with_effects`]: the content
+    /// drawn until [`Self::pop_layer_2d`] is rendered offscreen and its effect
+    /// chain runs.  Then the mask source, drawn between [`Self::begin_mask_2d`]
+    /// and [`Self::end_mask_2d`], supplies a per-pixel coverage; the masked
+    /// image composites with `desc.opacity` and `desc.blend` afterwards.
+    ///
+    /// A mask source may itself contain layers (including their effects), which
+    /// is how a feathered mask is built: give the source a blur effect.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::push_layer_2d_with_effects`].
+    pub fn push_layer_2d_masked(
+        &mut self,
+        desc: Layer2d,
+        effects: &[Effect2d],
+        mask: Mask2d,
+    ) -> Result<(), LayerError> {
+        self.push_layer_record(desc, effects, Some(mask), LayerRole::Content)
+    }
+
+    /// Starts the mask source of the innermost masked layer.
+    ///
+    /// Draw the mask between this call and [`Self::end_mask_2d`]; it renders
+    /// into its own offscreen texture and is never composited on its own.  Only
+    /// one mask source may be open at a time, and the innermost open layer must
+    /// be a masked layer that has not drawn its source yet.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LayerError::MaskSourceNotAllowed`] when there is no masked
+    /// layer waiting for a source, or when the innermost layer already has one;
+    /// [`LayerError::TooDeep`] when the mask source would exceed the nesting
+    /// limit.
+    pub fn begin_mask_2d(&mut self) -> Result<(), LayerError> {
+        let ready = self.layer_stack_2d.last().is_some_and(|parent| {
+            let record = &self.layers_2d[*parent as usize];
+            record.role == LayerRole::Content
+                && record.mask.is_some()
+                && record.mask_source.is_none()
+        });
+        if !ready {
+            let err = LayerError::MaskSourceNotAllowed;
+            self.layer_error_2d = Some(err);
+            log::warn!("begin_mask_2d rejected: {err}");
+            return Err(err);
+        }
+        self.push_layer_record(Layer2d::default(), &[], None, LayerRole::MaskSource)
+    }
+
+    /// Finishes the mask source and attaches it to the masked layer below it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LayerError::MaskSourceMismatch`] when no mask source is open.
+    pub fn end_mask_2d(&mut self) -> Result<(), LayerError> {
+        let Some(index) = self.layer_stack_2d.last().copied() else {
+            let err = LayerError::MaskSourceMismatch;
+            self.layer_error_2d = Some(err);
+            log::warn!("end_mask_2d rejected: {err}");
+            return Err(err);
+        };
+        if self.layers_2d[index as usize].role != LayerRole::MaskSource {
+            let err = LayerError::MaskSourceMismatch;
+            self.layer_error_2d = Some(err);
+            log::warn!("end_mask_2d rejected: {err}");
+            return Err(err);
+        }
+        self.layer_stack_2d.pop();
+        let Some(parent) = self.layer_stack_2d.last().copied() else {
+            let err = LayerError::MaskSourceMismatch;
+            self.layer_error_2d = Some(err);
+            log::warn!("end_mask_2d rejected: {err}");
+            return Err(err);
+        };
+        let record = &mut self.layers_2d[parent as usize];
+        if record.role != LayerRole::Content || record.mask.is_none() {
+            let err = LayerError::MaskSourceMismatch;
+            self.layer_error_2d = Some(err);
+            log::warn!("end_mask_2d rejected: {err}");
+            return Err(err);
+        }
+        record.mask_source = Some(index);
+        Ok(())
+    }
+
+    /// Shared implementation of the layer push variants.
+    fn push_layer_record(
+        &mut self,
+        desc: Layer2d,
+        effects: &[Effect2d],
+        mask: Option<Mask2d>,
+        role: LayerRole,
+    ) -> Result<(), LayerError> {
         if effects.len() > MAX_EFFECTS_PER_LAYER {
             let err = LayerError::TooManyEffects {
                 max: MAX_EFFECTS_PER_LAYER,
@@ -4008,6 +4194,9 @@ impl Renderer {
                 desc,
                 cmds: Vec::new(),
                 effects: effects.to_vec(),
+                mask,
+                mask_source: None,
+                role,
             });
         } else {
             let record = &mut self.layers_2d[index as usize];
@@ -4015,6 +4204,9 @@ impl Renderer {
             record.cmds.clear();
             record.effects.clear();
             record.effects.extend_from_slice(effects);
+            record.mask = mask;
+            record.mask_source = None;
+            record.role = role;
         }
         self.layer_next_index += 1;
         self.layer_stack_2d.push(index);
@@ -4026,13 +4218,27 @@ impl Renderer {
     /// Returns [`LayerError::Underflow`] when no layer is open (and changes
     /// nothing).
     pub fn pop_layer_2d(&mut self) -> Result<(), LayerError> {
-        let Some(index) = self.layer_stack_2d.pop() else {
+        let Some(index) = self.layer_stack_2d.last().copied() else {
             let err = LayerError::Underflow;
             self.layer_error_2d = Some(err);
             log::warn!("pop_layer_2d called with no open layer");
             return Err(err);
         };
+        if self.layers_2d[index as usize].role == LayerRole::MaskSource {
+            let err = LayerError::MaskSourceNotClosed;
+            self.layer_error_2d = Some(err);
+            log::warn!("pop_layer_2d rejected: {err}");
+            return Err(err);
+        }
+        self.layer_stack_2d.pop();
         self.record_frame_cmd(FrameCmd2d::Layer { index });
+        let record = &self.layers_2d[index as usize];
+        if record.mask.is_some() && record.mask_source.is_none() {
+            let err = LayerError::MaskWithoutSource;
+            self.layer_error_2d = Some(err);
+            log::warn!("{err}; the layer composites unmasked");
+            return Err(err);
+        }
         Ok(())
     }
 
@@ -4120,6 +4326,12 @@ impl Renderer {
         let open = self.layer_stack_2d.len() as u32;
         log::warn!("Pure2D frame ended with {open} open layer(s); closing them automatically");
         while let Some(index) = self.layer_stack_2d.pop() {
+            if self.layers_2d[index as usize].role == LayerRole::MaskSource {
+                if let Some(parent) = self.layer_stack_2d.last().copied() {
+                    self.layers_2d[parent as usize].mask_source = Some(index);
+                }
+                continue;
+            }
             match self.layer_stack_2d.last().copied() {
                 Some(parent) => self.layers_2d[parent as usize]
                     .cmds
@@ -4202,6 +4414,7 @@ impl Renderer {
         );
         let blur_effect = BlurEffectPipeline::new(device.clone(), format, 1, None);
         let composite_effect = EffectCompositePipeline::new(device.clone(), format, 1, None);
+        let mask = MaskPipeline::new(device.clone(), format, 1, None);
 
         self.layer_res = Some(LayerResources {
             format,
@@ -4217,6 +4430,7 @@ impl Renderer {
             backdrop_target,
             blur_effect,
             composite_effect,
+            mask,
             root_backdrop: None,
             layer_backdrops: Vec::new(),
             effect_targets: Vec::new(),
@@ -4388,7 +4602,8 @@ impl Renderer {
 
         for layer_index in &plan_order {
             self.ensure_layer_texture(*layer_index);
-            if !self.layers_2d[*layer_index as usize].effects.is_empty() {
+            let recorded = &self.layers_2d[*layer_index as usize];
+            if !recorded.effects.is_empty() || recorded.mask.is_some() {
                 self.ensure_effect_targets(*layer_index);
             }
             if Self::plan_needs_backdrop(&plans[*layer_index as usize]) {
@@ -4483,6 +4698,15 @@ impl Renderer {
                 }),
             );
             passes += self.apply_layer_effects(encoder, &res, *layer_index);
+            passes += run_layer_mask(
+                &self.context.device,
+                &self.context.queue,
+                encoder,
+                &res,
+                *layer_index,
+                &self.layers_2d,
+                &mut self.effect_uniforms,
+            );
         }
 
         if root_backdrop_ok {
@@ -4932,6 +5156,99 @@ fn create_effect_targets(
         textures: [textures.remove(0), textures.remove(0)],
         views: [views.remove(0), views.remove(0)],
     }
+}
+
+/// Multiplies layer `index` by its mask source's coverage.
+///
+/// The masked layer texture is the content; the source's texture is sampled
+/// 1:1 (both are full-target).  The mask pass writes into the layer's first
+/// effect scratch texture, because a pass cannot read and write the same
+/// texture, and the result is copied back so the parent composites the masked
+/// image.  Returns the number of passes encoded (zero when the layer is not
+/// masked or its resources are missing).
+#[allow(clippy::too_many_arguments)]
+fn run_layer_mask(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    res: &LayerResources,
+    index: u32,
+    layers: &[LayerRecord],
+    uniforms: &mut EffectUniformPool,
+) -> u32 {
+    let Some(record) = layers.get(index as usize) else {
+        return 0;
+    };
+    let (Some(mask), Some(source)) = (record.mask, record.mask_source) else {
+        return 0;
+    };
+    let Some(content) = res.textures.get(index as usize).and_then(Option::as_ref) else {
+        return 0;
+    };
+    let Some(mask_source) = res.textures.get(source as usize).and_then(Option::as_ref) else {
+        return 0;
+    };
+    let Some(targets) = res
+        .effect_targets
+        .get(index as usize)
+        .and_then(Option::as_ref)
+    else {
+        return 0;
+    };
+
+    let uniform = MaskUniform2d::new(mask);
+    let buffer = uniforms.next(device);
+    queue.write_buffer(buffer, 0, uniform.as_bytes());
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Pure2D Mask Bind Group"),
+        layout: &res.mask.bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&content.view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&res.sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(&mask_source.view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::Sampler(&res.sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: buffer.as_entire_binding(),
+            },
+        ],
+    });
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("Pure2D Mask Pass"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: &targets.views[0],
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+    });
+    pass.set_pipeline(res.mask.pipeline());
+    pass.set_bind_group(0, &bind_group, &[]);
+    pass.draw(0..3, 0..1);
+    drop(pass);
+    encoder.copy_texture_to_texture(
+        targets.textures[0].as_image_copy(),
+        content.texture.as_image_copy(),
+        content.texture.size(),
+    );
+    1
 }
 
 /// Runs effects over layer index's texture, ping-ponging through the two

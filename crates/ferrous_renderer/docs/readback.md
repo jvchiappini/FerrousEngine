@@ -2,7 +2,7 @@
 
 `ferrous_renderer::headless` renders Pure2D scenes into an off-screen texture
 without a window or `Surface`. It is used by integration tests, the `divan`
-benches, and consumers that export video frames (Motioner).
+benches, and consumers that export video frames.
 
 ## Formats
 

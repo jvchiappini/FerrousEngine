@@ -1,8 +1,8 @@
 //! Runtime-settable render/performance configuration.
 //!
-//! Exposes a small, documented [`Render2dConfig`] that a consumer (e.g.
-//! Koncreta) can read/toggle at runtime to A/B compare optimizations and to
-//! pick an antialiasing policy without recompiling.
+//! Exposes a small, documented [`Render2dConfig`] that a consumer can
+//! read/toggle at runtime to A/B compare optimizations and to pick an
+//! antialiasing policy without recompiling.
 //!
 //! All knobs default to the safest/most optimized behaviour.  Toggling any
 //! knob takes effect on the **next frame**; no GPU pipelines are rebuilt.

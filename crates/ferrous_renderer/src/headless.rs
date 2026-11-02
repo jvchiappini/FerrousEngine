@@ -920,6 +920,28 @@ impl Pure2dHarness {
         self.renderer.push_layer_2d_with_effects(desc, effects)
     }
 
+    /// Opens an offscreen layer masked by a source drawn between
+    /// [`Self::begin_mask`] and [`Self::end_mask`] (see
+    /// [`Renderer::push_layer_2d_masked`]).
+    pub fn push_masked_layer(
+        &mut self,
+        desc: ferrous_2d::render::Layer2d,
+        effects: &[ferrous_2d::render::Effect2d],
+        mask: ferrous_2d::render::Mask2d,
+    ) -> Result<(), ferrous_2d::render::LayerError> {
+        self.renderer.push_layer_2d_masked(desc, effects, mask)
+    }
+
+    /// Starts the mask source of the innermost masked layer.
+    pub fn begin_mask(&mut self) -> Result<(), ferrous_2d::render::LayerError> {
+        self.renderer.begin_mask_2d()
+    }
+
+    /// Ends the mask source and attaches it to the masked layer below it.
+    pub fn end_mask(&mut self) -> Result<(), ferrous_2d::render::LayerError> {
+        self.renderer.end_mask_2d()
+    }
+
     /// Closes the innermost offscreen layer.
     pub fn pop_layer(&mut self) -> Result<(), ferrous_2d::render::LayerError> {
         self.renderer.pop_layer_2d()

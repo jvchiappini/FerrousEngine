@@ -849,6 +849,78 @@ impl EffectCompositePipeline {
     }
 }
 
+/// Render pipeline that multiplies a finished layer by a mask source's
+/// coverage.
+///
+/// Group 0 binds the content texture (`0`/`1`), the mask source texture
+/// (`2`/`3`) and the per-pass uniform (`4`, see
+/// [`MaskUniform2d`](crate::render::MaskUniform2d)).  Blending is disabled: the
+/// fragment shader returns the masked premultiplied image.
+pub struct MaskPipeline {
+    /// GPU device the pipeline was created on.
+    pub device: Arc<wgpu::Device>,
+    pipeline: wgpu::RenderPipeline,
+    /// Bind group 0: content + sampler, mask + sampler, mask uniform.
+    pub bind_group_layout: wgpu::BindGroupLayout,
+}
+
+impl MaskPipeline {
+    /// Builds the pipeline for `output_format`.
+    pub fn new(
+        device: Arc<wgpu::Device>,
+        output_format: wgpu::TextureFormat,
+        sample_count: u32,
+        cache: Option<&wgpu::PipelineCache>,
+    ) -> Self {
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("2D Mask Bind Group Layout"),
+            entries: &[
+                texture_entry(0),
+                sampler_entry(1),
+                texture_entry(2),
+                sampler_entry(3),
+                uniform_entry(4),
+            ],
+        });
+        let shader = create_shader(
+            &device,
+            "2D Mask Shader",
+            include_str!("../../../../assets/shaders/mask_2d.wgsl").to_string(),
+        );
+        let bgls = [&bind_group_layout];
+        let pipeline = build_2d_pipeline(
+            &device,
+            Pipeline2dDesc {
+                label: "2D Mask WGPU Pipeline",
+                format: output_format,
+                depth_format: None,
+                sample_count,
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                shader: &shader,
+                vertex_entry: "vs_main",
+                fragment_entry: "fs_main",
+                vertex_buffers: &[],
+                bind_group_layouts: &bgls,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Always,
+                blend: None,
+            },
+            cache,
+        );
+        Self {
+            device,
+            pipeline,
+            bind_group_layout,
+        }
+    }
+
+    /// The mask pipeline.
+    #[must_use]
+    pub const fn pipeline(&self) -> &wgpu::RenderPipeline {
+        &self.pipeline
+    }
+}
+
 /// Bind-group entry for a fragment-visible uniform buffer.
 pub(crate) const fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {

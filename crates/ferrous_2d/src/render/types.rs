@@ -1707,6 +1707,121 @@ impl Default for Layer2d {
     }
 }
 
+/// How a mask source's offscreen image becomes a coverage value.
+///
+/// Masks multiply a finished layer's premultiplied colour and alpha by a
+/// per-pixel coverage in `0.0..=1.0` (see `Renderer::push_layer_2d_masked`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub enum MaskMode2d {
+    /// Coverage is the mask's alpha channel.
+    #[default]
+    Alpha,
+    /// Coverage is the linear-light luminance of the mask's premultiplied
+    /// colour, using the Rec. 709 weights `(0.2126, 0.7152, 0.0722)`.
+    ///
+    /// A transparent mask pixel reads as black, so its coverage is zero.
+    Luma,
+}
+
+impl MaskMode2d {
+    /// Every mode, in a stable order.
+    pub const ALL: [Self; 2] = [Self::Alpha, Self::Luma];
+
+    /// Stable identifier used by the mask shader.
+    #[must_use]
+    pub const fn shader_id(self) -> u32 {
+        match self {
+            Self::Alpha => 0,
+            Self::Luma => 1,
+        }
+    }
+
+    /// Stable, human-readable name used in docs and logs.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Alpha => "alpha",
+            Self::Luma => "luma",
+        }
+    }
+}
+
+/// Description of the mask applied to one offscreen layer.
+///
+/// The mask source is drawn between `Renderer::begin_mask_2d` and
+/// `Renderer::end_mask_2d`, into its own offscreen texture with its own effect
+/// chain.  The finished content layer is then multiplied by
+/// `mask mode (inverted when requested)` before it composites with the usual
+/// opacity and blend mode:
+///
+/// ```text
+/// coverage = mode == alpha ? mask.a : luminance(mask.rgb)
+/// coverage = invert ? 1 - coverage : coverage
+/// out      = content * coverage
+/// ```
+///
+/// Everything is premultiplied linear light, so scaling all four channels is
+/// the correct alpha and colour multiply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Mask2d {
+    /// How the source's pixels become coverage.
+    pub mode: MaskMode2d,
+    /// `true` swaps coverage for `1 - coverage`.
+    pub invert: bool,
+}
+
+impl Mask2d {
+    /// Builds a non-inverted mask.
+    #[must_use]
+    pub const fn new(mode: MaskMode2d) -> Self {
+        Self {
+            mode,
+            invert: false,
+        }
+    }
+
+    /// Returns the same mask with `invert` swapped.
+    #[must_use]
+    pub const fn inverted(mut self) -> Self {
+        self.invert = !self.invert;
+        self
+    }
+}
+
+/// Per-mask-pixel uniform consumed by `mask_2d.wgsl`.
+///
+/// `mode` is [`MaskMode2d::shader_id`]; `invert` is a 0/1 flag.  The two
+/// padding floats keep the uniform at 16 bytes.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, Pod, Zeroable)]
+pub struct MaskUniform2d {
+    /// [`MaskMode2d::shader_id`].
+    pub mode: f32,
+    /// `1.0` when the coverage is inverted, `0.0` otherwise.
+    pub invert: f32,
+    /// Padding to a 16-byte std140 stride.
+    pub _pad: [f32; 2],
+}
+
+impl MaskUniform2d {
+    /// Builds the uniform for `mask`.
+    #[must_use]
+    pub fn new(mask: Mask2d) -> Self {
+        Self {
+            #[allow(clippy::cast_precision_loss)]
+            mode: mask.mode.shader_id() as f32,
+            invert: if mask.invert { 1.0 } else { 0.0 },
+            _pad: [0.0; 2],
+        }
+    }
+
+    /// The bytes to upload.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        bytemuck::bytes_of(self)
+    }
+}
+
 /// Typed errors for the Pure2D offscreen-layer API.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LayerError {
@@ -1745,6 +1860,18 @@ pub enum LayerError {
         /// Maximum number of effects per layer.
         max: usize,
     },
+    /// `begin_mask_2d` was called when the innermost layer is not a masked
+    /// layer waiting for its source, or when it already has one.
+    MaskSourceNotAllowed,
+    /// `end_mask_2d` was called with no mask source open.
+    MaskSourceMismatch,
+    /// `pop_layer_2d` was called while a mask source was still open; close it
+    /// with `end_mask_2d` first.
+    MaskSourceNotClosed,
+    /// A masked layer was popped before its mask source was drawn.
+    ///
+    /// The layer still composites, unmasked, so its content is not lost.
+    MaskWithoutSource,
 }
 
 impl std::fmt::Display for LayerError {
@@ -1767,6 +1894,17 @@ impl std::fmt::Display for LayerError {
             }
             Self::TooManyEffects { max } => {
                 write!(f, "a layer supports at most {max} effects")
+            }
+            Self::MaskSourceNotAllowed => write!(
+                f,
+                "begin_mask_2d needs an open masked layer that is still waiting for its source"
+            ),
+            Self::MaskSourceMismatch => write!(f, "end_mask_2d called with no mask source open"),
+            Self::MaskSourceNotClosed => {
+                write!(f, "a mask source is still open; call end_mask_2d before pop_layer_2d")
+            }
+            Self::MaskWithoutSource => {
+                write!(f, "the masked layer was closed before its mask source was drawn")
             }
         }
     }
