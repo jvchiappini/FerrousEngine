@@ -113,7 +113,7 @@ pub struct Renderer2d {
     /// Written rarely (pattern registration), read every frame when the
     /// camera uniform is uploaded.
     dash_table: Mutex<[[f32; 8]; 16]>,
-    /// Per-frame gradient table (D-0030), written into every view uniform.
+    /// Per-frame gradient table, written into every view uniform (see `GradientTable2d`).
     gradient_table: Mutex<Vec<[f32; 4]>>,
 
     /// Procedural background grid (optional).

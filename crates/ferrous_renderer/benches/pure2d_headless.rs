@@ -504,9 +504,9 @@ fn pure2d_layers_three(bencher: divan::Bencher) {
             [0.0, 0.25, 0.5, 1.0],
         ));
         for (i, blend) in [
-            ferrous_2d::render::BlendMode2d::Normal,
-            ferrous_2d::render::BlendMode2d::Screen,
-            ferrous_2d::render::BlendMode2d::Multiply,
+            ferrous_2d::render::CompositeMode2d::Normal,
+            ferrous_2d::render::CompositeMode2d::Screen,
+            ferrous_2d::render::CompositeMode2d::Multiply,
         ]
         .into_iter()
         .enumerate()

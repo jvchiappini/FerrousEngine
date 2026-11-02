@@ -4,7 +4,7 @@
 
 use std::sync::Mutex;
 
-use ferrous_2d::render::{BlendMode2d, Layer2d, LayerError, ShapeInstance, MAX_LAYER_DEPTH_2D};
+use ferrous_2d::render::{CompositeMode2d, Layer2d, LayerError, ShapeInstance, MAX_LAYER_DEPTH_2D};
 use ferrous_font::{charset, TextAlign};
 use ferrous_renderer::headless::Pure2dHarness;
 use glam::{Mat4, Vec2};
@@ -75,7 +75,7 @@ fn group_opacity_has_no_internal_overlap() {
     h.begin_frame();
     h.push_layer(Layer2d {
         opacity: 0.5,
-        blend: BlendMode2d::Normal,
+        blend: CompositeMode2d::Normal,
         depth: 0.0,
     })
     .expect("push layer");
@@ -114,7 +114,7 @@ fn layer_depth_orders_the_whole_layer() {
     h.draw_shape(rect(Vec2::ZERO, 60.0, [1.0, 0.0, 0.0, 1.0], 1.0));
     h.push_layer(Layer2d {
         opacity: 1.0,
-        blend: BlendMode2d::Normal,
+        blend: CompositeMode2d::Normal,
         depth: 2.0,
     })
     .expect("push");
@@ -150,13 +150,13 @@ fn nested_layer_opacities_multiply() {
     h.begin_frame();
     h.push_layer(Layer2d {
         opacity: 0.5,
-        blend: BlendMode2d::Normal,
+        blend: CompositeMode2d::Normal,
         depth: 0.0,
     })
     .expect("outer");
     h.push_layer(Layer2d {
         opacity: 0.5,
-        blend: BlendMode2d::Normal,
+        blend: CompositeMode2d::Normal,
         depth: 0.0,
     })
     .expect("inner");
@@ -192,7 +192,7 @@ fn layer_multiply_blend_matches_the_formula() {
     h.draw_shape(rect(Vec2::ZERO, 60.0, [0.5, 1.0, 0.5, 1.0], 0.0));
     h.push_layer(Layer2d {
         opacity: 1.0,
-        blend: BlendMode2d::Multiply,
+        blend: CompositeMode2d::Multiply,
         depth: 1.0,
     })
     .expect("push");
@@ -246,7 +246,7 @@ fn text_inside_a_layer_matches_outside() {
     h.begin_frame();
     h.push_layer(Layer2d {
         opacity: 1.0,
-        blend: BlendMode2d::Normal,
+        blend: CompositeMode2d::Normal,
         depth: 0.0,
     })
     .expect("push");
@@ -361,7 +361,7 @@ fn layer_texture_pool_is_reused_across_frames() {
         for i in 0..3 {
             h.push_layer(Layer2d {
                 opacity: 0.75,
-                blend: BlendMode2d::Normal,
+                blend: CompositeMode2d::Normal,
                 depth: i as f32,
             })
             .expect("push");
@@ -402,14 +402,14 @@ fn layered_frame_is_deterministic() {
         h.draw_shape(rect(Vec2::ZERO, 50.0, [0.0, 0.25, 0.5, 1.0], 0.0));
         h.push_layer(Layer2d {
             opacity: 0.6,
-            blend: BlendMode2d::Screen,
+            blend: CompositeMode2d::Screen,
             depth: 1.0,
         })
         .expect("push");
         h.draw_shape(rect(Vec2::new(4.0, 0.0), 30.0, [1.0, 0.0, 0.0, 0.5], 0.0));
         h.push_layer(Layer2d {
             opacity: 0.5,
-            blend: BlendMode2d::Add,
+            blend: CompositeMode2d::Add,
             depth: 2.0,
         })
         .expect("push inner");

@@ -9,18 +9,7 @@
 // by the pipeline.  The fragment writes premultiplied linear colour
 // (`vec4(rgb * a, a)`), matching the shape and sprite pipelines.
 
-struct CameraUniform {
-    view_proj: mat4x4<f32>,
-    resolution: vec2<f32>,
-    // x = device pixels per logical pixel, y = legacy flag (unused here).
-    padding: vec2<f32>,
-    // Physical-pixel viewport origin (0,0 for the single main camera).
-    viewport_origin: vec2<f32>,
-    _pad: vec2<f32>,
-};
-
-@group(0) @binding(0)
-var<uniform> camera: CameraUniform;
+// Camera layout and gradient helpers come from `pure2d_common.wgsl`.
 
 // Font MSDF atlas at group 1 (same binding shape as the sprite texture).
 @group(1) @binding(0)
@@ -37,6 +26,8 @@ struct InstanceInput {
     @location(5) uv_rect: vec4<f32>,
     // x = encoded MSDF range in atlas texels.
     @location(6) params: vec4<f32>,
+    // Gradient table reference (base + 1), 0 keeps the flat color.
+    @location(7) gradient: u32,
 };
 
 struct VertexOutput {
@@ -49,6 +40,10 @@ struct VertexOutput {
     // Flat: quad size in world units and the encoded px range.
     @location(4) @interpolate(flat) quad_world: vec2<f32>,
     @location(5) @interpolate(flat) px_range: f32,
+    // World position for gradient evaluation.
+    @location(6) world_pos: vec2<f32>,
+    // Gradient reference (base + 1); flat because it is per instance.
+    @location(7) @interpolate(flat) gradient: u32,
 };
 
 @vertex
@@ -87,6 +82,8 @@ fn vs_main(
         length(instance.transform_c1.xy),
     );
     out.px_range = max(instance.params.x, 1.0);
+    out.world_pos = world.xy;
+    out.gradient = instance.gradient;
     return out;
 }
 
@@ -107,7 +104,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let quad_px = in.quad_world / max(world_px, 1e-9);
     let screen_px_range = msdf_screen_px_range(quad_px, cell, in.px_range);
     let opacity = msdf_opacity(sig_dist, screen_px_range);
-    let alpha = in.color.a * opacity;
+    let straight = shade_color(in.color, in.world_pos, in.gradient);
+    let alpha = straight.a * opacity;
 
-    return vec4<f32>(in.color.rgb * alpha, alpha);
+    return vec4<f32>(straight.rgb * alpha, alpha);
 }

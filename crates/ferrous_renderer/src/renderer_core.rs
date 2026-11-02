@@ -84,6 +84,9 @@ use ferrous_core::context::EngineContext;
 enum RenderDest<'a> {
     Target,
     View(&'a wgpu::TextureView),
+    /// External texture plus its view.  The texture is needed by backdrop-aware
+    /// layer compositing, which snapshots the destination before blending.
+    Texture(&'a wgpu::Texture, &'a wgpu::TextureView),
 }
 
 /// A maximal run of consecutive same-key commands in the Pure2D painter-order
@@ -184,8 +187,15 @@ struct LayerRecord {
 
 /// A pooled offscreen layer texture plus the bind group used to composite it.
 struct LayerTexture {
+    texture: wgpu::Texture,
     view: wgpu::TextureView,
     bind_group: std::sync::Arc<wgpu::BindGroup>,
+}
+
+/// A destination snapshot used by backdrop-aware layer compositing.
+struct BackdropTexture {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
 }
 
 /// Per-format pipelines and the pooled textures for the layered Pure2D path.
@@ -205,6 +215,14 @@ struct LayerResources {
     composite_layer: CompositePipeline,
     /// Composite pipeline writing into the target format.
     composite_target: CompositePipeline,
+    /// Backdrop-aware composite pipeline for the layer format.
+    backdrop_layer: ferrous_2d::render::BackdropCompositePipeline,
+    /// Backdrop-aware composite pipeline for the target format.
+    backdrop_target: ferrous_2d::render::BackdropCompositePipeline,
+    /// Destination snapshot for the root plan.
+    root_backdrop: Option<BackdropTexture>,
+    /// Destination snapshots for nested layers, indexed by layer index.
+    layer_backdrops: Vec<Option<BackdropTexture>>,
     /// Linear (or nearest) clamp sampler shared by all layer textures.
     sampler: wgpu::Sampler,
     /// Pooled textures, indexed by layer index (`None` = never used/empty).
@@ -241,7 +259,7 @@ enum PlanItem {
     /// Composite `layer` into the current destination.
     Composite {
         layer: u32,
-        blend: BlendMode2d,
+        blend: ferrous_2d::render::CompositeMode2d,
         /// Index of the opacity instance in the composite instance buffer.
         instance: u32,
     },
@@ -397,8 +415,10 @@ fn build_layer_plan(
                     plans[index as usize] = child_items;
                     order.push(index);
                     let instance = composites.len() as u32;
+                    let blend = layers[index as usize].desc.blend;
                     composites.push(CompositeInstance {
                         opacity: layers[index as usize].desc.opacity,
+                        mode: blend.shader_id(),
                     });
                     out.push(PlanItem::Composite {
                         layer: index,
@@ -1522,7 +1542,7 @@ impl Renderer {
     }
 
     /// Uploads the per-view gradient table used by 2D shape instances
-    /// (D-0030). The table applies to both 2D renderers; see
+    /// The table applies to both 2D renderers; see
     /// [`ferrous_2d::render::Renderer2d::set_gradient_table`] for the layout.
     pub fn set_2d_gradient_table(&mut self, table: &[[f32; 4]]) {
         self.renderer_2d.set_gradient_table(table);
@@ -2140,6 +2160,22 @@ impl Renderer {
         self.render_internal(encoder, RenderDest::View(view), ui_batch);
     }
 
+    /// Renders the scene into an external texture and view.
+    ///
+    /// Like [`Self::render_to_view`], but also knows the underlying texture, so
+    /// backdrop-aware layer compositing (overlay, darken, lighten) can snapshot
+    /// the destination before blending.  The texture must have been created
+    /// with [`wgpu::TextureUsages::COPY_SRC`].
+    pub fn render_to_texture_view(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        texture: &wgpu::Texture,
+        view: &wgpu::TextureView,
+        ui_batch: Option<UiBatch>,
+    ) {
+        self.render_internal(encoder, RenderDest::Texture(texture, view), ui_batch);
+    }
+
     /// Renders the scene to its own internal [`RenderTarget`].
     /// Useful for headless mode or off-screen composition.
     pub fn render_to_internal_target(
@@ -2164,10 +2200,16 @@ impl Renderer {
 
         // Resolve target view. If internal, use a raw pointer to avoid conflicting
         // borrows with &mut self used by passes later.
-        let target_view = match dest {
-            RenderDest::View(v) => v,
+        let (target_view, target_texture) = match dest {
+            RenderDest::View(v) => (v, None),
+            RenderDest::Texture(t, v) => (v, Some(t)),
             RenderDest::Target => unsafe {
-                &*(self.render_target.color_view() as *const wgpu::TextureView)
+                // Both references point into `self.render_target`, which is not
+                // mutated while the frame is being encoded.  The raw-pointer
+                // dance keeps the immutable borrows disjoint from `&mut self`.
+                let view = &*(self.render_target.color_view() as *const wgpu::TextureView);
+                let texture = &*std::ptr::addr_of!(self.render_target.color.texture);
+                (view, Some(texture))
             },
         };
 
@@ -2261,7 +2303,7 @@ impl Renderer {
             // for A/B comparison.
             self.layer_passes_drawn = 1;
             if self.frame_uses_layers || !self.layers_2d.is_empty() {
-                self.render_layered_2d(encoder, target_view);
+                self.render_layered_2d(encoder, target_texture, target_view);
             } else {
                 let n_shapes = self.shape_batcher.instances.len();
                 let n_sprites = self.sprite_batcher_2d.total_instances();
@@ -3711,6 +3753,26 @@ impl Renderer {
         align: TextAlign,
         color: [f32; 4],
     ) {
+        self.draw_text_2d_with_gradient(font_id, text, transform, size_px, align, color, None);
+    }
+
+    /// Like [`Self::draw_text_2d`], but fills the glyphs with a gradient.
+    ///
+    /// `gradient` is a base slot returned by
+    /// [`ferrous_2d::render::GradientTable2d::push`]; the ramp is evaluated in
+    /// world space, so it stays glued to the scene while the text moves.
+    /// `None` keeps the flat `color`.
+    #[allow(clippy::too_many_arguments)] // mirrors `draw_text_2d` plus the paint
+    pub fn draw_text_2d_with_gradient(
+        &mut self,
+        font_id: FontId2d,
+        text: &str,
+        transform: glam::Mat4,
+        size_px: f32,
+        align: TextAlign,
+        color: [f32; 4],
+        gradient: Option<u32>,
+    ) {
         let Some(entry) = self.fonts_2d.get(font_id.handle()) else {
             log::warn!(
                 "draw_text_2d called with a stale FontId2d (index {}, generation {})",
@@ -3734,7 +3796,10 @@ impl Renderer {
             let placement = glam::Mat4::from_translation(glam::Vec3::new(left, bottom, 0.0))
                 * glam::Mat4::from_scale(glam::Vec3::new(width, height, 1.0));
             let model = transform * placement;
-            let glyph = TextInstance::new(model, quad.uv, color, px_range);
+            let mut glyph = TextInstance::new(model, quad.uv, color, px_range);
+            if let Some(base) = gradient {
+                glyph = glyph.with_gradient(base);
+            }
             if self.frame_uses_layers {
                 self.record_frame_cmd(FrameCmd2d::Text {
                     font: font_id,
@@ -4005,6 +4070,14 @@ impl Renderer {
         let composite_layer = CompositePipeline::new(device.clone(), format, 1, None);
         let composite_target =
             CompositePipeline::new(device.clone(), target_format, sample_count, None);
+        let backdrop_layer =
+            ferrous_2d::render::BackdropCompositePipeline::new(device.clone(), format, 1, None);
+        let backdrop_target = ferrous_2d::render::BackdropCompositePipeline::new(
+            device.clone(),
+            target_format,
+            sample_count,
+            None,
+        );
 
         self.layer_res = Some(LayerResources {
             format,
@@ -4016,6 +4089,10 @@ impl Renderer {
             root_text,
             composite_layer,
             composite_target,
+            backdrop_layer,
+            backdrop_target,
+            root_backdrop: None,
+            layer_backdrops: Vec::new(),
             sampler,
             textures: Vec::new(),
             textures_allocated: 0,
@@ -4047,7 +4124,9 @@ impl Renderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: res.format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -4066,7 +4145,11 @@ impl Renderer {
                     },
                 ],
             }));
-        res.textures[index as usize] = Some(LayerTexture { view, bind_group });
+        res.textures[index as usize] = Some(LayerTexture {
+            texture,
+            view,
+            bind_group,
+        });
         res.textures_allocated += 1;
     }
 
@@ -4075,6 +4158,7 @@ impl Renderer {
     fn render_layered_2d(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
+        target_texture: Option<&wgpu::Texture>,
         target_view: &wgpu::TextureView,
     ) {
         self.close_open_layers_2d();
@@ -4133,6 +4217,13 @@ impl Renderer {
 
         for layer_index in &plan_order {
             self.ensure_layer_texture(*layer_index);
+            if Self::plan_needs_backdrop(&plans[*layer_index as usize]) {
+                self.ensure_layer_backdrop(*layer_index);
+            }
+        }
+        let root_needs_backdrop = Self::plan_needs_backdrop(&root_plan);
+        if root_needs_backdrop {
+            self.ensure_root_backdrop();
         }
 
         if !composites.is_empty() {
@@ -4179,6 +4270,12 @@ impl Renderer {
             return;
         };
         let mut passes = 0u32;
+        let root_backdrop_ok = root_needs_backdrop && target_texture.is_some();
+        if root_needs_backdrop && target_texture.is_none() {
+            log::warn!(
+                "Pure2D backdrop blend at the root needs render_to_texture_view; falling back to normal"
+            );
+        }
 
         for layer_index in &plan_order {
             let plan = &plans[*layer_index as usize];
@@ -4189,39 +4286,69 @@ impl Renderer {
             else {
                 continue;
             };
-            {
-                let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Pure2D Layer Pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &texture.view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color {
-                                r: 0.0,
-                                g: 0.0,
-                                b: 0.0,
-                                a: 0.0,
-                            }),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-                self.draw_layer_plan(
-                    &mut rpass,
-                    plan,
-                    &res,
-                    (&res.shape, &res.sprite, &res.text),
-                    &res.composite_layer,
-                    self.composite_buffer.as_ref(),
-                );
-            }
-            passes += 1;
+            let backdrop = res
+                .layer_backdrops
+                .get(*layer_index as usize)
+                .and_then(|entry| entry.as_ref());
+            passes += self.execute_plan(
+                encoder,
+                &res,
+                plan,
+                &texture.view,
+                Some(&texture.texture),
+                backdrop,
+                &res.backdrop_layer,
+                &res.composite_layer,
+                (&res.shape, &res.sprite, &res.text),
+                self.composite_buffer.as_ref(),
+                Some(wgpu::Color {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 0.0,
+                }),
+            );
         }
 
-        {
+        if root_backdrop_ok {
+            if let Some(target_texture) = target_texture {
+                // The plan needs to read the destination, so the grid and the
+                // static batches go into their own pass first and the plan runs
+                // afterwards with `Load`.
+                {
+                    let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("Pure2D Layered Prefix Pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: target_view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(self.world_pass.clear_color),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                    self.renderer_2d_pure.render_grid(&mut rpass);
+                    self.emit_static_2d_batches(&mut rpass, None, false);
+                }
+                passes += 1;
+                passes += self.execute_plan(
+                    encoder,
+                    &res,
+                    &root_plan,
+                    target_view,
+                    Some(target_texture),
+                    res.root_backdrop.as_ref(),
+                    &res.backdrop_target,
+                    &res.composite_target,
+                    (&res.root_shape, &res.root_sprite, &res.root_text),
+                    self.composite_buffer.as_ref(),
+                    None,
+                );
+            }
+        } else {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Pure2D Layered Main Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -4246,8 +4373,8 @@ impl Renderer {
                 &res.composite_target,
                 self.composite_buffer.as_ref(),
             );
+            passes += 1;
         }
-        passes += 1;
 
         self.layer_res = Some(res);
         self.composite_instances = composites;
@@ -4264,6 +4391,207 @@ impl Renderer {
         self.layer_stack_2d.clear();
         self.layer_next_index = 0;
         self.frame_uses_layers = false;
+    }
+
+    /// `true` when `plan` contains a composite that needs the destination.
+    fn plan_needs_backdrop(plan: &[PlanItem]) -> bool {
+        plan.iter().any(|item| match item {
+            PlanItem::Composite { blend, .. } => blend.needs_backdrop(),
+            _ => false,
+        })
+    }
+
+    /// Ensures the destination snapshot used by layer `index`'s plan.
+    fn ensure_layer_backdrop(&mut self, index: u32) {
+        let device = self.context.device.clone();
+        let (format, width, height) = match &self.layer_res {
+            Some(res) => (res.format, res.width, res.height),
+            None => return,
+        };
+        let Some(res) = self.layer_res.as_mut() else {
+            return;
+        };
+        while res.layer_backdrops.len() <= index as usize {
+            res.layer_backdrops.push(None);
+        }
+        if res.layer_backdrops[index as usize].is_some() {
+            return;
+        }
+        res.layer_backdrops[index as usize] = Some(create_backdrop_texture(
+            &device,
+            format,
+            width,
+            height,
+            "Pure2D Layer Backdrop",
+        ));
+    }
+
+    /// Ensures the destination snapshot used by the root plan.
+    fn ensure_root_backdrop(&mut self) {
+        let device = self.context.device.clone();
+        let format = self.format;
+        let (width, height) = (self.width, self.height);
+        let Some(res) = self.layer_res.as_mut() else {
+            return;
+        };
+        if res.root_backdrop.is_some() {
+            return;
+        }
+        res.root_backdrop = Some(create_backdrop_texture(
+            &device,
+            format,
+            width,
+            height,
+            "Pure2D Root Backdrop",
+        ));
+    }
+
+    /// Executes `plan` into `dest_view`, splitting the pass around
+    /// backdrop-aware composites.
+    ///
+    /// Every backdrop composite needs the destination contents as an input, and
+    /// a render pass cannot sample its own attachment.  The plan is therefore
+    /// split into segments: each segment is drawn normally, then the finished
+    /// destination is copied into `backdrop`, and the composite runs in its own
+    /// pass with that snapshot bound.  Plans without backdrop modes keep the
+    /// single-pass fast path.
+    #[allow(clippy::too_many_arguments)]
+    fn execute_plan(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        res: &LayerResources,
+        plan: &[PlanItem],
+        dest_view: &wgpu::TextureView,
+        dest_texture: Option<&wgpu::Texture>,
+        backdrop: Option<&BackdropTexture>,
+        backdrop_pipeline: &ferrous_2d::render::BackdropCompositePipeline,
+        composite: &CompositePipeline,
+        pipes: (&ShapePipeline, &SpritePipeline, &Text2dPipeline),
+        composite_buffer: Option<&wgpu::Buffer>,
+        clear: Option<wgpu::Color>,
+    ) -> u32 {
+        let advanced_ok = dest_texture.is_some()
+            && backdrop.is_some()
+            && composite_buffer.is_some()
+            && Self::plan_needs_backdrop(plan);
+        let mut passes = 0u32;
+        let mut cursor = 0usize;
+        let mut load = clear;
+        loop {
+            let next = if advanced_ok {
+                plan[cursor..].iter().position(|item| match item {
+                    PlanItem::Composite { blend, .. } => blend.needs_backdrop(),
+                    _ => false,
+                })
+            } else {
+                None
+            };
+            let end = next.map_or(plan.len(), |offset| cursor + offset);
+            if end > cursor || load.is_some() {
+                let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Pure2D Plan Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: dest_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: match load {
+                                Some(color) => wgpu::LoadOp::Clear(color),
+                                None => wgpu::LoadOp::Load,
+                            },
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                self.draw_layer_plan(
+                    &mut rpass,
+                    &plan[cursor..end],
+                    res,
+                    pipes,
+                    composite,
+                    composite_buffer,
+                );
+                passes += 1;
+            }
+            let Some(offset) = next else { break };
+            let index = cursor + offset;
+            let (Some(dest_texture), Some(backdrop), Some(buffer)) =
+                (dest_texture, backdrop, composite_buffer)
+            else {
+                break;
+            };
+            encoder.copy_texture_to_texture(
+                dest_texture.as_image_copy(),
+                backdrop.texture.as_image_copy(),
+                backdrop.texture.size(),
+            );
+            {
+                let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Pure2D Backdrop Composite Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: dest_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                if let PlanItem::Composite {
+                    layer, instance, ..
+                } = plan[index]
+                {
+                    if let Some(texture) = res
+                        .textures
+                        .get(layer as usize)
+                        .and_then(|entry| entry.as_ref())
+                    {
+                        let bind_group =
+                            self.context
+                                .device
+                                .create_bind_group(&wgpu::BindGroupDescriptor {
+                                    label: Some("Pure2D Backdrop Composite Bind Group"),
+                                    layout: &backdrop_pipeline.bind_group_layout,
+                                    entries: &[
+                                        wgpu::BindGroupEntry {
+                                            binding: 0,
+                                            resource: wgpu::BindingResource::TextureView(
+                                                &texture.view,
+                                            ),
+                                        },
+                                        wgpu::BindGroupEntry {
+                                            binding: 1,
+                                            resource: wgpu::BindingResource::Sampler(&res.sampler),
+                                        },
+                                        wgpu::BindGroupEntry {
+                                            binding: 2,
+                                            resource: wgpu::BindingResource::TextureView(
+                                                &backdrop.view,
+                                            ),
+                                        },
+                                        wgpu::BindGroupEntry {
+                                            binding: 3,
+                                            resource: wgpu::BindingResource::Sampler(&res.sampler),
+                                        },
+                                    ],
+                                });
+                        rpass.set_pipeline(backdrop_pipeline.pipeline());
+                        rpass.set_bind_group(0, &bind_group, &[]);
+                        rpass.set_vertex_buffer(0, buffer.slice(..));
+                        rpass.draw(0..3, instance..(instance + 1));
+                    }
+                }
+            }
+            passes += 1;
+            cursor = index + 1;
+            load = None;
+        }
+        passes
     }
 
     /// Draws one layer plan (or the root plan) into the current pass.
@@ -4324,6 +4652,10 @@ impl Renderer {
                     blend,
                     instance,
                 } => {
+                    // A backdrop mode reaching this path was not split, which
+                    // means it is unsupported here (no destination texture);
+                    // draw it as normal rather than dropping the layer.
+                    let blend = blend.fixed().unwrap_or(BlendMode2d::Normal);
                     let Some(texture) = res
                         .textures
                         .get(layer as usize)
@@ -4362,4 +4694,30 @@ impl Renderer {
         self.frame_uses_layers = false;
         self.layer_error_2d = None;
     }
+}
+
+/// Creates a destination snapshot for backdrop-aware compositing.
+fn create_backdrop_texture(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+    label: &str,
+) -> BackdropTexture {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: width.max(1),
+            height: height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    BackdropTexture { texture, view }
 }

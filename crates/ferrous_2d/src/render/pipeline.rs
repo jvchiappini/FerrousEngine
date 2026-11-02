@@ -144,7 +144,7 @@ struct Pipeline2dDesc<'a> {
     bind_group_layouts: &'a [&'a wgpu::BindGroupLayout],
     depth_write_enabled: bool,
     depth_compare: wgpu::CompareFunction,
-    blend: wgpu::BlendState,
+    blend: Option<wgpu::BlendState>,
 }
 
 /// The single render-pipeline constructor shared by every Pure2D pipeline.
@@ -172,7 +172,7 @@ fn build_2d_pipeline(
             entry_point: Some(desc.fragment_entry),
             targets: &[Some(wgpu::ColorTargetState {
                 format: desc.format,
-                blend: Some(desc.blend),
+                blend: desc.blend,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -322,7 +322,7 @@ impl SpritePipeline {
             bind_group_layouts: &bgls,
             depth_write_enabled: true,
             depth_compare: wgpu::CompareFunction::Less,
-            blend: mode.wgpu_blend(),
+            blend: Some(mode.wgpu_blend()),
         });
 
         Self {
@@ -372,10 +372,15 @@ impl ShapePipeline {
     ) -> Self {
         let camera_bind_group_layout =
             create_camera_bind_group_layout(&device, "Shape Camera Bind Group Layout");
+        const SHARED_2D: &str = include_str!("../../../../assets/shaders/pure2d_common.wgsl");
+        const SHAPE_2D: &str = include_str!("../../../../assets/shaders/shape_2d.wgsl");
         let shader = create_shader(
             &device,
             "Shape Shader",
-            include_str!("../../../../assets/shaders/shape_2d.wgsl").to_string(),
+            format!(
+                "{SHARED_2D}
+{SHAPE_2D}"
+            ),
         );
         let bgls = [&camera_bind_group_layout];
         let vertex_buffers = [ShapeGpu::descriptor()];
@@ -392,7 +397,7 @@ impl ShapePipeline {
             bind_group_layouts: &bgls,
             depth_write_enabled: false,
             depth_compare: wgpu::CompareFunction::Always,
-            blend: mode.wgpu_blend(),
+            blend: Some(mode.wgpu_blend()),
         });
 
         Self {
@@ -451,14 +456,15 @@ impl Text2dPipeline {
         let texture_bind_group_layout =
             create_texture_bind_group_layout(&device, "Text Texture Bind Group Layout");
 
-        // Prepend the shared MSDF helpers so the GUI and 2D shaders cannot drift
-        // apart.
+        // Prepend the shared camera/gradient layout and MSDF helpers so the GUI
+        // and 2D shaders cannot drift apart.
+        const SHARED_2D: &str = include_str!("../../../../assets/shaders/pure2d_common.wgsl");
         const SHARED_MSDF: &str = include_str!("../../../../assets/shaders/msdf_common.wgsl");
         const TEXT_2D: &str = include_str!("../../../../assets/shaders/text_2d.wgsl");
         let shader = create_shader(
             &device,
             "2D Text Shader",
-            format!("{SHARED_MSDF}\n{TEXT_2D}"),
+            format!("{SHARED_2D}\n{SHARED_MSDF}\n{TEXT_2D}"),
         );
         let bgls = [&camera_bind_group_layout, &texture_bind_group_layout];
         let vertex_buffers = [TextInstance::descriptor()];
@@ -475,7 +481,7 @@ impl Text2dPipeline {
             bind_group_layouts: &bgls,
             depth_write_enabled: false,
             depth_compare: wgpu::CompareFunction::Always,
-            blend: mode.wgpu_blend(),
+            blend: Some(mode.wgpu_blend()),
         });
 
         Self {
@@ -549,7 +555,7 @@ impl GridPipeline {
                 bind_group_layouts: &bgls,
                 depth_write_enabled: false,
                 depth_compare: wgpu::CompareFunction::Always,
-                blend: BlendMode2d::Normal.wgpu_blend(),
+                blend: Some(BlendMode2d::Normal.wgpu_blend()),
             },
             cache,
         );
@@ -618,7 +624,7 @@ impl CompositePipeline {
             bind_group_layouts: &bgls,
             depth_write_enabled: false,
             depth_compare: wgpu::CompareFunction::Always,
-            blend: mode.wgpu_blend(),
+            blend: Some(mode.wgpu_blend()),
         });
 
         Self {
@@ -631,5 +637,99 @@ impl CompositePipeline {
     /// The pipeline for `mode`.
     pub fn pipeline(&self, mode: BlendMode2d) -> &wgpu::RenderPipeline {
         &self.pipelines[mode.index()]
+    }
+}
+
+/// Render pipeline for backdrop-aware layer compositing.
+///
+/// Used for [`CompositeMode2d`](crate::render::CompositeMode2d) modes that depend on
+/// the destination colour ([`CompositeMode2d::needs_backdrop`](crate::render::CompositeMode2d::needs_backdrop)).
+/// (`0`/`1`) and a snapshot of the destination (`2`/`3`); blending is disabled
+/// because the fragment shader returns the fully composited premultiplied
+/// result.
+pub struct BackdropCompositePipeline {
+    /// GPU device the pipeline was created on.
+    pub device: Arc<wgpu::Device>,
+    pipeline: wgpu::RenderPipeline,
+    /// Bind group 0: layer texture + sampler, backdrop texture + sampler.
+    pub bind_group_layout: wgpu::BindGroupLayout,
+}
+
+impl BackdropCompositePipeline {
+    /// Builds the pipeline for `output_format`.
+    pub fn new(
+        device: Arc<wgpu::Device>,
+        output_format: wgpu::TextureFormat,
+        sample_count: u32,
+        cache: Option<&wgpu::PipelineCache>,
+    ) -> Self {
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Backdrop Composite Bind Group Layout"),
+            entries: &[
+                texture_entry(0),
+                sampler_entry(1),
+                texture_entry(2),
+                sampler_entry(3),
+            ],
+        });
+        let shader = create_shader(
+            &device,
+            "2D Backdrop Composite Shader",
+            include_str!("../../../../assets/shaders/composite_2d_blend.wgsl").to_string(),
+        );
+        let bgls = [&bind_group_layout];
+        let vertex_buffers = [crate::render::types::CompositeInstance::descriptor()];
+        let pipeline = build_2d_pipeline(
+            &device,
+            Pipeline2dDesc {
+                label: "2D Backdrop Composite WGPU Pipeline",
+                format: output_format,
+                depth_format: None,
+                sample_count,
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                shader: &shader,
+                vertex_entry: "vs_main",
+                fragment_entry: "fs_main",
+                vertex_buffers: &vertex_buffers,
+                bind_group_layouts: &bgls,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Always,
+                blend: None,
+            },
+            cache,
+        );
+        Self {
+            device,
+            pipeline,
+            bind_group_layout,
+        }
+    }
+
+    /// The composite pipeline.
+    #[must_use]
+    pub const fn pipeline(&self) -> &wgpu::RenderPipeline {
+        &self.pipeline
+    }
+}
+
+const fn texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            multisampled: false,
+            view_dimension: wgpu::TextureViewDimension::D2,
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+        },
+        count: None,
+    }
+}
+
+const fn sampler_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+        count: None,
     }
 }

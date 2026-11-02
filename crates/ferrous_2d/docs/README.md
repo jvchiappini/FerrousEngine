@@ -99,8 +99,8 @@ Pure2D renders in **linear light** with **premultiplied alpha** end to end:
 | `Multiply` | `Cs*Cd + Cd*(1-As)` | `As + Ad*(1-As)` | `Dst`, `OneMinusSrcAlpha` |
 
 `Multiply` is exact over an opaque backdrop; over a transparent one it omits
-the `Cs*(1-Ad)` term. Advanced modes (overlay, soft light, colour dodge, hue)
-need the backdrop in the shader and are out of scope for this path.
+the `Cs*(1-Ad)` term. Backdrop-aware modes (overlay, darken, lighten) are
+available on layers through `CompositeMode2d`; see [`blend.md`](blend.md).
 
 The API is a state: `Renderer::set_blend_mode_2d(mode)` applies to every
 subsequent 2D draw until changed, and `Renderer::clear_2d` (called at the start
@@ -111,11 +111,7 @@ them: painter order is `z`, then shape/sprite/text, then submission/blend.
 ## Offscreen layers
 
 ```rust
-renderer.push_layer_2d(Layer2d {
-    opacity: 0.5,
-    blend: BlendMode2d::Normal,
-    depth: 2.0,
-})?;
+renderer.push_layer_2d(Layer2d::new(0.5, CompositeMode2d::Normal, 2.0))?;
 // draws go into the layer, z-sorted among themselves
 renderer.pop_layer_2d()?;
 ```

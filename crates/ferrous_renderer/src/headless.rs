@@ -998,6 +998,23 @@ impl Pure2dHarness {
             .draw_text_2d(font, text, transform, size_px, align, color);
     }
 
+    /// Queues one line of Pure2D text filled with a gradient (see
+    /// [`Renderer::draw_text_2d_with_gradient`]).
+    #[allow(clippy::too_many_arguments)] // same shape as `Renderer::draw_text_2d`'s
+    pub fn draw_text_with_gradient(
+        &mut self,
+        font: FontId2d,
+        text: &str,
+        transform: glam::Mat4,
+        size_px: f32,
+        align: TextAlign,
+        color: [f32; 4],
+        gradient: Option<u32>,
+    ) {
+        self.renderer
+            .draw_text_2d_with_gradient(font, text, transform, size_px, align, color, gradient);
+    }
+
     /// Renders one frame into the off-screen target and returns metrics.
     ///
     /// This **only submits** the command buffer; it never calls
@@ -1026,8 +1043,12 @@ impl Pure2dHarness {
         let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
             label: Some("Pure2D Headless Frame Encoder"),
         });
-        self.renderer
-            .render_to_view(&mut encoder, &self.target.view, None);
+        self.renderer.render_to_texture_view(
+            &mut encoder,
+            &self.target.texture,
+            &self.target.view,
+            None,
+        );
         self.renderer.context.queue.submit(Some(encoder.finish()));
         if blocking {
             self.blocking_polls.fetch_add(1, Ordering::Relaxed);

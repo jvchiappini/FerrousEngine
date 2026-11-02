@@ -43,6 +43,9 @@ nav:
     - Configuration (ferrous.toml): ferrous_engine/config.md
   - ferrous_2d — 2D Rendering:
     - Overview: ferrous_2d/README.md
+    - Text: ferrous_2d/text.md
+    - Gradients: ferrous_2d/gradients.md
+    - Blending and Layers: ferrous_2d/blend.md
   - ferrous_ui_core — UI Core:
     - Overview: ferrous_ui_core/README.md
     - Core API (Ui / Canvas / Widget): ferrous_ui_core/CORE.md

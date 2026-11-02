@@ -86,6 +86,9 @@ therefore keep a constant screen-space AA width.
 * Missing characters use `.notdef` when the font has a non-empty glyph 0;
   otherwise they are skipped and counted in `LineMetrics::missing_glyphs`.
 * Straight-alpha blending only, like the shape and sprite pipelines.
+* Gradient fills evaluate in world space (see [gradients.md](gradients.md));
+  use Renderer::draw_text_2d_with_gradient or
+  Pure2dHarness::draw_text_with_gradient.
 * Multi-view scissor segmentation does not split text yet. The multi-view fast
   path only uploads shapes, so text and sprites are not drawn in that mode
   (pre-existing limitation, not specific to text).

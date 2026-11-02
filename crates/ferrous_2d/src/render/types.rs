@@ -168,6 +168,11 @@ pub struct TextInstance {
     pub uv_rect: [f32; 4],
     /// `[px_range, 0, 0, 0]` where `px_range` is `FontAtlas::px_range`.
     pub params: [f32; 4],
+    /// Gradient table reference (base + 1), or `0` for the flat [`Self::color`].
+    ///
+    /// The reference is produced by [`GradientTable2d`](crate::render::GradientTable2d);
+    /// see [`Self::with_gradient`].
+    pub gradient: u32,
 }
 
 impl TextInstance {
@@ -212,6 +217,11 @@ impl TextInstance {
                     shader_location: 6,
                     format: wgpu::VertexFormat::Float32x4,
                 },
+                wgpu::VertexAttribute {
+                    offset: 112,
+                    shader_location: 7,
+                    format: wgpu::VertexFormat::Uint32,
+                },
             ],
         }
     }
@@ -238,6 +248,29 @@ impl TextInstance {
                 0.0,
                 0.0,
             ],
+            gradient: 0,
+        }
+    }
+
+    /// Use a gradient ramp instead of the flat colour.
+    ///
+    /// `base` is the slot returned by
+    /// [`GradientTable2d::push`](crate::render::GradientTable2d::push).  `0` is
+    /// reserved for "flat colour", so the stored reference is `base + 1`.  The
+    /// gradient is evaluated in world space, exactly like
+    /// [`ShapeInstance::with_gradient`].
+    #[must_use]
+    pub const fn with_gradient(mut self, base: u32) -> Self {
+        self.gradient = base + 1;
+        self
+    }
+
+    /// The gradient base of this instance, or `None` for a flat colour.
+    #[must_use]
+    pub const fn gradient_base(&self) -> Option<u32> {
+        match self.gradient {
+            0 => None,
+            reference => Some(reference - 1),
         }
     }
 
@@ -351,7 +384,7 @@ pub struct ShapeInstance {
     pub ext0: [f32; 4],
     /// Segment distance at the start point `a` along the polyline (dash phase).
     pub ext1: f32,
-    /// Gradient table base + 1, or 0 for a solid colour (D-0030).
+    /// Gradient table base + 1, or 0 for a solid colour (see `GradientTable2d`).
     ///
     /// The table lives in the camera uniform (`gradients`), so one instance
     /// references a header vec4 and the stops that follow it.
@@ -1021,7 +1054,7 @@ pub struct ShapeGpu {
     pub ext0: [f32; 4],
     /// Joined segment: accumulated polyline length at the start (dash phase).
     pub ext1: f32,
-    /// Gradient table base + 1; 0 = solid colour (D-0030).
+    /// Gradient table base + 1; 0 = solid colour (see `GradientTable2d`).
     pub gradient: u32,
 }
 
@@ -1494,7 +1527,7 @@ pub struct Uniform2d {
     /// uniform array is 16-byte aligned. Slot `0` is unused (continuous).
     /// Pattern `i` uses `dash[i*2]` (lengths 0..3) and `dash[i*2+1]` (4..7).
     pub dash: [[f32; 4]; 32],
-    /// Gradient table (D-0030): headers and stops, GRADIENT_TABLE_VEC4 vec4.
+    /// Gradient table: headers and stops, `GRADIENT_TABLE_VEC4` vec4.
     ///
     /// A gradient occupies a header (kind, stop count, first stop, 0), one
     /// geometry vec4 and two vec4 per stop (linear rgba, (offset,0,0,0)).
@@ -1503,9 +1536,9 @@ pub struct Uniform2d {
 
 /// Number of vec4 slots in the per-view gradient table.
 ///
-/// A 2-stop gradient uses 6 slots, so this holds 85 full gradients or a mix
-/// of many smaller ramps. A document that needs more gets its extra
-/// gradients drawn with the solid fallback.
+/// A 2-stop gradient uses 6 slots, so this holds 85 minimal ramps or a mix of
+/// larger ones. A gradient that does not fit keeps the instance's solid colour.
+/// See [GradientTable2d](crate::render::GradientTable2d).
 pub const GRADIENT_TABLE_VEC4: usize = 512;
 
 /// Maximum nesting depth of Pure2D offscreen layers.
@@ -1513,6 +1546,122 @@ pub const GRADIENT_TABLE_VEC4: usize = 512;
 /// Pushing a layer when this many are already open returns
 /// [`LayerError::TooDeep`] and changes nothing.
 pub const MAX_LAYER_DEPTH_2D: u32 = 8;
+
+/// How a finished offscreen layer composites onto its backdrop.
+///
+/// The first four modes are the fixed-function [`BlendMode2d`](crate::render::pipeline::BlendMode2d)
+/// states and are exactly equivalent to a per-draw blend.  The last three are **backdrop
+/// aware**: their result depends on the destination colour, so the composite
+/// pass reads a snapshot of the destination (see
+/// `Renderer::push_layer_2d`).  They are the modes that cannot be expressed by
+/// `wgpu` blend factors alone.
+///
+/// All formulas work in premultiplied linear light.  With straight source `s`
+/// and backdrop `b` colours, coverage `As`/`Ad`, the composited colour is
+///
+/// ```text
+/// Co = Cs*(1-Ad) + As*Ad*B(b, s) + Cd*(1-As)
+/// Ao = As + Ad*(1-As)
+/// ```
+///
+/// where `B` is the per-mode blend:
+///
+/// | mode | `B(b, s)` |
+/// |---|---|
+/// | overlay | `s < 0.5 ? 2*b*s : 1 - 2*(1-b)*(1-s)` |
+/// | darken | `min(b, s)` |
+/// | lighten | `max(b, s)` |
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub enum CompositeMode2d {
+    /// Source-over.
+    #[default]
+    Normal,
+    /// Additive colour, source-over coverage.
+    Add,
+    /// Multiplicative over the backdrop.
+    Multiply,
+    /// Screen.
+    Screen,
+    /// Multiply in the dark half, screen in the light half (conditioned on the
+    /// source, per the engine's blend contract).
+    Overlay,
+    /// Per-channel minimum.
+    Darken,
+    /// Per-channel maximum.
+    Lighten,
+}
+
+impl CompositeMode2d {
+    /// Every mode, in a stable order.
+    pub const ALL: [Self; 7] = [
+        Self::Normal,
+        Self::Add,
+        Self::Multiply,
+        Self::Screen,
+        Self::Overlay,
+        Self::Darken,
+        Self::Lighten,
+    ];
+
+    /// `true` for the modes that need a destination snapshot.
+    #[must_use]
+    pub const fn needs_backdrop(self) -> bool {
+        matches!(self, Self::Overlay | Self::Darken | Self::Lighten)
+    }
+
+    /// The matching fixed-function mode, or `None` for a backdrop-aware mode.
+    #[must_use]
+    pub const fn fixed(self) -> Option<crate::render::pipeline::BlendMode2d> {
+        use crate::render::pipeline::BlendMode2d;
+        match self {
+            Self::Normal => Some(BlendMode2d::Normal),
+            Self::Add => Some(BlendMode2d::Add),
+            Self::Multiply => Some(BlendMode2d::Multiply),
+            Self::Screen => Some(BlendMode2d::Screen),
+            Self::Overlay | Self::Darken | Self::Lighten => None,
+        }
+    }
+
+    /// Stable identifier used by the composite shader.
+    #[must_use]
+    pub const fn shader_id(self) -> u32 {
+        match self {
+            Self::Normal => 0,
+            Self::Add => 1,
+            Self::Multiply => 2,
+            Self::Screen => 3,
+            Self::Overlay => 4,
+            Self::Darken => 5,
+            Self::Lighten => 6,
+        }
+    }
+
+    /// Stable, human-readable name used in logs and errors.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Add => "add",
+            Self::Multiply => "multiply",
+            Self::Screen => "screen",
+            Self::Overlay => "overlay",
+            Self::Darken => "darken",
+            Self::Lighten => "lighten",
+        }
+    }
+}
+
+impl From<crate::render::pipeline::BlendMode2d> for CompositeMode2d {
+    fn from(mode: crate::render::pipeline::BlendMode2d) -> Self {
+        use crate::render::pipeline::BlendMode2d;
+        match mode {
+            BlendMode2d::Normal => Self::Normal,
+            BlendMode2d::Add => Self::Add,
+            BlendMode2d::Multiply => Self::Multiply,
+            BlendMode2d::Screen => Self::Screen,
+        }
+    }
+}
 
 /// Description of one offscreen compositing layer (see
 /// `Renderer::push_layer_2d`).
@@ -1531,7 +1680,7 @@ pub struct Layer2d {
     /// Group opacity applied once to the finished layer, in `0.0..=1.0`.
     pub opacity: f32,
     /// Blend mode used to composite the finished layer into its parent.
-    pub blend: crate::render::pipeline::BlendMode2d,
+    pub blend: CompositeMode2d,
     /// Depth of the whole layer in the parent's painter order.
     pub depth: f32,
 }
@@ -1541,11 +1690,8 @@ impl Layer2d {
     ///
     /// `opacity` is clamped to `0.0..=1.0` at push time; non-finite values are
     /// rejected with [`LayerError::InvalidOpacity`].
-    pub const fn new(
-        opacity: f32,
-        blend: crate::render::pipeline::BlendMode2d,
-        depth: f32,
-    ) -> Self {
+    pub fn new(opacity: f32, blend: impl Into<CompositeMode2d>, depth: f32) -> Self {
+        let blend = blend.into();
         Self {
             opacity,
             blend,
@@ -1558,7 +1704,7 @@ impl Default for Layer2d {
     fn default() -> Self {
         Self {
             opacity: 1.0,
-            blend: crate::render::pipeline::BlendMode2d::Normal,
+            blend: CompositeMode2d::Normal,
             depth: 0.0,
         }
     }
@@ -1619,6 +1765,9 @@ impl std::error::Error for LayerError {}
 pub struct CompositeInstance {
     /// Group opacity multiplied into the premultiplied layer colour.
     pub opacity: f32,
+    /// [CompositeMode2d::shader_id] of a backdrop-aware mode; ignored by the
+    /// fixed-function composite pipelines.
+    pub mode: u32,
 }
 
 impl CompositeInstance {
@@ -1627,11 +1776,18 @@ impl CompositeInstance {
         wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<CompositeInstance>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &[wgpu::VertexAttribute {
-                offset: 0,
-                shader_location: 0,
-                format: wgpu::VertexFormat::Float32,
-            }],
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32,
+                },
+                wgpu::VertexAttribute {
+                    offset: 4,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Uint32,
+                },
+            ],
         }
     }
 }

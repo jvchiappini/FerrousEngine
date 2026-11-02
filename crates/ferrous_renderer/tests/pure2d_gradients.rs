@@ -1,13 +1,14 @@
-//! Headless tests for Pure2D gradient fills (D-0030).
+//! Headless tests for Pure2D gradient fills and gradient text.
 //!
 //! A linear ramp is drawn across a rect and read back. The checks are the
-//! ones the Motioner golden/banding tests rely on: exact authored sRGB stops,
+//! ones gradient consumers rely on for golden/banding tests: exact authored sRGB stops,
 //! linear-light interpolation between them (the encoded midpoint of red and
 //! blue is 188, not 128) and a bounded step between neighbouring pixels.
 
 use std::sync::Mutex;
 
-use ferrous_2d::render::ShapeInstance;
+use ferrous_2d::render::{Gradient2d, GradientTable2d, ShapeInstance};
+use ferrous_font::TextAlign;
 use ferrous_renderer::headless::Pure2dHarness;
 use glam::Vec2;
 use wgpu::TextureFormat;
@@ -125,4 +126,74 @@ fn linear_gradient_has_no_visible_banding() {
         worst <= 3,
         "pixel {worst_at} is {worst} code(s) off the linear-light ramp"
     );
+}
+
+/// A gradient across a text line tints its glyphs from red (left) to blue
+/// (right), exactly like shapes.
+#[test]
+fn text_glyphs_take_the_gradient() {
+    let _gpu = GPU_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut h = Pure2dHarness::new(320, 96, TextureFormat::Rgba8UnormSrgb).expect("headless gpu");
+    let font = h
+        .register_font(
+            include_bytes!("../../../assets/fonts/Roboto-Regular.ttf"),
+            ferrous_font::charset::latin_western(),
+        )
+        .expect("font");
+    let mut table = GradientTable2d::new();
+    let base = table
+        .push(
+            &Gradient2d::linear(
+                Vec2::new(-120.0, 0.0),
+                Vec2::new(120.0, 0.0),
+                &[(0.0, [1.0, 0.0, 0.0, 1.0]), (1.0, [0.0, 0.0, 1.0, 1.0])],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    h.renderer_mut().set_2d_gradient_table(table.slots());
+    h.set_clear_color(wgpu::Color::BLACK);
+    h.begin_frame();
+    h.draw_text_with_gradient(
+        font,
+        "HHHHH",
+        glam::Mat4::IDENTITY,
+        56.0,
+        TextAlign::Center,
+        [1.0; 4],
+        Some(base),
+    );
+    h.render_frame_blocking();
+
+    let pixels = h.read_pixels();
+    let mut left_red = 0u32;
+    let mut right_blue = 0u32;
+    let mut left_blue = 0u32;
+    let mut right_red = 0u32;
+    for y in 0..96u32 {
+        for x in 0..320u32 {
+            let index = ((y * 320 + x) * 4) as usize;
+            let [r, _, b, _] = [
+                pixels[index],
+                pixels[index + 1],
+                pixels[index + 2],
+                pixels[index + 3],
+            ];
+            if u32::from(r) + u32::from(b) < 24 {
+                continue;
+            }
+            if x < 100 {
+                left_red += u32::from(r);
+                left_blue += u32::from(b);
+            } else if x > 220 {
+                right_red += u32::from(r);
+                right_blue += u32::from(b);
+            }
+        }
+    }
+    assert!(left_red > 0 && right_blue > 0, "text did not render");
+    assert!(left_red > left_blue, "left glyphs are not the red stop");
+    assert!(right_blue > right_red, "right glyphs are not the blue stop");
 }
