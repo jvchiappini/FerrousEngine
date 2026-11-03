@@ -3457,6 +3457,17 @@ impl Renderer {
         self.mark_dirty();
     }
 
+    /// Returns the empty GUI batch reclaimed from the previous frame.
+    ///
+    /// The runner owns the batch and passes it back to
+    /// [`Self::render_to_view`] every frame; [`FrameBuilder::reclaim`] clears
+    /// it at the end of the frame, so the next frame starts with warm quad and
+    /// text capacities instead of allocating a fresh `GuiBatch`.
+    #[cfg(feature = "gui")]
+    pub fn take_recycled_ui_batch(&mut self) -> Option<UiBatch> {
+        self.frame_builder.take_ui_batch()
+    }
+
     pub fn set_clear_color(&mut self, color: wgpu::Color) {
         crate::renderer_api::set_clear_color(
             &mut self.world_pass,

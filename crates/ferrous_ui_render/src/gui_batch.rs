@@ -412,6 +412,16 @@ impl GuiBatch {
     /// Pushes a connected polyline as one anti-aliased [`Self::line`] per
     /// segment. Adjacent segments share their endpoint; round caps make the
     /// joint continuous. Fewer than two points draw nothing.
+    ///
+    /// # Translucent joints
+    ///
+    /// Each segment is an independent quad with a round cap at both ends, so
+    /// the caps overlap at every shared point. With an opaque colour this is
+    /// invisible; with a translucent one the joint is composited twice and
+    /// reads darker (coverage `1 - (1 - a)^2` instead of `a`). Draw the pieces
+    /// as separate strokes when exact coverage matters, or accept the joint
+    /// accent. The geometry of the overlap is pinned by
+    /// `polyline_joints_overlap_at_the_shared_endpoint`.
     pub fn polyline(&mut self, points: &[[f32; 2]], width: f32, color: [f32; 4]) {
         for pair in points.windows(2) {
             self.line(pair[0], pair[1], width, color);
@@ -555,6 +565,40 @@ mod tests {
         // A single point (and a degenerate list) draws nothing.
         batch.polyline(&[[0.0, 0.0]], 1.0, [1.0; 4]);
         assert_eq!(batch.quads.len(), 3);
+    }
+
+    #[test]
+    fn polyline_joints_overlap_at_the_shared_endpoint() {
+        // Half-alpha segments: the two round caps cover the same pixels at the
+        // joint, which is why a translucent polyline composites that point
+        // twice. The test pins the geometry behind the documented limitation.
+        let mut batch = GuiBatch::new();
+        batch.polyline(
+            &[[10.0, 10.0], [60.0, 10.0], [60.0, 60.0]],
+            8.0,
+            [1.0, 0.0, 0.0, 0.5],
+        );
+        assert_eq!(batch.quads.len(), 2);
+        let joint = [60.0_f32, 10.0];
+        let contains = |quad: &GuiQuad| {
+            joint[0] >= quad.pos[0]
+                && joint[0] <= quad.pos[0] + quad.size[0]
+                && joint[1] >= quad.pos[1]
+                && joint[1] <= quad.pos[1] + quad.size[1]
+        };
+        assert!(
+            batch.quads.iter().all(contains),
+            "both caps must cover the shared endpoint"
+        );
+        let [first, second] = [&batch.quads[0], &batch.quads[1]];
+        let overlap_x = (first.pos[0] + first.size[0]).min(second.pos[0] + second.size[0])
+            - first.pos[0].max(second.pos[0]);
+        let overlap_y = (first.pos[1] + first.size[1]).min(second.pos[1] + second.size[1])
+            - first.pos[1].max(second.pos[1]);
+        assert!(
+            overlap_x > 0.0 && overlap_y > 0.0,
+            "the joint quads must overlap (x {overlap_x}, y {overlap_y})"
+        );
     }
 
     #[test]

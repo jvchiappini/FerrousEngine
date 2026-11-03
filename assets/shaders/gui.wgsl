@@ -152,7 +152,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         return vec4<f32>(rgb, alpha);
     }
 
-    // ── LINE (flag 0x100) ─────────────────────────────────────────────────────
+    // ── LINE (flag 0x200) ─────────────────────────────────────────────────────
     // uv0/uv1 are the segment endpoints local to the quad and radii.x is
     // the half width. The distance to the segment gives exact anti-aliasing
     // and round caps at both ends. The AA band is a constant pixel because

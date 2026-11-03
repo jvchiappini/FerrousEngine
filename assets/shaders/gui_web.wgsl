@@ -128,7 +128,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         return vec4<f32>(rgb, alpha);
     }
 
-    // ── LINE (flag 0x100) ──────────────────────────────────────────────────────
+    // ── LINE (flag 0x200) ──────────────────────────────────────────────────────
     // uv0/uv1 are the segment endpoints local to the quad and radii.x is the
     // half width; the distance to the segment gives round-capped AA.
     if (in.flags & 0x200u) != 0u {

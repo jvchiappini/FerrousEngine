@@ -55,4 +55,10 @@ pub const OPAQUE_BIT: u32 = 1 << 8;
 /// quad's top-left corner, and `radii.x` is the half line width. The quad is
 /// the segment's bounds expanded by the half width plus one anti-aliasing
 /// pixel, so the fragment shader can round-cap both ends.
+///
+/// Segments are independent quads. A translucent [`GuiBatch::polyline`]
+/// therefore composites every shared endpoint twice (coverage
+/// `1 - (1 - a)^2` instead of `a`) where two round caps overlap. This is a
+/// documented limitation of the primitive; see that method for the guidance
+/// and the test that pins the overlap.
 pub const LINE_BIT: u32 = 1 << 9;

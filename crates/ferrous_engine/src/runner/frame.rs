@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use ferrous_assets::AssetState;
 use ferrous_core::glam::Vec3;
-use ferrous_gui::GuiBatch;
 use ferrous_ui_core::Rect;
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 
@@ -285,6 +284,11 @@ impl<A: FerrousApp + 'static> Runner<A> {
             let camera_eye = gfx.renderer.camera().eye;
             let camera_target = gfx.renderer.camera().target;
             let backend = gfx.renderer.context.backend;
+            // Reuse the batch the renderer reclaimed last frame. Clearing it
+            // keeps every primitive Vec's capacity, so the chrome's steady
+            // state does not allocate (measured by Motioner's alloc counter).
+            let mut gui_batch = gfx.renderer.take_recycled_ui_batch().unwrap_or_default();
+            gui_batch.clear();
             let mut ctx = AppContext {
                 input: &self.input,
                 time,
@@ -313,7 +317,6 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 ctx.render.inner.queue_gizmo(gizmo);
             }
 
-            let mut gui_batch = GuiBatch::new();
             if let Some(font) = self.font.as_ref() {
                 let mut dc = DrawContext {
                     gui: &mut gui_batch,

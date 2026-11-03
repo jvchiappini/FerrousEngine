@@ -115,6 +115,15 @@ impl FramePacket {
         self.extras.get_mut(&TypeId::of::<T>())?.downcast_mut::<T>()
     }
 
+    /// Removes a typed value from the packet and returns it, or `None`.
+    pub fn remove<T: Any + Send + Sync>(&mut self) -> Option<T> {
+        self.extras
+            .remove(&TypeId::of::<T>())?
+            .downcast::<T>()
+            .ok()
+            .map(|value| *value)
+    }
+
     /// Returns `true` if a value of type `T` is present.
     pub fn contains<T: Any + Send + Sync>(&self) -> bool {
         self.extras.contains_key(&TypeId::of::<T>())

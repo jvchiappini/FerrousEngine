@@ -29,6 +29,8 @@ use crate::graph::frame_packet::{CameraPacket, FramePacket, InstancedDrawCommand
 use crate::render_stats::RenderStats;
 use crate::resources::InstanceBuffer;
 use crate::scene::Frustum;
+#[cfg(feature = "gui")]
+use ferrous_ui_render::GuiBatch;
 
 /// All per-frame scratch state that `FrameBuilder` needs to track between calls.
 pub struct FrameBuilder {
@@ -87,6 +89,11 @@ pub struct FrameBuilder {
     pub world_instance_matrices: Vec<glam::Mat4>,
     /// Scratch matrices for shadow instancing.
     world_shadow_matrices: Vec<glam::Mat4>,
+    /// Empty GUI batch reclaimed from the previous frame. Reusing it keeps
+    /// the quad, text, icon, SVG and segment `Vec` capacities warm, so the UI
+    /// path allocates nothing in the steady state.
+    #[cfg(feature = "gui")]
+    pub ui_batch_scratch: Option<GuiBatch>,
 }
 
 impl Default for FrameBuilder {
@@ -121,6 +128,8 @@ impl FrameBuilder {
             world_shadow_instanced: Vec::new(),
             world_instance_matrices: Vec::new(),
             world_shadow_matrices: Vec::new(),
+            #[cfg(feature = "gui")]
+            ui_batch_scratch: None,
         }
     }
 
@@ -850,9 +859,22 @@ impl FrameBuilder {
         (packet, stats)
     }
 
+    /// Takes the empty GUI batch reclaimed from the previous frame.
+    #[cfg(feature = "gui")]
+    pub fn take_ui_batch(&mut self) -> Option<GuiBatch> {
+        self.ui_batch_scratch.take()
+    }
+
     /// Reclaim the internal caches from a used `FramePacket`.
     #[inline]
     pub fn reclaim(&mut self, mut packet: FramePacket) {
+        // The UI batch travels inside the packet. Clear it and keep it for the
+        // next frame so its primitive vectors never start from zero again.
+        #[cfg(feature = "gui")]
+        if let Some(mut batch) = packet.remove::<GuiBatch>() {
+            batch.clear();
+            self.ui_batch_scratch = Some(batch);
+        }
         std::mem::swap(
             &mut self.instanced_commands_cache,
             &mut packet.instanced_objects,
