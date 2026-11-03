@@ -4,6 +4,7 @@ use super::layout::{
     layout_block, layout_line, measure_block, measure_line, GlyphLayout, LayoutFont, LineMetrics,
     TextAlign, TextMetrics, TextStyle,
 };
+use super::layout_data::LayoutData;
 use super::msdf_gen::{generate_msdf, CELL_MAX, CELL_MIN, PIXEL_RANGE};
 use super::parser::{FontMetrics, GposKerning};
 use anyhow::Result;
@@ -118,8 +119,11 @@ impl FontAtlas {
         }
 
         let mut pixels = vec![255u8; (tex_size * tex_size * 4) as usize];
-        let mut metrics = HashMap::new();
-        let mut notdef = None;
+        // The atlas reuses the CPU layout tables verbatim, so `LayoutData` and
+        // `FontAtlas` can never measure the same text differently.
+        let (mut metrics, notdef, glyph_indices, kerning, gpos, font_metrics) =
+            LayoutData::from_parser(parser, char_list.clone()).into_parts();
+        let mut notdef = notdef;
 
         #[cfg(not(target_arch = "wasm32"))]
         let glyph_results: Vec<GlyphBake> = jobs
@@ -142,8 +146,7 @@ impl FontAtlas {
             })
             .collect();
 
-        let mut glyph_indices = HashMap::new();
-        for (i, c, bmp, advance, gid) in glyph_results {
+        for (i, c, bmp, _advance, _gid) in glyph_results {
             let x = (i as u32 % atlas_dim) * glyph_size;
             let y = (i as u32 / atlas_dim) * glyph_size;
 
@@ -154,25 +157,22 @@ impl FontAtlas {
                     .copy_from_slice(&bmp[src..src + (glyph_size * 4) as usize]);
             }
 
-            let ink = parser.get_glyph_bounds_by_index(gid).unwrap_or_default();
-            let glyph = GlyphMetrics {
-                uv: [
-                    x as f32 / tex_size as f32,
-                    y as f32 / tex_size as f32,
-                    (x + glyph_size) as f32 / tex_size as f32,
-                    (y + glyph_size) as f32 / tex_size as f32,
-                ],
-                size: [glyph_size as f32, glyph_size as f32],
-                advance,
-                plane_bounds: cell_bounds,
-                ink_bounds: [ink.left, ink.bottom, ink.right, ink.top],
+            let glyph = match c {
+                Some(c) => metrics.get_mut(&c),
+                None => notdef.as_mut(),
             };
-            if let Some(c) = c {
-                glyph_indices.insert(c, gid);
-                metrics.insert(c, glyph);
-            } else {
-                notdef = Some(glyph);
-            }
+            let Some(glyph) = glyph else {
+                // `LayoutData` inserted every requested character and the
+                // `.notdef` cell, so this only guards a future change.
+                continue;
+            };
+            glyph.uv = [
+                x as f32 / tex_size as f32,
+                y as f32 / tex_size as f32,
+                (x + glyph_size) as f32 / tex_size as f32,
+                (y + glyph_size) as f32 / tex_size as f32,
+            ];
+            glyph.size = [glyph_size as f32, glyph_size as f32];
         }
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -225,10 +225,10 @@ impl FontAtlas {
             glyph_size,
             px_range: PIXEL_RANGE,
             cell_bounds,
-            font_metrics: parser.metrics(),
+            font_metrics,
             glyph_indices,
-            kerning: parser.kerning_pairs().clone(),
-            gpos: parser.gpos_kerning().clone(),
+            kerning,
+            gpos,
             notdef,
         })
     }

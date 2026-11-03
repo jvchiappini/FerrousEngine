@@ -12,6 +12,7 @@ pub mod charset;
 pub mod icons;
 /// Pure-CPU single-line text layout (no GPU required).
 pub mod layout;
+pub mod layout_data;
 pub mod msdf_gen;
 pub mod parser;
 pub mod path;
@@ -24,6 +25,7 @@ pub use layout::{
     layout_block, layout_line, measure_block, measure_line, GlyphLayout, GlyphQuad, LayoutFont,
     LineMetrics, TextAlign, TextBounds, TextLineMetrics, TextMetrics, TextStyle,
 };
+pub use layout_data::LayoutData;
 pub use parser::{FontMetrics, FontParser, GlyphBounds, GposKerning, GposPair, ParseError};
 
 /// Errors returned by the typed font loading entry points.

@@ -860,6 +860,8 @@ pub struct Renderer {
     /// Without recycling, repeatedly loading plan textures grew
     /// `next_sprite_texture_id` without bound.
     pub freed_sprite_texture_ids: Vec<u32>,
+    /// Resident bytes per registered 2D texture, mip levels included.
+    sprite_texture_bytes: std::collections::HashMap<u32, u64>,
 
     // -- Pure2D text ----------------------------------------------------------
     /// Registered 2D fonts (atlas + sampling bind group) in a generational
@@ -1226,6 +1228,7 @@ impl Renderer {
             sprite_bind_groups: std::collections::HashMap::new(),
             next_sprite_texture_id: 0,
             freed_sprite_texture_ids: Vec::new(),
+            sprite_texture_bytes: std::collections::HashMap::new(),
             fonts_2d: SlotRegistry::new(),
             text_batcher_2d: Vec::new(),
             shape_blend_2d: Vec::new(),
@@ -3739,6 +3742,128 @@ impl Renderer {
         self.register_sprite_texture_inner(width, height, data, wgpu::FilterMode::Nearest, true)
     }
 
+    /// Registers a production image texture with an optional CPU mip chain.
+    ///
+    /// `rgba8_srgb_straight` is straight-alpha sRGB RGBA8.  The upload converts
+    /// it to premultiplied linear light once (the shader skips the second
+    /// premultiply), builds a deterministic box-filtered mip chain when
+    /// `options.mipmaps` is set, and samples trilinearly in that case.  Odd
+    /// sizes are resampled with exact area weights (see
+    /// [`ferrous_2d::render::build_mip_chain`]).
+    ///
+    /// The returned id is consumed by `draw_sprite_2d` and released with
+    /// [`Self::free_sprite_texture`].  Use [`Self::texture_bytes_2d`] to read
+    /// the resident total.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TextureError::ZeroSize`], [`TextureError::SizeMismatch`] or
+    /// [`TextureError::TooLarge`] (above the device's
+    /// `max_texture_dimension_2d`); it never panics on those inputs.
+    pub fn register_texture_2d(
+        &mut self,
+        width: u32,
+        height: u32,
+        rgba8_srgb_straight: &[u8],
+        options: ferrous_2d::render::TextureOptions2d,
+    ) -> Result<u32, ferrous_2d::render::TextureError> {
+        use ferrous_2d::render::{TextureError, TextureFilter2d};
+
+        if width == 0 || height == 0 {
+            return Err(TextureError::ZeroSize);
+        }
+        let limit = self.context.device.limits().max_texture_dimension_2d;
+        if width > limit || height > limit {
+            return Err(TextureError::TooLarge {
+                width,
+                height,
+                limit,
+            });
+        }
+        let chain = ferrous_2d::render::build_mip_chain(width, height, rgba8_srgb_straight)?;
+        // `mipmaps: false` uploads level 0 only; building the chain first is
+        // cheap enough and keeps one code path, but the texture must not carry
+        // levels the sampler would then be free to pick.
+        let level_count = if options.mipmaps { chain.len() } else { 1 };
+        let texture = self
+            .context
+            .device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("Sprite2D Texture (mipmapped)"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: u32::try_from(level_count).unwrap_or(1),
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+        for (index, level) in chain.levels.iter().take(level_count).enumerate() {
+            self.context.queue.write_texture(
+                wgpu::ImageCopyTexture {
+                    texture: &texture,
+                    mip_level: u32::try_from(index).unwrap_or(0),
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &level.rgba8_srgb_premultiplied,
+                wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(level.width * 4),
+                    rows_per_image: Some(level.height),
+                },
+                wgpu::Extent3d {
+                    width: level.width,
+                    height: level.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        let filter = match options.filter {
+            TextureFilter2d::Nearest => wgpu::FilterMode::Nearest,
+            TextureFilter2d::Linear => wgpu::FilterMode::Linear,
+        };
+        // Trilinear needs a linear minification filter too; magnification
+        // keeps the requested filter so pixel art stays crisp.
+        let (min_filter, mipmap_filter) = if options.mipmaps {
+            (wgpu::FilterMode::Linear, wgpu::FilterMode::Linear)
+        } else {
+            (filter, wgpu::FilterMode::Nearest)
+        };
+        let sampler = self
+            .context
+            .device
+            .create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("Sprite2D Sampler (mipmapped)"),
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
+                mag_filter: filter,
+                min_filter,
+                mipmap_filter,
+                ..Default::default()
+            });
+        let bytes = if options.mipmaps {
+            chain.bytes()
+        } else {
+            u64::from(width) * u64::from(height) * 4
+        };
+        Ok(self.store_sprite_texture(texture, sampler, true, bytes))
+    }
+
+    /// Total resident bytes of every registered 2D sprite texture.
+    ///
+    /// Mip levels are included.  Freeing a texture subtracts its bytes, so an
+    /// application can show and enforce a memory budget.
+    #[must_use]
+    pub fn texture_bytes_2d(&self) -> u64 {
+        self.sprite_texture_bytes.values().copied().sum()
+    }
+
     fn register_sprite_texture_inner(
         &mut self,
         width: u32,
@@ -3769,7 +3894,6 @@ impl Renderer {
             data,
         );
 
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let sampler = self
             .context
             .device
@@ -3784,6 +3908,23 @@ impl Renderer {
                 ..Default::default()
             });
 
+        self.store_sprite_texture(
+            texture,
+            sampler,
+            premultiplied,
+            u64::from(width) * u64::from(height) * 4,
+        )
+    }
+
+    /// Creates the bind group, allocates/recycles the id and records its bytes.
+    fn store_sprite_texture(
+        &mut self,
+        texture: wgpu::Texture,
+        sampler: wgpu::Sampler,
+        premultiplied: bool,
+        bytes: u64,
+    ) -> u32 {
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let bind_group = std::sync::Arc::new(self.context.device.create_bind_group(
             &wgpu::BindGroupDescriptor {
                 label: Some("Sprite2D Bind Group"),
@@ -3800,7 +3941,6 @@ impl Renderer {
                 ],
             },
         ));
-
         let id = match self.freed_sprite_texture_ids.pop() {
             Some(recycled) => recycled,
             None => {
@@ -3810,6 +3950,7 @@ impl Renderer {
             }
         };
         self.sprite_bind_groups.insert(id, bind_group);
+        self.sprite_texture_bytes.insert(id, bytes);
         if premultiplied {
             self.premultiplied_textures.insert(id);
         } else {
@@ -3829,6 +3970,7 @@ impl Renderer {
     pub fn free_sprite_texture(&mut self, texture_id: u32) {
         let existed = self.sprite_bind_groups.remove(&texture_id).is_some();
         self.premultiplied_textures.remove(&texture_id);
+        self.sprite_texture_bytes.remove(&texture_id);
         self.sprite_batcher_2d.remove_texture(texture_id);
         if existed && !self.freed_sprite_texture_ids.contains(&texture_id) {
             self.freed_sprite_texture_ids.push(texture_id);

@@ -11,7 +11,7 @@
 //! at once exhausts the adapter (see `tests/common/mod.rs`).
 
 use ferrous_2d::render::{GlyphDraw2d, TextStyle2d};
-use ferrous_font::{charset, TextAlign};
+use ferrous_font::{charset, TextAlign, TextStyle};
 use ferrous_renderer::headless::{Pure2dHarness, DEFAULT_FORMAT};
 use glam::Mat4;
 
@@ -347,5 +347,107 @@ fn unsupported_fonts_are_a_typed_error() {
             assert!(reason.contains("CFF"), "reason: {reason}");
         }
         other => panic!("expected FontError::Unsupported, got {other:?}"),
+    }
+}
+
+/// Removes the TrueType `kern` table so a font's pair kerning can only come
+/// from GPOS.  Roboto ships both tables; stripping `kern` produces a
+/// GPOS-only face without needing a second font file.
+fn without_kern_table(bytes: &[u8]) -> Vec<u8> {
+    let num_tables = u16::from_be_bytes([bytes[4], bytes[5]]) as usize;
+    let mut records: Vec<([u8; 4], usize, usize)> = Vec::new();
+    for index in 0..num_tables {
+        let start = 12 + index * 16;
+        let tag: [u8; 4] = bytes[start..start + 4].try_into().expect("four tag bytes");
+        let offset = u32::from_be_bytes([
+            bytes[start + 8],
+            bytes[start + 9],
+            bytes[start + 10],
+            bytes[start + 11],
+        ]) as usize;
+        let length = u32::from_be_bytes([
+            bytes[start + 12],
+            bytes[start + 13],
+            bytes[start + 14],
+            bytes[start + 15],
+        ]) as usize;
+        if tag == *b"kern" {
+            continue;
+        }
+        records.push((tag, offset, length));
+    }
+    let mut out = Vec::with_capacity(bytes.len());
+    out.extend_from_slice(&bytes[..4]);
+    out.extend_from_slice(&(records.len() as u16).to_be_bytes());
+    out.extend_from_slice(&bytes[6..12]);
+    let mut data_offset = 12 + records.len() * 16;
+    let mut data = Vec::new();
+    for (tag, offset, length) in &records {
+        out.extend_from_slice(tag);
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&(data_offset as u32).to_be_bytes());
+        out.extend_from_slice(&(*length as u32).to_be_bytes());
+        data.extend_from_slice(&bytes[*offset..*offset + *length]);
+        data_offset += length;
+    }
+    out.extend_from_slice(&data);
+    out
+}
+
+#[test]
+fn layout_data_measures_exactly_like_the_atlas() {
+    let _gpu = common::lock();
+    let Some(bytes) = roboto_bytes() else { return };
+    let Some(h) = harness(16, 16) else { return };
+    let chars = charset::latin_western();
+    let styles = [
+        TextStyle::at(16.0),
+        TextStyle {
+            size_px: 48.0,
+            align: TextAlign::Center,
+            tracking: 0.04,
+            line_height: 1.5,
+        },
+        TextStyle {
+            size_px: 7.0,
+            align: TextAlign::Right,
+            tracking: -0.01,
+            line_height: 0.7,
+        },
+    ];
+    let texts = [
+        "", "A", "AV", "AVATAR", "Ao\nAV", "AV\n\nA", "A \n A", "A\r\nA",
+    ];
+
+    for (name, font_bytes) in [
+        ("Roboto", bytes.clone()),
+        (
+            "Roboto without kern (GPOS only)",
+            without_kern_table(&bytes),
+        ),
+    ] {
+        let parser = ferrous_font::FontParser::new(font_bytes.clone()).expect("valid font");
+        let atlas = ferrous_font::FontAtlas::new(h.device(), h.queue(), &parser, chars.clone())
+            .expect("atlas");
+        let data =
+            ferrous_font::LayoutData::from_bytes(&font_bytes, chars.clone()).expect("layout data");
+        for text in texts {
+            for style in styles {
+                let from_atlas = atlas.measure_block(text, style);
+                let from_data = data.measure_block(text, style);
+                assert_eq!(
+                    from_atlas, from_data,
+                    "{name}: {text:?} {style:?} must measure bit for bit"
+                );
+            }
+        }
+        // The GPOS-only face still kerns: AV is narrower than A + V.
+        let style = TextStyle::at(100.0);
+        let av = data.measure_block("AV", style).width;
+        let sum = data.measure_block("A", style).width + data.measure_block("V", style).width;
+        assert!(
+            av < sum,
+            "{name}: GPOS kerning must narrow AV ({av} vs {sum})"
+        );
     }
 }

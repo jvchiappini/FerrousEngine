@@ -142,19 +142,19 @@ impl<'r> RenderContext<'r> {
     pub fn enable_full_3d(&mut self) {
         self.inner.enable_full_3d();
     }
-    
+
     /// Enable and configure distance fog.
     /// `color`: linear RGB. `density`: typical values 0.01 - 0.05.
     pub fn set_fog(&mut self, color: [f32; 3], density: f32) {
         self.inner.set_fog(color, density);
     }
-    
+
     /// Adjust the global exposure multiplier.
     /// Values < 1.0 are darker, > 1.0 are brighter. 0.5 is a good baseline for HDR.
     pub fn set_exposure(&mut self, exposure: f32) {
         self.inner.set_exposure(exposure);
     }
-    
+
     /// Set the background clear color and switch to Solid sky mode.
     pub fn set_background_color(&mut self, color: Color) {
         self.inner.set_background_color(color.to_wgpu());
@@ -233,7 +233,12 @@ impl<'r> RenderContext<'r> {
     }
 
     /// Register a GPU texture from raw RGBA8 bytes.
-    pub fn register_texture(&mut self, width: u32, height: u32, data: &[u8]) -> ferrous_renderer::TextureHandle {
+    pub fn register_texture(
+        &mut self,
+        width: u32,
+        height: u32,
+        data: &[u8],
+    ) -> ferrous_renderer::TextureHandle {
         self.inner.register_texture(width, height, data)
     }
 
@@ -367,7 +372,11 @@ impl<'r> RenderContext<'r> {
 
     /// Starts an **overlay-only** 2D view: shapes use `view_proj` and are
     /// clipped to `rect_px`, but the grid/static batches are not redrawn.
-    pub fn begin_2d_overlay_view(&mut self, rect_px: [f32; 4], view_proj: ferrous_core::glam::Mat4) {
+    pub fn begin_2d_overlay_view(
+        &mut self,
+        rect_px: [f32; 4],
+        view_proj: ferrous_core::glam::Mat4,
+    ) {
         self.inner.begin_2d_overlay_view(rect_px, view_proj);
     }
 
@@ -482,7 +491,11 @@ impl<'r> RenderContext<'r> {
     /// The sprite is centred on its instance transform; see
     /// [`ferrous_2d::render::SpriteInstance`] for the transform and UV
     /// conventions.
-    pub fn draw_sprite_2d(&mut self, texture_id: u32, instance: ferrous_2d::render::SpriteInstance) {
+    pub fn draw_sprite_2d(
+        &mut self,
+        texture_id: u32,
+        instance: ferrous_2d::render::SpriteInstance,
+    ) {
         self.inner.draw_sprite_2d(texture_id, instance);
     }
 
@@ -494,6 +507,32 @@ impl<'r> RenderContext<'r> {
     /// available through `renderer_mut()` for smooth (HD) sprites.
     pub fn register_sprite_texture(&mut self, width: u32, height: u32, data: &[u8]) -> u32 {
         self.inner.register_sprite_texture(width, height, data)
+    }
+
+    /// Upload an image texture with an optional mip chain and sampler choice.
+    ///
+    /// Equivalent to `renderer_mut().register_texture_2d(...)`. The data is
+    /// straight-alpha sRGB RGBA8; the upload premultiplies it and, when
+    /// `options.mipmaps` is set, builds a deterministic linear-light mip chain
+    /// sampled trilinearly.
+    ///
+    /// # Errors
+    ///
+    /// Returns the renderer's typed [`ferrous_2d::render::TextureError`] for a
+    /// zero or oversized dimension or a wrong byte count.
+    pub fn register_texture_2d(
+        &mut self,
+        width: u32,
+        height: u32,
+        data: &[u8],
+        options: ferrous_2d::render::TextureOptions2d,
+    ) -> Result<u32, ferrous_2d::render::TextureError> {
+        self.inner.register_texture_2d(width, height, data, options)
+    }
+
+    /// Total resident bytes of every registered 2D sprite texture.
+    pub fn texture_bytes_2d(&self) -> u64 {
+        self.inner.texture_bytes_2d()
     }
 
     /// Push a technical 2D path for rendering this frame.
@@ -510,8 +549,6 @@ impl<'r> RenderContext<'r> {
     pub fn clear_2d(&mut self) {
         self.inner.clear_2d();
     }
-
-
 
     /// Returns the current viewport size in pixels.
     pub fn viewport_size(&self) -> ferrous_core::glam::Vec2 {

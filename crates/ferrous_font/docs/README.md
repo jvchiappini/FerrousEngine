@@ -59,3 +59,18 @@ Si la carga de una fuente falla o la aplicación se ejecuta en un entorno sin ac
 ## Further Reading
 - [Backend de renderizado — ferrous_ui_render](../../ferrous_ui_render/docs/README.md)
 - [Sistema de assets — ferrous_assets](../../ferrous_assets/docs/README.md)
+
+## CPU layout data (`LayoutData`)
+
+`ferrous_font::LayoutData::from_bytes(bytes, charset)` builds the layout tables
+(glyph metrics, indices, `kern`, GPOS and vertical metrics) without a device.
+`layout_font()` returns the same `LayoutFont` view the atlas uses, and
+`measure_line` / `measure_block` / `layout_line` / `layout_block` delegate to the
+shared layout functions.
+
+`FontAtlas::new` builds its metrics through `LayoutData` and only adds the atlas
+UV rectangles, so a `LayoutData` and a `FontAtlas` for the same font and
+character set measure text bit for bit identically.  Measurement callers should
+use `LayoutData` instead of re-implementing the block arithmetic over
+`FontParser`: it has GPOS, parses the face once and can never drift from the
+renderer.

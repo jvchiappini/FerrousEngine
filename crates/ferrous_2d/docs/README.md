@@ -72,8 +72,15 @@ is unified.
 
 `Renderer::register_sprite_texture` (nearest) / `register_sprite_texture_linear`
 return a `u32` id consumed by `draw_sprite_2d`. One texture means one bind group
-and one draw call; there is no atlas packer yet, and `free_sprite_texture` does
-not release the batcher's per-texture bucket.
+and one draw call; there is no atlas packer yet.
+
+For production images use `Renderer::register_texture_2d`: it takes
+straight-alpha sRGB RGBA8, premultiplies once, builds a deterministic CPU mip
+chain (linear light, odd sizes included), samples trilinearly and reports a
+typed `TextureError` for oversized or malformed input. `texture_bytes_2d()` is
+the resident byte budget. Colour space, mip filtering, sampler choice, `uv_rect`
+cropping, the budget and the layer/mask/effect behaviour are documented in
+[images.md](images.md).
 
 ## Compositing: premultiplied alpha
 

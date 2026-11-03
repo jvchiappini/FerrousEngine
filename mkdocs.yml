@@ -44,6 +44,7 @@ nav:
   - ferrous_2d — 2D Rendering:
     - Overview: ferrous_2d/README.md
     - Text: ferrous_2d/text.md
+    - Images: ferrous_2d/images.md
     - Gradients: ferrous_2d/gradients.md
     - Blending and Layers: ferrous_2d/blend.md
     - Layer Effects: ferrous_2d/effects.md

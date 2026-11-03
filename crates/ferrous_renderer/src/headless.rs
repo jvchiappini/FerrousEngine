@@ -987,6 +987,29 @@ impl Pure2dHarness {
             .register_sprite_texture_premultiplied(width, height, data)
     }
 
+    /// Registers a mipmapped, premultiplied image texture (see
+    /// [`Renderer::register_texture_2d`]).
+    ///
+    /// # Errors
+    ///
+    /// The same typed [`ferrous_2d::render::TextureError`] the renderer returns.
+    pub fn register_texture_2d(
+        &mut self,
+        width: u32,
+        height: u32,
+        data: &[u8],
+        options: ferrous_2d::render::TextureOptions2d,
+    ) -> Result<u32, ferrous_2d::render::TextureError> {
+        self.renderer
+            .register_texture_2d(width, height, data, options)
+    }
+
+    /// Total resident bytes of every registered 2D texture (see
+    /// [`Renderer::texture_bytes_2d`]).
+    pub fn texture_bytes_2d(&self) -> u64 {
+        self.renderer.texture_bytes_2d()
+    }
+
     /// Bakes and registers a 2D font atlas (see
     /// [`Renderer::register_font_2d`]).
     pub fn register_font<I>(

@@ -16,6 +16,8 @@ pub mod gradient;
 pub mod pipeline;
 /// Text layout types and per-glyph draw requests.
 pub mod text;
+/// CPU mip-chain generation and sprite texture options.
+pub mod texture;
 /// POD instance types for sprites, shapes and the camera uniform.
 pub mod types;
 
@@ -24,6 +26,7 @@ pub use effects::*;
 pub use gradient::*;
 pub use pipeline::*;
 pub use text::*;
+pub use texture::*;
 pub use types::*;
 /// The [`Renderer2d`] helper and its per-frame [`Frame2dCounters`].
 pub mod renderer;
