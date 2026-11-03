@@ -294,7 +294,8 @@ impl OffscreenTarget {
             format,
             usage: TextureUsages::RENDER_ATTACHMENT
                 | TextureUsages::COPY_SRC
-                | TextureUsages::COPY_DST,
+                | TextureUsages::COPY_DST
+                | TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         let view = texture.create_view(&TextureViewDescriptor::default());
@@ -1008,6 +1009,47 @@ impl Pure2dHarness {
     /// [`Renderer::texture_bytes_2d`]).
     pub fn texture_bytes_2d(&self) -> u64 {
         self.renderer.texture_bytes_2d()
+    }
+
+    /// Opens a temporal-accumulation sequence (see
+    /// [`Renderer::begin_accumulation_2d`]).
+    ///
+    /// # Errors
+    ///
+    /// The same typed errors as [`Renderer::begin_accumulation_2d`].
+    pub fn begin_accumulation_2d(&mut self) -> Result<(), ferrous_2d::render::AccumulationError> {
+        self.renderer.begin_accumulation_2d()
+    }
+
+    /// Adds the last rendered harness frame with `weight` (see
+    /// [`Renderer::accumulate_frame_2d`]).
+    ///
+    /// # Errors
+    ///
+    /// The same typed errors as [`Renderer::accumulate_frame_2d`].
+    pub fn accumulate_frame_2d(
+        &mut self,
+        weight: f32,
+    ) -> Result<(), ferrous_2d::render::AccumulationError> {
+        self.renderer.accumulate_view_2d(&self.target.view, weight)
+    }
+
+    /// Writes the weighted average into the harness target, so
+    /// [`Self::read_pixels_into`] returns it (see
+    /// [`Renderer::resolve_accumulation_2d`]).
+    ///
+    /// # Errors
+    ///
+    /// The same typed errors as [`Renderer::resolve_accumulation_2d`].
+    pub fn resolve_accumulation_2d(&mut self) -> Result<(), ferrous_2d::render::AccumulationError> {
+        self.renderer
+            .resolve_accumulation_to_2d(&self.target.view, self.target.format)
+    }
+
+    /// Whether an accumulation sequence is open.
+    #[must_use]
+    pub fn accumulation_active_2d(&self) -> bool {
+        self.renderer.accumulation_active_2d()
     }
 
     /// Bakes and registers a 2D font atlas (see

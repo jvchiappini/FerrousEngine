@@ -336,6 +336,24 @@ fn the_texture_budget_counts_mips_and_frees_them() {
     assert_eq!(h.texture_bytes_2d(), 0);
 }
 
+/// `mipmaps: false` builds level 0 only, so resident bytes are exactly
+/// `width * height * 4` (no discarded chain).
+#[test]
+fn no_mipmaps_resident_bytes_are_level_zero_only() {
+    let _guard = GPU_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(mut h) = harness(8, 8, wgpu::Color::BLACK) else {
+        return;
+    };
+    // An odd size would otherwise produce 7x5 + 3x2 + 1x1 levels.
+    let data = vec![128u8; 7 * 5 * 4];
+    let texture = h
+        .register_texture_2d(7, 5, &data, TextureOptions2d::pixel_art())
+        .unwrap();
+    assert_eq!(h.texture_bytes_2d(), 7 * 5 * 4);
+    h.renderer_mut().free_sprite_texture(texture);
+    assert_eq!(h.texture_bytes_2d(), 0);
+}
+
 /// A texture above the device limit is a typed error, not a panic.
 #[test]
 fn an_oversized_texture_is_a_typed_error() {

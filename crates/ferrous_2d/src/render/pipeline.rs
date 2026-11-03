@@ -131,24 +131,24 @@ impl BlendMode2d {
 }
 
 /// Everything a Pure2D pipeline needs besides its shader and vertex layout.
-struct Pipeline2dDesc<'a> {
-    label: &'a str,
-    format: wgpu::TextureFormat,
-    depth_format: Option<wgpu::TextureFormat>,
-    sample_count: u32,
-    topology: wgpu::PrimitiveTopology,
-    shader: &'a wgpu::ShaderModule,
-    vertex_entry: &'a str,
-    fragment_entry: &'a str,
-    vertex_buffers: &'a [wgpu::VertexBufferLayout<'a>],
-    bind_group_layouts: &'a [&'a wgpu::BindGroupLayout],
-    depth_write_enabled: bool,
-    depth_compare: wgpu::CompareFunction,
-    blend: Option<wgpu::BlendState>,
+pub(crate) struct Pipeline2dDesc<'a> {
+    pub(crate) label: &'a str,
+    pub(crate) format: wgpu::TextureFormat,
+    pub(crate) depth_format: Option<wgpu::TextureFormat>,
+    pub(crate) sample_count: u32,
+    pub(crate) topology: wgpu::PrimitiveTopology,
+    pub(crate) shader: &'a wgpu::ShaderModule,
+    pub(crate) vertex_entry: &'a str,
+    pub(crate) fragment_entry: &'a str,
+    pub(crate) vertex_buffers: &'a [wgpu::VertexBufferLayout<'a>],
+    pub(crate) bind_group_layouts: &'a [&'a wgpu::BindGroupLayout],
+    pub(crate) depth_write_enabled: bool,
+    pub(crate) depth_compare: wgpu::CompareFunction,
+    pub(crate) blend: Option<wgpu::BlendState>,
 }
 
 /// The single render-pipeline constructor shared by every Pure2D pipeline.
-fn build_2d_pipeline(
+pub(crate) fn build_2d_pipeline(
     device: &wgpu::Device,
     desc: Pipeline2dDesc<'_>,
     cache: Option<&wgpu::PipelineCache>,
@@ -234,7 +234,10 @@ fn create_camera_bind_group_layout(device: &wgpu::Device, label: &str) -> wgpu::
 
 /// Shared bind-group layout for a sampled texture plus filtering sampler
 /// (group 1 of the sprite and text pipelines).
-fn create_texture_bind_group_layout(device: &wgpu::Device, label: &str) -> wgpu::BindGroupLayout {
+pub(crate) fn create_texture_bind_group_layout(
+    device: &wgpu::Device,
+    label: &str,
+) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some(label),
         entries: &[
@@ -258,7 +261,11 @@ fn create_texture_bind_group_layout(device: &wgpu::Device, label: &str) -> wgpu:
     })
 }
 
-fn create_shader(device: &wgpu::Device, label: &str, source: String) -> wgpu::ShaderModule {
+pub(crate) fn create_shader(
+    device: &wgpu::Device,
+    label: &str,
+    source: String,
+) -> wgpu::ShaderModule {
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
         source: wgpu::ShaderSource::Wgsl(source.into()),

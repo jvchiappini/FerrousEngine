@@ -4,6 +4,8 @@
 //! bind-group layouts, the per-frame batchers, and [`Renderer2d`], the helper
 //! that owns the instance buffers and issues the draw calls.
 
+/// Weighted temporal accumulation into a linear `Rgba16Float` target.
+pub mod accumulation;
 /// Per-frame instance batchers ([`ShapeBatcher`], [`SpriteBatcher`]) and the
 /// unified [`DrawCommand2d`] command stream.
 pub mod batch;
@@ -21,6 +23,7 @@ pub mod texture;
 /// POD instance types for sprites, shapes and the camera uniform.
 pub mod types;
 
+pub use accumulation::*;
 pub use batch::*;
 pub use effects::*;
 pub use gradient::*;

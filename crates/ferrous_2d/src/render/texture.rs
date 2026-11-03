@@ -166,6 +166,35 @@ pub fn build_mip_chain(
     height: u32,
     rgba8_srgb_straight: &[u8],
 ) -> Result<MipChain, TextureError> {
+    build_chain(width, height, rgba8_srgb_straight, true)
+}
+
+/// Builds only mip level 0 from straight-alpha sRGB RGBA8.
+///
+/// This is the `mipmaps: false` path: a 4K image does not pay for a full box
+/// filtered chain that would be discarded before upload.  Level 0 has exactly
+/// the same premultiplied sRGB bytes [`build_mip_chain`] produces for its first
+/// level, so the sampled texels are identical.
+///
+/// # Errors
+///
+/// Returns [`TextureError::ZeroSize`] for a zero dimension and
+/// [`TextureError::SizeMismatch`] for the wrong byte count.
+pub fn build_level_zero(
+    width: u32,
+    height: u32,
+    rgba8_srgb_straight: &[u8],
+) -> Result<MipChain, TextureError> {
+    build_chain(width, height, rgba8_srgb_straight, false)
+}
+
+/// Shared chain builder; `full` selects every level or level 0 only.
+fn build_chain(
+    width: u32,
+    height: u32,
+    rgba8_srgb_straight: &[u8],
+    full: bool,
+) -> Result<MipChain, TextureError> {
     if width == 0 || height == 0 {
         return Err(TextureError::ZeroSize);
     }
@@ -190,6 +219,9 @@ pub fn build_mip_chain(
     }
 
     let mut levels = vec![encode_level(width, height, &current)];
+    if !full {
+        return Ok(MipChain { levels });
+    }
     let mut source_width = width;
     let mut source_height = height;
     while source_width > 1 || source_height > 1 {
@@ -371,6 +403,18 @@ mod tests {
         // Premultiplied linear 0.502 -> sRGB ~188, alpha stays 128.
         assert!((i16::from(texel[0]) - 188).abs() <= 1, "got {}", texel[0]);
         assert_eq!(texel[3], 128);
+    }
+
+    #[test]
+    fn level_zero_matches_the_first_level_of_the_full_chain() {
+        let data = [
+            0u8, 64, 128, 255, 255, 200, 100, 32, 10, 20, 30, 40, 50, 60, 70, 255,
+        ];
+        let flat = build_level_zero(2, 2, &data).unwrap();
+        assert_eq!(flat.len(), 1);
+        assert_eq!(flat.bytes(), 2 * 2 * 4);
+        let full = build_mip_chain(2, 2, &data).unwrap();
+        assert_eq!(flat.level(0), full.level(0));
     }
 
     #[test]

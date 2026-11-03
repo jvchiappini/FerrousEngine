@@ -535,6 +535,44 @@ impl<'r> RenderContext<'r> {
         self.inner.texture_bytes_2d()
     }
 
+    /// Opens a temporal-accumulation sequence (see
+    /// [`ferrous_renderer::Renderer::begin_accumulation_2d`]).
+    ///
+    /// # Errors
+    ///
+    /// The renderer's typed [`ferrous_2d::render::AccumulationError`].
+    pub fn begin_accumulation_2d(&mut self) -> Result<(), ferrous_2d::render::AccumulationError> {
+        self.inner.begin_accumulation_2d()
+    }
+
+    /// Adds the current output target as one weighted sub-frame (see
+    /// [`ferrous_renderer::Renderer::accumulate_frame_2d`]).
+    ///
+    /// # Errors
+    ///
+    /// The renderer's typed [`ferrous_2d::render::AccumulationError`].
+    pub fn accumulate_frame_2d(
+        &mut self,
+        weight: f32,
+    ) -> Result<(), ferrous_2d::render::AccumulationError> {
+        self.inner.accumulate_frame_2d(weight)
+    }
+
+    /// Resolves the weighted average into the normal output target (see
+    /// [`ferrous_renderer::Renderer::resolve_accumulation_2d`]).
+    ///
+    /// # Errors
+    ///
+    /// The renderer's typed [`ferrous_2d::render::AccumulationError`].
+    pub fn resolve_accumulation_2d(&mut self) -> Result<(), ferrous_2d::render::AccumulationError> {
+        self.inner.resolve_accumulation_2d()
+    }
+
+    /// Whether an accumulation sequence is open.
+    pub fn accumulation_active_2d(&self) -> bool {
+        self.inner.accumulation_active_2d()
+    }
+
     /// Push a technical 2D path for rendering this frame.
     pub fn draw_2d_path(&mut self, path: ferrous_2d::components::Path2d) {
         self.inner.draw_2d_path(&path);

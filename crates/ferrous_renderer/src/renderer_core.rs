@@ -819,6 +819,8 @@ pub struct Renderer {
     pub renderer_2d: Renderer2d,
     /// 2D renderer para Pure2D: sample_count=1, formato swapchain, sin overhead HDR.
     pub renderer_2d_pure: Renderer2d,
+    /// Open temporal-accumulation sequence (see `begin_accumulation_2d`).
+    accumulation_2d: Option<ferrous_2d::render::Accumulation2d>,
     /// Recorded multi-view segments (`begin_2d_view`/`end_2d_view`).
     views_2d: Vec<View2dCommand>,
     view_2d_open: bool,
@@ -1212,6 +1214,7 @@ impl Renderer {
             aa_pass,
             renderer_2d,
             renderer_2d_pure,
+            accumulation_2d: None,
             views_2d: Vec::new(),
             view_2d_open: false,
             shape_batcher,
@@ -3745,11 +3748,12 @@ impl Renderer {
     /// Registers a production image texture with an optional CPU mip chain.
     ///
     /// `rgba8_srgb_straight` is straight-alpha sRGB RGBA8.  The upload converts
-    /// it to premultiplied linear light once (the shader skips the second
-    /// premultiply), builds a deterministic box-filtered mip chain when
-    /// `options.mipmaps` is set, and samples trilinearly in that case.  Odd
-    /// sizes are resampled with exact area weights (see
-    /// [`ferrous_2d::render::build_mip_chain`]).
+    /// it to premultiplied linear light and re-encodes it to premultiplied
+    /// **sRGB-encoded** texels once (the shader skips the second premultiply).
+    /// When `options.mipmaps` is set it builds a deterministic box-filtered mip
+    /// chain and samples trilinearly; otherwise it builds level 0 only and
+    /// samples with the requested filter.  Odd sizes are resampled with exact
+    /// area weights (see [`ferrous_2d::render::build_mip_chain`]).
     ///
     /// The returned id is consumed by `draw_sprite_2d` and released with
     /// [`Self::free_sprite_texture`].  Use [`Self::texture_bytes_2d`] to read
@@ -3780,11 +3784,14 @@ impl Renderer {
                 limit,
             });
         }
-        let chain = ferrous_2d::render::build_mip_chain(width, height, rgba8_srgb_straight)?;
-        // `mipmaps: false` uploads level 0 only; building the chain first is
-        // cheap enough and keeps one code path, but the texture must not carry
-        // levels the sampler would then be free to pick.
-        let level_count = if options.mipmaps { chain.len() } else { 1 };
+        // `mipmaps: false` builds and uploads level 0 only: a 4K image must
+        // not pay for a full chain that is discarded before the upload.
+        let chain = if options.mipmaps {
+            ferrous_2d::render::build_mip_chain(width, height, rgba8_srgb_straight)?
+        } else {
+            ferrous_2d::render::build_level_zero(width, height, rgba8_srgb_straight)?
+        };
+        let level_count = chain.len();
         let texture = self
             .context
             .device
@@ -3853,6 +3860,156 @@ impl Renderer {
             u64::from(width) * u64::from(height) * 4
         };
         Ok(self.store_sprite_texture(texture, sampler, true, bytes))
+    }
+
+    /// Opens a temporal-accumulation sequence for the Pure2D path.
+    ///
+    /// The sequence renders several sub-frames into the normal output target,
+    /// then [`Self::accumulate_frame_2d`] adds each one to an `Rgba16Float`
+    /// linear accumulator.  [`Self::resolve_accumulation_2d`] writes the
+    /// weighted average back into the output target, so a normal readback sees
+    /// the result.
+    ///
+    /// # Errors
+    ///
+    /// [`ferrous_2d::render::AccumulationError::Unsupported`] outside
+    /// [`RendererMode::Pure2D`] and
+    /// [`ferrous_2d::render::AccumulationError::TooLarge`] when the target is
+    /// above the device limit.
+    pub fn begin_accumulation_2d(&mut self) -> Result<(), ferrous_2d::render::AccumulationError> {
+        use ferrous_2d::render::{Accumulation2d, AccumulationError};
+        if self.mode != RendererMode::Pure2D {
+            return Err(AccumulationError::Unsupported {
+                reason: "the accumulation API is part of the Pure2D path",
+            });
+        }
+        let size = (self.width, self.height);
+        let recreate = self
+            .accumulation_2d
+            .as_ref()
+            .is_none_or(|accumulation| accumulation.size() != size);
+        if recreate {
+            self.accumulation_2d = Some(Accumulation2d::new(
+                self.context.device.clone(),
+                size.0,
+                size.1,
+            )?);
+        }
+        if let Some(accumulation) = self.accumulation_2d.as_mut() {
+            accumulation.begin(&self.context.queue);
+        }
+        Ok(())
+    }
+
+    /// Adds the current output target as one weighted sub-frame.
+    ///
+    /// Call it after the sub-frame's draw (and after `render_to_texture_view`
+    /// has been submitted, or from a harness that submits per frame).
+    ///
+    /// # Errors
+    ///
+    /// The same typed errors as [`ferrous_2d::render::Accumulation2d::accumulate`].
+    pub fn accumulate_frame_2d(
+        &mut self,
+        weight: f32,
+    ) -> Result<(), ferrous_2d::render::AccumulationError> {
+        use ferrous_2d::render::AccumulationError;
+        let source = self.render_target.color_view();
+        let Some(accumulation) = self.accumulation_2d.as_mut() else {
+            return Err(AccumulationError::NotBegun);
+        };
+        let mut encoder =
+            self.context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("2D Accumulation Frame Encoder"),
+                });
+        accumulation.accumulate(&mut encoder, &self.context.queue, source, weight)?;
+        self.context.queue.submit(Some(encoder.finish()));
+        Ok(())
+    }
+
+    /// Adds an explicit sub-frame view (used by the headless harness).
+    ///
+    /// # Errors
+    ///
+    /// The same typed errors as [`ferrous_2d::render::Accumulation2d::accumulate`].
+    pub(crate) fn accumulate_view_2d(
+        &mut self,
+        source: &wgpu::TextureView,
+        weight: f32,
+    ) -> Result<(), ferrous_2d::render::AccumulationError> {
+        use ferrous_2d::render::AccumulationError;
+        let Some(accumulation) = self.accumulation_2d.as_mut() else {
+            return Err(AccumulationError::NotBegun);
+        };
+        let mut encoder =
+            self.context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("2D Accumulation Frame Encoder"),
+                });
+        accumulation.accumulate(&mut encoder, &self.context.queue, source, weight)?;
+        self.context.queue.submit(Some(encoder.finish()));
+        Ok(())
+    }
+
+    /// Resolves the accumulated weighted average into the normal output target.
+    ///
+    /// # Errors
+    ///
+    /// [`ferrous_2d::render::AccumulationError::NotBegun`] and
+    /// [`ferrous_2d::render::AccumulationError::ZeroWeight`].
+    pub fn resolve_accumulation_2d(&mut self) -> Result<(), ferrous_2d::render::AccumulationError> {
+        use ferrous_2d::render::AccumulationError;
+        let format = self.render_target.color.format;
+        let target = self.render_target.color_view();
+        let Some(accumulation) = self.accumulation_2d.as_mut() else {
+            return Err(AccumulationError::NotBegun);
+        };
+        let mut encoder =
+            self.context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("2D Accumulation Resolve Encoder"),
+                });
+        accumulation.resolve(&mut encoder, &self.context.queue, target, format)?;
+        self.context.queue.submit(Some(encoder.finish()));
+        Ok(())
+    }
+
+    /// Resolves into an explicit target view (used by the headless harness).
+    ///
+    /// # Errors
+    ///
+    /// [`ferrous_2d::render::AccumulationError::NotBegun`] and
+    /// [`ferrous_2d::render::AccumulationError::ZeroWeight`].
+    pub(crate) fn resolve_accumulation_to_2d(
+        &mut self,
+        target: &wgpu::TextureView,
+        target_format: wgpu::TextureFormat,
+    ) -> Result<(), ferrous_2d::render::AccumulationError> {
+        use ferrous_2d::render::AccumulationError;
+        let Some(accumulation) = self.accumulation_2d.as_mut() else {
+            return Err(AccumulationError::NotBegun);
+        };
+        let mut encoder =
+            self.context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("2D Accumulation Resolve Encoder"),
+                });
+        accumulation.resolve(&mut encoder, &self.context.queue, target, target_format)?;
+        self.context.queue.submit(Some(encoder.finish()));
+        Ok(())
+    }
+
+    /// Whether an accumulation sequence is open.
+    #[must_use]
+    pub fn accumulation_active_2d(&self) -> bool {
+        self.accumulation_2d
+            .as_ref()
+            .is_some_and(ferrous_2d::render::Accumulation2d::is_begun)
     }
 
     /// Total resident bytes of every registered 2D sprite texture.

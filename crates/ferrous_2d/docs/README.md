@@ -150,6 +150,14 @@ renderer.pop_layer_2d()?;
   Gaussian blur, drop shadow and glow, applied to the finished texture before
   it composites. See [`effects.md`](effects.md); the kernel is a pure function
   of the radius and the chain is deterministic.
-- A layer may be masked (push_layer_2d_masked plus egin_mask_2d /
+- A layer may be masked (push_layer_2d_masked plus begin_mask_2d /
   end_mask_2d): alpha or luma coverage from a second offscreen layer
   multiplies the finished, effected texture. See [masks.md](masks.md).
+
+## Temporal accumulation
+
+`begin_accumulation_2d` / `accumulate_frame_2d` / `resolve_accumulation_2d`
+average completed sub-frames in linear light on the GPU, for motion blur,
+supersampling and any other "average N renders" use. The target is
+`Rgba16Float`, weights are normalised by their sum and the order is
+deterministic. See [accumulation.md](accumulation.md).
