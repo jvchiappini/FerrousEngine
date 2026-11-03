@@ -24,6 +24,7 @@
 //   bit 5 (0x20): GRADIENT_RADIAL_BIT — gradiente radial (combinado con GRADIENT_BIT)
 //   bit 6 (0x40): BORDER_BIT          — borde (outline) sin relleno; uv0.x = border_width
 //   bit 7 (0x80): SHADOW_BIT          — sombra suavizada (box-shadow aproximado)
+//   bit 9 (0x200): LINE_BIT           — segmento anti-aliased; uv0/uv1 = extremos, radii.x = half width
 
 struct VsOut {
     @builtin(position) clip_pos: vec4<f32>,
@@ -149,6 +150,23 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let d    = dist - r;
         let alpha = 1.0 - smoothstep(0.0, 1.0, d);
         return vec4<f32>(rgb, alpha);
+    }
+
+    // ── LINE (flag 0x100) ─────────────────────────────────────────────────────
+    // uv0/uv1 are the segment endpoints local to the quad and radii.x is
+    // the half width. The distance to the segment gives exact anti-aliasing
+    // and round caps at both ends. The AA band is a constant pixel because
+    // fwidth() must stay in uniform control flow.
+    if (in.flags & 0x200u) != 0u {
+        let a = in.uv0;
+        let b = in.uv1;
+        let point = vec2<f32>(px, py);
+        let segment = b - a;
+        let length_sq = max(dot(segment, segment), 1e-6);
+        let t = clamp(dot(point - a, segment) / length_sq, 0.0, 1.0);
+        let distance = length(point - (a + segment * t));
+        let alpha = 1.0 - smoothstep(in.radii.x - 0.5, in.radii.x + 0.5, distance);
+        return vec4<f32>(in.color.rgb, in.color.a * alpha);
     }
 
     // ── SHADOW (flag 0x80) ────────────────────────────────────────────────────

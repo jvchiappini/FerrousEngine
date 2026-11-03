@@ -128,6 +128,21 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         return vec4<f32>(rgb, alpha);
     }
 
+    // ── LINE (flag 0x100) ──────────────────────────────────────────────────────
+    // uv0/uv1 are the segment endpoints local to the quad and radii.x is the
+    // half width; the distance to the segment gives round-capped AA.
+    if (in.flags & 0x200u) != 0u {
+        let a = in.uv0;
+        let b = in.uv1;
+        let point = vec2<f32>(px, py);
+        let segment = b - a;
+        let length_sq = max(dot(segment, segment), 1e-6);
+        let t = clamp(dot(point - a, segment) / length_sq, 0.0, 1.0);
+        let distance = length(point - (a + segment * t));
+        let alpha = 1.0 - smoothstep(in.radii.x - 0.5, in.radii.x + 0.5, distance);
+        return vec4<f32>(in.color.rgb, in.color.a * alpha);
+    }
+
     // ── SHADOW (flag 0x80) ─────────────────────────────────────────────────────
     if (in.flags & 0x80u) != 0u {
         let blur      = in.uv0.x;

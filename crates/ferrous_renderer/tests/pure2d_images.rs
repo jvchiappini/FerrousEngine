@@ -11,6 +11,7 @@ use ferrous_2d::render::{
     TextureFilter2d, TextureOptions2d,
 };
 use ferrous_renderer::headless::{Pure2dHarness, DEFAULT_FORMAT};
+use ferrous_renderer::TextureUpdateError;
 use glam::{Mat4, Quat, Vec2, Vec3};
 
 static GPU_LOCK: Mutex<()> = Mutex::new(());
@@ -90,6 +91,60 @@ fn a_checker_downsampled_is_linear_half() {
     h.render_frame_blocking();
     let pixels = h.read_pixels();
     near(pixel(&pixels, 8, 4, 4), [188, 188, 188], 2, "checker mip");
+}
+
+/// A same-size frame rewrites the texels in place: the same id, bind group
+/// and sampler show the new colour, and bad sizes are rejected with typed
+/// errors instead of panicking or corrupting the upload.
+#[test]
+fn a_sprite_texture_updates_in_place() {
+    let _guard = GPU_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(mut h) = harness(8, 8, wgpu::Color::BLACK) else {
+        return;
+    };
+    let red = vec![255, 0, 0, 255].repeat(4);
+    let texture = h.register_texture_rgba8(2, 2, &red);
+
+    h.begin_frame();
+    h.draw_sprite(
+        texture,
+        sprite(Vec2::ZERO, Vec2::splat(8.0), [0.0, 0.0, 1.0, 1.0]),
+    );
+    h.render_frame_blocking();
+    near(
+        pixel(&h.read_pixels(), 8, 4, 4),
+        [255, 0, 0],
+        2,
+        "registered red",
+    );
+
+    let green = vec![0, 255, 0, 255].repeat(4);
+    h.renderer_mut()
+        .update_sprite_texture(texture, 2, 2, &green)
+        .unwrap();
+    h.begin_frame();
+    h.draw_sprite(
+        texture,
+        sprite(Vec2::ZERO, Vec2::splat(8.0), [0.0, 0.0, 1.0, 1.0]),
+    );
+    h.render_frame_blocking();
+    near(
+        pixel(&h.read_pixels(), 8, 4, 4),
+        [0, 255, 0],
+        2,
+        "in-place green",
+    );
+
+    assert!(matches!(
+        h.renderer_mut()
+            .update_sprite_texture(texture, 2, 2, &[0; 4]),
+        Err(TextureUpdateError::SizeMismatch { .. })
+    ));
+    let bigger = vec![0; 4 * 4 * 4];
+    assert!(matches!(
+        h.renderer_mut().update_sprite_texture(texture, 4, 4, &bigger),
+        Err(TextureUpdateError::DimensionsMismatch { .. })
+    ));
 }
 
 /// The CPU chain is exact for the 2x2 -> 1x1 case and for odd sizes.

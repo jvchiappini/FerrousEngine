@@ -374,6 +374,50 @@ impl GuiBatch {
         );
     }
 
+    /// Pushes one anti-aliased line segment.
+    ///
+    /// The quad is the segment's bounding box expanded by `width / 2 + 1`
+    /// pixels on every side; `uv0`/`uv1` carry the endpoints in pixels
+    /// relative to that box and `radii.x` carries the half width. `gui.wgsl`
+    /// computes the exact distance to the segment per fragment, so diagonals
+    /// are anti-aliased and both ends are round-capped. The packing is
+    /// documented on [`crate::LINE_BIT`].
+    ///
+    /// A non-positive width or a transparent colour is ignored. `color` is
+    /// straight RGBA, like every other batch quad.
+    pub fn line(&mut self, from: [f32; 2], to: [f32; 2], width: f32, color: [f32; 4]) {
+        if !(width > 0.0) || color[3] <= 0.0 {
+            return;
+        }
+        let half = (width * 0.5).max(0.5);
+        let pad = half + 1.0;
+        let min = [from[0].min(to[0]) - pad, from[1].min(to[1]) - pad];
+        let max = [from[0].max(to[0]) + pad, from[1].max(to[1]) + pad];
+        self.push_quad(GuiQuad {
+            pos: min,
+            size: [max[0] - min[0], max[1] - min[1]],
+            uv0: [from[0] - min[0], from[1] - min[1]],
+            uv1: [to[0] - min[0], to[1] - min[1]],
+            color,
+            color_b: [0.0; 4],
+            radii: [half, 0.0, 0.0, 0.0],
+            tex_index: 0,
+            flags: crate::LINE_BIT,
+            z_order: 0.0,
+            node_id: 0,
+        });
+        self.update_last_segment();
+    }
+
+    /// Pushes a connected polyline as one anti-aliased [`Self::line`] per
+    /// segment. Adjacent segments share their endpoint; round caps make the
+    /// joint continuous. Fewer than two points draw nothing.
+    pub fn polyline(&mut self, points: &[[f32; 2]], width: f32, color: [f32; 4]) {
+        for pair in points.windows(2) {
+            self.line(pair[0], pair[1], width, color);
+        }
+    }
+
     pub fn rect_textured(
         &mut self,
         x: f32,
@@ -483,6 +527,34 @@ mod tests {
         assert_eq!(quad.flags, crate::BORDER_BIT);
         assert_eq!(quad.pos, [10.0, 20.0]);
         assert_eq!(quad.size, [100.0, 40.0]);
+    }
+
+    #[test]
+    fn line_packs_endpoints_and_bounds_for_the_shader() {
+        let quad = quad_of(|b| b.line([10.0, 20.0], [110.0, 60.0], 2.0, [1.0; 4]));
+        assert_eq!(quad.flags, crate::LINE_BIT);
+        // pad = half width (1) + 1 AA pixel; the endpoints are stored local
+        // to the expanded box.
+        assert_eq!(quad.pos, [8.0, 18.0]);
+        assert_eq!(quad.size, [104.0, 44.0]);
+        assert_eq!(quad.uv0, [2.0, 2.0]);
+        assert_eq!(quad.uv1, [102.0, 42.0]);
+        assert_eq!(quad.radii[0], 1.0);
+    }
+
+    #[test]
+    fn a_polyline_emits_one_quad_per_segment() {
+        let mut batch = GuiBatch::new();
+        batch.polyline(
+            &[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+            1.0,
+            [1.0; 4],
+        );
+        assert_eq!(batch.quads.len(), 3);
+        assert!(batch.quads.iter().all(|q| q.flags == crate::LINE_BIT));
+        // A single point (and a degenerate list) draws nothing.
+        batch.polyline(&[[0.0, 0.0]], 1.0, [1.0; 4]);
+        assert_eq!(batch.quads.len(), 3);
     }
 
     #[test]

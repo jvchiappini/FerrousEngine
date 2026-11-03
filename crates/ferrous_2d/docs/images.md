@@ -30,6 +30,25 @@ renderer.draw_sprite_2d(texture, SpriteInstance { /* ... */ });
 `TextureOptions2d::photo()` is mipmapped + linear; `::pixel_art()` is one level
 + nearest.
 
+## Updating a texture in place
+
+A preview that produces a new frame at the same size must not free and
+re-register the sprite every frame: that rebuilds the texture, the sampler and
+the bind group.  `Renderer::update_sprite_texture(id, width, height, data)`
+rewrites the existing texture with `queue.write_texture` and returns a typed
+`TextureUpdateError`:
+
+| Variant | Meaning |
+|---|---|
+| `ZeroSize` | A dimension is zero. |
+| `UnknownTexture` | The id was never registered or was freed. |
+| `SizeMismatch` | `data` is not `width * height * 4` bytes. |
+| `DimensionsMismatch` | The registered texture has another size; free and register again. |
+
+`data` uses the encoding of the registration call (straight sRGB for
+`register_sprite_texture*`, premultiplied for `_premultiplied`).  The id,
+bind group and sampler stay valid, so the next draw sees the new texels.
+
 ## Colour space and premultiplication
 
 - The texture format is `Rgba8UnormSrgb`: wgpu **decodes sRGB to linear** on

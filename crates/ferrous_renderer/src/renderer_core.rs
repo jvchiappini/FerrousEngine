@@ -663,6 +663,55 @@ pub enum RendererMode {
     Pure2D,
 }
 
+/// Why [`Renderer::update_sprite_texture`] rejected an in-place update.
+///
+/// The error is typed instead of a boolean so a caller can tell a stale id
+/// from a resized frame; a resized frame must be freed and registered again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TextureUpdateError {
+    /// A width or height of zero.
+    ZeroSize,
+    /// The id was never registered, or it was already freed.
+    UnknownTexture {
+        /// The rejected id.
+        id: u32,
+    },
+    /// The data is not `width * height * 4` bytes.
+    SizeMismatch {
+        /// Required length.
+        expected: usize,
+        /// Supplied length.
+        actual: usize,
+    },
+    /// The registered texture has different dimensions.
+    DimensionsMismatch {
+        /// Registered dimensions.
+        expected: (u32, u32),
+        /// Requested dimensions.
+        actual: (u32, u32),
+    },
+}
+
+impl std::fmt::Display for TextureUpdateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ZeroSize => write!(f, "texture width and height must be at least 1"),
+            Self::UnknownTexture { id } => write!(f, "sprite texture {id} is not registered"),
+            Self::SizeMismatch { expected, actual } => write!(
+                f,
+                "texture data is {actual} bytes but {expected} are required (w*h*4)"
+            ),
+            Self::DimensionsMismatch { expected, actual } => write!(
+                f,
+                "texture is {}x{} but the update is {}x{}; free and register a new size",
+                expected.0, expected.1, actual.0, actual.1
+            ),
+        }
+    }
+}
+
+impl std::error::Error for TextureUpdateError {}
+
 /// Top-level renderer.
 ///
 /// Holds GPU resources and executes a list of [`RenderPass`] stages each frame
@@ -856,6 +905,13 @@ pub struct Renderer {
 
     /// Bind groups de texturas indexados por texture_id para sprites 2D en Pure2D.
     pub sprite_bind_groups: std::collections::HashMap<u32, std::sync::Arc<wgpu::BindGroup>>,
+    /// The GPU texture behind each sprite id, so a same-size frame can be
+    /// rewritten in place instead of being freed and registered again every
+    /// preview frame (see [`Self::update_sprite_texture`]).
+    sprite_textures: std::collections::HashMap<u32, wgpu::Texture>,
+    /// Dimensions of each registered sprite texture, used to reject a
+    /// resizing in-place update instead of silently corrupting the upload.
+    sprite_texture_sizes: std::collections::HashMap<u32, (u32, u32)>,
     /// High-water mark: the next never-before-used sprite texture id.
     pub next_sprite_texture_id: u32,
     /// Ids returned by `free_sprite_texture`, reused before allocating a new id.
@@ -1229,6 +1285,8 @@ impl Renderer {
             static_2d_order_scratch: Vec::new(),
             static_2d_runs_scratch: Vec::new(),
             sprite_bind_groups: std::collections::HashMap::new(),
+            sprite_textures: std::collections::HashMap::new(),
+            sprite_texture_sizes: std::collections::HashMap::new(),
             next_sprite_texture_id: 0,
             freed_sprite_texture_ids: Vec::new(),
             sprite_texture_bytes: std::collections::HashMap::new(),
@@ -3859,7 +3917,7 @@ impl Renderer {
         } else {
             u64::from(width) * u64::from(height) * 4
         };
-        Ok(self.store_sprite_texture(texture, sampler, true, bytes))
+        Ok(self.store_sprite_texture(texture, sampler, true, width, height, bytes))
     }
 
     /// Opens a temporal-accumulation sequence for the Pure2D path.
@@ -4069,6 +4127,8 @@ impl Renderer {
             texture,
             sampler,
             premultiplied,
+            width,
+            height,
             u64::from(width) * u64::from(height) * 4,
         )
     }
@@ -4079,6 +4139,8 @@ impl Renderer {
         texture: wgpu::Texture,
         sampler: wgpu::Sampler,
         premultiplied: bool,
+        width: u32,
+        height: u32,
         bytes: u64,
     ) -> u32 {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -4107,6 +4169,8 @@ impl Renderer {
             }
         };
         self.sprite_bind_groups.insert(id, bind_group);
+        self.sprite_textures.insert(id, texture);
+        self.sprite_texture_sizes.insert(id, (width, height));
         self.sprite_texture_bytes.insert(id, bytes);
         if premultiplied {
             self.premultiplied_textures.insert(id);
@@ -4128,10 +4192,84 @@ impl Renderer {
         let existed = self.sprite_bind_groups.remove(&texture_id).is_some();
         self.premultiplied_textures.remove(&texture_id);
         self.sprite_texture_bytes.remove(&texture_id);
+        self.sprite_textures.remove(&texture_id);
+        self.sprite_texture_sizes.remove(&texture_id);
         self.sprite_batcher_2d.remove_texture(texture_id);
         if existed && !self.freed_sprite_texture_ids.contains(&texture_id) {
             self.freed_sprite_texture_ids.push(texture_id);
         }
+    }
+
+    /// Rewrites a registered sprite texture in place.
+    ///
+    /// `data` must use the same encoding as the registration call: straight
+    /// RGBA8 sRGB for [`Self::register_sprite_texture`] and
+    /// [`Self::register_sprite_texture_linear`], premultiplied bytes for
+    /// [`Self::register_sprite_texture_premultiplied`]. The dimensions must
+    /// equal the registered size; a resized frame is freed and registered
+    /// again by the caller instead.
+    ///
+    /// This is the steady-state path for an offscreen preview that produces a
+    /// new frame at the same size: no texture, sampler or bind group is
+    /// recreated, so only the texel upload changes.
+    ///
+    /// # Errors
+    ///
+    /// [`TextureUpdateError::ZeroSize`] for a zero dimension,
+    /// [`TextureUpdateError::SizeMismatch`] when `data` is not
+    /// `width * height * 4` bytes, [`TextureUpdateError::UnknownTexture`] for
+    /// a stale id and [`TextureUpdateError::DimensionsMismatch`] when the
+    /// registered size differs.
+    pub fn update_sprite_texture(
+        &mut self,
+        texture_id: u32,
+        width: u32,
+        height: u32,
+        data: &[u8],
+    ) -> Result<(), TextureUpdateError> {
+        if width == 0 || height == 0 {
+            return Err(TextureUpdateError::ZeroSize);
+        }
+        let expected =
+            usize::try_from(u64::from(width) * u64::from(height) * 4).unwrap_or(usize::MAX);
+        if data.len() != expected {
+            return Err(TextureUpdateError::SizeMismatch {
+                expected,
+                actual: data.len(),
+            });
+        }
+        let Some(&registered) = self.sprite_texture_sizes.get(&texture_id) else {
+            return Err(TextureUpdateError::UnknownTexture { id: texture_id });
+        };
+        if registered != (width, height) {
+            return Err(TextureUpdateError::DimensionsMismatch {
+                expected: registered,
+                actual: (width, height),
+            });
+        }
+        let Some(texture) = self.sprite_textures.get(&texture_id) else {
+            return Err(TextureUpdateError::UnknownTexture { id: texture_id });
+        };
+        self.context.queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            data,
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        Ok(())
     }
 
     /// Bake a font MSDF atlas and register it for Pure2D text.

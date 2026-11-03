@@ -54,6 +54,12 @@ Offset  Size  Campo
 
 El flag `TEXTURED_BIT (1 << 1)` activa el muestreo de textura en el fragment shader.
 
+`GuiBatch::line` y `GuiBatch::polyline` usan `LINE_BIT (1 << 9)`: el quad es
+la caja del segmento expandida por media anchura más un píxel, `uv0`/`uv1`
+llevan los extremos en coordenadas locales al quad y `radii.x` lleva la media
+anchura. `gui.wgsl` calcula la distancia exacta al segmento por fragmento, así
+que las diagonales quedan anti-aliased y los dos extremos son redondos.
+
 ---
 
 ## 🚀 Trait `ToBatches`
