@@ -23,7 +23,7 @@ use ferrous_assets::font_importer::FontData;
 
 use crate::builder::AppConfig;
 use crate::graphics::GraphicsState;
-use crate::traits::FerrousApp;
+use crate::traits::{FerrousApp, FileDropEvent};
 
 // ─── Runner ─────────────────────────────────────────────────────────────────
 
@@ -57,6 +57,8 @@ pub(crate) struct Runner<A: FerrousApp + 'static> {
     pub(super) shift_held: bool,
     /// Tracks the last deterministic time absolute value passed to render frames
     pub(super) last_deterministic_t: Option<f64>,
+    /// File-drag events waiting for the next frame's `AppContext`.
+    pub(super) pending_file_drops: Vec<FileDropEvent>,
 }
 
 impl<A: FerrousApp + 'static> Runner<A> {
@@ -100,6 +102,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
             ctrl_held: false,
             shift_held: false,
             last_deterministic_t: None,
+            pending_file_drops: Vec::new(),
         }
     }
 }

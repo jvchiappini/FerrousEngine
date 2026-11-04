@@ -23,7 +23,7 @@ use crate::builder::AppMode;
 use crate::context::AppContext;
 use crate::graphics::GraphicsState;
 use crate::render_context::RenderContext;
-use crate::traits::FerrousApp;
+use crate::traits::{FerrousApp, FileDropEvent};
 use ferrous_assets::Font;
 
 use super::types::Runner;
@@ -453,6 +453,21 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
+            WindowEvent::HoveredFile(path) => {
+                self.pending_file_drops.push(FileDropEvent::entered(path));
+            }
+            WindowEvent::HoveredFileCancelled => {
+                if let Some(event) = self.pending_file_drops.last() {
+                    if event.kind == crate::traits::FileDropKind::Entered {
+                        let path = event.path.clone();
+                        self.pending_file_drops.push(FileDropEvent::left(path));
+                    }
+                }
+            }
+            WindowEvent::DroppedFile(path) => {
+                self.pending_file_drops.push(FileDropEvent::dropped(path));
+            }
+
             _ => {}
         }
     }

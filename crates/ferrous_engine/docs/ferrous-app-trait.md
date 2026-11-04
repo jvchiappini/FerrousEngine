@@ -210,6 +210,24 @@ fn on_resize(&mut self, new_size: (u32, u32), _ctx: &mut AppContext) {
 
 ---
 
+## `on_file_drop`
+
+```rust
+fn on_file_drop(&mut self, event: FileDropEvent, ctx: &mut AppContext) {}
+```
+
+Operating-system file drags are queued by the runner and delivered here once
+per frame while the frame's `AppContext` exists. `FileDropEvent` carries a
+`FileDropKind` (`Entered`, `Left`, `Dropped`) and the path the platform
+reported; on Windows the path is a normal filesystem path, on the web the
+browser supplies a synthetic name.
+
+Use it to import media, open a project by dropping its folder, or highlight a
+drop target. The callback is optional and has an empty default, so an
+application that only handles `Dropped` can match on `event.kind` and ignore
+the rest. Delivery is deterministic with respect to the frame loop: every
+queued event arrives before the next `update` call, in arrival order.
+
 ## `on_window_event`
 
 ```rust

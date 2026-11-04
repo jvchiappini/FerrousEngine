@@ -14,6 +14,7 @@ loop.
 | `FerrousApp` | Trait your application struct implements; six optional frame callbacks |
 | `AppContext<'_>` | Per-frame handle passed to every callback — input, world, render, assets |
 | `RenderContext<'_>` | User-facing renderer facade inside `AppContext::render` |
+| `FileDropEvent` | Queued OS file-drag events delivered to `FerrousApp::on_file_drop` |
 | `AppConfig` | Plain struct with all window / rendering configuration |
 | `Plugin` trait | Extensibility mechanism; `DefaultPlugins` bundles all built-ins |
 

@@ -222,6 +222,11 @@ impl<A: FerrousApp + 'static> Runner<A> {
             };
 
             self.app.update(&mut ctx);
+
+            let drops = std::mem::take(&mut self.pending_file_drops);
+            for event in drops {
+                self.app.on_file_drop(event, &mut ctx);
+            }
             update_screenshot = ctx.screenshot_requested;
 
             if ctx.keep_awake_requested {

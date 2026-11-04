@@ -56,7 +56,7 @@ pub use context::{AppContext, WindowResizeDirection};
 pub use ferrous_core::scene::camera::Projection as ProjectionType;
 pub use render_context::RenderContext;
 pub use screenshot::Screenshot;
-pub use traits::{DrawContext, FerrousApp};
+pub use traits::{DrawContext, FerrousApp, FileDropEvent, FileDropKind};
 
 // --- Re-exports de Utilidad (ferrous_core / glam) ---
 pub use ferrous_core::glam;
