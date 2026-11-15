@@ -15,6 +15,7 @@
 //! [`scene`]     | `World`, `Element`, ECS systems (`TimeSystem`, `VelocitySystem`, `AnimationSystem`, `BehaviorSystem`, `TransformSystem`), hierarchy components (`Parent`, `Children`, `GlobalTransform`), `AnimationClip/Player`, `BehaviorComponent`, `Camera` |
 //! [`context`]   | `EngineContext` — wgpu device + queue |
 //! [`metrics`]   | CPU / RAM usage helpers |
+//! [`startup`]   | Process startup trace: marks, spans and stderr/JSON reports |
 //!
 //! ## Quick start
 //!
@@ -72,6 +73,9 @@ pub mod scene;
 
 /// CPU / RAM usage helpers.
 pub mod metrics;
+
+/// Process startup tracing (marks, spans, table and JSON reports).
+pub mod startup;
 
 /// Viewport rectangle (x, y, width, height) for 3-D rendering.
 pub mod viewport;

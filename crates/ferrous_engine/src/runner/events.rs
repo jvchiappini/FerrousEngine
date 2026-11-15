@@ -81,6 +81,7 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
             .with_inner_size(winit::dpi::PhysicalSize::new(window_size.0, window_size.1));
 
         let window = Arc::new(event_loop.create_window(attributes).unwrap());
+        ferrous_core::startup::mark("engine: window created");
         self.window_size = window_size;
         self.viewport = ferrous_core::Viewport {
             x: 0,
@@ -121,6 +122,7 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
                     &gfx.renderer.context.queue,
                     ferrous_font::latin_western(),
                 );
+                ferrous_core::startup::mark("engine: fonts ready");
                 gfx.renderer
                     .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
                 self.font = Some(font);
@@ -155,6 +157,7 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
                 };
                 self.app.setup(&mut ctx);
             }
+            ferrous_core::startup::mark("engine: app setup done");
 
             self.graphics = Some(gfx);
             self.window = Some(window);
@@ -451,7 +454,7 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
                 self.window_size = (size.width, size.height);
             }
             WindowEvent::CloseRequested => {
-                event_loop.exit();
+                self.begin_close(Some(event_loop));
             }
             WindowEvent::HoveredFile(path) => {
                 self.pending_file_drops.push(FileDropEvent::entered(path));

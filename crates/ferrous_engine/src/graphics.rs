@@ -45,6 +45,7 @@ impl GraphicsState {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
+        ferrous_core::startup::mark("engine: instance");
 
         // ── wasm32: attach the canvas before creating the surface ─────────────
         #[cfg(target_arch = "wasm32")]
@@ -231,8 +232,23 @@ impl GraphicsState {
         let surface: wgpu::Surface<'static> = unsafe { std::mem::transmute(surface) };
 
         // Build the context with the surface so the adapter selection is
-        // surface-compatible (avoids costly cross-bus present paths).
-        let context = match EngineContext::new_with_instance(instance, Some(&surface)).await {
+        // surface-compatible (avoids costly cross-bus present paths). Adapter
+        // selection and device creation are separate startup marks because
+        // they are the two dominant driver costs on a hybrid laptop.
+        let adapter = match EngineContext::request_adapter(&instance, Some(&surface)).await {
+            Ok(adapter) => adapter,
+            Err(e) => {
+                #[cfg(target_arch = "wasm32")]
+                web_sys::console::error_1(&wasm_bindgen::JsValue::from_str(&format!(
+                    "EngineContext init failed: {:?}",
+                    e
+                )));
+                panic!("EngineContext init failed: {:?}", e);
+            }
+        };
+        ferrous_core::startup::mark("engine: adapter");
+
+        let context = match EngineContext::from_adapter(instance, adapter).await {
             Ok(c) => c,
             Err(e) => {
                 #[cfg(target_arch = "wasm32")]
@@ -243,6 +259,7 @@ impl GraphicsState {
                 panic!("EngineContext init failed: {:?}", e);
             }
         };
+        ferrous_core::startup::mark("engine: device");
 
         #[cfg(target_arch = "wasm32")]
         web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
@@ -302,6 +319,7 @@ impl GraphicsState {
         )));
 
         surface.configure(&context.device, &config);
+        ferrous_core::startup::mark("engine: surface configured");
 
         #[cfg(target_arch = "wasm32")]
         web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(
@@ -317,6 +335,7 @@ impl GraphicsState {
             // convert Option<String> -> Option<&Path>
             hdri_path.as_ref().map(std::path::Path::new),
         ));
+        ferrous_core::startup::mark("engine: renderer built");
 
         #[cfg(target_arch = "wasm32")]
         web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(

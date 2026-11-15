@@ -97,6 +97,12 @@ pub struct AppConfig {
     /// Resolution scale applied to the physical size of the window/canvas.
     /// Defaults to 1.0. Set to 2.0 or higher for supersampling (improves clarity on Web).
     pub resolution_scale: f64,
+    /// Record a startup trace and print it at the first presented frame.
+    ///
+    /// Default: `false`. The `FERROUS_TRACE_STARTUP=1` environment variable
+    /// enables the same trace without a code change; see
+    /// [`ferrous_core::startup`].
+    pub startup_trace: bool,
 }
 
 impl Default for AppConfig {
@@ -120,6 +126,7 @@ impl Default for AppConfig {
             render_quality: RenderQuality::High,
             mode: AppMode::Game3D,
             resolution_scale: 1.0,
+            startup_trace: false,
         }
     }
 }
@@ -328,6 +335,23 @@ impl<A: FerrousApp + 'static> App<A> {
     /// Highly recommended for web and high-DPI displays if rendering is pixelated.
     pub fn with_resolution_scale(mut self, scale: f64) -> Self {
         self.config.resolution_scale = scale;
+        self
+    }
+
+    /// Turn the startup trace on or off (default: off).
+    ///
+    /// When on, the engine records marks for the window, GPU initialisation,
+    /// font upload, app setup and the first presented frame, and prints a
+    /// table to stderr at the first present. Applications can add their own
+    /// marks with [`ferrous_core::startup::mark`].
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// App::new(MyApp).with_startup_trace(true).run();
+    /// ```
+    pub fn with_startup_trace(mut self, enable: bool) -> Self {
+        self.config.startup_trace = enable;
         self
     }
 

@@ -59,6 +59,8 @@ pub(crate) struct Runner<A: FerrousApp + 'static> {
     pub(super) last_deterministic_t: Option<f64>,
     /// File-drag events waiting for the next frame's `AppContext`.
     pub(super) pending_file_drops: Vec<FileDropEvent>,
+    /// Whether the close path (hide + exit) has already run.
+    pub(super) closing: bool,
 }
 
 impl<A: FerrousApp + 'static> Runner<A> {
@@ -103,6 +105,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
             shift_held: false,
             last_deterministic_t: None,
             pending_file_drops: Vec::new(),
+            closing: false,
         }
     }
 }

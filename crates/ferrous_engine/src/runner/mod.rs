@@ -15,16 +15,25 @@ use winit::event_loop::{ControlFlow, EventLoop};
 
 use crate::builder::AppConfig;
 use crate::traits::FerrousApp;
+use ferrous_core::startup;
 
 // ── Direct entry point ────────────────────────────────────────────────────────
 
 /// Desktop entry point: blocks the calling thread running the event loop.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn run_internal<A: FerrousApp + 'static>(config: AppConfig, app: A) {
+    startup::begin(config.startup_trace);
+    startup::mark("engine: entry");
     let mut runner = Runner::new(app, config);
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Wait);
+    startup::mark("engine: event loop");
     event_loop.run_app(&mut runner).unwrap();
+    startup::mark("engine: event loop exited");
+    // The window and the whole GPU state live in `runner`; dropping it here is
+    // the teardown the closing report measures.
+    drop(runner);
+    startup::teardown();
 }
 
 /// wasm32 entry point: runs Runner directly in the browser event loop.
@@ -32,6 +41,8 @@ pub(crate) fn run_internal<A: FerrousApp + 'static>(config: AppConfig, app: A) {
 pub(crate) fn run_internal<A: FerrousApp + 'static>(config: AppConfig, app: A) {
     console_error_panic_hook::set_once();
     use winit::platform::web::EventLoopExtWebSys;
+    startup::begin(config.startup_trace);
+    startup::mark("engine: entry");
     let runner = Runner::new(app, config);
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Wait);
@@ -46,6 +57,8 @@ impl FerrousApp for PluginApp {}
 
 /// Entry point for [`crate::plugin::AppBuilder::run`].
 pub(crate) fn run_plugin_app(mut builder: crate::plugin::AppBuilder) {
+    startup::begin(builder.config.startup_trace);
+    startup::mark("engine: entry");
     let mut runner = Runner::new(PluginApp, builder.config.clone());
 
     for (stage, system) in builder.staged_systems.drain(..) {
@@ -56,7 +69,11 @@ pub(crate) fn run_plugin_app(mut builder: crate::plugin::AppBuilder) {
     {
         let event_loop = EventLoop::new().unwrap();
         event_loop.set_control_flow(ControlFlow::Wait);
+        startup::mark("engine: event loop");
         event_loop.run_app(&mut runner).unwrap();
+        startup::mark("engine: event loop exited");
+        drop(runner);
+        startup::teardown();
     }
     #[cfg(target_arch = "wasm32")]
     {

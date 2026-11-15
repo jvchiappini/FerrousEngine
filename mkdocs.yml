@@ -41,6 +41,7 @@ nav:
     - AppContext Reference: ferrous_engine/app-context.md
     - RenderContext Reference: ferrous_engine/render-context.md
     - Configuration (ferrous.toml): ferrous_engine/config.md
+    - Startup trace: ferrous_engine/startup.md
   - ferrous_2d — 2D Rendering:
     - Overview: ferrous_2d/README.md
     - Text: ferrous_2d/text.md

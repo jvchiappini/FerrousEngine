@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use ferrous_assets::AssetState;
 use ferrous_core::glam::Vec3;
+use ferrous_core::startup;
 use ferrous_ui_core::Rect;
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 
@@ -166,6 +167,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
                         &gfx.renderer.context.queue,
                         ferrous_font::latin_western(),
                     );
+                    startup::mark("engine: fonts ready");
                     gfx.renderer
                         .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
                     self.font = Some(font);
@@ -242,9 +244,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 drop(ctx);
                 gfx.renderer
                     .record_frame_time(frame_start.elapsed().as_secs_f32() * 1000.0);
-                if let Some(el) = event_loop {
-                    el.exit();
-                }
+                self.begin_close(event_loop);
                 return None;
             }
 
@@ -407,6 +407,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
             gfx.renderer.context.queue.submit(Some(encoder.finish()));
 
             frame.present();
+            startup::first_frame_presented();
             if let Some(buffer) = capture {
                 let (width, height) = self.window_size;
                 let bgra = crate::screenshot::is_bgra(gfx.config.format);
@@ -480,6 +481,28 @@ impl<A: FerrousApp + 'static> Runner<A> {
 
         self.input.end_frame();
         None
+    }
+
+    /// Hides the window, then exits the event loop.
+    ///
+    /// Hiding first is what makes closing feel instant: the OS removes the
+    /// window while the GPU teardown (device and swapchain drop) is still
+    /// running. The OS close button and `AppContext::request_exit` both go
+    /// through here, so the closing report can measure the hide separately
+    /// from the teardown. Later calls do nothing.
+    pub(super) fn begin_close(&mut self, event_loop: Option<&ActiveEventLoop>) {
+        if self.closing {
+            return;
+        }
+        self.closing = true;
+        startup::mark("engine: close requested");
+        if let Some(window) = &self.window {
+            window.set_visible(false);
+        }
+        startup::mark("engine: window hidden");
+        if let Some(event_loop) = event_loop {
+            event_loop.exit();
+        }
     }
 
     /// Called by winit between frames to manage redraw scheduling.

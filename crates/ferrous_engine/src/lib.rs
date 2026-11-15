@@ -79,6 +79,9 @@ pub use ferrous_renderer::{
 // --- Helpers de Assets ---
 pub use crate::asset_bridge::{spawn_gltf, spawn_gltf_async, GltfSpawnTask};
 
+// --- Startup trace (generic marks so an application can add its own) ---
+pub use ferrous_core::startup;
+
 // Gizmo types
 pub use ferrous_renderer::scene::GizmoDraw;
 

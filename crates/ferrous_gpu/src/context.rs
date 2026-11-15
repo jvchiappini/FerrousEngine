@@ -57,6 +57,21 @@ impl EngineContext {
         instance: wgpu::Instance,
         compatible_surface: Option<&wgpu::Surface<'_>>,
     ) -> anyhow::Result<Self> {
+        let adapter = Self::request_adapter(&instance, compatible_surface).await?;
+        Self::from_adapter(instance, adapter).await
+    }
+
+    /// Selecciona el adaptador para `instance`, prefiriendo alto rendimiento y
+    /// cayendo a un adaptador software cuando no hay hardware disponible.
+    ///
+    /// Es el primer paso de [`Self::new_with_instance`]; separarlo permite
+    /// medir y trazar la selección de adaptador y la creación de dispositivo
+    /// como fases distintas. `compatible_surface` fuerza un adaptador que pueda
+    /// presentar en esa superficie.
+    pub async fn request_adapter(
+        instance: &wgpu::Instance,
+        compatible_surface: Option<&wgpu::Surface<'_>>,
+    ) -> anyhow::Result<wgpu::Adapter> {
         let adapter = match instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -78,7 +93,17 @@ impl EngineContext {
                     .context(ContextError::AdapterUnavailable)?
             }
         };
+        Ok(adapter)
+    }
 
+    /// Construye dispositivo, cola y caché de pipelines sobre `adapter`.
+    ///
+    /// Es el segundo paso de [`Self::new_with_instance`]; `instance` se guarda
+    /// en el contexto devuelto.
+    pub async fn from_adapter(
+        instance: wgpu::Instance,
+        adapter: wgpu::Adapter,
+    ) -> anyhow::Result<Self> {
         let info = adapter.get_info();
         #[cfg(target_arch = "wasm32")]
         web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
