@@ -616,6 +616,8 @@ pub struct FrameReport {
     pub sprite_draw_calls: u32,
     /// MSDF text draw calls.
     pub text_draw_calls: u32,
+    /// Textured-mesh draw calls.
+    pub mesh_draw_calls: u32,
     /// Bytes written to GPU instance buffers this frame.
     pub bytes_uploaded: u64,
     /// Shape + sprite instances uploaded this frame.
@@ -969,6 +971,24 @@ impl Pure2dHarness {
         self.renderer.draw_sprite_2d(texture_id, instance);
     }
 
+    /// Queues one generic textured triangle mesh for this frame.
+    ///
+    /// Mirrors [`Renderer::draw_textured_mesh_2d`]: the texture id comes from
+    /// the same registry as sprites, `transform` maps local vertices to world
+    /// space, and `blend` is the per-draw [`ferrous_2d::render::BlendMode2d`].
+    /// Returns `true` when a draw was queued.
+    pub fn draw_textured_mesh(
+        &mut self,
+        texture_id: u32,
+        vertices: &[ferrous_2d::render::MeshVertex2d],
+        indices: &[u32],
+        transform: glam::Mat4,
+        blend: ferrous_2d::render::BlendMode2d,
+    ) -> bool {
+        self.renderer
+            .draw_textured_mesh_2d(texture_id, vertices, indices, transform, blend)
+    }
+
     /// Registers an RGBA8 sprite texture; returns the `texture_id` to pass to
     /// [`Pure2dHarness::draw_sprite`].  Each registration creates one bind
     /// group (plus one texture + sampler).
@@ -1222,6 +1242,7 @@ impl Pure2dHarness {
             shape_draw_calls: counters.shape_draw_calls,
             sprite_draw_calls: counters.sprite_draw_calls,
             text_draw_calls: counters.text_draw_calls,
+            mesh_draw_calls: counters.mesh_draw_calls,
             bytes_uploaded: counters.bytes_uploaded,
             instances_uploaded: counters.instances_uploaded,
             culled_instances: counters.culled_instances,

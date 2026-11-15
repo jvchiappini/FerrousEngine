@@ -14,6 +14,9 @@ pub mod batch;
 pub mod effects;
 /// CPU-side gradient encoding for the Pure2D shaders ([GradientTable2d]).
 pub mod gradient;
+/// Generic textured triangle meshes: vertex type, per-frame arena and draw
+/// records.
+pub mod mesh;
 /// wgpu render pipelines and bind-group layouts for sprites and shapes.
 pub mod pipeline;
 /// Text layout types and per-glyph draw requests.
@@ -27,6 +30,7 @@ pub use accumulation::*;
 pub use batch::*;
 pub use effects::*;
 pub use gradient::*;
+pub use mesh::*;
 pub use pipeline::*;
 pub use text::*;
 pub use texture::*;

@@ -346,6 +346,88 @@ impl SpritePipeline {
     }
 }
 
+/// Render pipelines and bind-group layouts for generic textured triangle
+/// meshes.
+///
+/// The pipeline is the mesh twin of [`SpritePipeline`]: the same camera
+/// uniform (group 0) and texture-plus-sampler bind group layout (group 1), so
+/// the renderer reuses one texture bind group for sprites and meshes.  It
+/// draws an indexed `TriangleList` from a per-vertex position/UV/coverage
+/// stream instead of an instanced quad.
+pub struct TexturedMeshPipeline {
+    /// GPU device the pipelines were created on.
+    pub device: Arc<wgpu::Device>,
+    /// Pipelines indexed by [`BlendMode2d::index`].
+    pipelines: [wgpu::RenderPipeline; BLEND_MODE_COUNT],
+    /// Bind group 0: the shared 2D camera uniform.
+    pub camera_bind_group_layout: wgpu::BindGroupLayout,
+    /// Bind group 1: the per-texture view + sampler.
+    pub texture_bind_group_layout: wgpu::BindGroupLayout,
+}
+
+impl TexturedMeshPipeline {
+    /// Build the textured-mesh pipelines for the given output `format` and
+    /// `sample_count` (pass `depth_format: None` for the depth-less Pure2D
+    /// path).
+    pub fn new(
+        device: Arc<wgpu::Device>,
+        output_format: wgpu::TextureFormat,
+        depth_format: Option<wgpu::TextureFormat>,
+        sample_count: u32,
+    ) -> Self {
+        Self::new_with_cache(device, output_format, depth_format, sample_count, None)
+    }
+
+    /// Same as [`TexturedMeshPipeline::new`] but threads a shared
+    /// [`wgpu::PipelineCache`] into `create_render_pipeline`.
+    pub fn new_with_cache(
+        device: Arc<wgpu::Device>,
+        output_format: wgpu::TextureFormat,
+        depth_format: Option<wgpu::TextureFormat>,
+        sample_count: u32,
+        cache: Option<&wgpu::PipelineCache>,
+    ) -> Self {
+        let camera_bind_group_layout =
+            create_camera_bind_group_layout(&device, "Mesh Camera Bind Group Layout");
+        let texture_bind_group_layout =
+            create_texture_bind_group_layout(&device, "Mesh Texture Bind Group Layout");
+        let shader = create_shader(
+            &device,
+            "Textured Mesh Shader",
+            include_str!("../../../../assets/shaders/textured_mesh_2d.wgsl").to_string(),
+        );
+        let bgls = [&camera_bind_group_layout, &texture_bind_group_layout];
+        let vertex_buffers = [crate::render::mesh::MeshVertex2d::descriptor()];
+        let pipelines = build_blend_bank(&device, cache, |mode| Pipeline2dDesc {
+            label: "Textured Mesh WGPU Pipeline",
+            format: output_format,
+            depth_format,
+            sample_count,
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            shader: &shader,
+            vertex_entry: "vs_main",
+            fragment_entry: "fs_main",
+            vertex_buffers: &vertex_buffers,
+            bind_group_layouts: &bgls,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::Less,
+            blend: Some(mode.wgpu_blend()),
+        });
+
+        Self {
+            device,
+            pipelines,
+            camera_bind_group_layout,
+            texture_bind_group_layout,
+        }
+    }
+
+    /// The pipeline for `mode`.
+    pub fn pipeline(&self, mode: BlendMode2d) -> &wgpu::RenderPipeline {
+        &self.pipelines[mode.index()]
+    }
+}
+
 /// Render pipelines and bind-group layout for untextured SDF shapes.
 pub struct ShapePipeline {
     /// GPU device the pipelines were created on.

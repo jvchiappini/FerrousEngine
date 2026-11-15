@@ -50,6 +50,7 @@ nav:
     - Layer Effects: ferrous_2d/effects.md
     - Layer Masks: ferrous_2d/masks.md
     - Temporal Accumulation: ferrous_2d/accumulation.md
+    - Textured Meshes: ferrous_renderer/textured-meshes.md
   - ferrous_ui_core — UI Core:
     - Overview: ferrous_ui_core/README.md
     - Core API (Ui / Canvas / Widget): ferrous_ui_core/CORE.md

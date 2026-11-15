@@ -1,6 +1,6 @@
 use crate::render::{
-    BlendMode2d, Grid2dParams, GridPipeline, ShapeGpu, ShapePipeline, SpriteBatcher,
-    SpriteInstance, SpritePipeline, Text2dPipeline, TextInstance,
+    BlendMode2d, Grid2dParams, GridPipeline, MeshVertex2d, ShapeGpu, ShapePipeline, SpriteBatcher,
+    SpriteInstance, SpritePipeline, Text2dPipeline, TextInstance, TexturedMeshPipeline,
 };
 use glam::Mat4;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -24,9 +24,12 @@ pub struct Frame2dCounters {
     pub sprite_draw_calls: u32,
     /// Draw calls issued through the MSDF text pipeline.
     pub text_draw_calls: u32,
+    /// Draw calls issued through the textured-mesh pipeline.
+    pub mesh_draw_calls: u32,
     /// Bytes actually written to GPU instance buffers this frame.
     pub bytes_uploaded: u64,
-    /// Instances uploaded this frame (shapes + sprites).
+    /// Instances uploaded this frame (shapes + sprites); mesh vertices also
+    /// count as one uploaded instance each.
     pub instances_uploaded: u32,
     /// Instance buffers reallocated because the frame outgrew the current
     /// capacity.  A steady-state frame is expected to report `0`.
@@ -58,21 +61,28 @@ pub struct Renderer2d {
     pub shape_pipeline: ShapePipeline,
     /// MSDF text pipeline and its font-atlas bind-group layout.
     pub text_pipeline: Text2dPipeline,
+    /// Generic textured triangle mesh pipeline.
+    pub mesh_pipeline: TexturedMeshPipeline,
 
     // Buffers
     instance_buffer: wgpu::Buffer,
     shape_instance_buffer: wgpu::Buffer,
     text_instance_buffer: wgpu::Buffer,
+    mesh_vertex_buffer: wgpu::Buffer,
+    mesh_index_buffer: wgpu::Buffer,
     camera_buffer: wgpu::Buffer,
 
     camera_bind_group: wgpu::BindGroup,
     shape_camera_bind_group: wgpu::BindGroup,
     text_camera_bind_group: wgpu::BindGroup,
+    mesh_camera_bind_group: wgpu::BindGroup,
 
     // Capacity
     max_instances: u32,
     max_shape_instances: u32,
     max_text_instances: u32,
+    max_mesh_vertices: u32,
+    max_mesh_indices: u32,
 
     // Per-frame instrumentation.  Atomics (not `Cell`) so `Renderer2d` stays
     // `Send + Sync` as required by `ferrous_render_graph::RenderPass`.
@@ -80,6 +90,7 @@ pub struct Renderer2d {
     counters_shape_draw_calls: AtomicU32,
     counters_sprite_draw_calls: AtomicU32,
     counters_text_draw_calls: AtomicU32,
+    counters_mesh_draw_calls: AtomicU32,
     counters_bytes_uploaded: AtomicU64,
     counters_instances_uploaded: AtomicU32,
     counters_buffer_reallocations: AtomicU32,
@@ -185,6 +196,13 @@ impl Renderer2d {
             sample_count,
             cache,
         );
+        let mesh_pipeline = TexturedMeshPipeline::new_with_cache(
+            device.clone(),
+            output_format,
+            depth_format,
+            sample_count,
+            cache,
+        );
         let grid_pipeline =
             GridPipeline::new_with_cache(device.clone(), output_format, sample_count, cache);
 
@@ -208,6 +226,20 @@ impl Renderer2d {
             label: Some("Text Instance Buffer"),
             size: (max_instances as usize * std::mem::size_of::<TextInstance>()) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let mesh_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Mesh Vertex Buffer"),
+            size: (max_instances as usize * std::mem::size_of::<MeshVertex2d>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let mesh_index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Mesh Index Buffer"),
+            size: (max_instances as usize * 6 * std::mem::size_of::<u32>()) as u64,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -245,6 +277,15 @@ impl Renderer2d {
             label: Some("Text Camera Bind Group"),
         });
 
+        let mesh_camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &mesh_pipeline.camera_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            }],
+            label: Some("Mesh Camera Bind Group"),
+        });
+
         let grid_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Grid Uniform Buffer"),
             size: std::mem::size_of::<crate::render::types::Grid2dUniform>() as u64,
@@ -265,20 +306,27 @@ impl Renderer2d {
             pipeline,
             shape_pipeline,
             text_pipeline,
+            mesh_pipeline,
             instance_buffer,
             shape_instance_buffer,
             text_instance_buffer,
+            mesh_vertex_buffer,
+            mesh_index_buffer,
             camera_buffer,
             camera_bind_group,
             shape_camera_bind_group,
             text_camera_bind_group,
+            mesh_camera_bind_group,
             max_instances,
             max_shape_instances: max_instances,
             max_text_instances: max_instances,
+            max_mesh_vertices: max_instances,
+            max_mesh_indices: max_instances * 6,
             counters_draw_calls: AtomicU32::new(0),
             counters_shape_draw_calls: AtomicU32::new(0),
             counters_sprite_draw_calls: AtomicU32::new(0),
             counters_text_draw_calls: AtomicU32::new(0),
+            counters_mesh_draw_calls: AtomicU32::new(0),
             counters_bytes_uploaded: AtomicU64::new(0),
             counters_instances_uploaded: AtomicU32::new(0),
             counters_buffer_reallocations: AtomicU32::new(0),
@@ -638,6 +686,7 @@ impl Renderer2d {
         self.counters_shape_draw_calls.store(0, Ordering::Relaxed);
         self.counters_sprite_draw_calls.store(0, Ordering::Relaxed);
         self.counters_text_draw_calls.store(0, Ordering::Relaxed);
+        self.counters_mesh_draw_calls.store(0, Ordering::Relaxed);
         self.counters_bytes_uploaded.store(0, Ordering::Relaxed);
         self.counters_instances_uploaded.store(0, Ordering::Relaxed);
         self.counters_buffer_reallocations
@@ -669,6 +718,7 @@ impl Renderer2d {
             shape_draw_calls: self.counters_shape_draw_calls.load(Ordering::Relaxed),
             sprite_draw_calls: self.counters_sprite_draw_calls.load(Ordering::Relaxed),
             text_draw_calls: self.counters_text_draw_calls.load(Ordering::Relaxed),
+            mesh_draw_calls: self.counters_mesh_draw_calls.load(Ordering::Relaxed),
             bytes_uploaded: self.counters_bytes_uploaded.load(Ordering::Relaxed),
             instances_uploaded: self.counters_instances_uploaded.load(Ordering::Relaxed),
             buffer_reallocations: self.counters_buffer_reallocations.load(Ordering::Relaxed),
@@ -696,6 +746,13 @@ impl Renderer2d {
     fn record_text_draw(&self) {
         self.counters_draw_calls.fetch_add(1, Ordering::Relaxed);
         self.counters_text_draw_calls
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline]
+    fn record_mesh_draw(&self) {
+        self.counters_draw_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters_mesh_draw_calls
             .fetch_add(1, Ordering::Relaxed);
     }
 
@@ -910,6 +967,60 @@ impl Renderer2d {
         self.counters_instances_uploaded
             .fetch_add(total as u32, Ordering::Relaxed);
         total
+    }
+
+    /// Uploads a painter-ordered vertex and index slice for the textured-mesh
+    /// pipeline, growing both GPU buffers first when needed.
+    ///
+    /// The buffers only ever grow (to the next power of two) and are rewritten
+    /// every frame, so a steady frame performs no GPU allocation.  Returns the
+    /// number of vertices uploaded.  A no-op for an empty slice.
+    pub fn prepare_mesh_slice(
+        &mut self,
+        queue: &wgpu::Queue,
+        vertices: &[MeshVertex2d],
+        indices: &[u32],
+    ) -> usize {
+        let vertex_count = vertices.len();
+        if vertex_count == 0 || indices.is_empty() {
+            return 0;
+        }
+
+        if vertex_count > self.max_mesh_vertices as usize {
+            self.max_mesh_vertices = (vertex_count as u32).next_power_of_two();
+            self.mesh_vertex_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Mesh Vertex Buffer (Resized)"),
+                size: (self.max_mesh_vertices as usize * std::mem::size_of::<MeshVertex2d>())
+                    as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.counters_buffer_reallocations
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        if indices.len() > self.max_mesh_indices as usize {
+            self.max_mesh_indices = (indices.len() as u32).next_power_of_two();
+            self.mesh_index_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Mesh Index Buffer (Resized)"),
+                size: (self.max_mesh_indices as usize * std::mem::size_of::<u32>()) as u64,
+                usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.counters_buffer_reallocations
+                .fetch_add(1, Ordering::Relaxed);
+        }
+
+        let vertex_bytes: &[u8] = bytemuck::cast_slice(vertices);
+        queue.write_buffer(&self.mesh_vertex_buffer, 0, vertex_bytes);
+        let index_bytes: &[u8] = bytemuck::cast_slice(indices);
+        queue.write_buffer(&self.mesh_index_buffer, 0, index_bytes);
+        self.counters_bytes_uploaded.fetch_add(
+            (vertex_bytes.len() + index_bytes.len()) as u64,
+            Ordering::Relaxed,
+        );
+        self.counters_instances_uploaded
+            .fetch_add(vertex_count as u32, Ordering::Relaxed);
+        vertex_count
     }
 
     /// Draw `[offset, offset + count)` text instances with `font_bg` bound at
@@ -1344,6 +1455,58 @@ impl Renderer2d {
         render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
         render_pass.draw(0..4, offset..(offset + count));
         self.record_sprite_draw();
+    }
+
+    /// Draws an indexed mesh range with the renderer's default mesh pipeline
+    /// and camera.
+    ///
+    /// `first_index`/`index_count` address the painter-ordered mesh index
+    /// upload (see [`Self::prepare_mesh_slice`]); the vertex buffer is bound as
+    /// slot 0.  No-op when the range is empty.
+    pub fn render_meshes_range_blend(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        texture_bg: &wgpu::BindGroup,
+        first_index: u32,
+        index_count: u32,
+        mode: BlendMode2d,
+    ) {
+        if index_count == 0 {
+            return;
+        }
+        render_pass.set_pipeline(self.mesh_pipeline.pipeline(mode));
+        render_pass.set_bind_group(0, &self.mesh_camera_bind_group, &[]);
+        render_pass.set_bind_group(1, texture_bg, &[]);
+        render_pass.set_vertex_buffer(0, self.mesh_vertex_buffer.slice(..));
+        render_pass.set_index_buffer(self.mesh_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        render_pass.draw_indexed(first_index..(first_index + index_count), 0, 0..1);
+        self.record_mesh_draw();
+    }
+
+    /// Draws an indexed mesh range with an explicit pipeline (offscreen layer
+    /// format) and the renderer's own camera bind group.
+    ///
+    /// Structurally identical pipelines created for another target format are
+    /// layout-compatible, exactly like [`Self::render_sprites_range_blend_on`].
+    pub fn render_meshes_range_blend_on<'a>(
+        &'a self,
+        mesh: &'a TexturedMeshPipeline,
+        render_pass: &mut wgpu::RenderPass<'a>,
+        texture_bg: &'a wgpu::BindGroup,
+        first_index: u32,
+        index_count: u32,
+        mode: BlendMode2d,
+    ) {
+        if index_count == 0 {
+            return;
+        }
+        render_pass.set_pipeline(mesh.pipeline(mode));
+        render_pass.set_bind_group(0, &self.mesh_camera_bind_group, &[]);
+        render_pass.set_bind_group(1, texture_bg, &[]);
+        render_pass.set_vertex_buffer(0, self.mesh_vertex_buffer.slice(..));
+        render_pass.set_index_buffer(self.mesh_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        render_pass.draw_indexed(first_index..(first_index + index_count), 0, 0..1);
+        self.record_mesh_draw();
     }
 
     /// Draws a text range with an explicit pipeline and font bind group.

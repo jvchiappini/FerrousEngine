@@ -499,6 +499,26 @@ impl<'r> RenderContext<'r> {
         self.inner.draw_sprite_2d(texture_id, instance);
     }
 
+    /// Push a generic textured triangle mesh for rendering this frame.
+    ///
+    /// `texture_id` must come from the same registry as sprites
+    /// ([`register_texture_2d`](Self::register_texture_2d)), so in-place
+    /// texture updates, premultiplied texels, masks, layers and blend modes all
+    /// behave exactly as they do for sprites.  `transform` maps local vertices
+    /// to world space; its z translation is the painter-order depth.  Returns
+    /// `false` for an empty mesh or an out-of-range index (nothing is drawn).
+    pub fn draw_textured_mesh_2d(
+        &mut self,
+        texture_id: u32,
+        vertices: &[ferrous_2d::render::MeshVertex2d],
+        indices: &[u32],
+        transform: ferrous_renderer::glam::Mat4,
+        blend: ferrous_2d::render::BlendMode2d,
+    ) -> bool {
+        self.inner
+            .draw_textured_mesh_2d(texture_id, vertices, indices, transform, blend)
+    }
+
     /// Upload a raw RGBA8 texture for use with
     /// [`draw_sprite_2d`](Self::draw_sprite_2d) and return its `texture_id`.
     ///

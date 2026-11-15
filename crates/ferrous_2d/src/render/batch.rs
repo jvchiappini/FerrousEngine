@@ -128,7 +128,8 @@ impl ShapeBatcher {
 /// is the deterministic tie-break for equal `z`.  The documented full order is:
 ///
 /// 1. ascending `z`;
-/// 2. for equal `z`: shapes, then sprites, then text (variant order);
+/// 2. for equal `z`: shapes, then sprites, then meshes, then text (variant
+///    order);
 /// 3. within a kind: submission order (shape index / texture id + sprite
 ///    offset / text index), then blend mode.
 ///
@@ -150,6 +151,15 @@ pub enum DrawCommand2d {
         /// Registered sprite texture id.
         texture_id: u32,
         /// Offset in the flattened sprite upload.
+        index: usize,
+        /// Per-draw blend mode.
+        blend: BlendMode2d,
+    },
+    /// Draw one queued textured mesh with the mesh pipeline.
+    Mesh {
+        /// Registered sprite texture id.
+        texture_id: u32,
+        /// Index into the renderer's mesh draw list.
         index: usize,
         /// Per-draw blend mode.
         blend: BlendMode2d,
