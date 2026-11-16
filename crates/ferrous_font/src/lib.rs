@@ -6,9 +6,14 @@
 //! `ferrous_gui --no-default-features` to avoid pulling in the GPU/font logic.
 
 pub mod atlas;
+/// Pure-data baked atlases and their versioned binary form.
+pub mod baked;
 pub mod binary_reader;
+/// On-disk cache of baked atlases.
+pub mod cache;
 /// Pre-built Unicode character sets for atlas generation.
 pub mod charset;
+mod codec;
 pub mod icons;
 /// Pure-CPU single-line text layout (no GPU required).
 pub mod layout;
@@ -19,6 +24,10 @@ pub mod path;
 pub mod tables;
 
 pub use atlas::{FontAtlas, GlyphMetrics, DEFAULT_GLYPH_SIZE};
+pub use baked::{
+    AtlasDecodeError, BakedAtlas, FontKey, ATLAS_FORMAT_VERSION, ATLAS_GENERATOR_VERSION,
+};
+pub use cache::{default_directory as default_cache_directory, AtlasCache, FontCacheConfig};
 pub use charset::{ascii, cyrillic, from_str as charset_from_str, latin_extended, latin_western};
 pub use icons::{IconAtlas, IconMetrics};
 pub use layout::{
@@ -123,27 +132,31 @@ impl Font {
         queue: &wgpu::Queue,
         chars: impl IntoIterator<Item = char>,
     ) -> Result<Self, FontError> {
+        Self::try_load_bytes_cached(bytes, device, queue, chars, None)
+    }
+
+    /// [`Self::try_load_bytes`] through an atlas cache.
+    ///
+    /// A cache hit skips the MSDF bake entirely; a miss bakes and stores the
+    /// result for the next process.  `None` bakes every time, which is what
+    /// [`Self::try_load_bytes`] does.
+    ///
+    /// # Errors
+    ///
+    /// The same conditions as [`Self::try_load_bytes`].
+    pub fn try_load_bytes_cached(
+        bytes: &[u8],
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        chars: impl IntoIterator<Item = char>,
+        cache: Option<&crate::AtlasCache>,
+    ) -> Result<Self, FontError> {
         let char_list: Vec<char> = chars.into_iter().collect();
-        let parser = parser::FontParser::new(bytes.to_vec()).map_err(|error| match error {
-            parser::ParseError::Parse(message) => FontError::Parse { message },
-            parser::ParseError::Unsupported(reason) => FontError::Unsupported { reason },
-        })?;
-
-        // Fall back to the Latin Western set (ASCII + Latin-1 Supplement) so
-        // that Spanish, French, German, and common symbols render out of the box.
-        let final_chars = if char_list.is_empty() {
-            charset::latin_western()
-        } else {
-            char_list
-        };
-
-        let atlas = FontAtlas::new(device, queue, &parser, final_chars).map_err(|err| {
-            FontError::Atlas {
-                message: err.to_string(),
-            }
-        })?;
-
-        Ok(Self { atlas, icons: None })
+        let baked = crate::BakedAtlas::build_cached(cache, bytes, &char_list)?;
+        Ok(Self {
+            atlas: baked.upload(device, queue),
+            icons: None,
+        })
     }
 
     /// Generate a minimal in-memory TrueType fallback font containing only

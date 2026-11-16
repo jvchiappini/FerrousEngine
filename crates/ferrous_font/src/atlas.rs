@@ -1,21 +1,17 @@
 //! Atlas packing and GPU texture management for glyph MSDFs.
+//!
+//! The CPU half of an atlas — pixels and layout tables — is
+//! [`crate::BakedAtlas`]; this module adds the GPU texture the renderer samples.
+//! [`FontAtlas::new`] keeps the one-call behaviour of building and uploading.
 
 use super::layout::{
     layout_block, layout_line, measure_block, measure_line, GlyphLayout, LayoutFont, LineMetrics,
     TextAlign, TextMetrics, TextStyle,
 };
-use super::layout_data::LayoutData;
-use super::msdf_gen::{generate_msdf, CELL_MAX, CELL_MIN, PIXEL_RANGE};
 use super::parser::{FontMetrics, GposKerning};
+use super::BakedAtlas;
 use anyhow::Result;
 use std::collections::HashMap;
-// rayon is used to parallelize glyph MSDF generation and metrics computation
-#[cfg(not(target_arch = "wasm32"))]
-use rayon::prelude::*;
-
-/// One baked glyph: cell index, optional character (`None` = `.notdef`),
-/// MSDF bitmap, advance and glyph index.
-type GlyphBake = (usize, Option<char>, Vec<u8>, f32, u16);
 
 /// Default MSDF cell size in texels.  One atlas cell stores one glyph.
 pub const DEFAULT_GLYPH_SIZE: u32 = 64;
@@ -25,7 +21,7 @@ pub const DEFAULT_GLYPH_SIZE: u32 = 64;
 /// The atlas bitmap covers a fixed em-space cell (`plane_bounds`, see
 /// [`FontAtlas::cell_bounds`]), so every glyph quad maps the **whole** cell to
 /// the atlas UV rectangle; the MSDF shader clips the actual ink.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GlyphMetrics {
     /// Atlas UV rectangle `[u0, v0, u1, v1]`.
     pub uv: [f32; 4],
@@ -71,166 +67,29 @@ pub struct FontAtlas {
     pub gpos: GposKerning,
     /// The `.notdef` glyph cell, when the font has a non-empty glyph 0.
     pub notdef: Option<GlyphMetrics>,
+    /// Key of the font bytes and character set this atlas was baked from.
+    ///
+    /// Two registrations with the same key produce the same atlas, which is
+    /// what lets the renderer share one atlas between them.
+    pub key: super::FontKey,
 }
 
 impl FontAtlas {
     /// Build an MSDF atlas for `chars` and upload it to the GPU.
     ///
-    /// Chapters are packed in the given order; each cell is
-    /// [`DEFAULT_GLYPH_SIZE`] texels.  Glyph 0 (`.notdef`) is appended as an
-    /// extra cell when it has an outline, so missing characters can be drawn as
-    /// a visible replacement.
+    /// This is [`BakedAtlas::build`] followed by [`BakedAtlas::upload`]; use
+    /// those directly to cache or share the CPU half.  Chapters are packed in
+    /// the given order; each cell is [`DEFAULT_GLYPH_SIZE`] texels.  Glyph 0
+    /// (`.notdef`) is appended as an extra cell when it has an outline, so
+    /// missing characters can be drawn as a visible replacement.
     pub fn new<I: IntoIterator<Item = char>>(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         parser: &super::parser::FontParser,
         chars: I,
     ) -> Result<Self> {
-        let glyph_size = DEFAULT_GLYPH_SIZE;
         let char_list: Vec<char> = chars.into_iter().collect();
-        if char_list.is_empty() {
-            return Err(anyhow::anyhow!("no characters"));
-        }
-
-        // `.notdef` (glyph 0) gets its own cell after the requested characters
-        // when the font provides an outline for it.
-        let notdef_outline = parser.get_glyph_outline_by_index(0);
-        let has_notdef = !notdef_outline.is_empty();
-        let count = char_list.len() as u32 + u32::from(has_notdef);
-
-        let atlas_dim = ((count as f32).sqrt().ceil() as u32).max(1);
-        let tex_size = atlas_dim * glyph_size;
-        log::debug!(
-            "Building atlas {}x{} for {} glyphs",
-            tex_size,
-            tex_size,
-            count
-        );
-        let cell_bounds = [CELL_MIN, CELL_MIN, CELL_MAX, CELL_MAX];
-
-        // Jobs: `(cell index, character, glyph index)`.  `None` is `.notdef`.
-        let mut jobs: Vec<(usize, Option<char>, u16)> = char_list
-            .iter()
-            .enumerate()
-            .map(|(i, &c)| (i, Some(c), parser.get_glyph_index(c)))
-            .collect();
-        if has_notdef {
-            jobs.push((char_list.len(), None, 0));
-        }
-
-        let mut pixels = vec![255u8; (tex_size * tex_size * 4) as usize];
-        // The atlas reuses the CPU layout tables verbatim, so `LayoutData` and
-        // `FontAtlas` can never measure the same text differently.
-        let (mut metrics, notdef, glyph_indices, kerning, gpos, font_metrics) =
-            LayoutData::from_parser(parser, char_list.clone()).into_parts();
-        let mut notdef = notdef;
-
-        #[cfg(not(target_arch = "wasm32"))]
-        let glyph_results: Vec<GlyphBake> = jobs
-            .par_iter()
-            .map(|&(i, c, gid)| {
-                let outline = parser.get_glyph_outline_by_index(gid);
-                let advance = parser.get_glyph_advance_by_index(gid);
-                let bmp = generate_msdf(&outline, glyph_size);
-                (i, c, bmp, advance, gid)
-            })
-            .collect();
-        #[cfg(target_arch = "wasm32")]
-        let glyph_results: Vec<GlyphBake> = jobs
-            .iter()
-            .map(|&(i, c, gid)| {
-                let outline = parser.get_glyph_outline_by_index(gid);
-                let advance = parser.get_glyph_advance_by_index(gid);
-                let bmp = generate_msdf(&outline, glyph_size);
-                (i, c, bmp, advance, gid)
-            })
-            .collect();
-
-        for (i, c, bmp, _advance, _gid) in glyph_results {
-            let x = (i as u32 % atlas_dim) * glyph_size;
-            let y = (i as u32 / atlas_dim) * glyph_size;
-
-            for row in 0..glyph_size {
-                let dst = (((y + row) * tex_size + x) * 4) as usize;
-                let src = (row * glyph_size * 4) as usize;
-                pixels[dst..dst + (glyph_size * 4) as usize]
-                    .copy_from_slice(&bmp[src..src + (glyph_size * 4) as usize]);
-            }
-
-            let glyph = match c {
-                Some(c) => metrics.get_mut(&c),
-                None => notdef.as_mut(),
-            };
-            let Some(glyph) = glyph else {
-                // `LayoutData` inserted every requested character and the
-                // `.notdef` cell, so this only guards a future change.
-                continue;
-            };
-            glyph.uv = [
-                x as f32 / tex_size as f32,
-                y as f32 / tex_size as f32,
-                (x + glyph_size) as f32 / tex_size as f32,
-                (y + glyph_size) as f32 / tex_size as f32,
-            ];
-            glyph.size = [glyph_size as f32, glyph_size as f32];
-        }
-
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("FontAtlas"),
-            size: wgpu::Extent3d {
-                width: tex_size,
-                height: tex_size,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            wgpu::ImageCopyTexture {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &pixels,
-            wgpu::ImageDataLayout {
-                offset: 0,
-                bytes_per_row: Some(tex_size * 4),
-                rows_per_image: None,
-            },
-            wgpu::Extent3d {
-                width: tex_size,
-                height: tex_size,
-                depth_or_array_layers: 1,
-            },
-        );
-
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("FontAtlas Sampler"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-
-        Ok(FontAtlas {
-            texture,
-            view,
-            sampler,
-            metrics,
-            glyph_size,
-            px_range: PIXEL_RANGE,
-            cell_bounds,
-            font_metrics,
-            glyph_indices,
-            kerning,
-            gpos,
-            notdef,
-        })
+        Ok(BakedAtlas::build(parser, &char_list)?.upload(device, queue))
     }
 
     /// A pure-data view of this atlas for [`layout_line`].

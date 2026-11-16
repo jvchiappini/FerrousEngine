@@ -116,6 +116,7 @@ nav:
     - ferrous_events: ferrous_events/README.md
     - ferrous_events — Events: ferrous_events/EVENTS.md
     - ferrous_font: ferrous_font/README.md
+    - ferrous_font - Baked atlases and the cache: ferrous_font/atlas-cache.md
     - ferrous_gpu: ferrous_gpu/README.md
     - ferrous_reflection: ferrous_reflection/README.md
     - ferrous_render_graph: ferrous_render_graph/README.md

@@ -90,7 +90,7 @@ pub struct GposPair {
 /// Supports `PairPos` format 1 (explicit pairs) and format 2 (class pairs),
 /// horizontal `xAdvance` only.  `kern` table pairs are a separate fallback in
 /// [`FontParser`]; a GPOS pair always wins over a `kern` pair.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct GposKerning {
     pairs: HashMap<(u16, u16), f32>,
     classes: Vec<ClassKerning>,
@@ -161,7 +161,7 @@ impl GposKerning {
 }
 
 /// One `PairPos` format-2 class subtable.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct ClassKerning {
     coverage: Coverage,
     class1: ClassDef,
@@ -174,7 +174,7 @@ struct ClassKerning {
 }
 
 /// A GPOS coverage table, normalised to inclusive glyph ranges.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 struct Coverage {
     ranges: Vec<(u16, u16)>,
 }
@@ -231,7 +231,7 @@ impl Coverage {
 }
 
 /// A GPOS class definition table.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 struct ClassDef {
     ranges: Vec<(u16, u16, u16)>,
 }
@@ -276,6 +276,146 @@ impl ClassDef {
             .iter()
             .find(|&&(start, end, _)| glyph >= start && glyph <= end)
             .map_or(0, |&(_, _, class)| class)
+    }
+}
+
+// ── Binary form of the kerning tables ────────────────────────────────────────
+//
+// The baked-atlas cache stores the layout tables, so the GPOS structures need a
+// stable byte form.  The codec lives next to the (private) types it encodes and
+// writes entries in a deterministic order.
+
+impl GposKerning {
+    /// Appends the kerning tables to `writer`.
+    pub(crate) fn encode(&self, writer: &mut crate::codec::Writer) {
+        let mut pairs: Vec<((u16, u16), f32)> = self
+            .pairs
+            .iter()
+            .map(|(&pair, &value)| (pair, value))
+            .collect();
+        pairs.sort_by_key(|(pair, _)| *pair);
+        writer.u32(pairs.len() as u32);
+        for ((left, right), value) in pairs {
+            writer.u16(left);
+            writer.u16(right);
+            writer.f32(value);
+        }
+        writer.u32(self.classes.len() as u32);
+        for table in &self.classes {
+            table.encode(writer);
+        }
+    }
+
+    /// Reads what [`Self::encode`] wrote, or `None` on a malformed table.
+    pub(crate) fn decode(reader: &mut crate::codec::Reader<'_>) -> Option<Self> {
+        const MAX_PAIRS: u32 = 1 << 20;
+        const MAX_CLASSES: u32 = 1 << 12;
+        let pair_count = reader.count(MAX_PAIRS)?;
+        let mut pairs = HashMap::with_capacity(pair_count);
+        for _ in 0..pair_count {
+            let left = reader.u16()?;
+            let right = reader.u16()?;
+            pairs.insert((left, right), reader.f32()?);
+        }
+        let class_count = reader.count(MAX_CLASSES)?;
+        let mut classes = Vec::with_capacity(class_count);
+        for _ in 0..class_count {
+            classes.push(ClassKerning::decode(reader)?);
+        }
+        Some(Self { pairs, classes })
+    }
+}
+
+impl ClassKerning {
+    fn encode(&self, writer: &mut crate::codec::Writer) {
+        self.coverage.encode(writer);
+        self.class1.encode(writer);
+        self.class2.encode(writer);
+        writer.u32(self.class1_count as u32);
+        writer.u32(self.class2_count as u32);
+        writer.u32(self.values.len() as u32);
+        for value in &self.values {
+            match value {
+                Some(value) => {
+                    writer.u8(1);
+                    writer.f32(*value);
+                }
+                None => writer.u8(0),
+            }
+        }
+    }
+
+    fn decode(reader: &mut crate::codec::Reader<'_>) -> Option<Self> {
+        const MAX_CLASS_COUNT: u32 = 1 << 16;
+        let coverage = Coverage::decode(reader)?;
+        let class1 = ClassDef::decode(reader)?;
+        let class2 = ClassDef::decode(reader)?;
+        let class1_count = reader.count(MAX_CLASS_COUNT)?;
+        let class2_count = reader.count(MAX_CLASS_COUNT)?;
+        let value_count = reader.count(1 << 20)?;
+        if value_count != class1_count.checked_mul(class2_count)? {
+            return None;
+        }
+        let mut values = Vec::with_capacity(value_count);
+        for _ in 0..value_count {
+            values.push(match reader.u8()? {
+                0 => None,
+                1 => Some(reader.f32()?),
+                _ => return None,
+            });
+        }
+        Some(Self {
+            coverage,
+            class1,
+            class2,
+            class1_count,
+            class2_count,
+            values,
+        })
+    }
+}
+
+impl Coverage {
+    fn encode(&self, writer: &mut crate::codec::Writer) {
+        writer.u32(self.ranges.len() as u32);
+        for (start, end) in &self.ranges {
+            writer.u16(*start);
+            writer.u16(*end);
+        }
+    }
+
+    fn decode(reader: &mut crate::codec::Reader<'_>) -> Option<Self> {
+        let count = reader.count(1 << 16)?;
+        let mut ranges = Vec::with_capacity(count);
+        for _ in 0..count {
+            let start = reader.u16()?;
+            let end = reader.u16()?;
+            ranges.push((start, end));
+        }
+        Some(Self { ranges })
+    }
+}
+
+impl ClassDef {
+    fn encode(&self, writer: &mut crate::codec::Writer) {
+        writer.u32(self.ranges.len() as u32);
+        for (start, end, class) in &self.ranges {
+            writer.u16(*start);
+            writer.u16(*end);
+            writer.u16(*class);
+        }
+    }
+
+    fn decode(reader: &mut crate::codec::Reader<'_>) -> Option<Self> {
+        let count = reader.count(1 << 16)?;
+        let mut ranges = Vec::with_capacity(count);
+        for _ in 0..count {
+            let start = reader.u16()?;
+            let end = reader.u16()?;
+            let class = reader.u16()?;
+            ranges.push((start, end, class));
+        }
+        Some(Self { ranges })
     }
 }
 
@@ -355,6 +495,15 @@ impl FontParser {
     /// Vertical metrics in em units (see [`FontMetrics`]).
     pub fn metrics(&self) -> FontMetrics {
         self.metrics
+    }
+
+    /// The font bytes this parser was built from.
+    ///
+    /// The baked-atlas cache hashes them together with the character set to
+    /// name one atlas file.
+    #[must_use]
+    pub fn data(&self) -> &[u8] {
+        &self.data
     }
 
     /// Whether GPOS pair kerning was recovered from the font.
