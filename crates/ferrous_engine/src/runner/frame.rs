@@ -80,7 +80,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
                         if let Some(font_slot) = self.font_pending.take() {
                             if let Ok(mut borrow) = font_slot.try_borrow_mut() {
                                 if let Some(font) = borrow.take() {
-                                    self.font = Some(font);
+                                    self.font = Some(std::sync::Arc::new(font));
                                 }
                             }
                         }
@@ -170,7 +170,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
                     startup::mark("engine: fonts ready");
                     gfx.renderer
                         .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
-                    self.font = Some(font);
+                    self.font = Some(std::sync::Arc::new(font));
                     self.font_asset_handle = None;
                 }
             }
@@ -322,7 +322,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 ctx.render.inner.queue_gizmo(gizmo);
             }
 
-            if let Some(font) = self.font.as_ref() {
+            if let Some(font) = self.font.as_deref() {
                 let mut dc = DrawContext {
                     gui: &mut gui_batch,
                     font,
@@ -338,7 +338,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 height: self.window_size.1 as f32,
             };
 
-            let ui_render_batch = self.ui.render(viewport_rect, self.font.as_ref());
+            let ui_render_batch = self.ui.render(viewport_rect, self.font.as_deref());
             gui_batch.extend(ui_render_batch);
 
             // A screenshot asked for during `update` or `draw_ui` is copied on

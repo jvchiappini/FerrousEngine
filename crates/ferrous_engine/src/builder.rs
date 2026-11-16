@@ -103,6 +103,12 @@ pub struct AppConfig {
     /// enables the same trace without a code change; see
     /// [`ferrous_core::startup`].
     pub startup_trace: bool,
+    /// On-disk cache for baked font atlases.
+    ///
+    /// `None` (the default) bakes every font on every launch.  Applications opt
+    /// in with [`ferrous_font::FontCacheConfig::for_app`] so the second launch
+    /// reads the MSDF atlas from disk instead of regenerating it.
+    pub font_cache: Option<ferrous_font::FontCacheConfig>,
 }
 
 impl Default for AppConfig {
@@ -127,6 +133,7 @@ impl Default for AppConfig {
             mode: AppMode::Game3D,
             resolution_scale: 1.0,
             startup_trace: false,
+            font_cache: None,
         }
     }
 }
@@ -352,6 +359,24 @@ impl<A: FerrousApp + 'static> App<A> {
     /// ```
     pub fn with_startup_trace(mut self, enable: bool) -> Self {
         self.config.startup_trace = enable;
+        self
+    }
+
+    /// Cache baked font atlases on disk (default: off).
+    ///
+    /// The cache is keyed by the font bytes and the character set, so a launch
+    /// after the first one uploads the stored MSDF atlas instead of baking it.
+    /// A corrupt or outdated file is rebuilt; see [`ferrous_font::AtlasCache`].
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// App::new(MyApp)
+    ///     .with_font_cache(ferrous_font::FontCacheConfig::for_app("MyApp"))
+    ///     .run();
+    /// ```
+    pub fn with_font_cache(mut self, cache: ferrous_font::FontCacheConfig) -> Self {
+        self.config.font_cache = Some(cache);
         self
     }
 

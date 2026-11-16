@@ -38,7 +38,7 @@ pub(crate) struct Runner<A: FerrousApp + 'static> {
     pub(super) viewport: Viewport,
     pub(super) clock: TimeClock,
     pub(super) world: World,
-    pub(super) font: Option<Font>,
+    pub(super) font: Option<std::sync::Arc<Font>>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) font_asset_handle: Option<AssetHandle<FontData>>,
     #[cfg(target_arch = "wasm32")]

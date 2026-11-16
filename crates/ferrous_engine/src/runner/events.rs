@@ -24,6 +24,7 @@ use crate::context::AppContext;
 use crate::graphics::GraphicsState;
 use crate::render_context::RenderContext;
 use crate::traits::{FerrousApp, FileDropEvent};
+#[cfg(target_arch = "wasm32")]
 use ferrous_assets::Font;
 
 use super::types::Runner;
@@ -115,17 +116,32 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
                     .set_mode(ferrous_renderer::RendererMode::Flat2D);
             }
 
+            if let Some(config) = &self.config.font_cache {
+                if let Some(cache) = ferrous_font::AtlasCache::from_config(config) {
+                    gfx.renderer.set_font_cache(std::sync::Arc::new(cache));
+                }
+            }
+
             if let Some(bytes) = self.config.font_bytes {
-                let font = Font::load_bytes(
-                    bytes,
-                    &gfx.renderer.context.device,
-                    &gfx.renderer.context.queue,
-                    ferrous_font::latin_western(),
-                );
-                ferrous_core::startup::mark("engine: fonts ready");
-                gfx.renderer
-                    .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
-                self.font = Some(font);
+                // Register the UI font through the renderer so an application
+                // that registers the same face shares this atlas (no second
+                // bake or upload) and so the on-disk cache applies to it.
+                match gfx
+                    .renderer
+                    .register_font_2d(bytes, ferrous_font::latin_western())
+                {
+                    Ok(id) => {
+                        if let Some(font) = gfx.renderer.font_2d(id) {
+                            gfx.renderer
+                                .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
+                            ferrous_core::startup::mark("engine: fonts ready");
+                            self.font = Some(font);
+                        }
+                    }
+                    Err(error) => {
+                        log::error!("the embedded UI font could not be registered: {error}");
+                    }
+                }
             } else if let Some(path) = &self.config.font_path {
                 let handle = self
                     .asset_server

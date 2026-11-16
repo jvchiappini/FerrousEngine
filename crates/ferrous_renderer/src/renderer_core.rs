@@ -717,9 +717,11 @@ fn build_layer_plan(
     sort_buffers[depth] = sort_order;
 }
 
-/// A registered 2D font: its baked atlas and the bind group that samples it./// A registered 2D font: its baked atlas and the bind group that samples it.
+/// A registered 2D font: its baked atlas and the bind group that samples it.
 struct Font2dEntry {
-    font: ferrous_font::Font,
+    /// Inputs the atlas was baked from; equal keys share one entry.
+    key: ferrous_font::FontKey,
+    font: std::sync::Arc<ferrous_font::Font>,
     bind_group: std::sync::Arc<wgpu::BindGroup>,
 }
 
@@ -1068,6 +1070,10 @@ pub struct Renderer {
     /// Registered 2D fonts (atlas + sampling bind group) in a generational
     /// slot registry, so freed font handles can never address a recycled font.
     fonts_2d: SlotRegistry<Font2dEntry>,
+    /// Optional on-disk cache of baked atlases used by font registration.
+    ///
+    /// Set by the engine from `AppConfig::font_cache`; `None` bakes every font.
+    font_cache: Option<Arc<ferrous_font::AtlasCache>>,
     /// Per-frame glyph instances plus the font and blend mode each one belongs
     /// to. `DrawCommand2d::Text { index, .. }` indexes this vector directly, so
     /// submission order is preserved for equal `z`.
@@ -1439,6 +1445,7 @@ impl Renderer {
             freed_sprite_texture_ids: Vec::new(),
             sprite_texture_bytes: std::collections::HashMap::new(),
             fonts_2d: SlotRegistry::new(),
+            font_cache: None,
             text_batcher_2d: Vec::new(),
             shape_blend_2d: Vec::new(),
             current_blend_2d: BlendMode2d::Normal,
@@ -4588,16 +4595,35 @@ impl Renderer {
     /// The atlas is built once; every [`Self::draw_text_2d`] call with the
     /// returned [`FontId2d`] reuses it.  Free it with [`Self::free_font_2d`].
     /// An empty `charset` falls back to `ferrous_font::charset::latin_western`.
+    ///
+    /// Registering the same font bytes with the same character set twice returns
+    /// the **same** id: the atlas is neither baked nor uploaded again.  When a
+    /// cache is installed with [`Self::set_font_cache`] a miss is baked once per
+    /// process lifetime of the cache file instead of once per run.
     pub fn register_font_2d<I>(&mut self, bytes: &[u8], charset: I) -> Result<FontId2d, FontError>
     where
         I: IntoIterator<Item = char>,
     {
-        let font = ferrous_font::Font::try_load_bytes(
+        let mut char_list: Vec<char> = charset.into_iter().collect();
+        if char_list.is_empty() {
+            char_list = ferrous_font::charset::latin_western();
+        }
+        let key = ferrous_font::FontKey::of(bytes, &char_list);
+
+        // Same bytes and characters already on the GPU: share that atlas.
+        if let Some((handle, _)) = self.fonts_2d.iter().find(|(_, entry)| entry.key == key) {
+            return Ok(FontId2d::from(handle));
+        }
+
+        let baked = ferrous_font::BakedAtlas::build_cached(
+            self.font_cache.as_deref(),
             bytes,
-            &self.context.device,
-            &self.context.queue,
-            charset,
+            &char_list,
         )?;
+        let font = std::sync::Arc::new(ferrous_font::Font {
+            atlas: baked.upload(&self.context.device, &self.context.queue),
+            icons: None,
+        });
         let bind_group = std::sync::Arc::new(
             self.context
                 .device
@@ -4619,8 +4645,37 @@ impl Renderer {
                     ],
                 }),
         );
-        let handle = self.fonts_2d.insert(Font2dEntry { font, bind_group });
+        let handle = self.fonts_2d.insert(Font2dEntry {
+            key,
+            font,
+            bind_group,
+        });
         Ok(FontId2d::from(handle))
+    }
+
+    /// Installs the cache used by font registration.
+    ///
+    /// The engine passes the application's `AppConfig::font_cache`; registering
+    /// the same font again then reads the stored atlas instead of baking it.
+    pub fn set_font_cache(&mut self, cache: std::sync::Arc<ferrous_font::AtlasCache>) {
+        self.font_cache = Some(cache);
+    }
+
+    /// The installed atlas cache, if any.
+    #[must_use]
+    pub fn font_cache(&self) -> Option<&ferrous_font::AtlasCache> {
+        self.font_cache.as_deref()
+    }
+
+    /// The font behind a registered 2D font id.
+    ///
+    /// The returned handle shares the GPU atlas with the registration, so an
+    /// application (or the engine itself) can bind it without another upload.
+    #[must_use]
+    pub fn font_2d(&self, font_id: FontId2d) -> Option<std::sync::Arc<ferrous_font::Font>> {
+        self.fonts_2d
+            .get(font_id.handle())
+            .map(|entry| std::sync::Arc::clone(&entry.font))
     }
 
     /// Free a 2D font and recycle its handle.
