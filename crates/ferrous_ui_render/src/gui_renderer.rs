@@ -360,9 +360,10 @@ impl GuiRenderer {
             // pipeline cache lets the driver reuse previously compiled shaders
             // across backends/formats instead of recompiling from scratch
             // (audit M18).
-            println!(
+            log::debug!(
                 "[GuiRenderer] Rebuilding pipelines for format={:?}, sample_count={}",
-                format, sample_count
+                format,
+                sample_count
             );
             let cache = self.pipeline_cache.as_deref();
             self.opaque_pipeline = create_quad_pipeline(
@@ -703,31 +704,6 @@ impl GuiRenderer {
 
         if (base_sw == 0 || base_sh == 0) && matches!(load_op, wgpu::LoadOp::Load) {
             return;
-        }
-
-        static mut FRAME_COUNT: u32 = 0;
-        unsafe {
-            FRAME_COUNT += 1;
-            if FRAME_COUNT.is_multiple_of(120) {
-                println!(
-                    "[GuiRenderer] Render: segments={}, quads={}, text={}, icons={}, svg={}",
-                    batch.segments.len(),
-                    batch.quads.len(),
-                    batch.text_quads.len(),
-                    batch.icon_quads.len(),
-                    batch.svg_commands.len()
-                );
-                println!(
-                    "[GuiRenderer] Base Scissor: x={}, y={}, w={}, h={}",
-                    base_sx, base_sy, base_sw, base_sh
-                );
-                if let Some(s) = batch.segments.first() {
-                    println!(
-                        "[GuiRenderer] First Segment: q_range={:?}, scissor={:?}",
-                        s.quad_range, s.scissor
-                    );
-                }
-            }
         }
 
         for segment in &batch.segments {

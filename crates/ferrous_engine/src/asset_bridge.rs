@@ -16,8 +16,7 @@ pub fn spawn_gltf(
     let path = Path::new(path);
     let model = ferrous_assets::load_gltf(path)?;
 
-    // diagnostic: dump model summary
-    eprintln!(
+    log::debug!(
         "loaded gltf '{}' -> {} meshes, {} materials, {} images",
         path.display(),
         model.meshes.len(),
@@ -58,10 +57,10 @@ pub fn spawn_gltf(
     let mut tex_handles = Vec::with_capacity(n_images);
     for (img_idx, (w, h, pixels)) in model.images.iter().enumerate() {
         let th = if linear_flag[img_idx] {
-            eprintln!(" image {} -> linear (normal/MR/AO data)", img_idx);
+            log::debug!(" image {} -> linear (normal/MR/AO data)", img_idx);
             renderer.register_texture_linear(*w, *h, pixels)
         } else {
-            eprintln!(" image {} -> sRGB (color)", img_idx);
+            log::debug!(" image {} -> sRGB (color)", img_idx);
             renderer.register_texture(*w, *h, pixels)
         };
         tex_handles.push(th);
@@ -91,19 +90,19 @@ pub fn spawn_gltf(
         if let Some(idx) = raw.base_color_tex {
             if let Some(tex) = tex_handles.get(idx) {
                 desc.albedo_tex = Some(tex.0);
-                eprintln!(" material base_color_tex -> image {} handle {}", idx, tex.0);
+                log::debug!(" material base_color_tex -> image {} handle {}", idx, tex.0);
             }
         }
         if let Some(idx) = raw.normal_tex {
             if let Some(tex) = tex_handles.get(idx) {
                 desc.normal_tex = Some(tex.0);
-                eprintln!(" material normal_tex -> image {} handle {}", idx, tex.0);
+                log::debug!(" material normal_tex -> image {} handle {}", idx, tex.0);
             }
         }
         if let Some(idx) = raw.metallic_roughness_tex {
             if let Some(tex) = tex_handles.get(idx) {
                 desc.metallic_roughness_tex = Some(tex.0);
-                eprintln!(
+                log::debug!(
                     " material metallic_roughness_tex -> image {} handle {}",
                     idx, tex.0
                 );
@@ -112,18 +111,18 @@ pub fn spawn_gltf(
         if let Some(idx) = raw.emissive_tex {
             if let Some(tex) = tex_handles.get(idx) {
                 desc.emissive_tex = Some(tex.0);
-                eprintln!(" material emissive_tex -> image {} handle {}", idx, tex.0);
+                log::debug!(" material emissive_tex -> image {} handle {}", idx, tex.0);
             }
         }
         if let Some(idx) = raw.ao_tex {
             if let Some(tex) = tex_handles.get(idx) {
                 desc.ao_tex = Some(tex.0);
-                eprintln!(" material ao_tex -> image {} handle {}", idx, tex.0);
+                log::debug!(" material ao_tex -> image {} handle {}", idx, tex.0);
             }
         }
 
         let mh = renderer.create_material(&desc);
-        eprintln!(" created material desc: {:?} -> handle {:?}", desc, mh);
+        log::debug!(" created material desc: {:?} -> handle {:?}", desc, mh);
         // keep (handle, descriptor) together so we can store the full
         // descriptor on the world entity — sync_world calls update_params
         // every frame with the descriptor stored in the world, which would
@@ -134,7 +133,7 @@ pub fn spawn_gltf(
 
     let mut out_handles = Vec::new();
     for (i, mesh) in model.meshes.into_iter().enumerate() {
-        eprintln!(
+        log::debug!(
             " mesh {}: {} vertices {} indices mat_idx={:?}",
             i,
             mesh.positions.len(),
@@ -217,11 +216,11 @@ impl GltfSpawnTask {
         match server.get(self.handle) {
             AssetState::Loading => None,
             AssetState::NotFound => {
-                eprintln!("[GltfSpawnTask] handle not found for '{path}'");
+                log::warn!("[GltfSpawnTask] handle not found for '{path}'");
                 None
             }
             AssetState::Failed(msg) => {
-                eprintln!("[GltfSpawnTask] failed to load '{path}': {msg}");
+                log::warn!("[GltfSpawnTask] failed to load '{path}': {msg}");
                 // Return empty vec so callers know loading finished (with error).
                 Some(Vec::new())
             }
@@ -230,7 +229,7 @@ impl GltfSpawnTask {
                 match spawn_gltf_from_model(world, renderer, path, &gltf_model.0) {
                     Ok(handles) => Some(handles),
                     Err(e) => {
-                        eprintln!("[GltfSpawnTask] entity spawn failed for '{path}': {e}");
+                        log::warn!("[GltfSpawnTask] entity spawn failed for '{path}': {e}");
                         Some(Vec::new())
                     }
                 }
@@ -277,7 +276,7 @@ fn spawn_gltf_from_model(
 ) -> Result<Vec<ferrous_core::scene::Handle>> {
     let path_obj = Path::new(path);
 
-    eprintln!(
+    log::debug!(
         "spawning gltf '{}' -> {} meshes, {} materials, {} images",
         path,
         model.meshes.len(),

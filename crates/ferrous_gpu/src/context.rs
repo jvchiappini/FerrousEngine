@@ -142,7 +142,7 @@ impl EngineContext {
             info.name, info.device_type, info.backend
         )));
         #[cfg(not(target_arch = "wasm32"))]
-        println!(
+        log::info!(
             "[WGPU] Selected Adapter: {} ({:?}) - Backend: {:?}",
             info.name, info.device_type, info.backend
         );

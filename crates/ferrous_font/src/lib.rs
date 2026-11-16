@@ -91,10 +91,7 @@ impl Font {
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
             Err(e) => {
-                eprintln!(
-                    "Warning: Font not found at {}: {}. Using fallback.",
-                    path, e
-                );
+                log::warn!("Font not found at {}: {}. Using fallback.", path, e);
                 Self::build_fallback_font()
             }
         };

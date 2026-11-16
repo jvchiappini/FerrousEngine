@@ -3,28 +3,14 @@ use crate::primitives::{Overflow, Rect};
 use crate::render_command::CapturedCommand;
 use crate::ui_tree::{NodeId, UiTree};
 use crate::RenderCommand;
-use std::sync::atomic::{AtomicU32, Ordering};
 
 pub struct RenderCollector;
-
-/// Frame counter for the periodic diagnostic below.  Atomic (not `static
-/// mut`) so the collector is sound and usable from more than one thread.
-static TOTAL_FRAMES: AtomicU32 = AtomicU32::new(0);
 
 impl RenderCollector {
     /// Collects render commands from the UI tree, starting from the root.
     pub fn collect<App>(tree: &mut UiTree<App>, cmds: &mut Vec<CapturedCommand>, viewport: Rect) {
         if let Some(root_id) = tree.get_root() {
-            let mut visited = 0u32;
-            Self::collect_node(tree, root_id, cmds, viewport, 0.0, &mut visited);
-            let frames = TOTAL_FRAMES.fetch_add(1, Ordering::Relaxed) + 1;
-            if frames.is_multiple_of(120) {
-                println!(
-                    "[RenderCollector] Visited {} nodes, collected {} commands",
-                    visited,
-                    cmds.len()
-                );
-            }
+            Self::collect_node(tree, root_id, cmds, viewport, 0.0);
         }
     }
 
@@ -34,9 +20,7 @@ impl RenderCollector {
         cmds: &mut Vec<CapturedCommand>,
         viewport: Rect,
         z: f32,
-        count: &mut u32,
     ) {
-        *count += 1;
         let node = match tree.get_node(id) {
             Some(n) => n,
             None => return,
@@ -70,7 +54,7 @@ impl RenderCollector {
             let children = node.children.clone();
             // Painter's Algorithm: process in normal order (background to foreground)
             for child_id in children {
-                Self::collect_node(tree, child_id, cmds, viewport, z + 0.001, count);
+                Self::collect_node(tree, child_id, cmds, viewport, z + 0.001);
             }
 
             if overflow_clip {
@@ -127,7 +111,7 @@ impl RenderCollector {
 
         // Draw children in normal order (background to foreground)
         for child_id in children {
-            Self::collect_node(tree, child_id, cmds, viewport, z + 0.001, count);
+            Self::collect_node(tree, child_id, cmds, viewport, z + 0.001);
         }
 
         if overflow_clip {

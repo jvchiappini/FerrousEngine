@@ -86,8 +86,7 @@ pub fn parse_gltf_data(
     let mut out_images = Vec::with_capacity(images.len());
     use gltf::image::Format as GltfFormat;
     for img in images.iter() {
-        // diagnostic: print format/size so we can reason about failures
-        eprintln!(
+        log::debug!(
             "gltf image @{}x{} format={:?} bytes={}",
             img.width,
             img.height,
@@ -114,8 +113,8 @@ pub fn parse_gltf_data(
                     rgba.into_raw()
                 }
                 Err(err) => {
-                    eprintln!(
-                        "warning: failed to decode glTF image ({}x{}) {} bytes: {}",
+                    log::warn!(
+                        "failed to decode glTF image ({}x{}) {} bytes: {}",
                         img.width,
                         img.height,
                         img.pixels.len(),
@@ -144,7 +143,7 @@ pub fn parse_gltf_data(
                                 height = side;
                             }
                         }
-                        eprintln!(
+                        log::debug!(
                             "adjusted raw image dims from {}x{} to {}x{}",
                             img.width, img.height, width, height
                         );
@@ -153,25 +152,6 @@ pub fn parse_gltf_data(
                 }
             },
         };
-        // compute simple average colour for debugging
-        if !pixels.is_empty() {
-            let mut sum = [0u64; 3];
-            let mut count = 0u64;
-            for chunk in pixels.chunks(4) {
-                sum[0] += chunk[0] as u64;
-                sum[1] += chunk[1] as u64;
-                sum[2] += chunk[2] as u64;
-                count += 1;
-            }
-            if count > 0 {
-                eprintln!(
-                    " -> avg color = ({:.1},{:.1},{:.1})",
-                    sum[0] as f32 / count as f32,
-                    sum[1] as f32 / count as f32,
-                    sum[2] as f32 / count as f32
-                );
-            }
-        }
         out_images.push((width, height, pixels));
     }
     // --- materials ----------------------------------------------------------
@@ -362,8 +342,8 @@ pub fn parse_gltf_data(
                 .unwrap_or_default();
             // Guarantee normals has exactly one entry per vertex.
             if normals.len() != n_verts {
-                eprintln!(
-                    "warning: normals count ({}) != positions count ({}), padding",
+                log::warn!(
+                    "normals count ({}) != positions count ({}), padding",
                     normals.len(),
                     n_verts
                 );
@@ -373,23 +353,9 @@ pub fn parse_gltf_data(
                 .read_tex_coords(0)
                 .map(|t| t.into_f32().collect())
                 .unwrap_or_else(|| {
-                    eprintln!("warning: primitive has no TEXCOORD_0, using zero UVs");
+                    log::warn!("primitive has no TEXCOORD_0, using zero UVs");
                     vec![[0.0, 0.0]; n_verts]
                 });
-            if !uvs.is_empty() {
-                let (mut min_u, mut max_u) = (uvs[0][0], uvs[0][0]);
-                let (mut min_v, mut max_v) = (uvs[0][1], uvs[0][1]);
-                for uv in &uvs {
-                    min_u = min_u.min(uv[0]);
-                    max_u = max_u.max(uv[0]);
-                    min_v = min_v.min(uv[1]);
-                    max_v = max_v.max(uv[1]);
-                }
-                eprintln!(
-                    "    uv range = u[{:.3},{:.3}] v[{:.3},{:.3}]",
-                    min_u, max_u, min_v, max_v
-                );
-            }
             let colors: Vec<[f32; 4]> = reader
                 .read_colors(0)
                 .map(|c| c.into_rgba_f32().collect())
@@ -420,8 +386,8 @@ pub fn parse_gltf_data(
             let uvs = if uvs.len() == n_verts {
                 uvs
             } else if !uvs.is_empty() {
-                eprintln!(
-                    "warning: uvs count ({}) != positions count ({}), padding",
+                log::warn!(
+                    "uvs count ({}) != positions count ({}), padding",
                     uvs.len(),
                     n_verts
                 );
@@ -441,7 +407,6 @@ pub fn parse_gltf_data(
                 indices,
                 material_idx: primitive.material().index(),
             };
-            eprintln!("first uv = {:?}", mesh.uvs.first());
             out_meshes.push(mesh);
         }
     }

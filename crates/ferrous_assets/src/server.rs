@@ -76,13 +76,17 @@ struct InboxItem {
 // Hot-reload watch data (desktop only)
 // ---------------------------------------------------------------------------
 
+/// Closure that re-runs an import and returns an erased `Arc`.
+#[cfg(not(target_arch = "wasm32"))]
+type ReimportFn = dyn Fn(&Path) -> Result<Arc<dyn Any + Send + Sync>, String> + Send + Sync;
+
 #[cfg(not(target_arch = "wasm32"))]
 struct WatchEntry {
     path: PathBuf,
     slot_id: u32,
     generation: u16,
     /// Closure that re-runs import and returns an erased Arc.
-    reimport: Box<dyn Fn(&Path) -> Result<Arc<dyn Any + Send + Sync>, String> + Send + Sync>,
+    reimport: Box<ReimportFn>,
 }
 
 // ---------------------------------------------------------------------------
@@ -135,7 +139,7 @@ impl AssetServer {
             ) {
                 Ok(w) => Some(Box::new(w)),
                 Err(e) => {
-                    eprintln!("[AssetServer] failed to create file watcher: {e}");
+                    log::warn!("[AssetServer] failed to create file watcher: {e}");
                     None
                 }
             }
@@ -249,14 +253,12 @@ impl AssetServer {
         {
             Some(((_, p), _)) => p.clone(),
             None => {
-                eprintln!("[AssetServer] watch(): handle {slot_id} not found in path index");
+                log::warn!("[AssetServer] watch(): handle {slot_id} not found in path index");
                 return;
             }
         };
 
-        let reimport: Box<
-            dyn Fn(&Path) -> Result<Arc<dyn Any + Send + Sync>, String> + Send + Sync,
-        > = Box::new(|p: &Path| {
+        let reimport: Box<ReimportFn> = Box::new(|p: &Path| {
             T::import(p)
                 .map(|v| Arc::new(v) as Arc<dyn Any + Send + Sync>)
                 .map_err(|e| e.to_string())
@@ -275,10 +277,7 @@ impl AssetServer {
             #[allow(unused_imports)]
             use notify::Watcher;
             if let Err(e) = watcher.watch(&path, notify::RecursiveMode::NonRecursive) {
-                eprintln!(
-                    "[AssetServer] could not watch '{path}': {e}",
-                    path = path.display()
-                );
+                log::warn!("[AssetServer] could not watch '{path}': {e}", path = path.display());
             }
         }
     }
