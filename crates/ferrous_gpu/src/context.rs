@@ -72,9 +72,27 @@ impl EngineContext {
         instance: &wgpu::Instance,
         compatible_surface: Option<&wgpu::Surface<'_>>,
     ) -> anyhow::Result<wgpu::Adapter> {
+        Self::request_adapter_with(
+            instance,
+            compatible_surface,
+            wgpu::PowerPreference::HighPerformance,
+        )
+        .await
+    }
+
+    /// [`Self::request_adapter`] with an explicit power preference.
+    ///
+    /// `HighPerformance` picks the discrete GPU on a hybrid laptop,
+    /// `LowPower` the integrated one, `None` lets wgpu decide.  The engine
+    /// passes the application's preference (and `WGPU_POWER_PREF` when set).
+    pub async fn request_adapter_with(
+        instance: &wgpu::Instance,
+        compatible_surface: Option<&wgpu::Surface<'_>>,
+        power_preference: wgpu::PowerPreference,
+    ) -> anyhow::Result<wgpu::Adapter> {
         let adapter = match instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
+                power_preference,
                 compatible_surface,
                 force_fallback_adapter: false,
             })
@@ -104,6 +122,19 @@ impl EngineContext {
         instance: wgpu::Instance,
         adapter: wgpu::Adapter,
     ) -> anyhow::Result<Self> {
+        Self::from_adapter_with_cache(instance, adapter, None).await
+    }
+
+    /// [`Self::from_adapter`] that seeds the pipeline cache with `cache_data`.
+    ///
+    /// The bytes must come from [`wgpu::PipelineCache::get_data`] of a previous
+    /// run on the same adapter/driver.  wgpu tolerates stale or corrupt data
+    /// (`fallback: true`), so a bad cache only costs a recompile.
+    pub async fn from_adapter_with_cache(
+        instance: wgpu::Instance,
+        adapter: wgpu::Adapter,
+        cache_data: Option<Vec<u8>>,
+    ) -> anyhow::Result<Self> {
         let info = adapter.get_info();
         #[cfg(target_arch = "wasm32")]
         web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
@@ -120,7 +151,10 @@ impl EngineContext {
         // WebGL2 tiene límites mucho más bajos que un backend nativo;
         // usar Limits::default() en GL hace que request_device falle o
         // active rutas de validación lentas. Usamos los límites correctos.
-        let mut limits = if backend == wgpu::Backend::Gl {
+        // El GL de escritorio (OpenGL 4.3+) sí soporta storage buffers; solo
+        // WebGL2 carece de ellos (prompt 17 S3: los límites de webgl2 hacían
+        // fallar la creación del bind group de instancias).
+        let mut limits = if backend == wgpu::Backend::Gl && cfg!(target_arch = "wasm32") {
             wgpu::Limits::downlevel_webgl2_defaults()
         } else {
             wgpu::Limits::default()
@@ -176,8 +210,10 @@ impl EngineContext {
 
         // Only create the cache when the device actually negotiated the
         // feature; otherwise `create_pipeline_cache` is a validation error.
-        // SAFETY: `data: None` upholds `create_pipeline_cache`'s only unsafe
-        // precondition (initial data must come from `PipelineCache::get_data`).
+        // SAFETY: `cache_data` must come from `PipelineCache::get_data` on the
+        // same adapter (the engine keys its cache file by vendor/device/driver
+        // and version). `fallback: true` makes wgpu ignore stale or corrupt
+        // data instead of failing.
         let pipeline_cache = if device
             .features()
             .contains(wgpu::Features::PIPELINE_CACHE)
@@ -185,7 +221,7 @@ impl EngineContext {
             Some(Arc::new(unsafe {
                 device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
                     label: Some("Engine Pipeline Cache"),
-                    data: None,
+                    data: cache_data.as_deref(),
                     fallback: true,
                 })
             }))
