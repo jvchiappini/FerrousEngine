@@ -160,11 +160,9 @@ impl Renderer {
         let id = self.generate_id();
 
         let descriptor = ferrous_core::scene::MaterialDescriptor::default();
-        let handle = self.gpu.material_registry.create(
-            &self.gpu.context.device,
-            &self.gpu.context.queue,
-            &descriptor,
-        );
+        let device = self.gpu.context.device.clone();
+        let queue = self.gpu.context.queue.clone();
+        let handle = self.gpu.material_registry().create(&device, &queue, &descriptor);
 
         let material = MaterialComponent { handle, descriptor };
 
@@ -222,11 +220,9 @@ impl Renderer {
             double_sided: true,
             ..Default::default()
         };
-        let handle = self.gpu.material_registry.create(
-            &self.gpu.context.device,
-            &self.gpu.context.queue,
-            &descriptor,
-        );
+        let device = self.gpu.context.device.clone();
+        let queue = self.gpu.context.queue.clone();
+        let handle = self.gpu.material_registry().create(&device, &queue, &descriptor);
         let mut material = MaterialComponent { handle, descriptor };
 
         let element = Element {
@@ -370,11 +366,9 @@ impl Renderer {
             ..ferrous_core::scene::MaterialDescriptor::default()
         };
 
-        let handle = self.gpu.material_registry.create(
-            &self.gpu.context.device,
-            &self.gpu.context.queue,
-            &descriptor,
-        );
+        let device = self.gpu.context.device.clone();
+        let queue = self.gpu.context.queue.clone();
+        let handle = self.gpu.material_registry().create(&device, &queue, &descriptor);
 
         let material = MaterialComponent { handle, descriptor };
 

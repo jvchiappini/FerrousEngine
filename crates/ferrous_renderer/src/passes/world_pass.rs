@@ -20,7 +20,7 @@ use wgpu::{
 };
 
 use crate::graph::{FramePacket, InstancedDrawCommand, RenderPass};
-use crate::pipeline::{InstancingPipeline, PbrPipeline, PipelineLayouts, ShadowPipeline};
+use crate::pipeline::{InstancingPipeline, PipelineLayouts, ShadowPipeline};
 use crate::render_target::HdrTexture;
 use crate::resources::{DirectionalLightUniform, Environment, PointLightUniform, ShadowResources};
 use ferrous_core::scene::MaterialHandle;
@@ -93,17 +93,14 @@ pub struct WorldPass {
 }
 
 impl WorldPass {
+    /// Builds the pass and its GPU resources: instancing pipelines, shadow
+    /// pipeline and map, HDR target, environment (or the supplied HDRI) and
+    /// the skybox pipeline.
+    ///
+    /// `Renderer` calls this only when the first 3-D use happens, so a 2-D
+    /// application never pays for it (prompt 17 S4).
     #[allow(clippy::too_many_arguments)]
-    // Pass constructor keeps the renderer's pipeline set explicit.
     pub fn new(
-        _pbr_pipeline: PbrPipeline,
-        _pbr_pipeline_double: PbrPipeline,
-        _pbr_pipeline_blend: PbrPipeline,
-        _pbr_pipeline_blend_double: PbrPipeline,
-        instancing_pipeline: InstancingPipeline,
-        instancing_pipeline_double: InstancingPipeline,
-        instancing_pipeline_blend: InstancingPipeline,
-        instancing_pipeline_blend_double: InstancingPipeline,
         camera_bind_group: Arc<wgpu::BindGroup>,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -113,6 +110,44 @@ impl WorldPass {
         sample_count: u32,
         hdri_path: Option<&std::path::Path>,
     ) -> Self {
+        let hdr_format = HdrTexture::FORMAT;
+        // Instancing pipeline variants (cull on/off, opaque/blended).
+        let instancing_pipeline = InstancingPipeline::new(
+            device,
+            hdr_format,
+            sample_count,
+            layouts.clone(),
+            Some(wgpu::Face::Back),
+            None,
+            true,
+        );
+        let instancing_pipeline_double = InstancingPipeline::new(
+            device,
+            hdr_format,
+            sample_count,
+            layouts.clone(),
+            None,
+            None,
+            true,
+        );
+        let instancing_pipeline_blend = InstancingPipeline::new(
+            device,
+            hdr_format,
+            sample_count,
+            layouts.clone(),
+            Some(wgpu::Face::Back),
+            Some(wgpu::BlendState::ALPHA_BLENDING),
+            false,
+        );
+        let instancing_pipeline_blend_double = InstancingPipeline::new(
+            device,
+            hdr_format,
+            sample_count,
+            layouts.clone(),
+            None,
+            Some(wgpu::BlendState::ALPHA_BLENDING),
+            false,
+        );
         // environment bundle includes directional light and IBL textures. if
         // caller supplied an HDRI path we perform the expensive compute
         // precomputation once; otherwise fall back to the dummy grey maps.

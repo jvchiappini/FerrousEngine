@@ -193,7 +193,7 @@ impl<'r> RenderContext<'r> {
 
     /// Returns the currently active antialiasing mode.
     pub fn antialiasing_mode(&self) -> ferrous_renderer::AntialiasingMode {
-        self.inner.aa_pass.mode
+        self.inner.antialiasing_mode()
     }
 
     // ── Custom passes ────────────────────────────────────────────────────────

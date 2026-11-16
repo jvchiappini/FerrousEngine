@@ -751,7 +751,15 @@ impl Pure2dHarness {
                 }
             })?;
         let target = OffscreenTarget::new(&context.device, width, height, format);
-        let mut renderer = Renderer::new(context, width, height, format, 1, None);
+        let mut renderer = Renderer::new_with_mode(
+            context,
+            width,
+            height,
+            format,
+            1,
+            None,
+            crate::RendererMode::Pure2D,
+        );
         renderer.enable_pure_2d(clear);
 
         let (readback_slots, slots_allocated) =

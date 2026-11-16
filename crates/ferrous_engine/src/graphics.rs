@@ -18,7 +18,7 @@
 use std::path::PathBuf;
 
 use ferrous_gpu::EngineContext;
-use ferrous_renderer::Renderer;
+use ferrous_renderer::{Renderer, RendererMode};
 use winit::window::Window;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -57,6 +57,9 @@ pub(crate) struct GpuInit {
     pub(crate) power_preference: wgpu::PowerPreference,
     pub(crate) pipeline_cache: Option<PipelineCacheConfig>,
     pub(crate) background: wgpu::Color,
+    /// Renderer mode the window starts in, so 2-D apps never build 3-D
+    /// resources at startup (prompt 17 S4).
+    pub(crate) mode: RendererMode,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -73,6 +76,7 @@ impl GpuInit {
             power_preference: config.power_preference,
             pipeline_cache: config.pipeline_cache.clone(),
             background: config.background_color.to_wgpu(),
+            mode: renderer_mode_from(config.mode),
         }
     }
 
@@ -84,6 +88,18 @@ impl GpuInit {
     /// The power preference for this launch; `WGPU_POWER_PREF` wins.
     pub(crate) fn power_preference(&self) -> wgpu::PowerPreference {
         wgpu::util::power_preference_from_env().unwrap_or(self.power_preference)
+    }
+}
+
+/// The renderer mode an [`AppMode`](crate::builder::AppMode) maps to.
+///
+/// `Flat2D` apps (GUI tools, editors) construct their renderer without any 3-D
+/// resource; a later `Renderer::enable_full_3d` builds them on demand.
+#[must_use]
+pub fn renderer_mode_from(app_mode: crate::builder::AppMode) -> RendererMode {
+    match app_mode {
+        crate::builder::AppMode::Flat2D => RendererMode::Flat2D,
+        crate::builder::AppMode::Game3D => RendererMode::Full3D,
     }
 }
 
@@ -304,6 +320,7 @@ pub(crate) struct DeviceInit {
     cache_file: Option<PipelineCacheFile>,
     sample_count: u32,
     hdri_path: Option<String>,
+    mode: RendererMode,
 }
 
 impl DeviceInit {
@@ -313,13 +330,14 @@ impl DeviceInit {
         let Some(context) = self.context.take() else {
             panic!("the renderer was already built for this device");
         };
-        let renderer = Box::new(Renderer::new(
+        let renderer = Box::new(Renderer::new_with_mode(
             context,
             self.config.width,
             self.config.height,
             self.config.format,
             self.sample_count,
             self.hdri_path.as_deref().map(std::path::Path::new),
+            self.mode,
         ));
         startup::mark("engine: renderer built");
         (self, renderer)
@@ -510,6 +528,7 @@ impl GraphicsState {
             cache_file,
             sample_count: init.sample_count,
             hdri_path: init.hdri_path.clone(),
+            mode: init.mode,
         }
     }
 
@@ -522,6 +541,7 @@ impl GraphicsState {
         vsync: bool,
         sample_count: u32,
         hdri_path: Option<String>,
+        mode: RendererMode,
     ) -> Self {
         let backends = {
             let win = web_sys::window().expect("no window");
@@ -618,13 +638,14 @@ impl GraphicsState {
         };
         surface.configure(&context.device, &config);
 
-        let renderer = Box::new(Renderer::new(
+        let renderer = Box::new(Renderer::new_with_mode(
             context,
             config.width,
             config.height,
             config.format,
             sample_count,
             hdri_path.as_ref().map(std::path::Path::new),
+            mode,
         ));
         startup::mark("engine: renderer built");
 
@@ -776,6 +797,7 @@ mod tests {
             power_preference: wgpu::PowerPreference::HighPerformance,
             pipeline_cache: None,
             background: wgpu::Color::BLACK,
+            mode: RendererMode::Full3D,
         }
     }
 

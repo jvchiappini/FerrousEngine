@@ -159,6 +159,7 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
                     vsync,
                     samples,
                     hdri_path.clone(),
+                    crate::graphics::renderer_mode_from(app_mode),
                 )
                 .await;
                 gfx.renderer.set_clear_color(bg);
