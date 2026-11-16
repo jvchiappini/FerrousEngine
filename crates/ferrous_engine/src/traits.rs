@@ -260,4 +260,14 @@ pub trait FerrousApp {
     fn on_file_drop(&mut self, event: FileDropEvent, ctx: &mut AppContext<'_>) {
         let _ = (event, ctx);
     }
+
+    /// Called once when the window is closing, after it has been hidden and
+    /// before the event loop exits.
+    ///
+    /// Use this to flush pending saves, remove a session lock or persist
+    /// application state. The window is already invisible, so the work does
+    /// not delay the close from the user's point of view; expensive GPU
+    /// resources are dropped afterwards, when the runner is torn down
+    /// (prompt 17 S5).
+    fn on_exit(&mut self) {}
 }

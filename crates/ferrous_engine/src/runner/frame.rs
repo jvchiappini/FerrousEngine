@@ -556,6 +556,11 @@ impl<A: FerrousApp + 'static> Runner<A> {
             window.set_visible(false);
         }
         startup::mark("engine: window hidden");
+        // Prompt 17 S5: flush app state after the window is gone, before the
+        // (expensive) GPU teardown. The window is already invisible, so this
+        // never delays what the user sees.
+        self.app.on_exit();
+        startup::mark("engine: app exit saved");
         if let Some(event_loop) = event_loop {
             event_loop.exit();
         }
