@@ -86,13 +86,64 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
 
         let window = Arc::new(event_loop.create_window(attributes).unwrap());
         ferrous_core::startup::mark("engine: window created");
+
+        // Workers started before the window existed (prompt 17 S3/S3b): the GPU
+        // probe, the UI font bake and the launch-snapshot read.
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut work = self.startup_work.take();
+        // Prompt 17 S3b: the last screen, painted by the CPU, is the first
+        // thing the user sees. When it matches this window (size, scale,
+        // monitor, content key) it is shown at once; otherwise the background
+        // colour (S3) is painted instead.
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut launch = self
+            .config
+            .launch_snapshot
+            .clone()
+            .map(|config| super::launch::LaunchState::new(&config));
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut shown_early = false;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(launch) = launch.as_mut() {
+            let identity = crate::snapshot::window_identity(&window, launch.key(), 0);
+            let image = work
+                .as_mut()
+                .and_then(crate::graphics::StartupWork::take_snapshot)
+                .and_then(crate::snapshot::SnapshotReader::join);
+            match image {
+                Some(image) if image.identity().same_screen(&identity) => {
+                    // Restore the placement the captured screen belongs to.
+                    let (x, y) = image.position();
+                    window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
+                    if launch.paint(&window, image) {
+                        // Paint the hidden child first: GDI stores the pixels
+                        // in the window's surface, so the show is only a
+                        // composition and the snapshot is complete when the
+                        // window appears.
+                        launch.repaint();
+                        window.set_visible(true);
+                        ferrous_core::startup::mark("engine: snapshot visible");
+                        shown_early = true;
+                    }
+                }
+                Some(image) => log::info!(
+                    "the launch snapshot was captured on another screen ({}x{} @ {}); \
+                     showing the background colour",
+                    image.width(),
+                    image.height(),
+                    image.identity().scale
+                ),
+                None => {}
+            }
+        }
         // Paint the window with the app background colour before any GPU work.
         #[cfg(not(target_arch = "wasm32"))]
-        let shown_early =
-            crate::window_style::show_with_background(&window, self.config.background_color);
-        #[cfg(not(target_arch = "wasm32"))]
-        if shown_early {
-            ferrous_core::startup::mark("engine: window visible");
+        if !shown_early {
+            shown_early =
+                crate::window_style::show_with_background(&window, self.config.background_color);
+            if shown_early {
+                ferrous_core::startup::mark("engine: window visible");
+            }
         }
         #[cfg(target_arch = "wasm32")]
         window.set_visible(true);
@@ -107,7 +158,6 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
         // ── Desktop: blocking GPU init, using the worker probes ──────────────
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let mut work = self.startup_work.take();
             let probe = work
                 .as_mut()
                 .and_then(crate::graphics::StartupWork::take_gpu)
@@ -185,6 +235,8 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
                     requested_resolution_scale: None,
                     keep_awake_requested: false,
                     screenshot_requested: false,
+                    launch_snapshot_requested: false,
+                    launch_snapshot_key: None,
                     _gpu_backend: backend,
                 };
                 self.app.setup(&mut ctx);
@@ -193,6 +245,7 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
 
             self.graphics = Some(gfx);
             self.window = Some(window);
+            self.launch = launch;
         }
 
         // ── Web (WASM): asynchronous init ───────────────────────────────────
@@ -253,7 +306,18 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {}
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        // Prompt 17 S3b: while the CPU-painted snapshot is up, the application
+        // is not on screen yet. Clicks, keys, the wheel and modifiers are
+        // queued and replayed in order at the handoff; a close is honoured at
+        // once, and a resize or DPI change drops the snapshot because it no
+        // longer describes the screen.
+        #[cfg(not(target_arch = "wasm32"))]
+        let event = match self.queue_until_handoff(id, event) {
+            Some(event) => event,
+            None => return,
+        };
+
         match event {
             WindowEvent::RedrawRequested => {
                 let current_t = self.clock.peek().elapsed;
@@ -509,5 +573,57 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.about_to_wait_impl(event_loop);
+    }
+}
+
+impl<A: FerrousApp + 'static> Runner<A> {
+    /// Queues `event` for the application while the launch snapshot is on
+    /// screen, or returns it for normal handling.
+    ///
+    /// `None` means the event was consumed (queued or handled here).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn queue_until_handoff(&mut self, id: WindowId, event: WindowEvent) -> Option<WindowEvent> {
+        let Some(launch) = self.launch.as_mut() else {
+            return Some(event);
+        };
+        if !launch.shows_snapshot() {
+            return Some(event);
+        }
+        if matches!(
+            &event,
+            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. }
+        ) {
+            // winit reports the window's geometry right after creation; that
+            // event describes the screen the snapshot was painted for and must
+            // not drop it. A real change was painted for another geometry and
+            // would be stretched: drop the snapshot instead.
+            if let Some((width, height, scale)) = launch.painted_geometry() {
+                let same_moment = match &event {
+                    WindowEvent::Resized(size) => size.width == width && size.height == height,
+                    WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                        (*scale_factor - scale).abs() < f64::EPSILON
+                    }
+                    _ => false,
+                };
+                if same_moment {
+                    return Some(event);
+                }
+            }
+            if launch.drop_snapshot() {
+                ferrous_core::startup::mark("engine: snapshot dropped");
+            }
+            return Some(event);
+        }
+        // Closing, destruction and redraws keep their normal path: closing
+        // during the snapshot must close at once, and the redraw is what
+        // produces the first GPU frame.
+        if matches!(
+            &event,
+            WindowEvent::CloseRequested | WindowEvent::Destroyed | WindowEvent::RedrawRequested
+        ) {
+            return Some(event);
+        }
+        launch.queue(id, event);
+        None
     }
 }

@@ -7,6 +7,8 @@
 
 mod events;
 mod frame;
+#[cfg(not(target_arch = "wasm32"))]
+mod launch;
 mod types;
 
 pub(crate) use types::Runner;

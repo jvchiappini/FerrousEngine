@@ -626,6 +626,7 @@ impl GraphicsState {
 pub(crate) struct StartupWork {
     gpu: Option<GpuProbeHandle>,
     font: Option<std::thread::JoinHandle<Option<ferrous_font::BakedAtlas>>>,
+    snapshot: Option<crate::snapshot::SnapshotReader>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -633,6 +634,12 @@ impl StartupWork {
     /// Starts the probes for `config`.
     pub(crate) fn start(config: &AppConfig) -> Self {
         let gpu = Some(GpuProbeHandle::start(&GpuInit::from_config(config)));
+        // Prompt 17 S3b: the launch snapshot is read here, so it is ready when
+        // the window exists.
+        let snapshot = config
+            .launch_snapshot
+            .as_ref()
+            .map(crate::snapshot::SnapshotReader::start);
         let font = config.font_bytes.map(|bytes| {
             let cache = config
                 .font_cache
@@ -654,12 +661,18 @@ impl StartupWork {
         Self {
             gpu,
             font: font.flatten(),
+            snapshot,
         }
     }
 
     /// Takes the GPU probe handle (joined by the caller once the window exists).
     pub(crate) fn take_gpu(&mut self) -> Option<GpuProbeHandle> {
         self.gpu.take()
+    }
+
+    /// Takes the launch-snapshot reader (joined once the window exists).
+    pub(crate) fn take_snapshot(&mut self) -> Option<crate::snapshot::SnapshotReader> {
+        self.snapshot.take()
     }
 
     /// Waits for the UI font bake; `None` when it failed or did not run.

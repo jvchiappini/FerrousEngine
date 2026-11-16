@@ -69,6 +69,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
                                 requested_resolution_scale: None,
                                 keep_awake_requested: false,
                                 screenshot_requested: false,
+                                launch_snapshot_requested: false,
+                                launch_snapshot_key: None,
                                 _gpu_backend: gfx.renderer.context.backend,
                                 render: RenderContext::new(&mut gfx.renderer),
                                 asset_server: &mut self.asset_server,
@@ -201,6 +203,12 @@ impl<A: FerrousApp + 'static> Runner<A> {
         // on the frame that is about to be presented: the draw pass builds a
         // fresh `AppContext`, so carry the flag across the two passes.
         let update_screenshot;
+        let update_snapshot;
+        let update_snapshot_key;
+        // Whether this frame took the launch snapshot down (S3b).
+        #[cfg(not(target_arch = "wasm32"))]
+        let handed_off: bool;
+        #[cfg(not(target_arch = "wasm32"))]
         {
             let backend = gfx.renderer.context.backend;
             let mut ctx = AppContext {
@@ -219,6 +227,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 requested_resolution_scale: None,
                 keep_awake_requested: false,
                 screenshot_requested: false,
+                launch_snapshot_requested: false,
+                launch_snapshot_key: None,
                 _gpu_backend: backend,
                 asset_server: &mut self.asset_server,
             };
@@ -230,6 +240,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 self.app.on_file_drop(event, &mut ctx);
             }
             update_screenshot = ctx.screenshot_requested;
+            update_snapshot = ctx.launch_snapshot_requested;
+            update_snapshot_key = ctx.launch_snapshot_key.clone();
 
             if ctx.keep_awake_requested {
                 self.last_action_time = Instant::now();
@@ -310,6 +322,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 requested_resolution_scale: None,
                 keep_awake_requested: false,
                 screenshot_requested: false,
+                launch_snapshot_requested: false,
+                launch_snapshot_key: None,
                 _gpu_backend: backend,
                 asset_server: &mut self.asset_server,
             };
@@ -352,6 +366,22 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 ctx.screenshot_requested,
                 gfx.config.usage.contains(wgpu::TextureUsages::COPY_SRC),
             );
+            // Prompt 17 S3b: a launch-snapshot request takes the same readback;
+            // it is stored by the runner instead of being delivered to the app.
+            #[cfg(not(target_arch = "wasm32"))]
+            let want_launch_snapshot = {
+                let requested = update_snapshot || ctx.launch_snapshot_requested;
+                let key = ctx.launch_snapshot_key.clone().or(update_snapshot_key);
+                let copy_src = gfx.config.usage.contains(wgpu::TextureUsages::COPY_SRC);
+                requested
+                    && copy_src
+                    && self
+                        .launch
+                        .as_mut()
+                        .is_some_and(|launch| launch.request_capture(key))
+            };
+            #[cfg(target_arch = "wasm32")]
+            let want_launch_snapshot = false;
 
             // ── 3. RENDER FINAL ─────────────────────────────────────────────
             let frame = match gfx.surface.get_current_texture() {
@@ -376,7 +406,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 readback.copy_to_buffer(&mut encoder, &frame.texture);
             }
 
-            let capture = want_screenshot.then(|| {
+            let capture = (want_screenshot || want_launch_snapshot).then(|| {
                 let (width, height) = self.window_size;
                 let buffer =
                     crate::screenshot::capture_buffer(&gfx.renderer.context.device, width, height);
@@ -407,6 +437,19 @@ impl<A: FerrousApp + 'static> Runner<A> {
             gfx.renderer.context.queue.submit(Some(encoder.finish()));
 
             frame.present();
+            // Prompt 17 S3b: the GPU frame is on the swapchain now. Remove
+            // the CPU-painted child in the same message-loop turn, so the
+            // switch is one vsync with no intermediate frame.
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                handed_off = self
+                    .launch
+                    .as_mut()
+                    .is_some_and(super::launch::LaunchState::handoff);
+                if handed_off {
+                    startup::mark("engine: snapshot handoff");
+                }
+            }
             startup::first_frame_presented();
             // Prompt 17 S3: the startup pipelines exist after the first frame;
             // persist the wgpu cache now (and again at exit).
@@ -422,9 +465,47 @@ impl<A: FerrousApp + 'static> Runner<A> {
                     height,
                     bgra,
                 ) {
-                    self.app.on_screenshot(shot);
+                    // Prompt 17 S3b: the same readback feeds the launch
+                    // snapshot; it is stored by the runner, not the app.
+                    if want_launch_snapshot {
+                        if let Some(launch) = self.launch.as_mut() {
+                            let _span = startup::span("engine: snapshot capture");
+                            let identity = crate::snapshot::window_identity(
+                                window,
+                                launch.key(),
+                                crate::snapshot::format_code(gfx.config.format),
+                            );
+                            let position = window
+                                .outer_position()
+                                .map(|position| (position.x, position.y))
+                                .unwrap_or((0, 0));
+                            match crate::snapshot::SnapshotImage::new(
+                                identity,
+                                position,
+                                shot.rgba.clone(),
+                            ) {
+                                Some(image) => {
+                                    launch.store(image);
+                                    startup::mark("engine: snapshot captured");
+                                }
+                                None => {
+                                    log::warn!(
+                                        "launch snapshot: the frame and the window size disagree"
+                                    );
+                                    launch.cancel_capture();
+                                }
+                            }
+                        }
+                    }
+                    if want_screenshot {
+                        self.app.on_screenshot(shot);
+                    }
                 } else {
                     log::warn!("screenshot: the presented frame could not be read back");
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(launch) = self.launch.as_mut() {
+                        launch.cancel_capture();
+                    }
                 }
             }
 
@@ -484,6 +565,25 @@ impl<A: FerrousApp + 'static> Runner<A> {
         }
 
         self.input.end_frame();
+
+        // Prompt 17 S3b: the snapshot was removed right after the first
+        // present; replay the input the user produced while it was up, in
+        // order, so the application starts in the state it was left in.
+        #[cfg(not(target_arch = "wasm32"))]
+        if handed_off {
+            let queued = self
+                .launch
+                .as_mut()
+                .map(super::launch::LaunchState::take_queue)
+                .unwrap_or_default();
+            if let Some(event_loop) = event_loop {
+                for (id, event) in queued {
+                    <Self as winit::application::ApplicationHandler>::window_event(
+                        self, event_loop, id, event,
+                    );
+                }
+            }
+        }
         None
     }
 
@@ -511,6 +611,12 @@ impl<A: FerrousApp + 'static> Runner<A> {
         }
         self.closing = true;
         startup::mark("engine: close requested");
+        // A close during the snapshot must be immediate: drop the CPU-painted
+        // child (and the input it swallowed) before hiding the window.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(launch) = self.launch.as_mut() {
+            launch.drop_snapshot();
+        }
         if let Some(window) = &self.window {
             window.set_visible(false);
         }

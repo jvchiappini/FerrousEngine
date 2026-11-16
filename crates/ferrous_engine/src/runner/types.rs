@@ -64,6 +64,10 @@ pub(crate) struct Runner<A: FerrousApp + 'static> {
     /// GPU and UI-font probes started before the window existed (prompt 17 S3).
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) startup_work: Option<crate::graphics::StartupWork>,
+    /// The launch snapshot: painted window, queued input and capture requests
+    /// (prompt 17 S3b).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) launch: Option<super::launch::LaunchState>,
 }
 
 impl<A: FerrousApp + 'static> Runner<A> {
@@ -114,6 +118,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
             closing: false,
             #[cfg(not(target_arch = "wasm32"))]
             startup_work,
+            #[cfg(not(target_arch = "wasm32"))]
+            launch: None,
         }
     }
 }

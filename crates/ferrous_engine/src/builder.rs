@@ -128,6 +128,17 @@ pub struct AppConfig {
     /// backends that expose [`wgpu::Features::PIPELINE_CACHE`] (Vulkan in wgpu
     /// 23) use it; DX12, Metal and GL ignore it.
     pub pipeline_cache: Option<PipelineCacheConfig>,
+    /// Store the last painted screen and show it on the CPU while the GPU
+    /// starts (prompt 17 S3b).
+    ///
+    /// `None` (the default) shows the window painted with
+    /// [`background_color`](Self::background_color) until the first frame.
+    /// With a snapshot, the visible window appears once the file has been read
+    /// (tens of milliseconds) instead of after the driver's ~430 ms, and the
+    /// switch to the first GPU frame happens behind an identical image.
+    /// Only the platform painter is implemented; see
+    /// [`LaunchSnapshot`](crate::snapshot::LaunchSnapshot).
+    pub launch_snapshot: Option<crate::snapshot::LaunchSnapshot>,
 }
 
 /// Which backends a launch tries, in order.
@@ -284,6 +295,7 @@ impl Default for AppConfig {
             backends: default_backends(),
             power_preference: wgpu::PowerPreference::HighPerformance,
             pipeline_cache: None,
+            launch_snapshot: None,
         }
     }
 }
@@ -560,6 +572,17 @@ impl<A: FerrousApp + 'static> App<A> {
     /// the others ignore it.
     pub fn with_pipeline_cache(mut self, cache: PipelineCacheConfig) -> Self {
         self.config.pipeline_cache = Some(cache);
+        self
+    }
+
+    /// Shows the last captured screen on the CPU while the GPU starts
+    /// ([`LaunchSnapshot`](crate::snapshot::LaunchSnapshot)).
+    ///
+    /// The application supplies the directory and the content key; a capture
+    /// is requested with
+    /// [`AppContext::request_launch_snapshot`](crate::AppContext::request_launch_snapshot).
+    pub fn with_launch_snapshot(mut self, snapshot: crate::snapshot::LaunchSnapshot) -> Self {
+        self.config.launch_snapshot = Some(snapshot);
         self
     }
 

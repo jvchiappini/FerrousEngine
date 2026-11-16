@@ -34,6 +34,7 @@ pub mod render_context;
 pub mod renderer;
 mod runner;
 pub mod screenshot;
+pub mod snapshot;
 pub mod traits;
 mod window_style;
 
@@ -56,6 +57,8 @@ pub use ferrous_renderer::exporter::{FFmpegExporter, FrameExporter};
 
 // --- Compatibilidad con Framework (Opcional) ---
 pub use builder::{default_backends, App, AppConfig, AppMode, PipelineCacheConfig};
+#[cfg(not(target_arch = "wasm32"))]
+pub use snapshot::LaunchSnapshot;
 pub use context::{AppContext, WindowResizeDirection};
 pub use ferrous_core::scene::camera::Projection as ProjectionType;
 pub use render_context::RenderContext;

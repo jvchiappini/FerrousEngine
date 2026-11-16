@@ -131,6 +131,14 @@ pub struct AppContext<'a> {
     /// frame it presents and delivers it to
     /// [`FerrousApp::on_screenshot`](crate::FerrousApp::on_screenshot).
     pub(crate) screenshot_requested: bool,
+
+    /// Set via [`AppContext::request_launch_snapshot`]: the runner copies the
+    /// frame it presents and stores it as the launch snapshot.
+    pub(crate) launch_snapshot_requested: bool,
+
+    /// Set via [`AppContext::set_launch_snapshot_key`]: the content key of the
+    /// screen the launch snapshot describes.
+    pub(crate) launch_snapshot_key: Option<String>,
 }
 
 impl<'a> AppContext<'a> {
@@ -160,6 +168,33 @@ impl<'a> AppContext<'a> {
     /// need no capability check of their own.
     pub fn request_screenshot(&mut self) {
         self.screenshot_requested = true;
+    }
+
+    /// Ask the runner to store the frame it is about to present as the launch
+    /// snapshot (prompt 17 S3b).
+    ///
+    /// A no-op unless the application configured
+    /// [`App::with_launch_snapshot`](crate::App::with_launch_snapshot).
+    /// The frame must already show what the next launch should display: request
+    /// it on the frame where the screen is stable, not on a hover or a
+    /// transient message. The copy reuses the screenshot readback (one blocked
+    /// frame, then a worker writes the file), so it costs nothing on normal
+    /// frames.
+    ///
+    /// The file is keyed by [`AppContext::set_launch_snapshot_key`], the window
+    /// size, scale factor, monitor and surface format: a launch that does not
+    /// match shows the background colour instead.
+    pub fn request_launch_snapshot(&mut self) {
+        self.launch_snapshot_requested = true;
+    }
+
+    /// Set the content key of the screen the launch snapshot describes
+    /// (the app version plus a hash of what the screen shows).
+    ///
+    /// Call it when the content changes (a new recent project, another theme)
+    /// and before requesting the capture. The runner keeps the last value.
+    pub fn set_launch_snapshot_key(&mut self, key: &str) {
+        self.launch_snapshot_key = Some(key.to_owned());
     }
 
     /// Request a new render scale (engine surface = `css × dpr × scale`).

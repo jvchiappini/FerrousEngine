@@ -192,3 +192,48 @@ with the same background colour.
 picks the integrated GPU, `none` lets wgpu decide. Startup cost on the
 integrated GPU is comparable: the swapchain is cheaper (~150 ms versus
 ~190 ms) while shader compilation is a little slower.
+### Launch snapshot
+
+The GPU driver floor is ~430 ms per process and nothing about it can be
+cached. An application can show its own last screen during that time:
+
+- `App::with_launch_snapshot(LaunchSnapshot::for_app("MyApp").with_key(key))`
+  opts in. `key` is the application's content key: its version plus a hash of
+  everything the snapshotted screen shows. The engine adds the window size,
+  scale factor, monitor, surface format and its own version.
+- `ctx.request_launch_snapshot()` in `update` or `draw_ui` stores the frame
+  about to be presented; `ctx.set_launch_snapshot_key(key)` updates the key
+  when the content changes. One capture per key per run; the readback is the
+  screenshot path (one frame, then a worker writes the file).
+- At launch a worker reads the newest file before the window exists. A file
+  whose identity does not match (content key, size, scale, monitor) is
+  ignored, so a stale screen is never shown.
+
+On Windows the snapshot is a child window of the app window (`WS_EX_TRANSPARENT
+| WS_EX_NOACTIVATE`, `HTTRANSPARENT`) painted with `SetDIBitsToDevice`, created
+before the window is shown and destroyed in the same message-loop turn as the
+first present. A child window is used instead of subclassing winit's window
+procedure: winit owns `GWLP_USERDATA`, and the child answers hit-testing with
+`HTTRANSPARENT`, so clicks, keys, the wheel and the close button reach the app
+(the runner queues input until the handoff). The GDI child and the wgpu
+swapchain coexist: the snapshot stays visible through `surface.configure`, the
+clear-only frame and a slow `Renderer::new` (verified under Vulkan and DX12,
+including DX12's ~8 s shader compilation).
+
+Input produced while the snapshot is up is queued in order and replayed right
+after the first present; a close is honoured at once; a resize or DPI change
+drops the snapshot and falls back to the background colour.
+
+The file is a fixed header plus tight RGBA8: decoding is a copy, which is the
+fastest option at 1600x900 (5.5 MiB; a lossless codec would trade decode time
+for bytes). A foreign, truncated, oversized or corrupt file is ignored. On
+platforms without a painter the engine shows the background colour instead.
+
+Measured on the reference machine (Vulkan, 1600x900): snapshot visible at
+51 ms median (54 ms p90) from process start; the handoff and the first GPU
+frame land in the same instant at ~490 ms; a `preview` window with no snapshot
+shows at ~54 ms and its first frame at ~1509 ms. Read 8.4 ms (worker, overlapped
+with window creation), capture 0.9 ms, file write 6.8 ms (worker), file 5.5 MiB.
+The switch is pixel-identical: a screen capture of the snapshot and of the
+first GPU frame differ from the stored image in 0 of 720000 interior pixels
+(the only differences are DWM's rounded window corners).
