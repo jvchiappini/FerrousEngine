@@ -33,8 +33,17 @@ thiserror = "1"
 
 # ── desktop-only ────────────────────────────────────────────────────────────
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# Blocking async executor — used to drive GraphicsState::new on desktop.
+# Blocking async executor - used to drive GraphicsState::new on desktop.
 pollster = "0.3"
+
+# Windows-only window styling: the class background brush (prompt 17 S3).
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
 
 # ── wasm32 ────────────────────────────────────────────────────────────────
 [target.'cfg(target_arch = "wasm32")'.dependencies]

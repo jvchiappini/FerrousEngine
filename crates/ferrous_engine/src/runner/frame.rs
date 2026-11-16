@@ -408,6 +408,10 @@ impl<A: FerrousApp + 'static> Runner<A> {
 
             frame.present();
             startup::first_frame_presented();
+            // Prompt 17 S3: the startup pipelines exist after the first frame;
+            // persist the wgpu cache now (and again at exit).
+            #[cfg(not(target_arch = "wasm32"))]
+            gfx.save_pipeline_cache(false);
             if let Some(buffer) = capture {
                 let (width, height) = self.window_size;
                 let bgra = crate::screenshot::is_bgra(gfx.config.format);
@@ -481,6 +485,17 @@ impl<A: FerrousApp + 'static> Runner<A> {
 
         self.input.end_frame();
         None
+    }
+
+    /// Writes the pipeline cache at exit.
+    ///
+    /// The first frame already saved it; this forced write also captures
+    /// pipelines created later (a mode switch, a new text face).
+    pub(super) fn save_pipeline_cache(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(gfx) = self.graphics.as_mut() {
+            gfx.save_pipeline_cache(true);
+        }
     }
 
     /// Hides the window, then exits the event loop.

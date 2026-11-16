@@ -116,3 +116,79 @@ times in milliseconds since the origin.
   are safe and appear in the same report.
 - On wasm32 the trace compiles and records, but no teardown report is
   emitted because the browser owns the page lifetime.
+
+## GPU startup policy
+
+The engine starts the GPU by explicit phases and never pays for a backend it
+does not use.
+
+### Backend order
+
+`AppConfig::backends` is an ordered list, one `wgpu::Instance` per entry. The
+engine moves to the next entry only when the previous one has no adapter (or
+an adapter that cannot present on the window). The default is Vulkan, then
+DX12, then GL on Windows; Metal on macOS; Vulkan, then GL elsewhere.
+
+On the reference machine the default order saves the DX12 and GL enumeration:
+`Instance::new(Backends::all())` took ~245 ms in Vulkan plus ~250 ms more
+enumerating DX12 and GL, while a Vulkan-only instance takes ~200 ms and its
+adapter is selected in ~1 ms.
+
+`WGPU_BACKEND` (e.g. `vulkan`, `dx12`, `gl`) replaces the whole list with
+exactly those backends. A backend whose adapter lacks
+`TEXTURE_BINDING_ARRAY | SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING`
+(the GUI image pass) is skipped with a warning instead of panicking later in
+pipeline validation; GL in wgpu 23 is such a backend.
+
+### Overlap
+
+`App::run` starts two workers before the window exists:
+
+- the GPU probe: instance creation and a surface-less adapter request (the
+  adapter is re-checked against the real surface with
+  `Adapter::is_surface_supported` and re-probed if it cannot present);
+- the UI font bake: `BakedAtlas::build_cached` for the app's UI font, joined
+  at upload.
+
+The window is created in parallel, so window creation is not behind the
+driver. Applications should start their own CPU-only work (document load,
+font bakes, asset decode) before `App::run` for the same reason.
+
+### Pipeline cache
+
+`App::with_pipeline_cache(PipelineCacheConfig::for_app("MyApp"))` seeds the
+wgpu pipeline cache from
+`%LOCALAPPDATA%\<app>\cache\pipelines\<key>.bin` and writes it back after the
+first frame and at exit. The key covers backend, vendor, device, driver and
+driver version; a driver update starts from an empty cache. The file has a
+small header (magic, format version, key) so a foreign or truncated file is
+ignored; wgpu also runs with `fallback: true`, so bad bytes only cost a
+recompile. Only backends that expose `PIPELINE_CACHE` use it (Vulkan in wgpu
+23); DX12 and Metal ignore it.
+
+On the reference machine (Vulkan, NVIDIA) the cache takes `Renderer::new`
+from ~68 ms to ~48 ms. DX12 has no cache and takes ~7.3 s in `Renderer::new`
+(shader compilation), so it stays a fallback: a machine with Vulkan never
+pays it.
+
+### Window with no white flash
+
+The window is created hidden. On Windows the engine sets the window class
+background brush to `AppConfig::background_color`, shows the window and forces
+`WM_ERASEBKGND`, so the first pixel the user sees is the app background; winit
+registers its class without a brush, which is what makes a fresh window white.
+On other platforms the window is shown after the first clear-only frame is
+presented (the engine presents one clear frame as soon as the surface is
+configured, before the renderer and fonts exist).
+
+Measured on the reference machine: the window is visible and correctly
+coloured ~50 ms after process start, and the first presented frame replaces it
+with the same background colour.
+
+### Power preference
+
+`AppConfig::power_preference` selects the GPU (default
+`HighPerformance`, the discrete one on a hybrid laptop). `WGPU_POWER_PREF=low`
+picks the integrated GPU, `none` lets wgpu decide. Startup cost on the
+integrated GPU is comparable: the swapchain is cheaper (~150 ms versus
+~190 ms) while shader compilation is a little slower.

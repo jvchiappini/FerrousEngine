@@ -61,6 +61,9 @@ pub(crate) struct Runner<A: FerrousApp + 'static> {
     pub(super) pending_file_drops: Vec<FileDropEvent>,
     /// Whether the close path (hide + exit) has already run.
     pub(super) closing: bool,
+    /// GPU and UI-font probes started before the window existed (prompt 17 S3).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) startup_work: Option<crate::graphics::StartupWork>,
 }
 
 impl<A: FerrousApp + 'static> Runner<A> {
@@ -71,6 +74,9 @@ impl<A: FerrousApp + 'static> Runner<A> {
         systems.add(Stage::Update, AnimationSystem);
         systems.add(Stage::Update, BehaviorSystem);
         systems.add(Stage::PostUpdate, TransformSystem);
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let startup_work = Some(crate::graphics::StartupWork::start(&config));
 
         Self {
             app,
@@ -106,6 +112,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
             last_deterministic_t: None,
             pending_file_drops: Vec::new(),
             closing: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            startup_work,
         }
     }
 }

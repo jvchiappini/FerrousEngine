@@ -109,6 +109,153 @@ pub struct AppConfig {
     /// in with [`ferrous_font::FontCacheConfig::for_app`] so the second launch
     /// reads the MSDF atlas from disk instead of regenerating it.
     pub font_cache: Option<ferrous_font::FontCacheConfig>,
+    /// Backends to try at startup, in order.
+    ///
+    /// Each entry gets its own `wgpu::Instance`; the engine moves to the next
+    /// one only when the current one yields no adapter (or an adapter that
+    /// cannot present on the window).  Default: Vulkan, then DX12, then GL on
+    /// Windows; Metal on macOS; Vulkan, then GL elsewhere.  `WGPU_BACKEND`, when
+    /// set, replaces the list with exactly those backends.
+    pub backends: Vec<wgpu::Backends>,
+    /// Which GPU to prefer.  Default: [`wgpu::PowerPreference::HighPerformance`].
+    ///
+    /// `LowPower` selects the integrated GPU on a hybrid laptop; `WGPU_POWER_PREF`
+    /// (`low`, `high`, `none`) overrides this at runtime.
+    pub power_preference: wgpu::PowerPreference,
+    /// Persist the wgpu pipeline cache between runs.
+    ///
+    /// `None` (the default) recompiles every pipeline on every launch.  Only
+    /// backends that expose [`wgpu::Features::PIPELINE_CACHE`] (Vulkan in wgpu
+    /// 23) use it; DX12, Metal and GL ignore it.
+    pub pipeline_cache: Option<PipelineCacheConfig>,
+}
+
+/// Which backends a launch tries, in order.
+///
+/// The list is per platform; an application can replace it with
+/// [`App::with_backends`].  The engine creates one instance per entry and only
+/// advances when the previous entry has no usable adapter, so the common case
+/// (Vulkan on Windows) never pays for enumerating DX12 and GL.
+#[must_use]
+pub fn default_backends() -> Vec<wgpu::Backends> {
+    #[cfg(target_os = "windows")]
+    {
+        vec![
+            wgpu::Backends::VULKAN,
+            wgpu::Backends::DX12,
+            wgpu::Backends::GL,
+        ]
+    }
+    #[cfg(target_os = "macos")]
+    {
+        vec![wgpu::Backends::METAL]
+    }
+    #[cfg(all(
+        not(target_os = "windows"),
+        not(target_os = "macos"),
+        not(target_arch = "wasm32")
+    ))]
+    {
+        vec![wgpu::Backends::VULKAN, wgpu::Backends::GL]
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        vec![wgpu::Backends::BROWSER_WEBGPU]
+    }
+}
+
+/// Where the persisted wgpu pipeline cache lives.
+///
+/// The file is keyed by backend, vendor, device, driver and driver version, so
+/// a driver update or a GPU change starts from an empty cache.  A corrupt or
+/// stale file is ignored (wgpu compiles the pipelines again).
+#[derive(Clone, Debug)]
+pub struct PipelineCacheConfig {
+    /// Whether the cache is used at all.
+    pub enabled: bool,
+    /// Directory holding the cache files; `None` means the per-OS default for
+    /// [`Self::app_name`].
+    pub directory: Option<std::path::PathBuf>,
+    /// Application name used by the default directory.
+    pub app_name: String,
+}
+
+impl PipelineCacheConfig {
+    /// A cache for `app_name` under the per-OS default directory
+    /// (`%LOCALAPPDATA%\<app>\cache\pipelines` on Windows).
+    #[must_use]
+    pub fn for_app(app_name: impl Into<String>) -> Self {
+        Self {
+            enabled: true,
+            directory: None,
+            app_name: app_name.into(),
+        }
+    }
+
+    /// Uses `directory` instead of the per-OS default.
+    #[must_use]
+    pub fn with_directory(mut self, directory: impl Into<std::path::PathBuf>) -> Self {
+        self.directory = Some(directory.into());
+        self
+    }
+
+    /// A disabled cache.
+    #[must_use]
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            directory: None,
+            app_name: String::new(),
+        }
+    }
+
+    /// The directory this config resolves to, when the platform has one.
+    #[must_use]
+    pub fn resolve_directory(&self) -> Option<std::path::PathBuf> {
+        if !self.enabled {
+            return None;
+        }
+        if let Some(directory) = &self.directory {
+            return Some(directory.clone());
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            None
+        }
+        #[cfg(target_os = "windows")]
+        {
+            std::env::var_os("LOCALAPPDATA").map(|base| {
+                std::path::PathBuf::from(base)
+                    .join(&self.app_name)
+                    .join("cache")
+                    .join("pipelines")
+            })
+        }
+        #[cfg(target_os = "macos")]
+        {
+            std::env::var_os("HOME").map(|home| {
+                std::path::PathBuf::from(home)
+                    .join("Library")
+                    .join("Caches")
+                    .join(&self.app_name)
+                    .join("pipelines")
+            })
+        }
+        #[cfg(all(
+            not(target_os = "windows"),
+            not(target_os = "macos"),
+            not(target_arch = "wasm32")
+        ))]
+        {
+            std::env::var_os("XDG_CACHE_HOME")
+                .map(std::path::PathBuf::from)
+                .or_else(|| {
+                    std::env::var_os("HOME")
+                        .map(|home| std::path::PathBuf::from(home).join(".cache"))
+                })
+                .map(|base| base.join(&self.app_name).join("pipelines"))
+        }
+    }
 }
 
 impl Default for AppConfig {
@@ -134,6 +281,9 @@ impl Default for AppConfig {
             resolution_scale: 1.0,
             startup_trace: false,
             font_cache: None,
+            backends: default_backends(),
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            pipeline_cache: None,
         }
     }
 }
@@ -377,6 +527,39 @@ impl<A: FerrousApp + 'static> App<A> {
     /// ```
     pub fn with_font_cache(mut self, cache: ferrous_font::FontCacheConfig) -> Self {
         self.config.font_cache = Some(cache);
+        self
+    }
+
+    /// Replaces the ordered backend list (see [`AppConfig::backends`]).
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// App::new(MyApp)
+    ///     .with_backends([wgpu::Backends::VULKAN, wgpu::Backends::DX12])
+    ///     .run();
+    /// ```
+    pub fn with_backends(mut self, backends: impl IntoIterator<Item = wgpu::Backends>) -> Self {
+        self.config.backends = backends.into_iter().collect();
+        self
+    }
+
+    /// Prefers the discrete GPU ([`wgpu::PowerPreference::HighPerformance`],
+    /// the default) or the integrated one ([`wgpu::PowerPreference::LowPower`]).
+    ///
+    /// `WGPU_POWER_PREF` (`high`, `low`, `none`) overrides this at runtime.
+    pub fn with_power_preference(mut self, preference: wgpu::PowerPreference) -> Self {
+        self.config.power_preference = preference;
+        self
+    }
+
+    /// Persists the wgpu pipeline cache between runs
+    /// ([`PipelineCacheConfig::for_app`]).
+    ///
+    /// Only backends that expose `PIPELINE_CACHE` (Vulkan in wgpu 23) benefit;
+    /// the others ignore it.
+    pub fn with_pipeline_cache(mut self, cache: PipelineCacheConfig) -> Self {
+        self.config.pipeline_cache = Some(cache);
         self
     }
 

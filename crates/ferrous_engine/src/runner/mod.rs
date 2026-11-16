@@ -30,6 +30,8 @@ pub(crate) fn run_internal<A: FerrousApp + 'static>(config: AppConfig, app: A) {
     startup::mark("engine: event loop");
     event_loop.run_app(&mut runner).unwrap();
     startup::mark("engine: event loop exited");
+    // Flush the pipeline cache before the GPU state goes away.
+    runner.save_pipeline_cache();
     // The window and the whole GPU state live in `runner`; dropping it here is
     // the teardown the closing report measures.
     drop(runner);
@@ -72,6 +74,7 @@ pub(crate) fn run_plugin_app(mut builder: crate::plugin::AppBuilder) {
         startup::mark("engine: event loop");
         event_loop.run_app(&mut runner).unwrap();
         startup::mark("engine: event loop exited");
+        runner.save_pipeline_cache();
         drop(runner);
         startup::teardown();
     }

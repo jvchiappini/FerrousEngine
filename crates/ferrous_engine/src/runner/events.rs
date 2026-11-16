@@ -21,7 +21,6 @@ use std::rc::Rc;
 
 use crate::builder::AppMode;
 use crate::context::AppContext;
-use crate::graphics::GraphicsState;
 use crate::render_context::RenderContext;
 use crate::traits::{FerrousApp, FileDropEvent};
 #[cfg(target_arch = "wasm32")]
@@ -79,10 +78,24 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
             .with_title(&self.config.title)
             .with_resizable(self.config.resizable)
             .with_decorations(self.config.decorations)
+            // Prompt 17 S3: never show an unpainted window. On Windows it is
+            // shown below with the background brush; elsewhere after the first
+            // cleared frame.
+            .with_visible(false)
             .with_inner_size(winit::dpi::PhysicalSize::new(window_size.0, window_size.1));
 
         let window = Arc::new(event_loop.create_window(attributes).unwrap());
         ferrous_core::startup::mark("engine: window created");
+        // Paint the window with the app background colour before any GPU work.
+        #[cfg(not(target_arch = "wasm32"))]
+        let shown_early =
+            crate::window_style::show_with_background(&window, self.config.background_color);
+        #[cfg(not(target_arch = "wasm32"))]
+        if shown_early {
+            ferrous_core::startup::mark("engine: window visible");
+        }
+        #[cfg(target_arch = "wasm32")]
+        window.set_visible(true);
         self.window_size = window_size;
         self.viewport = ferrous_core::Viewport {
             x: 0,
@@ -91,21 +104,21 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
             height: window_size.1,
         };
 
-        // ── Desktop: synchronous blocking GPU init ───────────────────────────
+        // ── Desktop: blocking GPU init, using the worker probes ──────────────
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let mut gfx = {
-                use pollster::FutureExt;
-                GraphicsState::new(
-                    &window,
-                    self.config.width,
-                    self.config.height,
-                    self.config.vsync,
-                    self.config.sample_count,
-                    self.config.hdri_path.clone(),
-                )
-                .block_on()
-            };
+            let mut work = self.startup_work.take();
+            let probe = work
+                .as_mut()
+                .and_then(crate::graphics::StartupWork::take_gpu)
+                .and_then(crate::graphics::GpuProbeHandle::join);
+            let init = crate::graphics::GpuInit::from_config(&self.config);
+            let mut gfx = crate::graphics::GraphicsState::new_native(&window, &init, probe);
+            if !shown_early {
+                // Non-Windows: the first cleared frame is on the swapchain.
+                window.set_visible(true);
+                ferrous_core::startup::mark("engine: window visible");
+            }
             gfx.renderer.set_viewport(self.viewport);
             gfx.renderer
                 .set_clear_color(self.config.background_color.to_wgpu());
@@ -123,13 +136,16 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
             }
 
             if let Some(bytes) = self.config.font_bytes {
-                // Register the UI font through the renderer so an application
-                // that registers the same face shares this atlas (no second
-                // bake or upload) and so the on-disk cache applies to it.
-                match gfx
-                    .renderer
-                    .register_font_2d(bytes, ferrous_font::latin_western())
-                {
+                // The UI font was baked on a worker while the GPU initialised;
+                // fall back to the cache-backed bake when that failed.
+                let baked = work.and_then(crate::graphics::StartupWork::join_font);
+                let registered = match baked {
+                    Some(baked) => gfx.renderer.register_baked_font_2d(baked),
+                    None => gfx
+                        .renderer
+                        .register_font_2d(bytes, ferrous_font::latin_western()),
+                };
+                match registered {
                     Ok(id) => {
                         if let Some(font) = gfx.renderer.font_2d(id) {
                             gfx.renderer
@@ -198,7 +214,7 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
 
             self.gfx_pending = Some(slot);
             wasm_bindgen_futures::spawn_local(async move {
-                let mut gfx = GraphicsState::new(
+                let mut gfx = crate::graphics::GraphicsState::new(
                     &window_clone,
                     vp.width,
                     vp.height,

@@ -35,9 +35,13 @@ pub mod renderer;
 mod runner;
 pub mod screenshot;
 pub mod traits;
+mod window_style;
 
 // --- Re-exports Principales (SDK Facade) ---
 pub use renderer::{EngineError, Renderer, RendererBuilder, RendererConfig};
+/// The GPU startup policy types, so an application can name them.
+#[cfg(not(target_arch = "wasm32"))]
+pub use graphics::pipeline_cache_key;
 
 // --- Tipos de Escena y Transformación ---
 pub use ferrous_core::api::types::NodeId;
@@ -51,7 +55,7 @@ pub use ferrous_core::{Color, Transform, World};
 pub use ferrous_renderer::exporter::{FFmpegExporter, FrameExporter};
 
 // --- Compatibilidad con Framework (Opcional) ---
-pub use builder::{App, AppConfig, AppMode};
+pub use builder::{default_backends, App, AppConfig, AppMode, PipelineCacheConfig};
 pub use context::{AppContext, WindowResizeDirection};
 pub use ferrous_core::scene::camera::Projection as ProjectionType;
 pub use render_context::RenderContext;
