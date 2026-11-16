@@ -120,9 +120,9 @@ fn is_corner(a: (f32, f32), b: (f32, f32)) -> bool {
     dot <= 0.0 || cross > CROSS_THRESHOLD
 }
 
-/// Flattens the outline into segments (one or more per original edge) and
-/// assigns an MSDF [`EdgeColor`] to every segment.
-fn build_colored_segments(commands: &[GlyphCommand]) -> Vec<(Segment, u8)> {
+/// Flattens the outline into segments (one or more per original edge), assigns
+/// an MSDF [`EdgeColor`] to every segment and caches its bounding box.
+fn build_colored_segments(commands: &[GlyphCommand]) -> Vec<Culled> {
     let mut segments: Vec<Segment> = Vec::new();
     let mut edges: Vec<Edge> = Vec::new();
     let mut contours: Vec<Vec<usize>> = Vec::new();
@@ -213,11 +213,19 @@ fn build_colored_segments(commands: &[GlyphCommand]) -> Vec<(Segment, u8)> {
 
     color_edges(&mut edges, &contours);
 
-    // Fan the per-edge colour out to each of its flattened segments.
+    // Fan the per-edge colour out to each of its flattened segments, caching
+    // the bounding box the pixel loop culls with.
     let mut out = Vec::with_capacity(segments.len());
     for edge in &edges {
         for seg in &segments[edge.seg_start..edge.seg_end] {
-            out.push((*seg, edge.color));
+            out.push(Culled {
+                seg: *seg,
+                color: edge.color,
+                min_x: seg.x0.min(seg.x1),
+                max_x: seg.x0.max(seg.x1),
+                min_y: seg.y0.min(seg.y1),
+                max_y: seg.y0.max(seg.y1),
+            });
         }
     }
     out
@@ -268,6 +276,38 @@ fn color_edges(edges: &mut [Edge], contours: &[Vec<usize>]) {
     }
 }
 
+/// One flattened, coloured segment plus the bounding box the distance search
+/// and the winding test cull with.
+struct Culled {
+    seg: Segment,
+    color: u8,
+    min_x: f32,
+    max_x: f32,
+    min_y: f32,
+    max_y: f32,
+}
+
+/// Side of the pixel tiles that cull the per-pixel edge search, in texels.
+///
+/// 8 x 8 keeps each tile's candidate list short without making the binning
+/// table (one list per tile) expensive to build.
+const TILE: u32 = 8;
+
+/// Appends `index` to every tile the inclusive pixel rectangle covers.
+fn add_to_tiles(
+    tiles: &mut [Vec<u32>],
+    tiles_per_axis: u32,
+    x: (u32, u32),
+    y: (u32, u32),
+    index: u32,
+) {
+    for ty in y.0 / TILE..=y.1 / TILE {
+        for tx in x.0 / TILE..=x.1 / TILE {
+            tiles[(ty * tiles_per_axis + tx) as usize].push(index);
+        }
+    }
+}
+
 pub fn generate_msdf(commands: &[GlyphCommand], size: u32) -> Vec<u8> {
     let colored = build_colored_segments(commands);
 
@@ -286,30 +326,106 @@ pub fn generate_msdf(commands: &[GlyphCommand], size: u32) -> Vec<u8> {
     let inv_size = 1.0 / size as f32;
     let units_per_pixel = (cell_maxx - cell_minx) * inv_size;
     let dist_scale = 1.0 / (PIXEL_RANGE * units_per_pixel);
+    // Distance work past this radius encodes the same saturated channel value
+    // as an edge at infinity, so the search may skip those edges.
+    let saturate = 0.5 * PIXEL_RANGE * units_per_pixel;
+
+    // Bin every edge into the pixel tiles it can affect.  Winding only needs
+    // the edges whose y range straddles a row and that are not entirely left
+    // of the cell; distance only needs the edges whose bounding box, grown by
+    // the saturation radius, reaches the tile.  Both filters are exact: an
+    // edge the search skips either contributes zero winding or encodes a
+    // saturated value.
+    let tiles_per_axis = size.div_ceil(TILE);
+    let tile_count = (tiles_per_axis * tiles_per_axis) as usize;
+    let mut winding_tiles: Vec<Vec<u32>> = vec![Vec::new(); tile_count];
+    let mut distance_tiles: Vec<Vec<u32>> = vec![Vec::new(); tile_count];
+    let max_px = (size - 1) as f32;
+    let to_px_x = |value: f32| (value - cell_minx) / units_per_pixel - 0.5;
+    // The atlas rows run top-down while the glyph space runs bottom-up, so the
+    // em -> row mapping mirrors the x one.
+    let to_px_y =
+        |value: f32| (1.0 - (value - cell_miny) / (cell_maxy - cell_miny)) * size as f32 - 0.5;
+    let columns = |lo_x: f32, hi_x: f32| -> Option<(u32, u32)> {
+        let first = to_px_x(lo_x).floor();
+        let last = to_px_x(hi_x).ceil();
+        if last < 0.0 || first > max_px {
+            return None;
+        }
+        Some((first.max(0.0) as u32, last.min(max_px) as u32))
+    };
+    // `lo_y`/`hi_y` are in glyph space (y up); the returned rows are top-down.
+    let rows = |lo_y: f32, hi_y: f32| -> Option<(u32, u32)> {
+        let first = to_px_y(hi_y).floor();
+        let last = to_px_y(lo_y).ceil();
+        if last < 0.0 || first > max_px {
+            return None;
+        }
+        Some((first.max(0.0) as u32, last.min(max_px) as u32))
+    };
+    for (index, edge) in colored.iter().enumerate() {
+        let index = index as u32;
+
+        // Winding rows: the pixel rows whose centre the edge's y range straddles.
+        // An edge left of the cell can never raise a pixel's winding, but an
+        // edge to the right can, so the span starts at column zero.
+        if let (Some(rows), Some(last_column)) = (
+            rows(edge.min_y, edge.max_y),
+            columns(edge.max_x, edge.max_x).map(|(_, last)| last),
+        ) {
+            add_to_tiles(
+                &mut winding_tiles,
+                tiles_per_axis,
+                (0, last_column),
+                rows,
+                index,
+            );
+        }
+
+        // Distance tiles: the bounding box grown by the saturation radius.
+        if let (Some(columns), Some(rows)) = (
+            columns(edge.min_x - saturate, edge.max_x + saturate),
+            rows(edge.min_y - saturate, edge.max_y + saturate),
+        ) {
+            add_to_tiles(&mut distance_tiles, tiles_per_axis, columns, rows, index);
+        }
+    }
 
     let mut out = vec![0u8; (size * size * 4) as usize];
     for iy in 0..size {
+        let row_tile = (iy / TILE) * tiles_per_axis;
+        let ny = ((size - 1 - iy) as f32 + 0.5) * inv_size;
+        let gy = cell_miny + ny * (cell_maxy - cell_miny);
         for ix in 0..size {
+            let tile = (row_tile + ix / TILE) as usize;
             let nx = (ix as f32 + 0.5) * inv_size;
-            let ny = ((size - 1 - iy) as f32 + 0.5) * inv_size;
             let gx = cell_minx + nx * (cell_maxx - cell_minx);
-            let gy = cell_miny + ny * (cell_maxy - cell_miny);
+
+            let mut winding = 0;
+            for &index in &winding_tiles[tile] {
+                winding += line_winding(gx, gy, &colored[index as usize].seg);
+            }
 
             let mut min_dist = [f32::MAX; 3];
-            let mut winding = 0;
-
-            for (s, color) in &colored {
-                let d = point_seg_dist(gx, gy, s);
-                if color & RED != 0 && d < min_dist[0] {
+            for &index in &distance_tiles[tile] {
+                let edge = &colored[index as usize];
+                if gx < edge.min_x - saturate
+                    || gx > edge.max_x + saturate
+                    || gy < edge.min_y - saturate
+                    || gy > edge.max_y + saturate
+                {
+                    continue;
+                }
+                let d = point_seg_dist(gx, gy, &edge.seg);
+                if edge.color & RED != 0 && d < min_dist[0] {
                     min_dist[0] = d;
                 }
-                if color & GREEN != 0 && d < min_dist[1] {
+                if edge.color & GREEN != 0 && d < min_dist[1] {
                     min_dist[1] = d;
                 }
-                if color & BLUE != 0 && d < min_dist[2] {
+                if edge.color & BLUE != 0 && d < min_dist[2] {
                     min_dist[2] = d;
                 }
-                winding += line_winding(gx, gy, s);
             }
 
             // Inside is negative, outside is positive.
@@ -347,10 +463,11 @@ mod tests {
 
     #[test]
     fn every_edge_enables_at_least_two_channels() {
-        for (_, color) in build_colored_segments(&square_outline()) {
+        for edge in build_colored_segments(&square_outline()) {
             assert!(
-                color.count_ones() >= 2,
-                "edge colour {color:#05b} must enable >= 2 channels"
+                edge.color.count_ones() >= 2,
+                "edge colour {:#05b} must enable >= 2 channels",
+                edge.color
             );
         }
     }
@@ -426,5 +543,78 @@ mod tests {
     fn alpha_is_opaque_everywhere() {
         let bmp = generate_msdf(&square_outline(), 32);
         assert!(bmp.chunks(4).all(|px| px[3] == 255));
+    }
+
+    /// The un-culled generator, kept as the reference the tile-culled
+    /// [`generate_msdf`] must match byte for byte.
+    fn generate_msdf_reference(commands: &[GlyphCommand], size: u32) -> Vec<u8> {
+        let colored = build_colored_segments(commands);
+        if colored.is_empty() {
+            return vec![255u8; (size * size * 4) as usize];
+        }
+        let inv_size = 1.0 / size as f32;
+        let units_per_pixel = (CELL_MAX - CELL_MIN) * inv_size;
+        let dist_scale = 1.0 / (PIXEL_RANGE * units_per_pixel);
+        let mut out = vec![0u8; (size * size * 4) as usize];
+        for iy in 0..size {
+            for ix in 0..size {
+                let nx = (ix as f32 + 0.5) * inv_size;
+                let ny = ((size - 1 - iy) as f32 + 0.5) * inv_size;
+                let gx = CELL_MIN + nx * (CELL_MAX - CELL_MIN);
+                let gy = CELL_MIN + ny * (CELL_MAX - CELL_MIN);
+                let mut min_dist = [f32::MAX; 3];
+                let mut winding = 0;
+                for edge in &colored {
+                    let d = point_seg_dist(gx, gy, &edge.seg);
+                    if edge.color & RED != 0 && d < min_dist[0] {
+                        min_dist[0] = d;
+                    }
+                    if edge.color & GREEN != 0 && d < min_dist[1] {
+                        min_dist[1] = d;
+                    }
+                    if edge.color & BLUE != 0 && d < min_dist[2] {
+                        min_dist[2] = d;
+                    }
+                    winding += line_winding(gx, gy, &edge.seg);
+                }
+                let sign = if winding != 0 { -1.0 } else { 1.0 };
+                let offset = ((iy * size + ix) * 4) as usize;
+                for ch in 0..3 {
+                    let sd = sign * min_dist[ch] * dist_scale;
+                    out[offset + ch] = ((0.5 + sd).clamp(0.0, 1.0) * 255.0) as u8;
+                }
+                out[offset + 3] = 255;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn tile_culling_matches_the_reference_for_a_square() {
+        for size in [16u32, 64] {
+            assert_eq!(
+                generate_msdf(&square_outline(), size),
+                generate_msdf_reference(&square_outline(), size),
+                "culling must not change a pixel at {size}px"
+            );
+        }
+    }
+
+    /// Holes, mixed winding, curves, sharp corners and glyphs that touch the
+    /// cell edge: the cases where a wrong cull shows up first.
+    #[test]
+    fn tile_culling_matches_the_reference_for_real_glyphs() {
+        const ROBOTO: &[u8] = include_bytes!("../../../assets/fonts/Roboto-Regular.ttf");
+        let parser = super::super::FontParser::new(ROBOTO.to_vec()).unwrap();
+        for c in ['A', 'B', 'O', 'g', 'W', '@', '8', 'j'] {
+            let outline = parser.get_glyph_outline_by_index(parser.get_glyph_index(c));
+            for size in [16u32, 64] {
+                assert_eq!(
+                    generate_msdf(&outline, size),
+                    generate_msdf_reference(&outline, size),
+                    "culling changed glyph {c:?} at {size}px"
+                );
+            }
+        }
     }
 }
