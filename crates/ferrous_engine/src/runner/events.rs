@@ -70,6 +70,11 @@ impl<A: FerrousApp> Runner<A> {
 
 impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        // Creating a second window would start a second GPU state; resumed is
+        // expected once per run on desktop.
+        if self.window.is_some() {
+            return;
+        }
         self.app.configure_ui(&mut self.ui);
 
         let window_size = self.resumed_window_size();
@@ -78,75 +83,13 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
             .with_title(&self.config.title)
             .with_resizable(self.config.resizable)
             .with_decorations(self.config.decorations)
-            // Prompt 17 S3: never show an unpainted window. On Windows it is
-            // shown below with the background brush; elsewhere after the first
-            // cleared frame.
+            // Prompt 17 S3b: created hidden; shown when the first frame is
+            // ready (or by the safety timeout). Never an unpainted window.
             .with_visible(false)
             .with_inner_size(winit::dpi::PhysicalSize::new(window_size.0, window_size.1));
 
         let window = Arc::new(event_loop.create_window(attributes).unwrap());
         ferrous_core::startup::mark("engine: window created");
-
-        // Workers started before the window existed (prompt 17 S3/S3b): the GPU
-        // probe, the UI font bake and the launch-snapshot read.
-        #[cfg(not(target_arch = "wasm32"))]
-        let mut work = self.startup_work.take();
-        // Prompt 17 S3b: the last screen, painted by the CPU, is the first
-        // thing the user sees. When it matches this window (size, scale,
-        // monitor, content key) it is shown at once; otherwise the background
-        // colour (S3) is painted instead.
-        #[cfg(not(target_arch = "wasm32"))]
-        let mut launch = self
-            .config
-            .launch_snapshot
-            .clone()
-            .map(|config| super::launch::LaunchState::new(&config));
-        #[cfg(not(target_arch = "wasm32"))]
-        let mut shown_early = false;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(launch) = launch.as_mut() {
-            let identity = crate::snapshot::window_identity(&window, launch.key(), 0);
-            let image = work
-                .as_mut()
-                .and_then(crate::graphics::StartupWork::take_snapshot)
-                .and_then(crate::snapshot::SnapshotReader::join);
-            match image {
-                Some(image) if image.identity().same_screen(&identity) => {
-                    // Restore the placement the captured screen belongs to.
-                    let (x, y) = image.position();
-                    window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
-                    if launch.paint(&window, image) {
-                        // Paint the hidden child first: GDI stores the pixels
-                        // in the window's surface, so the show is only a
-                        // composition and the snapshot is complete when the
-                        // window appears.
-                        launch.repaint();
-                        window.set_visible(true);
-                        ferrous_core::startup::mark("engine: snapshot visible");
-                        shown_early = true;
-                    }
-                }
-                Some(image) => log::info!(
-                    "the launch snapshot was captured on another screen ({}x{} @ {}); \
-                     showing the background colour",
-                    image.width(),
-                    image.height(),
-                    image.identity().scale
-                ),
-                None => {}
-            }
-        }
-        // Paint the window with the app background colour before any GPU work.
-        #[cfg(not(target_arch = "wasm32"))]
-        if !shown_early {
-            shown_early =
-                crate::window_style::show_with_background(&window, self.config.background_color);
-            if shown_early {
-                ferrous_core::startup::mark("engine: window visible");
-            }
-        }
-        #[cfg(target_arch = "wasm32")]
-        window.set_visible(true);
         self.window_size = window_size;
         self.viewport = ferrous_core::Viewport {
             x: 0,
@@ -155,102 +98,44 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
             height: window_size.1,
         };
 
-        // ── Desktop: blocking GPU init, using the worker probes ──────────────
+        // ── Desktop: hidden window, GPU state on a worker ───────────────────
         #[cfg(not(target_arch = "wasm32"))]
         {
+            let mut work = self.startup_work.take();
+            let mut gate = super::show::StartupGate::new(
+                super::show::resolved_timeout(&self.config),
+                self.config.show_window_when_ready,
+                Instant::now(),
+            );
+            if !gate.show_when_ready() {
+                // Opt-out: the S3 behaviour, background colour first.
+                crate::window_style::show_timeout(&window, self.config.background_color);
+                ferrous_core::startup::mark("engine: window visible");
+                gate.mark_shown_early();
+            }
+            // Instance, device and swapchain stay on this thread; the renderer
+            // (the slow part) runs on a worker.
             let probe = work
                 .as_mut()
                 .and_then(crate::graphics::StartupWork::take_gpu)
                 .and_then(crate::graphics::GpuProbeHandle::join);
             let init = crate::graphics::GpuInit::from_config(&self.config);
-            let mut gfx = crate::graphics::GraphicsState::new_native(&window, &init, probe);
-            if !shown_early {
-                // Non-Windows: the first cleared frame is on the swapchain.
-                window.set_visible(true);
-                ferrous_core::startup::mark("engine: window visible");
-            }
-            gfx.renderer.set_viewport(self.viewport);
-            gfx.renderer
-                .set_clear_color(self.config.background_color.to_wgpu());
-            gfx.renderer.set_render_style(self.config.render_style);
-            // Propagate the app mode to the renderer
-            if self.config.mode == AppMode::Flat2D {
-                gfx.renderer
-                    .set_mode(ferrous_renderer::RendererMode::Flat2D);
-            }
-
-            if let Some(config) = &self.config.font_cache {
-                if let Some(cache) = ferrous_font::AtlasCache::from_config(config) {
-                    gfx.renderer.set_font_cache(std::sync::Arc::new(cache));
-                }
-            }
-
-            if let Some(bytes) = self.config.font_bytes {
-                // The UI font was baked on a worker while the GPU initialised;
-                // fall back to the cache-backed bake when that failed.
-                let baked = work.and_then(crate::graphics::StartupWork::join_font);
-                let registered = match baked {
-                    Some(baked) => gfx.renderer.register_baked_font_2d(baked),
-                    None => gfx
-                        .renderer
-                        .register_font_2d(bytes, ferrous_font::latin_western()),
-                };
-                match registered {
-                    Ok(id) => {
-                        if let Some(font) = gfx.renderer.font_2d(id) {
-                            gfx.renderer
-                                .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
-                            ferrous_core::startup::mark("engine: fonts ready");
-                            self.font = Some(font);
-                        }
-                    }
-                    Err(error) => {
-                        log::error!("the embedded UI font could not be registered: {error}");
-                    }
-                }
-            } else if let Some(path) = &self.config.font_path {
-                let handle = self
-                    .asset_server
-                    .load::<ferrous_assets::font_importer::FontData>(path.as_str());
-                self.font_asset_handle = Some(handle);
-            }
-
-            {
-                let time = self.clock.peek();
-                let backend = gfx.renderer.context.backend;
-                let mut ctx = AppContext {
-                    input: &self.input,
-                    time,
-                    window_size: self.window_size,
-                    window: &window,
-                    render_stats: ferrous_core::RenderStats::default(),
-                    camera_eye: ferrous_core::glam::Vec3::ZERO,
-                    camera_target: ferrous_core::glam::Vec3::ZERO,
-                    world: &mut self.world,
-                    viewport: self.viewport,
-                    gizmos: Vec::new(),
-                    render: RenderContext::new(&mut gfx.renderer),
-                    asset_server: &mut self.asset_server,
-                    exit_requested: false,
-                    requested_resolution_scale: None,
-                    keep_awake_requested: false,
-                    screenshot_requested: false,
-                    launch_snapshot_requested: false,
-                    launch_snapshot_key: None,
-                    _gpu_backend: backend,
-                };
-                self.app.setup(&mut ctx);
-            }
-            ferrous_core::startup::mark("engine: app setup done");
-
-            self.graphics = Some(gfx);
+            let device = crate::graphics::GraphicsState::init_device(
+                &window,
+                &init,
+                probe,
+                !self.config.show_window_when_ready,
+            );
+            self.init = Some(super::show::InitJob::start(device));
+            self.startup_work = work;
+            self.startup = Some(gate);
             self.window = Some(window);
-            self.launch = launch;
         }
 
         // ── Web (WASM): asynchronous init ───────────────────────────────────
         #[cfg(target_arch = "wasm32")]
         {
+            window.set_visible(true);
             let slot = Rc::new(RefCell::new(None));
             let font_slot = Rc::new(RefCell::new(None));
             let slot_clone = slot.clone();
@@ -307,13 +192,10 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {}
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        // Prompt 17 S3b: while the CPU-painted snapshot is up, the application
-        // is not on screen yet. Clicks, keys, the wheel and modifiers are
-        // queued and replayed in order at the handoff; a close is honoured at
-        // once, and a resize or DPI change drops the snapshot because it no
-        // longer describes the screen.
+        // Prompt 17 S3b: user input waits for the first frame, then is
+        // delivered in order. Closing, destruction and redraws pass at once.
         #[cfg(not(target_arch = "wasm32"))]
-        let event = match self.queue_until_handoff(id, event) {
+        let event = match self.queue_while_starting(id, event) {
             Some(event) => event,
             None => return,
         };
@@ -576,54 +458,129 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<A: FerrousApp + 'static> Runner<A> {
-    /// Queues `event` for the application while the launch snapshot is on
-    /// screen, or returns it for normal handling.
-    ///
-    /// `None` means the event was consumed (queued or handled here).
-    #[cfg(not(target_arch = "wasm32"))]
-    fn queue_until_handoff(&mut self, id: WindowId, event: WindowEvent) -> Option<WindowEvent> {
-        let Some(launch) = self.launch.as_mut() else {
+    /// Queues user input until the first frame is presented, or returns it for
+    /// normal handling.
+    fn queue_while_starting(&mut self, id: WindowId, event: WindowEvent) -> Option<WindowEvent> {
+        let Some(gate) = self.startup.as_mut() else {
             return Some(event);
         };
-        if !launch.shows_snapshot() {
+        if gate.accepts_input() {
             return Some(event);
         }
-        if matches!(
-            &event,
-            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. }
-        ) {
-            // winit reports the window's geometry right after creation; that
-            // event describes the screen the snapshot was painted for and must
-            // not drop it. A real change was painted for another geometry and
-            // would be stretched: drop the snapshot instead.
-            if let Some((width, height, scale)) = launch.painted_geometry() {
-                let same_moment = match &event {
-                    WindowEvent::Resized(size) => size.width == width && size.height == height,
-                    WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                        (*scale_factor - scale).abs() < f64::EPSILON
-                    }
-                    _ => false,
-                };
-                if same_moment {
-                    return Some(event);
-                }
-            }
-            if launch.drop_snapshot() {
-                ferrous_core::startup::mark("engine: snapshot dropped");
-            }
-            return Some(event);
-        }
-        // Closing, destruction and redraws keep their normal path: closing
-        // during the snapshot must close at once, and the redraw is what
-        // produces the first GPU frame.
+        // Closing must work at any time, and redraws are what produce the
+        // first frame.
         if matches!(
             &event,
             WindowEvent::CloseRequested | WindowEvent::Destroyed | WindowEvent::RedrawRequested
         ) {
             return Some(event);
         }
-        launch.queue(id, event);
+        gate.queue(id, event);
         None
+    }
+
+    /// Installs the GPU state produced by the worker and runs the app setup.
+    fn install_gpu(&mut self, result: super::show::InitResult) {
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        let mut gfx = result.device.into_state(result.renderer);
+        gfx.renderer.set_viewport(self.viewport);
+        gfx.renderer
+            .set_clear_color(self.config.background_color.to_wgpu());
+        gfx.renderer
+            .set_render_style(self.config.render_style);
+        if self.config.mode == AppMode::Flat2D {
+            gfx.renderer
+                .set_mode(ferrous_renderer::RendererMode::Flat2D);
+        }
+        if let Some(config) = &self.config.font_cache {
+            if let Some(cache) = ferrous_font::AtlasCache::from_config(config) {
+                gfx.renderer.set_font_cache(std::sync::Arc::new(cache));
+            }
+        }
+        if let Some(bytes) = self.config.font_bytes {
+            // The UI font was baked on a worker while the GPU initialised; fall
+            // back to the cache-backed bake when that failed.
+            let baked = self.startup_work.take().and_then(|work| work.join_font());
+            let registered = match baked {
+                Some(baked) => gfx.renderer.register_baked_font_2d(baked),
+                None => gfx
+                    .renderer
+                    .register_font_2d(bytes, ferrous_font::latin_western()),
+            };
+            match registered {
+                Ok(id) => {
+                    if let Some(font) = gfx.renderer.font_2d(id) {
+                        gfx.renderer
+                            .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
+                        ferrous_core::startup::mark("engine: fonts ready");
+                        self.font = Some(font);
+                    }
+                }
+                Err(error) => {
+                    log::error!("the embedded UI font could not be registered: {error}");
+                }
+            }
+        } else if let Some(path) = &self.config.font_path {
+            let handle = self
+                .asset_server
+                .load::<ferrous_assets::font_importer::FontData>(path.as_str());
+            self.font_asset_handle = Some(handle);
+        }
+        {
+            let time = self.clock.peek();
+            let backend = gfx.renderer.context.backend;
+            let mut ctx = AppContext {
+                input: &self.input,
+                time,
+                window_size: self.window_size,
+                window: &window,
+                render_stats: ferrous_core::RenderStats::default(),
+                camera_eye: ferrous_core::glam::Vec3::ZERO,
+                camera_target: ferrous_core::glam::Vec3::ZERO,
+                world: &mut self.world,
+                viewport: self.viewport,
+                gizmos: Vec::new(),
+                render: RenderContext::new(&mut gfx.renderer),
+                asset_server: &mut self.asset_server,
+                exit_requested: false,
+                requested_resolution_scale: None,
+                keep_awake_requested: false,
+                screenshot_requested: false,
+                _gpu_backend: backend,
+            };
+            self.app.setup(&mut ctx);
+        }
+        ferrous_core::startup::mark("engine: app setup done");
+        self.graphics = Some(gfx);
+    }
+
+    /// Polls the startup: installs the GPU state when the worker is done and
+    /// enforces the show timeout. Returns whether the GPU state was installed
+    /// on this call.
+    pub(super) fn poll_startup(&mut self, event_loop: Option<&ActiveEventLoop>) -> bool {
+        let mut installed = false;
+        if let Some(job) = self.init.as_mut() {
+            if let Some(result) = job.try_take() {
+                self.init = None;
+                self.install_gpu(result);
+                installed = true;
+            }
+        }
+        let (Some(gate), Some(window)) = (self.startup.as_mut(), self.window.as_ref()) else {
+            return installed;
+        };
+        if !gate.is_shown() && Instant::now() >= gate.deadline() {
+            // The driver is slower than the timeout: show the app colour so the
+            // user knows the app opened.
+            crate::window_style::show_timeout(window, self.config.background_color);
+            ferrous_core::startup::mark("engine: window visible (timeout)");
+            gate.mark_timeout();
+            let _ = event_loop;
+        }
+        installed
     }
 }

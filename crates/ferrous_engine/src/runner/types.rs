@@ -30,8 +30,10 @@ use crate::traits::{FerrousApp, FileDropEvent};
 pub(crate) struct Runner<A: FerrousApp + 'static> {
     pub(super) app: A,
     pub(super) config: AppConfig,
-    pub(super) window: Option<Arc<Window>>,
+    /// The GPU state. Declared before `window` so it is dropped first: it holds
+    /// a surface created from that window.
     pub(super) graphics: Option<GraphicsState>,
+    pub(super) window: Option<Arc<Window>>,
     pub(super) ui: ferrous_gui::UiSystem<A>,
     pub(super) input: InputState,
     pub(super) window_size: (u32, u32),
@@ -64,10 +66,12 @@ pub(crate) struct Runner<A: FerrousApp + 'static> {
     /// GPU and UI-font probes started before the window existed (prompt 17 S3).
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) startup_work: Option<crate::graphics::StartupWork>,
-    /// The launch snapshot: painted window, queued input and capture requests
-    /// (prompt 17 S3b).
+    /// Window show policy for the first frame (prompt 17 S3b).
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) launch: Option<super::launch::LaunchState>,
+    pub(super) startup: Option<super::show::StartupGate>,
+    /// The GPU/first-frame initialisation running off the event loop.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) init: Option<super::show::InitJob>,
 }
 
 impl<A: FerrousApp + 'static> Runner<A> {
@@ -119,7 +123,9 @@ impl<A: FerrousApp + 'static> Runner<A> {
             #[cfg(not(target_arch = "wasm32"))]
             startup_work,
             #[cfg(not(target_arch = "wasm32"))]
-            launch: None,
+            startup: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            init: None,
         }
     }
 }

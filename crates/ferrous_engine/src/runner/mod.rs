@@ -8,7 +8,7 @@
 mod events;
 mod frame;
 #[cfg(not(target_arch = "wasm32"))]
-mod launch;
+mod show;
 mod types;
 
 pub(crate) use types::Runner;
@@ -106,7 +106,11 @@ pub(crate) fn canvas_physical_size(window: &winit::window::Window, scale: f64) -
         .map(|w| w.device_pixel_ratio())
         .unwrap_or(1.0)
         .max(1e-6);
-    let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
 
     let css = window.canvas().and_then(|canvas| {
         let r = canvas.get_bounding_client_rect();

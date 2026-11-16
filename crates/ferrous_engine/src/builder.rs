@@ -128,18 +128,28 @@ pub struct AppConfig {
     /// backends that expose [`wgpu::Features::PIPELINE_CACHE`] (Vulkan in wgpu
     /// 23) use it; DX12, Metal and GL ignore it.
     pub pipeline_cache: Option<PipelineCacheConfig>,
-    /// Store the last painted screen and show it on the CPU while the GPU
-    /// starts (prompt 17 S3b).
+    /// Show the window only when the first frame is ready (prompt 17 S3b).
     ///
-    /// `None` (the default) shows the window painted with
-    /// [`background_color`](Self::background_color) until the first frame.
-    /// With a snapshot, the visible window appears once the file has been read
-    /// (tens of milliseconds) instead of after the driver's ~430 ms, and the
-    /// switch to the first GPU frame happens behind an identical image.
-    /// Only the platform painter is implemented; see
-    /// [`LaunchSnapshot`](crate::snapshot::LaunchSnapshot).
-    pub launch_snapshot: Option<crate::snapshot::LaunchSnapshot>,
+    /// Default `true`: the window is created hidden, the GPU state and the
+    /// first frame are prepared while it is hidden, and it is shown right after
+    /// that frame is presented, so the first thing the user sees is the
+    /// application, not a white or black rectangle. `false` restores the S3
+    /// behaviour (show it with the background colour immediately).
+    pub show_window_when_ready: bool,
+    /// Safety timeout for [`show_window_when_ready`](Self::show_window_when_ready).
+    ///
+    /// If the first frame has not been presented after this long (a cold or
+    /// software driver, a slow shader compile), the window is shown with
+    /// [`background_color`](Self::background_color) so the user knows the app
+    /// opened. Default: 800 ms from the start of the run. `FERROUS_SHOW_TIMEOUT_MS`
+    /// overrides it at runtime.
+    pub window_show_timeout: std::time::Duration,
 }
+
+/// How long the window stays hidden waiting for the first frame by default.
+///
+/// See [`AppConfig::window_show_timeout`].
+pub const DEFAULT_SHOW_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(800);
 
 /// Which backends a launch tries, in order.
 ///
@@ -295,7 +305,8 @@ impl Default for AppConfig {
             backends: default_backends(),
             power_preference: wgpu::PowerPreference::HighPerformance,
             pipeline_cache: None,
-            launch_snapshot: None,
+            show_window_when_ready: true,
+            window_show_timeout: DEFAULT_SHOW_TIMEOUT,
         }
     }
 }
@@ -575,14 +586,17 @@ impl<A: FerrousApp + 'static> App<A> {
         self
     }
 
-    /// Shows the last captured screen on the CPU while the GPU starts
-    /// ([`LaunchSnapshot`](crate::snapshot::LaunchSnapshot)).
-    ///
-    /// The application supplies the directory and the content key; a capture
-    /// is requested with
-    /// [`AppContext::request_launch_snapshot`](crate::AppContext::request_launch_snapshot).
-    pub fn with_launch_snapshot(mut self, snapshot: crate::snapshot::LaunchSnapshot) -> Self {
-        self.config.launch_snapshot = Some(snapshot);
+    /// Shows the window only when the first frame is ready
+    /// ([`AppConfig::show_window_when_ready`], default on).
+    pub fn with_show_window_when_ready(mut self, show: bool) -> Self {
+        self.config.show_window_when_ready = show;
+        self
+    }
+
+    /// Sets the safety timeout for showing the window
+    /// ([`AppConfig::window_show_timeout`], default 800 ms).
+    pub fn with_window_show_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.config.window_show_timeout = timeout;
         self
     }
 

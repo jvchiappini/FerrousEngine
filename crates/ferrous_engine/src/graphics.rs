@@ -291,11 +291,68 @@ impl GpuProbeHandle {
     }
 }
 
+/// Everything the renderer needs, once the device and swapchain exist.
+///
+/// Keeping the slow `Renderer::new` out of [`GraphicsState::init_device`] lets
+/// the runner build it on a worker: the event loop keeps running, the window
+/// stays hidden until the first frame is ready, and the safety timeout can
+/// still show the app background (prompt 17 S3b).
+pub(crate) struct DeviceInit {
+    pub(crate) surface: wgpu::Surface<'static>,
+    pub(crate) config: wgpu::SurfaceConfiguration,
+    context: Option<EngineContext>,
+    cache_file: Option<PipelineCacheFile>,
+    sample_count: u32,
+    hdri_path: Option<String>,
+}
+
+impl DeviceInit {
+    /// Builds the renderer — the part that can take seconds on a cold driver —
+    /// and returns the device parts with it.
+    pub(crate) fn build_renderer(mut self) -> (Self, Box<Renderer>) {
+        let Some(context) = self.context.take() else {
+            panic!("the renderer was already built for this device");
+        };
+        let renderer = Box::new(Renderer::new(
+            context,
+            self.config.width,
+            self.config.height,
+            self.config.format,
+            self.sample_count,
+            self.hdri_path.as_deref().map(std::path::Path::new),
+        ));
+        startup::mark("engine: renderer built");
+        (self, renderer)
+    }
+
+    /// The complete GPU state once the renderer exists.
+    pub(crate) fn into_state(self, renderer: Box<Renderer>) -> GraphicsState {
+        GraphicsState {
+            surface: self.surface,
+            config: self.config,
+            renderer,
+            pipeline_cache: self.cache_file,
+            pipeline_cache_saved: false,
+        }
+    }
+}
+
 impl GraphicsState {
-    /// Desktop initialisation: uses `probe` when it can present on the window,
-    /// otherwise selects an adapter here, backend by backend.
+    /// Desktop initialisation up to the device and the swapchain (the fast
+    /// part, on the caller's thread).
+    ///
+    /// Uses `probe` when it can present on the window, otherwise selects an
+    /// adapter here, backend by backend. The renderer — the slow part on a cold
+    /// driver, and the only part that can take seconds on DX12 — is built by
+    /// [`DeviceInit::build_renderer`], so the caller can run it on a worker and
+    /// keep its event loop responsive (prompt 17 S3b).
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn new_native(window: &Window, init: &GpuInit, probe: Option<GpuProbe>) -> Self {
+    pub(crate) fn init_device(
+        window: &Window,
+        init: &GpuInit,
+        probe: Option<GpuProbe>,
+        clear_frame: bool,
+    ) -> DeviceInit {
         let power = init.power_preference();
         let mut chosen: Option<(wgpu::Instance, wgpu::Adapter, wgpu::Surface<'static>)> = None;
 
@@ -303,7 +360,7 @@ impl GraphicsState {
             match probe.instance.create_surface(window) {
                 Ok(surface) => {
                     // SAFETY: the window outlives the surface (the runner owns
-                    // both and drops the window last); wgpu requires the
+                    // both and drops the GPU state last); wgpu requires the
                     // 'static surface form for this pattern.
                     let surface: wgpu::Surface<'static> = unsafe { std::mem::transmute(surface) };
                     if adapter_is_usable(&probe.adapter)
@@ -430,34 +487,29 @@ impl GraphicsState {
         surface.configure(&context.device, &config);
         startup::mark("engine: surface configured");
 
-        // One clear-only frame before the renderer exists: the window shows the
-        // app background colour as soon as the swapchain does, and the first
-        // real frame replaces it with the same colour (no flash, no shift).
-        present_clear(
-            &surface,
-            &config,
-            &context.device,
-            &context.queue,
-            init.background,
-        );
-        startup::mark("engine: first clear presented");
+        // The clear-only frame avoids a white or stale rectangle when the
+        // window is already visible (the S3 path). While the window is hidden
+        // (show-when-ready) there is nothing to see and presenting a black
+        // clear frame would only give DWM a stale buffer to show on
+        // `ShowWindow`.
+        if clear_frame {
+            present_clear(
+                &surface,
+                &config,
+                &context.device,
+                &context.queue,
+                init.background,
+            );
+            startup::mark("engine: first clear presented");
+        }
 
-        let renderer = Box::new(Renderer::new(
-            context,
-            config.width,
-            config.height,
-            config.format,
-            init.sample_count,
-            init.hdri_path.as_ref().map(std::path::Path::new),
-        ));
-        startup::mark("engine: renderer built");
-
-        Self {
+        DeviceInit {
             surface,
             config,
-            renderer,
-            pipeline_cache: cache_file,
-            pipeline_cache_saved: false,
+            context: Some(context),
+            cache_file,
+            sample_count: init.sample_count,
+            hdri_path: init.hdri_path.clone(),
         }
     }
 
@@ -626,7 +678,6 @@ impl GraphicsState {
 pub(crate) struct StartupWork {
     gpu: Option<GpuProbeHandle>,
     font: Option<std::thread::JoinHandle<Option<ferrous_font::BakedAtlas>>>,
-    snapshot: Option<crate::snapshot::SnapshotReader>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -634,12 +685,6 @@ impl StartupWork {
     /// Starts the probes for `config`.
     pub(crate) fn start(config: &AppConfig) -> Self {
         let gpu = Some(GpuProbeHandle::start(&GpuInit::from_config(config)));
-        // Prompt 17 S3b: the launch snapshot is read here, so it is ready when
-        // the window exists.
-        let snapshot = config
-            .launch_snapshot
-            .as_ref()
-            .map(crate::snapshot::SnapshotReader::start);
         let font = config.font_bytes.map(|bytes| {
             let cache = config
                 .font_cache
@@ -661,18 +706,12 @@ impl StartupWork {
         Self {
             gpu,
             font: font.flatten(),
-            snapshot,
         }
     }
 
     /// Takes the GPU probe handle (joined by the caller once the window exists).
     pub(crate) fn take_gpu(&mut self) -> Option<GpuProbeHandle> {
         self.gpu.take()
-    }
-
-    /// Takes the launch-snapshot reader (joined once the window exists).
-    pub(crate) fn take_snapshot(&mut self) -> Option<crate::snapshot::SnapshotReader> {
-        self.snapshot.take()
     }
 
     /// Waits for the UI font bake; `None` when it failed or did not run.
