@@ -4615,11 +4615,34 @@ impl Renderer {
             return Ok(FontId2d::from(handle));
         }
 
-        let baked = ferrous_font::BakedAtlas::build_cached(
-            self.font_cache.as_deref(),
-            bytes,
-            &char_list,
-        )?;
+        let baked =
+            ferrous_font::BakedAtlas::build_cached(self.font_cache.as_deref(), bytes, &char_list)?;
+        self.register_baked_font_2d(baked)
+    }
+
+    /// Register an atlas the caller already baked.
+    ///
+    /// This is [`Self::register_font_2d`] without the bake: useful when a worker
+    /// built the [`ferrous_font::BakedAtlas`] (through [`Self::font_cache`], for
+    /// example) and the frame thread only uploads it. The atlas is keyed by
+    /// [`ferrous_font::BakedAtlas::key`], so registering the same face again
+    /// returns the existing id and does not upload a second texture.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FontError::Atlas`] when the atlas is unusable (no glyphs).
+    pub fn register_baked_font_2d(
+        &mut self,
+        baked: ferrous_font::BakedAtlas,
+    ) -> Result<FontId2d, FontError> {
+        if let Some((handle, _)) = self
+            .fonts_2d
+            .iter()
+            .find(|(_, entry)| entry.key == baked.key)
+        {
+            return Ok(FontId2d::from(handle));
+        }
+        let key = baked.key;
         let font = std::sync::Arc::new(ferrous_font::Font {
             atlas: baked.upload(&self.context.device, &self.context.queue),
             icons: None,

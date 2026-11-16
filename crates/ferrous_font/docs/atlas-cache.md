@@ -83,6 +83,27 @@ its UI font through that path too, so an application that draws the same face
 cache with `Renderer::set_font_cache`; `Renderer::font_2d` hands back the shared
 `Arc<Font>` when an application needs the metrics.
 
+## Background bakes
+
+`Renderer::register_baked_font_2d(baked)` uploads an atlas the caller built
+elsewhere, usually on a worker: `BakedAtlas::build_cached` needs no device, so
+it can run while the engine creates the device and the swapchain, and the frame
+thread only creates the texture. The entry goes into the same `FontKey`
+registry, so a face registered by bytes and the same face registered baked are
+one atlas. Keep the `BakedAtlas` alive until the upload happens; the upload
+consumes it.
+
+```rust
+let baked = BakedAtlas::build_cached(cache.as_ref(), font_bytes, &chars)?;
+// ... hand `baked` to the frame thread ...
+let id = renderer.register_baked_font_2d(baked)?;
+```
+
+A caller that has both paths must still register every face a frame draws
+before drawing it; the engine does not guess a substitute face — the
+application decides its fallback (the engine's own runner uses Roboto).
+
+
 ## Fast cold bakes
 
 `msdf_gen` culls work per pixel tile: every flattened edge is binned into the

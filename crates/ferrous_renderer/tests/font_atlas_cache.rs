@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use ferrous_font::{AtlasCache, BakedAtlas, FontKey};
+use ferrous_font::{AtlasCache, BakedAtlas, FontKey, FontParser};
 use ferrous_renderer::headless::{Pure2dHarness, DEFAULT_FORMAT};
 
 static GPU_LOCK: Mutex<()> = Mutex::new(());
@@ -122,4 +122,32 @@ fn a_corrupt_cache_file_is_replaced_by_a_fresh_bake() {
     );
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn registering_an_already_baked_atlas_shares_the_same_entry() {
+    let _guard = GPU_LOCK.lock().unwrap();
+    let Some(mut harness) = harness() else {
+        return;
+    };
+    let chars = ferrous_font::charset::ascii();
+    let parser = FontParser::new(ROBOTO.to_vec()).expect("the bundled face parses");
+    let baked = BakedAtlas::build(&parser, &chars).expect("the atlas bakes");
+
+    // A worker may bake the atlas and the frame thread only uploads it.
+    let first = harness
+        .renderer_mut()
+        .register_baked_font_2d(baked.clone())
+        .expect("the atlas registers");
+    let second = harness
+        .renderer_mut()
+        .register_baked_font_2d(baked)
+        .expect("the second registration succeeds");
+    assert_eq!(first, second, "the same key must share one atlas");
+    assert_eq!(harness.renderer().font_count_2d(), 1);
+
+    // Registering the same face by bytes finds the same entry.
+    let by_bytes = harness.register_font(ROBOTO, chars).expect("ascii");
+    assert_eq!(by_bytes, first);
+    assert_eq!(harness.renderer().font_count_2d(), 1);
 }
