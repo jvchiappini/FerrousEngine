@@ -155,6 +155,7 @@ fn linear_to_srgb(value: f32) -> f32 {
 
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Foundation::{HWND, RECT};
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::Graphics::Gdi::{
     CreateSolidBrush, FillRect, GetDC, RedrawWindow, ReleaseDC, RDW_ERASE, RDW_INVALIDATE,
     RDW_UPDATENOW,

@@ -102,7 +102,7 @@ fn a_sprite_texture_updates_in_place() {
     let Some(mut h) = harness(8, 8, wgpu::Color::BLACK) else {
         return;
     };
-    let red = vec![255, 0, 0, 255].repeat(4);
+    let red = [255, 0, 0, 255].repeat(4);
     let texture = h.register_texture_rgba8(2, 2, &red);
 
     h.begin_frame();
@@ -118,7 +118,7 @@ fn a_sprite_texture_updates_in_place() {
         "registered red",
     );
 
-    let green = vec![0, 255, 0, 255].repeat(4);
+    let green = [0, 255, 0, 255].repeat(4);
     h.renderer_mut()
         .update_sprite_texture(texture, 2, 2, &green)
         .unwrap();

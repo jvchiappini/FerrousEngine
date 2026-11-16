@@ -46,6 +46,7 @@ pub struct GraphicsState {
 }
 
 /// The GPU initialisation one window needs, copied from [`AppConfig`].
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
 pub(crate) struct GpuInit {
     pub(crate) width: u32,
@@ -313,6 +314,7 @@ impl GpuProbeHandle {
 /// the runner build it on a worker: the event loop keeps running, the window
 /// stays hidden until the first frame is ready, and the safety timeout can
 /// still show the app background (prompt 17 S3b).
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct DeviceInit {
     pub(crate) surface: wgpu::Surface<'static>,
     pub(crate) config: wgpu::SurfaceConfiguration,
@@ -323,6 +325,7 @@ pub(crate) struct DeviceInit {
     mode: RendererMode,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl DeviceInit {
     /// Builds the renderer — the part that can take seconds on a cold driver —
     /// and returns the device parts with it.
