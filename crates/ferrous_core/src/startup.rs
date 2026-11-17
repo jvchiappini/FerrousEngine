@@ -261,6 +261,20 @@ pub fn first_frame_presented() {
     emit("startup trace", "startup-trace", "first-present");
 }
 
+/// Prints the first-present report without recording a mark.
+///
+/// The engine runner marks `engine: first frame presented` as soon as
+/// `frame.present()` succeeds, shows the window and records
+/// `engine: window visible`, and then calls this so both marks are in the same
+/// report in presentation order. Applications that only need the combined
+/// mark + report call [`first_frame_presented`]. Later calls do nothing.
+pub fn report_first_frame() {
+    if !enabled() || FIRST_REPORTED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    emit("startup trace", "startup-trace", "first-present");
+}
+
 /// Records `engine: teardown done` and prints the closing report once.
 ///
 /// The runner calls this after the window and the GPU state are dropped, so

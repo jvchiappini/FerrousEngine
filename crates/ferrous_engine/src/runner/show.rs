@@ -6,9 +6,14 @@
 //! the window is created hidden and only shown when there is something real to
 //! show:
 //!
-//! - the GPU state (instance, device, swapchain, renderer, UI font) is built on
-//!   a worker, so the event loop keeps running and the window can still be
-//!   shown if the driver is slow;
+//! - instance, adapter, device and swapchain are created by
+//!   `GraphicsState::init_device` **on the event-loop thread** (DXGI
+//!   swapchains are not usable from another thread). Only `Renderer::new` — the
+//!   part that takes seconds on a cold DX12 driver — runs on a worker while the
+//!   loop keeps pumping. The safety timeout therefore **cannot fire while
+//!   `init_device` blocks the loop** (~430 ms warm on the reference machine; a
+//!   cold driver can block longer, and the window appears as soon as the loop
+//!   gets control again);
 //! - [`StartupGate`] holds the deadline of the safety timeout: if the first
 //!   frame is not presented by then, the window is shown with the app
 //!   background colour so the user knows the app opened;
@@ -19,6 +24,7 @@
 //! with the background colour immediately); the timeout can be shortened with
 //! `AppConfig::with_window_show_timeout` or `FERROUS_SHOW_TIMEOUT_MS`.
 
+use std::ffi::OsStr;
 use std::sync::mpsc::{self, Receiver};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -38,7 +44,20 @@ pub(super) const MAX_QUEUED_INPUT: usize = 512;
 /// The show timeout for `config`, honouring `FERROUS_SHOW_TIMEOUT_MS`.
 #[must_use]
 pub(crate) fn resolved_timeout(config: &AppConfig) -> Duration {
-    if let Some(value) = std::env::var_os("FERROUS_SHOW_TIMEOUT_MS") {
+    timeout_from_override(
+        std::env::var_os("FERROUS_SHOW_TIMEOUT_MS").as_deref(),
+        config.window_show_timeout,
+    )
+}
+
+/// Resolves `override_value` over `configured` without touching the process
+/// environment, so it is testable in a parallel test run.
+///
+/// A missing or malformed value keeps `configured` (a malformed value is
+/// logged once); a valid value is the timeout in milliseconds.
+#[must_use]
+fn timeout_from_override(override_value: Option<&OsStr>, configured: Duration) -> Duration {
+    if let Some(value) = override_value {
         if let Some(text) = value.to_str() {
             if let Ok(millis) = text.trim().parse::<u64>() {
                 return Duration::from_millis(millis);
@@ -46,7 +65,7 @@ pub(crate) fn resolved_timeout(config: &AppConfig) -> Duration {
         }
         log::warn!("ignoring FERROUS_SHOW_TIMEOUT_MS={value:?} (expected milliseconds)");
     }
-    config.window_show_timeout
+    configured
 }
 
 /// Input events waiting for the first frame, in arrival order.
@@ -280,14 +299,33 @@ mod tests {
     }
 
     #[test]
-    fn the_timeout_can_be_overridden_from_the_environment() {
+    fn the_timeout_override_is_parsed_without_touching_the_environment() {
+        let configured = Duration::from_millis(800);
+        assert_eq!(
+            timeout_from_override(Some(OsStr::new("50")), configured),
+            Duration::from_millis(50)
+        );
+        assert_eq!(
+            timeout_from_override(Some(OsStr::new(" 125 ")), configured),
+            Duration::from_millis(125)
+        );
+        assert_eq!(
+            timeout_from_override(Some(OsStr::new("banana")), configured),
+            configured,
+            "a malformed value keeps the configured timeout"
+        );
+        assert_eq!(timeout_from_override(None, configured), configured);
+    }
+
+    #[test]
+    fn the_configured_timeout_is_the_default_used_by_the_gate() {
         let config = AppConfig {
-            window_show_timeout: Duration::from_millis(800),
+            window_show_timeout: Duration::from_millis(650),
             ..AppConfig::default()
         };
-        std::env::set_var("FERROUS_SHOW_TIMEOUT_MS", "50");
-        assert_eq!(resolved_timeout(&config), Duration::from_millis(50));
-        std::env::remove_var("FERROUS_SHOW_TIMEOUT_MS");
-        assert_eq!(resolved_timeout(&config), Duration::from_millis(800));
+        assert_eq!(
+            timeout_from_override(None, config.window_show_timeout),
+            Duration::from_millis(650)
+        );
     }
 }

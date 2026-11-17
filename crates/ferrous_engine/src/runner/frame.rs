@@ -421,6 +421,12 @@ impl<A: FerrousApp + 'static> Runner<A> {
             {
                 if let Some(gate) = self.startup.as_mut() {
                     if !gate.accepts_input() {
+                        // Prompt 17 S6: the frame is presented at
+                        // `frame.present()`; the mark is taken before
+                        // `ShowWindow` so the trace proves the window was not
+                        // visible before its first frame. The report is emitted
+                        // below, after the visibility mark.
+                        startup::mark("engine: first frame presented");
                         if !gate.is_shown() {
                             crate::window_style::show_ready(window);
                             startup::mark("engine: window visible");
@@ -430,7 +436,12 @@ impl<A: FerrousApp + 'static> Runner<A> {
                     }
                 }
             }
+            // wasm has no startup gate: the old mark + report path still
+            // applies there. On desktop this only prints the report (the marks
+            // were taken above, on the first frame only).
+            #[cfg(target_arch = "wasm32")]
             startup::first_frame_presented();
+            startup::report_first_frame();
             // Prompt 17 S3: the startup pipelines exist after the first frame;
             // persist the wgpu cache now (and again at exit).
             #[cfg(not(target_arch = "wasm32"))]

@@ -33,7 +33,9 @@ per report, which build and benchmarking tools parse.
 | `engine: renderer built` | `Renderer::new` returned |
 | `engine: fonts ready` | the engine UI font was baked and uploaded |
 | `engine: app setup done` | `FerrousApp::setup` returned |
-| `engine: first frame presented` | the first `frame.present()` succeeded |
+| `engine: first frame presented` | the first `frame.present()` succeeded, before `ShowWindow` |
+| `engine: window visible` | the window was shown carrying the first frame |
+| `engine: window visible (timeout)` | the window was shown with the background because the first frame was late |
 | `engine: close requested` | the close button or `request_exit` |
 | `engine: window hidden` | the window left the screen, before teardown |
 | `engine: event loop exited` | `run_app` returned |
@@ -207,18 +209,71 @@ next clear covers it.
 Input that arrives while the window is hidden is queued in order and replayed
 after the first frame; closing works at any time.
 
-Measured on the reference machine (Vulkan, 1600x900, 20 warm runs): the window
-is visible with the drawn start screen at **517 ms** median (526 ms p90, the
-first frame's present), `Renderer::new` 46 ms on the worker; the previous S3
-value was 497 ms with the window shown early (background only). With
-`FERROUS_SHOW_TIMEOUT_MS=50` the window appears at 445-478 ms (the event loop
-cannot run while the device phase blocks it, ~450 ms) painted with the start
-screen's background `#0A0B0D`; DX12's 7.4 s `Renderer::new` shows the window at
-837 ms (timeout 800) and stays responsive (`SendMessageTimeout` answers while
-the shaders compile). A real desktop capture of the first composed frame
-(Vulkan, forced timeout, DX12) matches a capture taken 1 s later exactly; the
-capture taken at the instant `IsWindowVisible` turns true still shows the
-previous screen because DWM has not composed the window yet (one vsync).
+`engine: first frame presented` is marked as soon as `frame.present()` returns,
+before `ShowWindow`; `engine: window visible` is marked after the show. That
+order is what lets the regression guard prove the window never appeared before
+its frame.
+
+Measured on the reference machine (Vulkan, 1600x900, 20 warm runs, S6): the
+first frame is ready at **471 ms** and the window is visible at **491 ms**
+median (496 ms p90); `Renderer::new` takes 28 ms on the worker. The previous
+S3b value was 517 ms with the same mechanism. With
+`FERROUS_SHOW_TIMEOUT_MS=50` the window appears at 460-472 ms (the event loop
+cannot run while the device phase blocks it, ~430-455 ms) painted with the
+start screen's background `#0A0B0D`; DX12's 7.4 s `Renderer::new` shows the
+window at 837 ms (timeout 800) and stays responsive (`SendMessageTimeout`
+answers while the shaders compile). A real desktop capture of the first
+composed frame (Vulkan, forced timeout, DX12) matches a capture taken 1 s later
+exactly; the capture taken at the instant `IsWindowVisible` turns true still
+shows the previous screen because DWM has not composed the window yet (one
+vsync).
+
+#### Timeout limitation
+
+The safety timeout is checked by the event loop. `GraphicsState::init_device`
+(instance, adapter, device and swapchain) runs on the event-loop thread when
+the window is created, so **the timeout cannot fire while that call blocks the
+loop**: it fires as soon as the loop regains control. On the reference machine
+that floor is ~430 ms warm, so a 50 ms timeout still shows the window at
+~450-500 ms; a cold driver can block longer. `Renderer::new` does run on the
+worker, so DX12's ~7.4 s shader compilation does not stop the event loop and
+the window appears at the timeout with the background colour and stays
+responsive.
+
+### Budgets and the regression guard
+
+The trace is the measurement tool; a budget turns it into a guard without
+depending on the GPU driver floor:
+
+- **Our critical path** is `engine: first frame presented` minus
+  `engine: surface configured`. Instance/adapter/device/swapchain costs are
+  excluded, so a slower driver does not fail the guard.
+- **Our spans** are budgeted directly (`motioner: host`, `document load`,
+  `canvas`, `paint composition`, `engine: renderer build (worker)`, ...).
+- **The window must not be visible before its first frame**: the normal-path
+  `engine: window visible` mark must not precede `engine: first frame
+  presented`. The timeout path is the only accepted exception and has its own
+  `engine: window visible (timeout)` mark.
+
+Motioner ships `scripts/startup_budgets.json` (2x the S6 measured values, with
+50 ms for the close-to-hidden budget) and
+`python scripts/startup_bench.py --check` reads it, runs a handful of processes
+and exits non-zero on a violation. It is deliberately outside the CI gate:
+first-run Defender scans and GPU state make wall-clock code checks
+unreliable in CI, but the reviewer can run it on the reference machine (see the
+Motioner README and `docs/startup.md`).
+
+### Keeping startup fast in an application
+
+- Do CPU-only work before `App::run` (document load, font bakes, asset decode):
+  the engine creates the window and starts the GPU at the same time.
+- Keep the pre-window path to listing and cheap lookups; never read file
+  contents the first screen does not show.
+- Move unbounded work (ffprobe, thumbnails, audio device open, network) to
+  workers and fill placeholders after the first frame.
+- Build only the renderer mode the first screen needs (`Flat2D`); 3-D passes
+  and their VRAM are created on first use.
+- Opt into the font atlas cache and the pipeline cache.
 
 ### Power preference
 
