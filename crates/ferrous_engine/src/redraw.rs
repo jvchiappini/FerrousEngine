@@ -56,7 +56,7 @@ pub(crate) enum EngineEvent {
 /// present exactly one frame in [`RedrawPolicy::OnDemand`] apps. It is cheap,
 /// `Send + Sync` and a no-op when the loop is gone (a window that closed
 /// while a worker was finishing).
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Waker {
     proxy: Option<EventLoopProxy<EngineEvent>>,
 }
@@ -66,12 +66,6 @@ impl std::fmt::Debug for Waker {
         f.debug_struct("Waker")
             .field("connected", &self.proxy.is_some())
             .finish()
-    }
-}
-
-impl Default for Waker {
-    fn default() -> Self {
-        Self { proxy: None }
     }
 }
 
