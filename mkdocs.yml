@@ -42,6 +42,7 @@ nav:
     - RenderContext Reference: ferrous_engine/render-context.md
     - Configuration (ferrous.toml): ferrous_engine/config.md
     - Startup trace: ferrous_engine/startup.md
+    - Redraw policy: ferrous_engine/redraw.md
   - ferrous_2d — 2D Rendering:
     - Overview: ferrous_2d/README.md
     - Text: ferrous_2d/text.md

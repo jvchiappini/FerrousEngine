@@ -21,6 +21,7 @@ use std::rc::Rc;
 
 use crate::builder::AppMode;
 use crate::context::AppContext;
+use crate::redraw::EngineEvent;
 use crate::render_context::RenderContext;
 use crate::traits::{FerrousApp, FileDropEvent};
 #[cfg(target_arch = "wasm32")]
@@ -68,7 +69,7 @@ impl<A: FerrousApp> Runner<A> {
     }
 }
 
-impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
+impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         // Creating a second window would start a second GPU state; resumed is
         // expected once per run on desktop.
@@ -192,10 +193,18 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {}
 
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: EngineEvent) {
+        // A worker finished (or asked for a frame): in on-demand mode this is
+        // what turns a background result into exactly one presented frame.
+        self.redraw.on_input();
+    }
+
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        // Prompt 18 P0: account the callback in the next frame's
-        // `EventHandling` stage (no-op unless FERROUS_TRACE_FRAMES is on).
-        let _event = ferrous_core::frame_trace::event_guard();
+        // Prompt 18 P1: measure only real event callbacks. `RedrawRequested`
+        // carries the whole frame, so bracketing it made the previous frame's
+        // render time appear as the next frame's "event handling".
+        let is_redraw = matches!(event, WindowEvent::RedrawRequested);
+        let _event = (!is_redraw).then(ferrous_core::frame_trace::event_guard);
         // Prompt 17 S3b: user input waits for the first frame, then is
         // delivered in order.  Closing, destruction and redraws pass at once.
         #[cfg(not(target_arch = "wasm32"))]
@@ -210,7 +219,11 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
                 let _ = self.render_frame(Some(event_loop), current_t);
                 return;
             }
-            _ => self.last_action_time = Instant::now(),
+            _ => {
+                self.last_action_time = Instant::now();
+                // Prompt 18 P1: one frame to process the input.
+                self.redraw.on_input();
+            }
         }
 
         match event {
@@ -494,8 +507,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
         gfx.renderer.set_viewport(self.viewport);
         gfx.renderer
             .set_clear_color(self.config.background_color.to_wgpu());
-        gfx.renderer
-            .set_render_style(self.config.render_style);
+        gfx.renderer.set_render_style(self.config.render_style);
         if self.config.mode == AppMode::Flat2D {
             gfx.renderer
                 .set_mode(ferrous_renderer::RendererMode::Flat2D);
@@ -537,26 +549,39 @@ impl<A: FerrousApp + 'static> Runner<A> {
         {
             let time = self.clock.peek();
             let backend = gfx.renderer.context.backend;
-            let mut ctx = AppContext {
-                input: &self.input,
-                time,
-                window_size: self.window_size,
-                window: &window,
-                render_stats: ferrous_core::RenderStats::default(),
-                camera_eye: ferrous_core::glam::Vec3::ZERO,
-                camera_target: ferrous_core::glam::Vec3::ZERO,
-                world: &mut self.world,
-                viewport: self.viewport,
-                gizmos: Vec::new(),
-                render: RenderContext::new(&mut gfx.renderer),
-                asset_server: &mut self.asset_server,
-                exit_requested: false,
-                requested_resolution_scale: None,
-                keep_awake_requested: false,
-                screenshot_requested: false,
-                _gpu_backend: backend,
+            let waker = self.waker.clone();
+            let (redraw, redraw_at) = {
+                let mut ctx = AppContext {
+                    input: &self.input,
+                    time,
+                    window_size: self.window_size,
+                    window: &window,
+                    render_stats: ferrous_core::RenderStats::default(),
+                    camera_eye: ferrous_core::glam::Vec3::ZERO,
+                    camera_target: ferrous_core::glam::Vec3::ZERO,
+                    world: &mut self.world,
+                    viewport: self.viewport,
+                    gizmos: Vec::new(),
+                    render: RenderContext::new(&mut gfx.renderer),
+                    asset_server: &mut self.asset_server,
+                    exit_requested: false,
+                    requested_resolution_scale: None,
+                    keep_awake_requested: false,
+                    screenshot_requested: false,
+                    redraw_requested: false,
+                    redraw_at: None,
+                    waker: &waker,
+                    _gpu_backend: backend,
+                };
+                self.app.setup(&mut ctx);
+                (ctx.redraw_requested, ctx.redraw_at)
             };
-            self.app.setup(&mut ctx);
+            if redraw {
+                self.redraw.request();
+            }
+            if let Some(when) = redraw_at {
+                self.redraw.request_at(when);
+            }
         }
         ferrous_core::startup::mark("engine: app setup done");
         self.graphics = Some(gfx);

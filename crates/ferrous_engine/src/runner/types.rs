@@ -23,6 +23,7 @@ use ferrous_assets::font_importer::FontData;
 
 use crate::builder::AppConfig;
 use crate::graphics::GraphicsState;
+use crate::redraw::{Scheduler, Waker};
 use crate::traits::{FerrousApp, FileDropEvent};
 
 // ─── Runner ─────────────────────────────────────────────────────────────────
@@ -72,10 +73,18 @@ pub(crate) struct Runner<A: FerrousApp + 'static> {
     /// The GPU/first-frame initialisation running off the event loop.
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) init: Option<super::show::InitJob>,
+    /// Continuous vs on-demand frame scheduling (prompt 18 P1).
+    pub(super) redraw: Scheduler,
+    /// Wakes the loop from background workers.
+    pub(super) waker: Waker,
 }
 
 impl<A: FerrousApp + 'static> Runner<A> {
-    pub(super) fn new(app: A, config: AppConfig) -> Self {
+    pub(super) fn new(
+        app: A,
+        config: AppConfig,
+        proxy: winit::event_loop::EventLoopProxy<crate::redraw::EngineEvent>,
+    ) -> Self {
         let mut systems = StagedScheduler::new();
         systems.add(Stage::PreUpdate, TimeSystem);
         systems.add(Stage::Update, VelocitySystem);
@@ -85,6 +94,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
 
         #[cfg(not(target_arch = "wasm32"))]
         let startup_work = Some(crate::graphics::StartupWork::start(&config));
+
+        let redraw_policy = config.redraw_policy;
 
         Self {
             app,
@@ -126,6 +137,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
             startup: None,
             #[cfg(not(target_arch = "wasm32"))]
             init: None,
+            redraw: Scheduler::new(redraw_policy),
+            waker: Waker::from_proxy(proxy),
         }
     }
 }

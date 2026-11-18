@@ -16,6 +16,7 @@ pub(crate) use types::Runner;
 use winit::event_loop::{ControlFlow, EventLoop};
 
 use crate::builder::AppConfig;
+use crate::redraw::EngineEvent;
 use crate::traits::FerrousApp;
 use ferrous_core::{frame_trace, startup};
 
@@ -26,8 +27,11 @@ use ferrous_core::{frame_trace, startup};
 pub(crate) fn run_internal<A: FerrousApp + 'static>(config: AppConfig, app: A) {
     startup::begin(config.startup_trace);
     startup::mark("engine: entry");
-    let mut runner = Runner::new(app, config);
-    let event_loop = EventLoop::new().unwrap();
+    // The loop exists before the runner so background workers can be handed a
+    // `Waker` from `setup` (prompt 18 P1).
+    let event_loop = EventLoop::<EngineEvent>::with_user_event().build().unwrap();
+    let proxy = event_loop.create_proxy();
+    let mut runner = Runner::new(app, config, proxy);
     event_loop.set_control_flow(ControlFlow::Wait);
     startup::mark("engine: event loop");
     event_loop.run_app(&mut runner).unwrap();
@@ -58,8 +62,9 @@ pub(crate) fn run_internal<A: FerrousApp + 'static>(config: AppConfig, app: A) {
     use winit::platform::web::EventLoopExtWebSys;
     startup::begin(config.startup_trace);
     startup::mark("engine: entry");
-    let runner = Runner::new(app, config);
-    let event_loop = EventLoop::new().unwrap();
+    let event_loop = EventLoop::<EngineEvent>::with_user_event().build().unwrap();
+    let proxy = event_loop.create_proxy();
+    let runner = Runner::new(app, config, proxy);
     event_loop.set_control_flow(ControlFlow::Wait);
     event_loop.spawn_app(runner);
 }
@@ -74,7 +79,9 @@ impl FerrousApp for PluginApp {}
 pub(crate) fn run_plugin_app(mut builder: crate::plugin::AppBuilder) {
     startup::begin(builder.config.startup_trace);
     startup::mark("engine: entry");
-    let mut runner = Runner::new(PluginApp, builder.config.clone());
+    let event_loop = EventLoop::<EngineEvent>::with_user_event().build().unwrap();
+    let proxy = event_loop.create_proxy();
+    let mut runner = Runner::new(PluginApp, builder.config.clone(), proxy);
 
     for (stage, system) in builder.staged_systems.drain(..) {
         runner.systems.add_boxed(stage, system);
@@ -82,7 +89,6 @@ pub(crate) fn run_plugin_app(mut builder: crate::plugin::AppBuilder) {
 
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let event_loop = EventLoop::new().unwrap();
         event_loop.set_control_flow(ControlFlow::Wait);
         startup::mark("engine: event loop");
         event_loop.run_app(&mut runner).unwrap();
@@ -104,7 +110,6 @@ pub(crate) fn run_plugin_app(mut builder: crate::plugin::AppBuilder) {
     {
         console_error_panic_hook::set_once();
         use winit::platform::web::EventLoopExtWebSys;
-        let event_loop = EventLoop::new().unwrap();
         event_loop.set_control_flow(ControlFlow::Wait);
         event_loop.spawn_app(runner);
     }

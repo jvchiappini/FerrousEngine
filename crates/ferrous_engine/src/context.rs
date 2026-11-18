@@ -5,6 +5,7 @@ use ferrous_core::{Handle, InputState, MouseButton, RenderStats, Time, Viewport,
 use ferrous_renderer::scene::GizmoDraw;
 use winit::window::{ResizeDirection, Window};
 
+use crate::redraw::{Instant, Waker};
 use crate::render_context::RenderContext;
 
 /// Direction from which the user is dragging a window edge or corner to resize it.
@@ -131,6 +132,17 @@ pub struct AppContext<'a> {
     /// frame it presents and delivers it to
     /// [`FerrousApp::on_screenshot`](crate::FerrousApp::on_screenshot).
     pub(crate) screenshot_requested: bool,
+
+    /// Set via [`AppContext::request_redraw`]: draw another frame after this
+    /// one. In [`RedrawPolicy::OnDemand`](crate::RedrawPolicy::OnDemand) this
+    /// is how an animation keeps itself running.
+    pub(crate) redraw_requested: bool,
+
+    /// Set via [`AppContext::redraw_at`]: the earliest scheduled wake.
+    pub(crate) redraw_at: Option<Instant>,
+
+    /// Wakes the event loop from a worker (see [`Waker`]).
+    pub(crate) waker: &'a Waker,
 }
 
 impl<'a> AppContext<'a> {
@@ -160,6 +172,41 @@ impl<'a> AppContext<'a> {
     /// need no capability check of their own.
     pub fn request_screenshot(&mut self) {
         self.screenshot_requested = true;
+    }
+
+    /// Ask for another frame after this one.
+    ///
+    /// In [`RedrawPolicy::Continuous`](crate::RedrawPolicy::Continuous) it is
+    /// redundant (the loop draws anyway). In
+    /// [`RedrawPolicy::OnDemand`](crate::RedrawPolicy::OnDemand) it is the
+    /// animation loop: call it from `update` every frame while something is
+    /// moving. The display's vsync paces the frames.
+    pub fn request_redraw(&mut self) {
+        self.redraw_requested = true;
+    }
+
+    /// Schedule a one-shot wake at `when`.
+    ///
+    /// Use it for anything that must happen at a known instant while the app
+    /// is otherwise idle: a caret blink, a hover transition, a tooltip delay,
+    /// a debounced write or an autosave heartbeat. In on-demand mode the wake
+    /// presents exactly one frame at (or after) that instant; call
+    /// [`Self::request_redraw`] from that frame if the animation continues.
+    pub fn redraw_at(&mut self, when: Instant) {
+        self.redraw_at = Some(match self.redraw_at {
+            Some(current) if current <= when => current,
+            _ => when,
+        });
+    }
+
+    /// A handle that wakes the event loop from a worker.
+    ///
+    /// Clone it into background jobs during `setup`; a finished job calls
+    /// [`Waker::wake`] so the app gets a frame to install the result. It is a
+    /// no-op after the loop closed.
+    #[must_use]
+    pub fn waker(&self) -> &Waker {
+        self.waker
     }
 
     /// Request a new render scale (engine surface = `css × dpr × scale`).

@@ -60,6 +60,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
                             gfx.resize(self.window_size.0, self.window_size.1);
                             gfx.renderer.set_viewport(self.viewport);
                             let time = self.clock.peek();
+                            let waker = self.waker.clone();
                             let mut ctx = AppContext {
                                 input: &self.input,
                                 time,
@@ -75,6 +76,9 @@ impl<A: FerrousApp + 'static> Runner<A> {
                                 requested_resolution_scale: None,
                                 keep_awake_requested: false,
                                 screenshot_requested: false,
+                                redraw_requested: false,
+                                redraw_at: None,
+                                waker: &waker,
                                 _gpu_backend: gfx.renderer.context.backend,
                                 render: RenderContext::new(&mut gfx.renderer),
                                 asset_server: &mut self.asset_server,
@@ -116,6 +120,10 @@ impl<A: FerrousApp + 'static> Runner<A> {
         // every return path below; it is a no-op unless FERROUS_TRACE_FRAMES
         // is enabled.
         let _frame = frame_trace::begin_frame();
+        // Prompt 18 P1: this frame answers any queued input/redraw request.
+        self.redraw.begin_frame();
+        let mut redraw_request: bool;
+        let mut redraw_at: Option<Instant>;
 
         // Wall-clock timing for the whole frame (update + draw + present).
         // Recorded on every return path below; `RenderContext::frame_ms()` and
@@ -217,6 +225,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
         let mut first_frame_shown = false;
         {
             let backend = gfx.renderer.context.backend;
+            let waker = self.waker.clone();
             let mut ctx = AppContext {
                 input: &self.input,
                 time,
@@ -233,6 +242,9 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 requested_resolution_scale: None,
                 keep_awake_requested: false,
                 screenshot_requested: false,
+                redraw_requested: false,
+                redraw_at: None,
+                waker: &waker,
                 _gpu_backend: backend,
                 asset_server: &mut self.asset_server,
             };
@@ -246,6 +258,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 self.app.on_file_drop(event, &mut ctx);
             }
             update_screenshot = ctx.screenshot_requested;
+            redraw_request = ctx.redraw_requested;
+            redraw_at = ctx.redraw_at;
 
             if ctx.keep_awake_requested {
                 self.last_action_time = Instant::now();
@@ -254,6 +268,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
             // Live render-scale change: resize the surface next frame.
             if let Some(requested) = ctx.requested_resolution_scale.take() {
                 self.config.resolution_scale = requested;
+                self.redraw.request();
             }
 
             if ctx.exit_requested {
@@ -311,6 +326,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
             // state does not allocate (measured by Motioner's alloc counter).
             let mut gui_batch = gfx.renderer.take_recycled_ui_batch().unwrap_or_default();
             gui_batch.clear();
+            let waker = self.waker.clone();
             let mut ctx = AppContext {
                 input: &self.input,
                 time,
@@ -327,6 +343,9 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 requested_resolution_scale: None,
                 keep_awake_requested: false,
                 screenshot_requested: false,
+                redraw_requested: false,
+                redraw_at: None,
+                waker: &waker,
                 _gpu_backend: backend,
                 asset_server: &mut self.asset_server,
             };
@@ -349,6 +368,10 @@ impl<A: FerrousApp + 'static> Runner<A> {
                     };
                     self.app.draw_ui(&mut dc);
                 }
+            }
+            redraw_request |= ctx.redraw_requested;
+            if let Some(when) = ctx.redraw_at {
+                redraw_at = Some(redraw_at.map_or(when, |current| current.min(when)));
             }
 
             let viewport_rect = Rect {
@@ -384,6 +407,9 @@ impl<A: FerrousApp + 'static> Runner<A> {
                         gfx.resize(self.window_size.0, self.window_size.1);
                         gfx.renderer
                             .record_frame_time(frame_start.elapsed().as_secs_f32() * 1000.0);
+                        // The new swapchain has not presented yet; in on-demand
+                        // mode nobody else would ask for that frame.
+                        self.redraw.request();
                         return None;
                     }
                     Err(e) => panic!("Surface error: {e:?}"),
@@ -540,6 +566,14 @@ impl<A: FerrousApp + 'static> Runner<A> {
             }
         }
 
+        // Prompt 18 P1: whatever the app asked for during this frame.
+        if redraw_request {
+            self.redraw.request();
+        }
+        if let Some(when) = redraw_at {
+            self.redraw.request_at(when);
+        }
+
         self.input.end_frame();
 
         // Prompt 17 S3b: the first frame is visible; deliver the input that
@@ -553,9 +587,9 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 .unwrap_or_default();
             if let Some(event_loop) = event_loop {
                 for (id, event) in queued {
-                    <Self as winit::application::ApplicationHandler>::window_event(
-                        self, event_loop, id, event,
-                    );
+                    <Self as winit::application::ApplicationHandler<
+                        crate::redraw::EngineEvent,
+                    >>::window_event(self, event_loop, id, event);
                 }
             }
         }
@@ -631,27 +665,31 @@ impl<A: FerrousApp + 'static> Runner<A> {
             return;
         }
 
-        let is_idle = match self.config.idle_timeout {
-            Some(timeout) => now.duration_since(self.last_action_time).as_secs_f32() > timeout,
-            None => false,
-        };
-
-        if is_idle {
-            match self.config.idle_fps {
-                // Throttled idle: keep drawing at a low rate.
-                Some(fps) if fps > 0 => {
-                    let next =
-                        self.last_frame + std::time::Duration::from_secs_f64(1.0 / fps as f64);
-                    if now >= next {
-                        window.request_redraw();
-                    } else {
-                        event_loop.set_control_flow(ControlFlow::WaitUntil(next));
+        // Continuous apps keep the historical timer-based idle throttle.
+        // On-demand apps never tick on a clock: the scheduler below waits for
+        // input, an app request, a wake deadline or a worker event.
+        if self.redraw.policy() == crate::redraw::RedrawPolicy::Continuous {
+            let is_idle = match self.config.idle_timeout {
+                Some(timeout) => now.duration_since(self.last_action_time).as_secs_f32() > timeout,
+                None => false,
+            };
+            if is_idle {
+                match self.config.idle_fps {
+                    // Throttled idle: keep drawing at a low rate.
+                    Some(fps) if fps > 0 => {
+                        let next =
+                            self.last_frame + std::time::Duration::from_secs_f64(1.0 / fps as f64);
+                        if now >= next {
+                            window.request_redraw();
+                        } else {
+                            event_loop.set_control_flow(ControlFlow::WaitUntil(next));
+                        }
                     }
+                    // Full idle: sleep until the next input event.
+                    _ => event_loop.set_control_flow(ControlFlow::Wait),
                 }
-                // Full idle: sleep until the next input event.
-                _ => event_loop.set_control_flow(ControlFlow::Wait),
+                return;
             }
-            return;
         }
 
         #[cfg(target_arch = "wasm32")]
@@ -663,14 +701,20 @@ impl<A: FerrousApp + 'static> Runner<A> {
 
         #[cfg(not(target_arch = "wasm32"))]
         {
-            if let Some(deadline) = self.next_frame_deadline {
-                if now >= deadline {
-                    window.request_redraw();
+            let continuous_deadline =
+                if self.redraw.policy() == crate::redraw::RedrawPolicy::Continuous {
+                    self.next_frame_deadline
                 } else {
-                    event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+                    None
+                };
+            match self.redraw.next(now, continuous_deadline) {
+                crate::redraw::NextFrame::Draw => window.request_redraw(),
+                crate::redraw::NextFrame::WaitUntil(wake) => {
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(wake));
                 }
-            } else {
-                window.request_redraw();
+                crate::redraw::NextFrame::Wait => {
+                    event_loop.set_control_flow(ControlFlow::Wait);
+                }
             }
         }
     }

@@ -2,6 +2,7 @@ use ferrous_core::Color;
 use ferrous_core::RenderQuality;
 use ferrous_renderer::RenderStyle;
 
+use crate::redraw::RedrawPolicy;
 use crate::traits::FerrousApp;
 
 /// Selects which engine subsystems the runner initialises and which frame
@@ -67,7 +68,20 @@ pub struct AppConfig {
     /// `Some(n)` = keep drawing at `n` fps, so time-driven UI (caret blink,
     /// messages from other windows, async loads) still shows up — at a
     /// fraction of the full-rate cost.
+    ///
+    /// These two fields are the older, timer-based throttle for
+    /// [`RedrawPolicy::Continuous`] apps. [`RedrawPolicy::OnDemand`] replaces
+    /// them: the loop sleeps until an input, a `request_redraw`/`redraw_at`
+    /// wake or a worker event, and the fields are ignored.
     pub idle_fps: Option<u32>,
+    /// When the runner draws frames (see [`RedrawPolicy`]).
+    ///
+    /// Default: [`RedrawPolicy::Continuous`], which keeps the historical
+    /// `target_fps` loop for games and demos. Editors and tools that only
+    /// change in response to input should opt into
+    /// [`RedrawPolicy::OnDemand`]: an idle app then presents zero frames and
+    /// submits no GPU work.
+    pub redraw_policy: RedrawPolicy,
     /// MSAA sample count: `1` = no anti-aliasing, `4` = 4x MSAA.
     ///
     /// Higher values improve edge quality but multiply GPU raster work.
@@ -294,6 +308,7 @@ impl Default for AppConfig {
             target_fps: Some(60),
             idle_timeout: None,
             idle_fps: None,
+            redraw_policy: RedrawPolicy::Continuous,
             sample_count: 1,
             hdri_path: None,
             render_style: RenderStyle::Pbr,
@@ -480,6 +495,26 @@ impl<A: FerrousApp + 'static> App<A> {
     /// [`with_idle_timeout`](Self::with_idle_timeout).
     pub fn with_idle_fps(mut self, fps: Option<u32>) -> Self {
         self.config.idle_fps = fps;
+        self
+    }
+
+    /// Chooses the frame scheduling policy (see [`RedrawPolicy`]).
+    ///
+    /// [`RedrawPolicy::OnDemand`] draws a frame only when input arrives, the
+    /// app calls `ctx.request_redraw()` / `ctx.redraw_at(instant)`, a worker
+    /// wakes the loop through the `Waker` obtained in `setup`, or the window
+    /// changes. An idle app presents no frames.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// App::new(MyEditor)
+    ///     .with_mode(AppMode::Flat2D)
+    ///     .with_redraw_policy(RedrawPolicy::OnDemand)
+    ///     .run();
+    /// ```
+    pub fn with_redraw_policy(mut self, policy: RedrawPolicy) -> Self {
+        self.config.redraw_policy = policy;
         self
     }
 
