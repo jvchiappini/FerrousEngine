@@ -86,6 +86,7 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
             .with_decorations(self.config.decorations)
             // Prompt 17 S3b: created hidden; shown when the first frame is
             // ready (or by the safety timeout). Never an unpainted window.
+            // `AppConfig::visible == false` keeps it hidden forever.
             .with_visible(false)
             .with_inner_size(winit::dpi::PhysicalSize::new(window_size.0, window_size.1));
 
@@ -105,10 +106,10 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
             let mut work = self.startup_work.take();
             let mut gate = super::show::StartupGate::new(
                 super::show::resolved_timeout(&self.config),
-                self.config.show_window_when_ready,
+                self.config.visible && self.config.show_window_when_ready,
                 Instant::now(),
             );
-            if !gate.show_when_ready() {
+            if self.config.visible && !gate.show_when_ready() {
                 // Opt-out: the S3 behaviour, background colour first.
                 crate::window_style::show_timeout(&window, self.config.background_color);
                 ferrous_core::startup::mark("engine: window visible");
@@ -602,7 +603,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
         let (Some(gate), Some(window)) = (self.startup.as_mut(), self.window.as_ref()) else {
             return installed;
         };
-        if !gate.is_shown() && Instant::now() >= gate.deadline() {
+        if self.config.visible && !gate.is_shown() && Instant::now() >= gate.deadline() {
             // The driver is slower than the timeout: show the app colour so the
             // user knows the app opened.
             crate::window_style::show_timeout(window, self.config.background_color);

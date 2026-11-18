@@ -142,6 +142,14 @@ pub struct AppConfig {
     /// backends that expose [`wgpu::Features::PIPELINE_CACHE`] (Vulkan in wgpu
     /// 23) use it; DX12, Metal and GL ignore it.
     pub pipeline_cache: Option<PipelineCacheConfig>,
+    /// Whether the OS window is ever shown.
+    ///
+    /// Default `true`. `false` creates the window hidden and never maps it:
+    /// frames still render and present to the hidden surface, but the window
+    /// never receives input, focus or compositor work. Benchmarks and CI use
+    /// it to measure an app's idle cost without a person or another window
+    /// interfering.
+    pub visible: bool,
     /// Show the window only when the first frame is ready (prompt 17 S3b).
     ///
     /// Default `true`: the window is created hidden, the GPU state and the
@@ -320,6 +328,7 @@ impl Default for AppConfig {
             backends: default_backends(),
             power_preference: wgpu::PowerPreference::HighPerformance,
             pipeline_cache: None,
+            visible: true,
             show_window_when_ready: true,
             window_show_timeout: DEFAULT_SHOW_TIMEOUT,
         }
@@ -618,6 +627,15 @@ impl<A: FerrousApp + 'static> App<A> {
     /// the others ignore it.
     pub fn with_pipeline_cache(mut self, cache: PipelineCacheConfig) -> Self {
         self.config.pipeline_cache = Some(cache);
+        self
+    }
+
+    /// Never maps the OS window (see [`AppConfig::visible`]).
+    ///
+    /// The app still initialises the GPU, renders and presents to the hidden
+    /// surface, so its frame code runs exactly as in a normal session.
+    pub fn with_visible(mut self, visible: bool) -> Self {
+        self.config.visible = visible;
         self
     }
 

@@ -478,12 +478,12 @@ impl<A: FerrousApp + 'static> Runner<A> {
                         // visible before its first frame. The report is emitted
                         // below, after the visibility mark.
                         startup::mark("engine: first frame presented");
-                        if !gate.is_shown() {
+                        if self.config.visible && !gate.is_shown() {
                             crate::window_style::show_ready(window);
                             startup::mark("engine: window visible");
+                            first_frame_shown = true;
                         }
                         gate.mark_first_frame();
-                        first_frame_shown = true;
                     }
                 }
             }
@@ -671,6 +671,32 @@ impl<A: FerrousApp + 'static> Runner<A> {
         // On-demand apps never tick on a clock: the scheduler below waits for
         // input, an app request, a wake deadline or a worker event.
         if self.redraw.policy() == crate::redraw::RedrawPolicy::Continuous {
+            // A never-shown window gets no `RedrawRequested`, so the scheduler
+            // renders its frames here (benchmarks/CI). It still presents to the
+            // hidden surface, so the frame code is identical.
+            if !self.config.visible {
+                let now = Instant::now();
+                let continuous_deadline =
+                    if self.redraw.policy() == crate::redraw::RedrawPolicy::Continuous {
+                        self.next_frame_deadline
+                    } else {
+                        None
+                    };
+                match self.redraw.next(now, continuous_deadline) {
+                    crate::redraw::NextFrame::Draw => {
+                        let t = self.clock.peek().elapsed;
+                        let _ = self.render_frame(Some(event_loop), t);
+                    }
+                    crate::redraw::NextFrame::WaitUntil(wake) => {
+                        event_loop.set_control_flow(ControlFlow::WaitUntil(wake));
+                    }
+                    crate::redraw::NextFrame::Wait => {
+                        event_loop.set_control_flow(ControlFlow::Wait);
+                    }
+                }
+                return;
+            }
+
             let is_idle = match self.config.idle_timeout {
                 Some(timeout) => now.duration_since(self.last_action_time).as_secs_f32() > timeout,
                 None => false,
