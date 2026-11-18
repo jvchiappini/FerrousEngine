@@ -142,6 +142,14 @@ pub struct AppConfig {
     /// backends that expose [`wgpu::Features::PIPELINE_CACHE`] (Vulkan in wgpu
     /// 23) use it; DX12, Metal and GL ignore it.
     pub pipeline_cache: Option<PipelineCacheConfig>,
+    /// Whether a pointer move requests a frame by itself (default `true`).
+    ///
+    /// Set it to `false` in an editor whose pointer moves often change
+    /// nothing: the app then handles [`FerrousApp::on_window_event`] and asks
+    /// for a frame only when the hover target, cursor or another visible
+    /// state changed. Other input (keys, buttons, wheel, resize) still
+    /// requests a frame.
+    pub redraw_on_pointer_move: bool,
     /// Whether the OS window is ever shown.
     ///
     /// Default `true`. `false` creates the window hidden and never maps it:
@@ -328,6 +336,7 @@ impl Default for AppConfig {
             backends: default_backends(),
             power_preference: wgpu::PowerPreference::HighPerformance,
             pipeline_cache: None,
+            redraw_on_pointer_move: true,
             visible: true,
             show_window_when_ready: true,
             window_show_timeout: DEFAULT_SHOW_TIMEOUT,
@@ -627,6 +636,13 @@ impl<A: FerrousApp + 'static> App<A> {
     /// the others ignore it.
     pub fn with_pipeline_cache(mut self, cache: PipelineCacheConfig) -> Self {
         self.config.pipeline_cache = Some(cache);
+        self
+    }
+
+    /// Stops a pointer move from requesting a frame by itself
+    /// ([`AppConfig::redraw_on_pointer_move`]).
+    pub fn with_redraw_on_pointer_move(mut self, redraw: bool) -> Self {
+        self.config.redraw_on_pointer_move = redraw;
         self
     }
 

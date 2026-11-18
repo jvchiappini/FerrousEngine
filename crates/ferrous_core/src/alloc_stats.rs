@@ -15,12 +15,15 @@
 //! nothing.  When it is on the cost is one relaxed atomic increment (and one
 //! byte add) per allocator call, plus the normal system allocator.
 //!
-//! The counters are process-wide, including worker threads.  A frame scope
-//! therefore also catches allocations made by a worker while that frame was
-//! open, which is what the frame trace wants.  The counters can be reset for a
-//! controlled measurement with [`reset`].
+//! There are two views. [`snapshot`] is process-wide, including worker threads;
+//! [`thread_snapshot`] only counts the calling thread.  The per-frame trace
+//! uses the thread view for "allocations per frame" and reports the rest as
+//! worker allocations, so a frame test measures the frame thread and never
+//! mistakes a decode or audio worker for frame work.  Both can be reset for a
+//! controlled measurement.
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::Serialize;
@@ -31,6 +34,12 @@ static FREES: AtomicU64 = AtomicU64::new(0);
 static ALLOCATED_BYTES: AtomicU64 = AtomicU64::new(0);
 static REALLOCATED_BYTES: AtomicU64 = AtomicU64::new(0);
 static FREED_BYTES: AtomicU64 = AtomicU64::new(0);
+
+thread_local! {
+    /// Counters for the calling thread only.  `Cell<Snapshot>` is allocation
+    /// free, so the allocator never recurses into itself.
+    static THREAD: Cell<Snapshot> = const { Cell::new(Snapshot::ZERO) };
+}
 
 /// A global allocator that delegates to the system allocator and counts.
 ///
@@ -48,6 +57,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
         if !pointer.is_null() && layout.size() > 0 {
             ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
             ALLOCATED_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
+            count_local(1, 0, 0, layout.size() as u64, 0, 0);
         }
         pointer
     }
@@ -57,6 +67,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
         if !pointer.is_null() && layout.size() > 0 {
             ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
             ALLOCATED_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
+            count_local(1, 0, 0, layout.size() as u64, 0, 0);
         }
         pointer
     }
@@ -65,6 +76,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
         if !pointer.is_null() && layout.size() > 0 {
             FREES.fetch_add(1, Ordering::Relaxed);
             FREED_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
+            count_local(0, 0, 1, 0, 0, layout.size() as u64);
         }
         System.dealloc(pointer, layout);
     }
@@ -78,9 +90,34 @@ unsafe impl GlobalAlloc for CountingAllocator {
             // byte number stays correct.
             FREED_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
             REALLOCATED_BYTES.fetch_add(new_size as u64, Ordering::Relaxed);
+            count_local(0, 1, 0, 0, new_size as u64, layout.size() as u64);
         }
         new_pointer
     }
+}
+
+/// Adds one allocator event to the calling thread's counters.
+///
+/// `try_with` keeps this safe while a thread's TLS is being destroyed (the
+/// counters then only go to the process-wide view).
+fn count_local(
+    allocations: u64,
+    reallocations: u64,
+    frees: u64,
+    allocated_bytes: u64,
+    reallocated_bytes: u64,
+    freed_bytes: u64,
+) {
+    let _ = THREAD.try_with(|cell| {
+        let mut snapshot = cell.get();
+        snapshot.allocations = snapshot.allocations.saturating_add(allocations);
+        snapshot.reallocations = snapshot.reallocations.saturating_add(reallocations);
+        snapshot.frees = snapshot.frees.saturating_add(frees);
+        snapshot.allocated_bytes = snapshot.allocated_bytes.saturating_add(allocated_bytes);
+        snapshot.reallocated_bytes = snapshot.reallocated_bytes.saturating_add(reallocated_bytes);
+        snapshot.freed_bytes = snapshot.freed_bytes.saturating_add(freed_bytes);
+        cell.set(snapshot);
+    });
 }
 
 /// Process-wide allocation totals.
@@ -101,6 +138,16 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    /// The all-zero snapshot.
+    pub const ZERO: Self = Self {
+        allocations: 0,
+        reallocations: 0,
+        frees: 0,
+        allocated_bytes: 0,
+        reallocated_bytes: 0,
+        freed_bytes: 0,
+    };
+
     /// Signed net change in live bytes (allocated + reallocated - freed).
     #[must_use]
     pub fn net_bytes(self) -> i64 {
@@ -168,6 +215,12 @@ pub fn snapshot() -> Snapshot {
     }
 }
 
+/// Reads the calling thread's counters.
+#[must_use]
+pub fn thread_snapshot() -> Snapshot {
+    THREAD.with(Cell::get)
+}
+
 /// The delta between two snapshots (`after - before`, saturating at zero).
 #[must_use]
 pub fn between(before: Snapshot, after: Snapshot) -> Delta {
@@ -183,7 +236,17 @@ pub fn between(before: Snapshot, after: Snapshot) -> Delta {
     }
 }
 
+/// The delta between two thread snapshots (`after - before`, saturating at
+/// zero).
+#[must_use]
+pub fn thread_between(before: Snapshot, after: Snapshot) -> Delta {
+    between(before, after)
+}
+
 /// Brackets a region and reports the allocator activity inside it.
+///
+/// Process-wide: includes allocations made by other threads while the scope
+/// is open. Use [`ThreadScope`] to measure the calling thread only.
 #[derive(Debug, Clone, Copy)]
 pub struct FrameScope {
     before: Snapshot,
@@ -209,6 +272,38 @@ impl Default for FrameScope {
     }
 }
 
+/// Brackets a region and reports the **calling thread's** allocator activity.
+///
+/// This is the frame-thread measurement the zero-allocation tests use; a
+/// worker that allocates while the scope is open does not contaminate it
+/// (its bytes appear in the process-wide [`FrameScope`] delta instead).
+#[derive(Debug, Clone, Copy)]
+pub struct ThreadScope {
+    before: Snapshot,
+}
+
+impl ThreadScope {
+    /// Starts a scope at the calling thread's counters.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            before: thread_snapshot(),
+        }
+    }
+
+    /// Ends the scope and returns its delta.
+    #[must_use]
+    pub fn finish(self) -> Delta {
+        thread_between(self.before, thread_snapshot())
+    }
+}
+
+impl Default for ThreadScope {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Resets the counters.  Use only around a controlled measurement.
 pub fn reset() {
     ALLOCATIONS.store(0, Ordering::Relaxed);
@@ -217,6 +312,7 @@ pub fn reset() {
     ALLOCATED_BYTES.store(0, Ordering::Relaxed);
     REALLOCATED_BYTES.store(0, Ordering::Relaxed);
     FREED_BYTES.store(0, Ordering::Relaxed);
+    let _ = THREAD.try_with(|cell| cell.set(Snapshot::ZERO));
 }
 
 #[cfg(test)]
@@ -233,13 +329,43 @@ mod tests {
     fn a_scope_reports_allocations_and_net_bytes() {
         let _lock = test_lock();
         reset();
-        let scope = FrameScope::new();
+        let scope = ThreadScope::new();
         let data = vec![0u8; 4096];
+        std::hint::black_box(&data);
         let delta = scope.finish();
         assert!(delta.allocations >= 1, "{delta:?}");
         assert!(delta.touched_bytes() >= 4096, "{delta:?}");
         assert!(delta.net_bytes() >= 4096, "{delta:?}");
         drop(data);
+    }
+
+    #[test]
+    fn thread_scopes_exclude_worker_allocations() {
+        let _lock = test_lock();
+        reset();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let before = thread_snapshot();
+            let data = vec![0u8; 4096];
+            let delta = thread_between(before, thread_snapshot());
+            drop(data);
+            sender.send(delta).unwrap();
+        });
+        let worker = receiver.recv().unwrap();
+        let before = thread_snapshot();
+        let scope = ThreadScope::new();
+        let data = vec![0u8; 128];
+        std::hint::black_box(&data);
+        let main = scope.finish();
+        drop(data);
+        let after = thread_snapshot();
+        handle.join().unwrap();
+        assert!(worker.allocating_calls() >= 1, "{worker:?}");
+        assert!(main.allocating_calls() >= 1, "{main:?}");
+        assert!(
+            after.allocating_calls() >= before.allocating_calls(),
+            "the main thread counter is monotonic"
+        );
     }
 
     #[test]

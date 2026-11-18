@@ -11,7 +11,7 @@
 //! identically.  That is the property measurement callers rely on: measuring
 //! with `LayoutData` can never drift from what the renderer lays out.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use crate::atlas::GlyphMetrics;
 use crate::layout::{layout_block, layout_line, measure_block, measure_line};
@@ -76,8 +76,8 @@ impl LayoutData {
         I: IntoIterator<Item = char>,
     {
         let plane_bounds = [CELL_MIN, CELL_MIN, CELL_MAX, CELL_MAX];
-        let mut metrics = HashMap::new();
-        let mut glyph_indices = HashMap::new();
+        let mut metrics = HashMap::default();
+        let mut glyph_indices = HashMap::default();
         for c in chars {
             let glyph = parser.get_glyph_index(c);
             glyph_indices.insert(c, glyph);
@@ -89,7 +89,11 @@ impl LayoutData {
             metrics,
             notdef,
             glyph_indices,
-            kerning: parser.kerning_pairs().clone(),
+            kerning: parser
+                .kerning_pairs()
+                .iter()
+                .map(|(pair, value)| (*pair, *value))
+                .collect(),
             gpos: parser.gpos_kerning().clone(),
             font: parser.metrics(),
         }

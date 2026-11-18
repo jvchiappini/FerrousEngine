@@ -113,8 +113,14 @@ static SUBMITS: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Clone, Copy)]
 struct FrameSample {
     stages: [f32; STAGE_COUNT],
+    /// Allocations made by the frame thread.
     allocations: u64,
+    /// Bytes touched by the frame thread.
     allocated_bytes: u64,
+    /// Allocations made by other threads while the frame was open.
+    worker_allocations: u64,
+    /// Bytes touched by other threads while the frame was open.
+    worker_bytes: u64,
 }
 
 impl Default for FrameSample {
@@ -123,6 +129,8 @@ impl Default for FrameSample {
             stages: [0.0; STAGE_COUNT],
             allocations: 0,
             allocated_bytes: 0,
+            worker_allocations: 0,
+            worker_bytes: 0,
         }
     }
 }
@@ -134,6 +142,8 @@ struct State {
     started: bool,
     #[cfg(feature = "alloc-stats")]
     alloc_before: Option<crate::alloc_stats::Snapshot>,
+    #[cfg(feature = "alloc-stats")]
+    thread_alloc_before: Option<crate::alloc_stats::Snapshot>,
 }
 
 fn state() -> &'static Mutex<State> {
@@ -182,6 +192,7 @@ pub fn begin_frame() -> FrameGuard {
         #[cfg(feature = "alloc-stats")]
         {
             state.alloc_before = Some(crate::alloc_stats::snapshot());
+            state.thread_alloc_before = Some(crate::alloc_stats::thread_snapshot());
         }
     }
     FrameGuard
@@ -207,10 +218,19 @@ fn finish_locked(state: &mut State) {
     #[allow(unused_mut)]
     let mut sample = std::mem::take(&mut state.current);
     #[cfg(feature = "alloc-stats")]
-    if let Some(before) = state.alloc_before.take() {
-        let delta = crate::alloc_stats::between(before, crate::alloc_stats::snapshot());
-        sample.allocations = delta.allocations.saturating_add(delta.reallocations);
-        sample.allocated_bytes = delta.touched_bytes();
+    if let (Some(before), Some(thread_before)) =
+        (state.alloc_before.take(), state.thread_alloc_before.take())
+    {
+        let global = crate::alloc_stats::between(before, crate::alloc_stats::snapshot());
+        let thread =
+            crate::alloc_stats::between(thread_before, crate::alloc_stats::thread_snapshot());
+        sample.allocations = thread.allocating_calls();
+        sample.allocated_bytes = thread.touched_bytes();
+        // Everything the process allocated that the frame thread did not.
+        sample.worker_allocations = global.allocating_calls().saturating_sub(sample.allocations);
+        sample.worker_bytes = global
+            .touched_bytes()
+            .saturating_sub(sample.allocated_bytes);
     }
     if state.frames.len() < MAX_FRAMES {
         state.frames.push(sample);
@@ -362,6 +382,16 @@ pub fn report(gpu_passes: &[(String, f64)], gpu_unsupported: &[String]) {
         .iter()
         .map(|frame| frame.allocated_bytes as f32)
         .collect();
+    let worker_allocations: Vec<f32> = state
+        .frames
+        .iter()
+        .map(|frame| frame.worker_allocations as f32)
+        .collect();
+    let worker_bytes: Vec<f32> = state
+        .frames
+        .iter()
+        .map(|frame| frame.worker_bytes as f32)
+        .collect();
 
     let mut gpu = Map::new();
     for (pass, millis) in gpu_passes {
@@ -383,6 +413,14 @@ pub fn report(gpu_passes: &[(String, f64)], gpu_unsupported: &[String]) {
         "bytes_per_frame": {
             "median": f64::from(percentile(&bytes, 0.5)),
             "p90": f64::from(percentile(&bytes, 0.9)),
+        },
+        "worker_allocations_per_frame": {
+            "median": f64::from(percentile(&worker_allocations, 0.5)),
+            "p90": f64::from(percentile(&worker_allocations, 0.9)),
+        },
+        "worker_bytes_per_frame": {
+            "median": f64::from(percentile(&worker_bytes, 0.5)),
+            "p90": f64::from(percentile(&worker_bytes, 0.9)),
         },
         "gpu_passes": gpu,
         "gpu_unsupported": gpu_unsupported,

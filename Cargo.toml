@@ -22,6 +22,7 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
+rustc-hash = "2.1.3"
 wgpu = { version = "23.0", features = ["webgpu", "webgl", "fragile-send-sync-non-atomic-wasm"] }
 glam = { version = "0.29", features = ["bytemuck", "serde"] }
 # el motor tendrá su propio sistema de UI; ya no dependemos de egui

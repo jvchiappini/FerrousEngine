@@ -61,3 +61,12 @@ web-time = "1.1"
 js-sys = "0.3"
 # Pretty panic messages in the browser console.
 console_error_panic_hook = "0.1"
+
+[dev-dependencies]
+# The zero-allocation tests exercise the UI and 2-D crates directly.
+ferrous_core = { path = "../ferrous_core" }
+ferrous_gui = { path = "../ferrous_gui" }
+ferrous_ui_core = { path = "../ferrous_ui_core" }
+ferrous_ui_render = { path = "../ferrous_ui_render" }
+ferrous_2d = { path = "../ferrous_2d" }
+ferrous_renderer = { path = "../ferrous_renderer", features = ["assets"] }

@@ -93,4 +93,5 @@ pub use ferrous_renderer::scene::GizmoDraw;
 
 // Export wgpu and winit types for consumers
 pub use wgpu;
+pub use winit;
 pub use winit::window::CursorIcon;

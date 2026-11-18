@@ -382,8 +382,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
             };
 
             let _batch = frame_trace::stage(Stage::BatchBuild);
-            let ui_render_batch = self.ui.render(viewport_rect, self.font.as_deref());
-            gui_batch.extend(ui_render_batch);
+            self.ui
+                .render_into(&mut gui_batch, viewport_rect, self.font.as_deref());
             drop(_batch);
 
             // A screenshot asked for during `update` or `draw_ui` is copied on

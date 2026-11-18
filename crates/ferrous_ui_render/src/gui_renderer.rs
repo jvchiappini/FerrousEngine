@@ -52,6 +52,9 @@ pub struct GuiRenderer {
     pub icon_max_instances: u32,
     pub svg_max_vertices: u32,
     pub svg_max_indices: u32,
+    /// Reused vertex/index scratch for SVG uploads (no per-frame `Vec`).
+    svg_scratch_vertices: Vec<ferrous_svg::SvgVertex>,
+    svg_scratch_indices: Vec<u32>,
     pub resolution: [f32; 2],
 
     // Depth Buffer for Early-Z
@@ -351,6 +354,8 @@ impl GuiRenderer {
             icon_max_instances: max_instances,
             svg_max_vertices: 65536,
             svg_max_indices: 65536,
+            svg_scratch_vertices: Vec::new(),
+            svg_scratch_indices: Vec::new(),
             resolution,
             depth_texture,
             depth_view,
@@ -663,8 +668,8 @@ impl GuiRenderer {
         }
 
         if !batch.svg_commands.is_empty() {
-            let mut all_vertices = Vec::new();
-            let mut all_indices = Vec::new();
+            self.svg_scratch_vertices.clear();
+            self.svg_scratch_indices.clear();
             let mut current_v_offset = 0;
 
             for cmd in &batch.svg_commands {
@@ -674,16 +679,18 @@ impl GuiRenderer {
                     v_shifted.position[1] += cmd.pos[1];
                     v_shifted.color = cmd.color;
                     v_shifted.z_order = cmd.z;
-                    all_vertices.push(v_shifted);
+                    self.svg_scratch_vertices.push(v_shifted);
                 }
                 for i in &cmd.mesh.indices {
-                    all_indices.push(i + current_v_offset);
+                    self.svg_scratch_indices.push(i + current_v_offset);
                 }
                 current_v_offset += cmd.mesh.vertices.len() as u32;
             }
 
-            if all_vertices.len() as u32 > self.svg_max_vertices {
-                let new_max = (all_vertices.len() as u32).next_power_of_two().max(1024);
+            if self.svg_scratch_vertices.len() as u32 > self.svg_max_vertices {
+                let new_max = (self.svg_scratch_vertices.len() as u32)
+                    .next_power_of_two()
+                    .max(1024);
                 self.svg_vertex_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("GUI SVG Vertex Buffer (resized)"),
                     size: (new_max as usize * std::mem::size_of::<ferrous_svg::SvgVertex>()) as u64,
@@ -697,8 +704,10 @@ impl GuiRenderer {
                 );
                 self.svg_max_vertices = new_max;
             }
-            if all_indices.len() as u32 > self.svg_max_indices {
-                let new_max = (all_indices.len() as u32).next_power_of_two().max(1024);
+            if self.svg_scratch_indices.len() as u32 > self.svg_max_indices {
+                let new_max = (self.svg_scratch_indices.len() as u32)
+                    .next_power_of_two()
+                    .max(1024);
                 self.svg_index_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("GUI SVG Index Buffer (resized)"),
                     size: (new_max as u64 * 4),
@@ -716,12 +725,12 @@ impl GuiRenderer {
             queue.write_buffer(
                 &self.svg_vertex_buffer,
                 0,
-                bytemuck::cast_slice(&all_vertices),
+                bytemuck::cast_slice(&self.svg_scratch_vertices),
             );
             queue.write_buffer(
                 &self.svg_index_buffer,
                 0,
-                bytemuck::cast_slice(&all_indices),
+                bytemuck::cast_slice(&self.svg_scratch_indices),
             );
         }
     }

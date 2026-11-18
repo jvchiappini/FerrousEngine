@@ -214,6 +214,25 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
             None => return,
         };
 
+        // Prompt 18 P2: the app sees the event before the built-in handling
+        // and can ask for a frame only when the pointer changed something
+        // visible. The pointer position is updated first so hover hit-testing
+        // uses the event's position.
+        let is_cursor = matches!(event, WindowEvent::CursorMoved { .. });
+        if let WindowEvent::CursorMoved { position, .. } = &event {
+            #[cfg(target_arch = "wasm32")]
+            let (mx, my) = (
+                position.x * self.config.resolution_scale,
+                position.y * self.config.resolution_scale,
+            );
+            #[cfg(not(target_arch = "wasm32"))]
+            let (mx, my) = (position.x, position.y);
+            self.input.set_mouse_position(mx, my);
+        }
+        if !is_redraw {
+            self.deliver_window_event(&event);
+        }
+
         match event {
             WindowEvent::RedrawRequested => {
                 let current_t = self.clock.peek().elapsed;
@@ -222,8 +241,11 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
             }
             _ => {
                 self.last_action_time = Instant::now();
-                // Prompt 18 P1: one frame to process the input.
-                self.redraw.on_input();
+                // Prompt 18 P1: one frame to process the input. A pointer
+                // move is opt-out: the app's `on_window_event` decides.
+                if !is_cursor || self.config.redraw_on_pointer_move {
+                    self.redraw.on_input();
+                }
             }
         }
 
@@ -497,6 +519,52 @@ impl<A: FerrousApp + 'static> Runner<A> {
         }
         gate.queue(id, event);
         None
+    }
+
+    /// Delivers one raw event to the app with a context, then applies any
+    /// redraw request it made.
+    fn deliver_window_event(&mut self, event: &WindowEvent) {
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        let Some(gfx) = self.graphics.as_mut() else {
+            return;
+        };
+        let waker = self.waker.clone();
+        let (redraw, redraw_at) = {
+            let backend = gfx.renderer.context.backend;
+            let time = self.clock.peek();
+            let mut ctx = AppContext {
+                input: &self.input,
+                time,
+                window_size: self.window_size,
+                window: &window,
+                viewport: self.viewport,
+                render_stats: ferrous_core::RenderStats::default(),
+                camera_eye: ferrous_core::glam::Vec3::ZERO,
+                camera_target: ferrous_core::glam::Vec3::ZERO,
+                gizmos: Vec::new(),
+                world: &mut self.world,
+                render: RenderContext::new(&mut gfx.renderer),
+                asset_server: &mut self.asset_server,
+                exit_requested: false,
+                requested_resolution_scale: None,
+                keep_awake_requested: false,
+                screenshot_requested: false,
+                redraw_requested: false,
+                redraw_at: None,
+                waker: &waker,
+                _gpu_backend: backend,
+            };
+            self.app.on_window_event(event, &mut ctx);
+            (ctx.redraw_requested, ctx.redraw_at)
+        };
+        if redraw {
+            self.redraw.request();
+        }
+        if let Some(when) = redraw_at {
+            self.redraw.request_at(when);
+        }
     }
 
     /// Installs the GPU state produced by the worker and runs the app setup.

@@ -19,7 +19,7 @@
 //! * Ink bounds come from the `glyf` header, not from the MSDF cell, so they
 //!   describe the drawn shape rather than the atlas quad.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::ops::Range;
 
 use crate::atlas::GlyphMetrics;
@@ -887,17 +887,17 @@ mod tests {
     );
 
     fn simple_maps() -> TestMaps {
-        let mut metrics = HashMap::new();
+        let mut metrics = HashMap::default();
         metrics.insert('A', metric(0.6, 0.0));
         metrics.insert('V', metric(0.6, 0.1));
         metrics.insert('o', metric(0.5, 0.2));
         metrics.insert(' ', metric(0.25, 0.0));
-        let mut indices = HashMap::new();
+        let mut indices = HashMap::default();
         indices.insert('A', 36);
         indices.insert('V', 57);
         indices.insert('o', 82);
         indices.insert(' ', 3);
-        (metrics, indices, HashMap::new())
+        (metrics, indices, HashMap::default())
     }
 
     #[test]

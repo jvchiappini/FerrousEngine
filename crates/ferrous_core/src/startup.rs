@@ -1,9 +1,12 @@
 //! Process startup tracing.
 //!
 //! Records monotonic marks and spans from the first instruction of the
-//! application to the first presented frame (and, optionally, to teardown),
-//! so a slow start can be attributed to a named phase instead of a guessed
-//! `eprintln!`.
+//! application to the first presented frame, so a slow start can be attributed
+//! to a named phase instead of a guessed `eprintln!`. Spans are only recorded
+//! **before** the first presented frame: an application may open a span every
+//! frame, and keeping every one of those would grow the trace without bound.
+//! Marks keep being recorded after the first frame so the close/teardown
+//! timings still appear in the closing report.
 //!
 //! The trace is **off by default**. While it is off every call is a single
 //! relaxed atomic load plus a branch: [`mark`] and [`span`] allocate nothing
@@ -54,6 +57,9 @@ pub const ENABLE_ENV: &str = "FERROUS_TRACE_STARTUP";
 pub const JSON_ENV: &str = "FERROUS_TRACE_STARTUP_JSON";
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
+/// Whether spans are still recorded. Cleared by the first-frame report; marks
+/// keep being recorded for the close report.
+static RECORD_SPANS: AtomicBool = AtomicBool::new(false);
 static FIRST_REPORTED: AtomicBool = AtomicBool::new(false);
 static CLOSE_REPORTED: AtomicBool = AtomicBool::new(false);
 
@@ -156,6 +162,7 @@ pub fn begin(app_requested: bool) {
     }
     let _ = origin();
     ENABLED.store(true, Ordering::Relaxed);
+    RECORD_SPANS.store(true, Ordering::Relaxed);
 }
 
 /// [`begin`] driven only by [`ENABLE_ENV`].
@@ -186,7 +193,7 @@ pub fn mark(name: &str) {
 /// Nothing is recorded when the trace is disabled.
 #[must_use]
 pub fn span(name: impl Into<String>) -> Span {
-    if !enabled() {
+    if !enabled() || !RECORD_SPANS.load(Ordering::Relaxed) {
         return Span::none();
     }
     Span::open(name.into())
@@ -205,7 +212,7 @@ pub fn span(name: impl Into<String>) -> Span {
 /// ```
 #[must_use]
 pub fn span_with(label: impl FnOnce() -> String) -> Span {
-    if !enabled() {
+    if !enabled() || !RECORD_SPANS.load(Ordering::Relaxed) {
         return Span::none();
     }
     Span::open(label())
@@ -258,6 +265,7 @@ pub fn first_frame_presented() {
         return;
     }
     mark("engine: first frame presented");
+    RECORD_SPANS.store(false, Ordering::Relaxed);
     emit("startup trace", "startup-trace", "first-present");
 }
 
@@ -272,6 +280,7 @@ pub fn report_first_frame() {
     if !enabled() || FIRST_REPORTED.swap(true, Ordering::Relaxed) {
         return;
     }
+    RECORD_SPANS.store(false, Ordering::Relaxed);
     emit("startup trace", "startup-trace", "first-present");
 }
 
@@ -326,6 +335,7 @@ pub fn trace() -> Trace {
 #[cfg(test)]
 pub(crate) fn reset() {
     ENABLED.store(false, Ordering::Relaxed);
+    RECORD_SPANS.store(false, Ordering::Relaxed);
     FIRST_REPORTED.store(false, Ordering::Relaxed);
     CLOSE_REPORTED.store(false, Ordering::Relaxed);
     lock(records()).clear();
@@ -459,6 +469,39 @@ mod tests {
         assert_eq!(trace.marks[1].name, "test: two");
         assert!(trace.marks[0].at_ms <= trace.marks[1].at_ms);
         assert!(trace.total_ms >= trace.marks[1].at_ms);
+        reset();
+    }
+
+    #[test]
+    fn spans_stop_at_the_first_frame_but_close_marks_remain() {
+        let _lock = test_lock();
+        reset();
+        begin(true);
+        {
+            let _span = span("test: startup span");
+        }
+        report_first_frame();
+        {
+            let _span = span("test: per-frame span (must be ignored)");
+        }
+        mark("test: close mark");
+        let trace = trace();
+        assert_eq!(trace.spans.len(), 1, "only the startup span is recorded");
+        assert_eq!(trace.spans[0].name, "test: startup span");
+        assert!(
+            trace
+                .marks
+                .iter()
+                .any(|mark| mark.name == "test: close mark"),
+            "marks keep being recorded for the close report"
+        );
+        assert!(
+            !trace
+                .spans
+                .iter()
+                .any(|span| span.name.contains("per-frame")),
+            "the per-frame span was not recorded"
+        );
         reset();
     }
 

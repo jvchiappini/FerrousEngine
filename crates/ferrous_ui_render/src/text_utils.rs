@@ -105,15 +105,7 @@ impl GuiBatch {
         size: f32,
         color: [f32; 4],
     ) {
-        let mut quads: Vec<([f32; 2], [f32; 2], [f32; 4])> = Vec::new();
         for_each_baseline_glyph(font, text, position, size, |pos, quad, uv| {
-            quads.push((pos, quad, uv));
-        });
-        self.push_baseline_quads(&quads, color);
-    }
-
-    fn push_baseline_quads(&mut self, quads: &[([f32; 2], [f32; 2], [f32; 4])], color: [f32; 4]) {
-        for &(pos, quad, uv) in quads {
             self.push_text(TextQuad {
                 pos,
                 size: quad,
@@ -123,7 +115,7 @@ impl GuiBatch {
                 z_order: 0.0,
                 node_id: 0,
             });
-        }
+        });
         self.update_last_segment();
     }
 }

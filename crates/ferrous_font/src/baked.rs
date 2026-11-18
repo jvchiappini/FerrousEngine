@@ -9,7 +9,7 @@
 //! part (MSDF generation) runs once and produces a portable value, while the
 //! upload stays tied to the device that is actually used.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::fmt;
 
 use crate::atlas::{FontAtlas, GlyphMetrics, DEFAULT_GLYPH_SIZE};
@@ -472,7 +472,7 @@ impl BakedAtlas {
         }
 
         let glyph_count = reader.count(MAX_TABLE_LENGTH).ok_or_else(truncated)?;
-        let mut metrics = HashMap::with_capacity(glyph_count);
+        let mut metrics = HashMap::default(/* capacity ignored for the Fx hasher */);
         for _ in 0..glyph_count {
             let c = reader.u32().ok_or_else(truncated)?;
             let c = char::from_u32(c)
@@ -486,7 +486,7 @@ impl BakedAtlas {
         };
 
         let index_count = reader.count(MAX_TABLE_LENGTH).ok_or_else(truncated)?;
-        let mut glyph_indices = HashMap::with_capacity(index_count);
+        let mut glyph_indices = HashMap::default(/* capacity ignored for the Fx hasher */);
         for _ in 0..index_count {
             let c = reader.u32().ok_or_else(truncated)?;
             let c = char::from_u32(c)
@@ -495,7 +495,7 @@ impl BakedAtlas {
         }
 
         let kerning_count = reader.count(MAX_TABLE_LENGTH * 16).ok_or_else(truncated)?;
-        let mut kerning = HashMap::with_capacity(kerning_count);
+        let mut kerning = HashMap::default(/* capacity ignored for the Fx hasher */);
         for _ in 0..kerning_count {
             let left = reader.u16().ok_or_else(truncated)?;
             let right = reader.u16().ok_or_else(truncated)?;

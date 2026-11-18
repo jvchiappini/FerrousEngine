@@ -11,7 +11,7 @@ use super::layout::{
 use super::parser::{FontMetrics, GposKerning};
 use super::BakedAtlas;
 use anyhow::Result;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 /// Default MSDF cell size in texels.  One atlas cell stores one glyph.
 pub const DEFAULT_GLYPH_SIZE: u32 = 64;
