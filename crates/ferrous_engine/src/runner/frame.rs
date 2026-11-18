@@ -456,6 +456,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 buffer
             });
             let _submit = frame_trace::stage(Stage::Submit);
+            frame_trace::record_submit();
             gfx.renderer.context.queue.submit(Some(encoder.finish()));
             drop(_submit);
             // Prompt 18 P0: start the non-blocking GPU timestamp readback.
@@ -463,6 +464,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
 
             let _present = frame_trace::stage(Stage::PresentWait);
             frame.present();
+            frame_trace::record_present();
             drop(_present);
             // Prompt 17 S3b: the first frame is on the swapchain. Show the
             // window now, so its first visible content is this frame.

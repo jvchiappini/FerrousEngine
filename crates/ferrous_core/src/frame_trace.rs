@@ -105,6 +105,10 @@ static ENABLED: AtomicBool = AtomicBool::new(false);
 static INITIALISED: OnceLock<()> = OnceLock::new();
 static EVENT_NS: AtomicU64 = AtomicU64::new(0);
 static REPORTED: AtomicBool = AtomicBool::new(false);
+/// Frames whose swapchain image reached `present()`.
+static PRESENTED: AtomicU64 = AtomicU64::new(0);
+/// Main render submits (`queue.submit` for the frame encoder).
+static SUBMITS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy)]
 struct FrameSample {
@@ -285,6 +289,26 @@ pub fn record_event(start: Instant) {
     EVENT_NS.fetch_add(nanos, Ordering::Relaxed);
 }
 
+/// Counts a presented frame.
+///
+/// The runner calls this after `SurfaceTexture::present`; an idle on-demand
+/// app must leave this counter unchanged.
+pub fn record_present() {
+    if enabled() {
+        PRESENTED.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Counts a main GPU submit.
+///
+/// The runner calls this around `queue.submit` for the frame encoder; an idle
+/// on-demand app must leave this counter unchanged.
+pub fn record_submit() {
+    if enabled() {
+        SUBMITS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 /// A nearest-rank percentile (`p` in `0.0..=1.0`).
 #[must_use]
 pub fn percentile(values: &[f32], p: f64) -> f32 {
@@ -348,6 +372,8 @@ pub fn report(gpu_passes: &[(String, f64)], gpu_unsupported: &[String]) {
         "event": "frame-trace",
         "version": 1,
         "frames": frames,
+        "presented": PRESENTED.load(Ordering::Relaxed),
+        "gpu_submits": SUBMITS.load(Ordering::Relaxed),
         "alloc_stats": cfg!(feature = "alloc-stats"),
         "stages": stages,
         "allocations_per_frame": {
@@ -378,6 +404,8 @@ fn clear_for_test() {
     state.started = false;
     EVENT_NS.store(0, Ordering::Relaxed);
     REPORTED.store(false, Ordering::Relaxed);
+    PRESENTED.store(0, Ordering::Relaxed);
+    SUBMITS.store(0, Ordering::Relaxed);
 }
 
 #[cfg(test)]
