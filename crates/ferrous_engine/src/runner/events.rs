@@ -229,6 +229,7 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
             let (mx, my) = (position.x, position.y);
             self.input.set_mouse_position(mx, my);
         }
+        #[cfg(not(target_arch = "wasm32"))]
         if !is_redraw {
             self.deliver_window_event(&event);
         }
