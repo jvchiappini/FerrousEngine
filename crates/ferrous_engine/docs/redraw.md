@@ -110,3 +110,23 @@ memory report and the GPU timestamps stay empty because nothing was
 submitted. `ferrous_core::frame_trace` measures only real event callbacks:
 `RedrawRequested` carries the frame itself, so it is intentionally not
 counted as event handling.
+
+## Headless windows
+
+`App::with_visible(false)` creates the window but never maps it. The GPU state,
+the first frame and any scheduled frames still render and present to the
+hidden surface, but the window never receives input, focus or compositor
+work. Idle benchmarks and CI use it so a person or another window cannot
+interfere with the measurement:
+
+```rust,ignore
+App::new(MyEditor)
+    .with_redraw_policy(RedrawPolicy::OnDemand)
+    .with_visible(false)
+    .with_window_show_timeout(Duration::ZERO) // no show wait
+    .run();
+```
+
+A never-shown window gets no `RedrawRequested`, so the runner renders its
+scheduled frames from `about_to_wait` instead of asking the OS. That path is
+identical for both policies.

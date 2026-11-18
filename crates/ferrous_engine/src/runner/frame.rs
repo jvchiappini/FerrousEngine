@@ -678,11 +678,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 } else {
                     None
                 };
-            let decision = self.redraw.next(now, continuous_deadline);
-            if std::env::var_os("FERROUS_TRACE_INVISIBLE").is_some() {
-                eprintln!("invisible next: {decision:?}");
-            }
-            match decision {
+            match self.redraw.next(now, continuous_deadline) {
                 crate::redraw::NextFrame::Draw => {
                     let t = self.clock.peek().elapsed;
                     let _ = self.render_frame(Some(event_loop), t);
