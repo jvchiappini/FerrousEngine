@@ -32,6 +32,10 @@ pub struct SvgVertex {
 
 impl SvgMesh {
     /// Parses an SVG string and tessellates it into a triangle mesh.
+    ///
+    /// The name mirrors the existing public API; it is not the
+    /// `std::str::FromStr` trait implementation.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(svg_content: &str) -> Result<Self, String> {
         let mut buffers: VertexBuffers<SvgVertex, u32> = VertexBuffers::new();
         let mut fill_tessellator = FillTessellator::new();

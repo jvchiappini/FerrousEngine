@@ -9,6 +9,9 @@ gpu-driven = ["ferrous_renderer/gpu-driven"]
 bindless = ["ferrous_renderer/bindless"]
 text = ["ferrous_ui_render/text"]
 assets = ["ferrous_ui_render/assets"]
+# Per-frame allocation counts in the frame trace (prompt 18 P0).  The binary
+# must install `ferrous_core::alloc_stats::CountingAllocator`.
+alloc-stats = ["ferrous_core/alloc-stats"]
 
 [dependencies]
 ferrous_renderer = { path = "../ferrous_renderer", features = ["assets"] }

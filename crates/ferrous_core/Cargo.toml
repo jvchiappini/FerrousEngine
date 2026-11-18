@@ -37,6 +37,9 @@ web-time = "1.1"
 [features]
 default = []
 ecs = ["dep:ferrous_ecs"]
+# Counting global allocator + per-frame allocation deltas.  Off in normal
+# builds; measured binaries install `alloc_stats::CountingAllocator`.
+alloc-stats = []
 
 # The `gpu` feature gates all wgpu-related types in this crate, allowing
 # downstream consumers to compile `ferrous_core` without dragging in the

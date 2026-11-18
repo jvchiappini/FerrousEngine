@@ -189,7 +189,10 @@ impl EngineContext {
             | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
             // Pipeline cache is Vulkan-only in wgpu 23; requesting it when the
             // adapter exposes it is what lets `create_pipeline_cache` succeed.
-            | wgpu::Features::PIPELINE_CACHE;
+            | wgpu::Features::PIPELINE_CACHE
+            // Prompt 18 P0: per-pass GPU timings.  Requested only when the
+            // adapter exposes it; `GpuTimings` degrades to "unsupported".
+            | wgpu::Features::TIMESTAMP_QUERY;
         #[cfg(target_arch = "wasm32")]
         let desired_features = wgpu::Features::empty();
 

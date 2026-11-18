@@ -28,6 +28,7 @@ pub mod context;
 pub mod frame_builder;
 pub mod geometry;
 pub mod gizmo_system;
+pub mod gpu_timing;
 pub mod graph;
 pub mod materials;
 pub mod passes;

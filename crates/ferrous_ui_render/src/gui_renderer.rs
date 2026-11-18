@@ -9,6 +9,7 @@ use crate::pipelines::{
     id::create_id_pipeline, layout::Layouts, quad::create_quad_pipeline, text::create_text_pipeline,
 };
 use crate::MAX_TEXTURE_SLOTS;
+use ferrous_core::memory::{self, Subsystem};
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
@@ -289,6 +290,39 @@ impl GuiRenderer {
             mapped_at_creation: false,
         });
 
+        memory::register_gpu("gui:quad vertices", vertex_buffer.size(), Subsystem::Gui);
+        memory::register_gpu("gui:quad indices", index_buffer.size(), Subsystem::Gui);
+        memory::register_gpu(
+            "gui:instance instances",
+            instance_buffer.size(),
+            Subsystem::Gui,
+        );
+        memory::register_gpu(
+            "gui:text instances",
+            text_instance_buffer.size(),
+            Subsystem::Gui,
+        );
+        memory::register_gpu(
+            "gui:icon instances",
+            icon_instance_buffer.size(),
+            Subsystem::Gui,
+        );
+        memory::register_gpu("gui:uniform", uniform_buffer.size(), Subsystem::Gui);
+        memory::register_gpu("gui:dummy texture", 4, Subsystem::Gui);
+        memory::register_gpu(
+            "gui:depth texture",
+            u64::from(width.max(1)) * u64::from(height.max(1)) * 4 * u64::from(sample_count),
+            Subsystem::Gui,
+        );
+        memory::register_gpu(
+            "gui:id texture",
+            u64::from(width.max(1)) * u64::from(height.max(1)) * 4,
+            Subsystem::Gui,
+        );
+        memory::register_gpu("gui:id staging", id_staging_buffer.size(), Subsystem::Gui);
+        memory::register_gpu("gui:svg vertices", svg_vertex_buffer.size(), Subsystem::Gui);
+        memory::register_gpu("gui:svg indices", svg_index_buffer.size(), Subsystem::Gui);
+
         Self {
             device,
             layouts,
@@ -417,6 +451,11 @@ impl GuiRenderer {
         self.depth_view = self
             .depth_texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        memory::register_gpu(
+            "gui:depth texture",
+            u64::from(width.max(1)) * u64::from(height.max(1)) * 4 * u64::from(sample_count),
+            Subsystem::Gui,
+        );
 
         // Resize ID
         self.id_texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -436,6 +475,11 @@ impl GuiRenderer {
         self.id_view = self
             .id_texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        memory::register_gpu(
+            "gui:id texture",
+            u64::from(width.max(1)) * u64::from(height.max(1)) * 4,
+            Subsystem::Gui,
+        );
     }
 
     /// Enable/disable the UI image bind-group cache (audit H8).
@@ -495,6 +539,11 @@ impl GuiRenderer {
                     usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
+                memory::register_gpu(
+                    "gui:instance instances",
+                    self.instance_buffer.size(),
+                    Subsystem::Gui,
+                );
                 self.max_instances = new_max;
             }
             queue.write_buffer(&self.instance_buffer, 0, bytes);
@@ -511,6 +560,11 @@ impl GuiRenderer {
                     usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
+                memory::register_gpu(
+                    "gui:text instances",
+                    self.text_instance_buffer.size(),
+                    Subsystem::Gui,
+                );
                 self.text_max_instances = new_max;
             }
             queue.write_buffer(&self.text_instance_buffer, 0, bytes);
@@ -527,6 +581,11 @@ impl GuiRenderer {
                     usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
+                memory::register_gpu(
+                    "gui:icon instances",
+                    self.icon_instance_buffer.size(),
+                    Subsystem::Gui,
+                );
                 self.icon_max_instances = new_max;
             }
             queue.write_buffer(&self.icon_instance_buffer, 0, bytes);
@@ -631,6 +690,11 @@ impl GuiRenderer {
                     usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
+                memory::register_gpu(
+                    "gui:svg vertices",
+                    self.svg_vertex_buffer.size(),
+                    Subsystem::Gui,
+                );
                 self.svg_max_vertices = new_max;
             }
             if all_indices.len() as u32 > self.svg_max_indices {
@@ -641,6 +705,11 @@ impl GuiRenderer {
                     usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
+                memory::register_gpu(
+                    "gui:svg indices",
+                    self.svg_index_buffer.size(),
+                    Subsystem::Gui,
+                );
                 self.svg_max_indices = new_max;
             }
 
@@ -666,6 +735,22 @@ impl GuiRenderer {
         batch: &GuiBatch,
         load_op: wgpu::LoadOp<wgpu::Color>,
     ) {
+        self.render_with_timestamps(encoder, target_view, resolve_target, batch, load_op, None);
+    }
+
+    /// [`Self::render`] with an optional per-pass GPU timestamp pair.
+    ///
+    /// The caller keeps the [`ferrous_renderer::gpu_timing::PassTiming`] alive
+    /// until the pass ends; this method only borrows its descriptor fragment.
+    pub fn render_with_timestamps(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        target_view: &wgpu::TextureView,
+        resolve_target: Option<&wgpu::TextureView>,
+        batch: &GuiBatch,
+        load_op: wgpu::LoadOp<wgpu::Color>,
+        timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
+    ) {
         if batch.segments.is_empty() && matches!(load_op, wgpu::LoadOp::Load) {
             return;
         }
@@ -689,7 +774,7 @@ impl GuiRenderer {
                 stencil_ops: None,
             }),
             occlusion_query_set: None,
-            timestamp_writes: None,
+            timestamp_writes,
         });
 
         let (base_sx, base_sy, base_sw, base_sh) = if let Some(damage) = batch.damage_union {

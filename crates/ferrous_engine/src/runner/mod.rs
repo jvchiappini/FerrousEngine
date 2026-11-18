@@ -17,7 +17,7 @@ use winit::event_loop::{ControlFlow, EventLoop};
 
 use crate::builder::AppConfig;
 use crate::traits::FerrousApp;
-use ferrous_core::startup;
+use ferrous_core::{frame_trace, startup};
 
 // ── Direct entry point ────────────────────────────────────────────────────────
 
@@ -34,6 +34,17 @@ pub(crate) fn run_internal<A: FerrousApp + 'static>(config: AppConfig, app: A) {
     startup::mark("engine: event loop exited");
     // Flush the pipeline cache before the GPU state goes away.
     runner.save_pipeline_cache();
+    // Prompt 18 P0: one JSON summary of the per-frame stages and GPU passes
+    // before the GPU state goes away.
+    let (gpu_passes, gpu_unsupported) = runner
+        .graphics
+        .as_ref()
+        .map(|gfx| gfx.renderer.gpu_timings_summary())
+        .unwrap_or_default();
+    frame_trace::report(&gpu_passes, &gpu_unsupported);
+    if let Some(gfx) = runner.graphics.as_ref() {
+        eprintln!("memory-report {}", gfx.renderer.memory_report_json());
+    }
     // The window and the whole GPU state live in `runner`; dropping it here is
     // the teardown the closing report measures.
     drop(runner);
@@ -77,6 +88,15 @@ pub(crate) fn run_plugin_app(mut builder: crate::plugin::AppBuilder) {
         event_loop.run_app(&mut runner).unwrap();
         startup::mark("engine: event loop exited");
         runner.save_pipeline_cache();
+        let (gpu_passes, gpu_unsupported) = runner
+            .graphics
+            .as_ref()
+            .map(|gfx| gfx.renderer.gpu_timings_summary())
+            .unwrap_or_default();
+        frame_trace::report(&gpu_passes, &gpu_unsupported);
+        if let Some(gfx) = runner.graphics.as_ref() {
+            eprintln!("memory-report {}", gfx.renderer.memory_report_json());
+        }
         drop(runner);
         startup::teardown();
     }

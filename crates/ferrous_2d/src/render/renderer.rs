@@ -2,6 +2,7 @@ use crate::render::{
     BlendMode2d, Grid2dParams, GridPipeline, MeshVertex2d, ShapeGpu, ShapePipeline, SpriteBatcher,
     SpriteInstance, SpritePipeline, Text2dPipeline, TextInstance, TexturedMeshPipeline,
 };
+use ferrous_core::memory::{self, Subsystem};
 use glam::Mat4;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -300,6 +301,42 @@ impl Renderer2d {
             }],
             label: Some("Grid Bind Group"),
         });
+
+        memory::register_gpu(
+            "2d:sprite instances",
+            instance_buffer.size(),
+            Subsystem::Renderer2d,
+        );
+        memory::register_gpu(
+            "2d:shape instances",
+            shape_instance_buffer.size(),
+            Subsystem::Renderer2d,
+        );
+        memory::register_gpu(
+            "2d:text instances",
+            text_instance_buffer.size(),
+            Subsystem::Renderer2d,
+        );
+        memory::register_gpu(
+            "2d:mesh vertices",
+            mesh_vertex_buffer.size(),
+            Subsystem::Renderer2d,
+        );
+        memory::register_gpu(
+            "2d:mesh indices",
+            mesh_index_buffer.size(),
+            Subsystem::Renderer2d,
+        );
+        memory::register_gpu(
+            "2d:camera uniform",
+            camera_buffer.size(),
+            Subsystem::Renderer2d,
+        );
+        memory::register_gpu(
+            "2d:grid uniform",
+            grid_uniform_buffer.size(),
+            Subsystem::Renderer2d,
+        );
 
         Self {
             device,
@@ -807,6 +844,11 @@ impl Renderer2d {
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
+            memory::register_gpu(
+                "2d:sprite instances",
+                self.instance_buffer.size(),
+                Subsystem::Renderer2d,
+            );
             self.counters_buffer_reallocations
                 .fetch_add(1, Ordering::Relaxed);
         }
@@ -891,6 +933,11 @@ impl Renderer2d {
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
+            memory::register_gpu(
+                "2d:shape instances",
+                self.shape_instance_buffer.size(),
+                Subsystem::Renderer2d,
+            );
             self.counters_buffer_reallocations
                 .fetch_add(1, Ordering::Relaxed);
         }
@@ -922,6 +969,11 @@ impl Renderer2d {
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
+            memory::register_gpu(
+                "2d:sprite instances",
+                self.instance_buffer.size(),
+                Subsystem::Renderer2d,
+            );
             self.counters_buffer_reallocations
                 .fetch_add(1, Ordering::Relaxed);
         }
@@ -956,6 +1008,11 @@ impl Renderer2d {
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
+            memory::register_gpu(
+                "2d:text instances",
+                self.text_instance_buffer.size(),
+                Subsystem::Renderer2d,
+            );
             self.counters_buffer_reallocations
                 .fetch_add(1, Ordering::Relaxed);
         }
@@ -995,6 +1052,11 @@ impl Renderer2d {
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
+            memory::register_gpu(
+                "2d:mesh vertices",
+                self.mesh_vertex_buffer.size(),
+                Subsystem::Renderer2d,
+            );
             self.counters_buffer_reallocations
                 .fetch_add(1, Ordering::Relaxed);
         }
@@ -1006,6 +1068,11 @@ impl Renderer2d {
                 usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
+            memory::register_gpu(
+                "2d:mesh indices",
+                self.mesh_index_buffer.size(),
+                Subsystem::Renderer2d,
+            );
             self.counters_buffer_reallocations
                 .fetch_add(1, Ordering::Relaxed);
         }

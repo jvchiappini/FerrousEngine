@@ -3,6 +3,7 @@
 //! This module contains the fundamental Renderer struct definition and its core
 //! lifecycle and state management methods. The Renderer is the top-level GPU
 //! rendering context that holds all GPU resources and executes render passes.
+use ferrous_core::frame_trace::{self, Stage};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -1017,6 +1018,8 @@ pub struct Renderer {
     pub renderer_2d: Renderer2d,
     /// 2D renderer para Pure2D: sample_count=1, formato swapchain, sin overhead HDR.
     pub renderer_2d_pure: Renderer2d,
+    /// Per-pass GPU timestamps (prompt 18 P0).
+    pub gpu_timings: crate::gpu_timing::GpuTimings,
     /// Open temporal-accumulation sequence (see `begin_accumulation_2d`).
     accumulation_2d: Option<ferrous_2d::render::Accumulation2d>,
     /// Recorded multi-view segments (`begin_2d_view`/`end_2d_view`).
@@ -1339,6 +1342,7 @@ impl Renderer {
             aa_pass: None,
             renderer_2d,
             renderer_2d_pure,
+            gpu_timings: crate::gpu_timing::GpuTimings::disabled(),
             accumulation_2d: None,
             views_2d: Vec::new(),
             view_2d_open: false,
@@ -2033,6 +2037,47 @@ impl Renderer {
         self.renderer_2d_pure.frame_counters()
     }
 
+    /// GPU and CPU memory registered by the engine subsystems.
+    ///
+    /// The inventory is filled at resource creation/resize time; call it from
+    /// the bench harness after the scene is warm.  `largest` returns the
+    /// `largest_count` biggest items so a leak or an oversized atlas is
+    /// immediately visible.
+    #[must_use]
+    pub fn memory_report(&self) -> ferrous_core::memory::Report {
+        ferrous_core::memory::report(24)
+    }
+
+    /// [`Self::memory_report`] serialised as one JSON object.
+    #[must_use]
+    pub fn memory_report_json(&self) -> String {
+        ferrous_core::memory::report_json(24)
+    }
+
+    /// Enables per-pass GPU timestamps when the frame trace is on and the
+    /// adapter exposes `TIMESTAMP_QUERY`.  The engine runner calls this after
+    /// constructing the renderer; a headless harness never does, so the
+    /// export path cannot create a query set on a software adapter.
+    pub fn enable_gpu_timings(&mut self) {
+        if !self.gpu_timings.supported() {
+            self.gpu_timings =
+                crate::gpu_timing::GpuTimings::new(&self.context.device, &self.context.queue);
+        }
+    }
+
+    /// Starts the non-blocking GPU timestamp readback.  Call **after** the
+    /// queue submit of the frame; the next frames poll it without blocking.
+    pub fn after_submit(&mut self) {
+        self.gpu_timings.after_submit();
+    }
+
+    /// Median GPU milliseconds per instrumented pass, plus the unsupported
+    /// marker when the adapter cannot timestamp.
+    #[must_use]
+    pub fn gpu_timings_summary(&self) -> (Vec<(String, f64)>, Vec<String>) {
+        self.gpu_timings.summary()
+    }
+
     /// Visible world-space rect `(min, max)` for the current Pure2D camera,
     /// expanded by the effective culling margin.
     ///
@@ -2714,6 +2759,8 @@ impl Renderer {
         // only.  Cheap (six relaxed atomic stores); done unconditionally so the
         // stats are consistent even when the mode changes between frames.
         self.renderer_2d_pure.reset_frame_counters();
+        self.gpu_timings.poll(&self.context.device);
+        self.gpu_timings.begin_frame();
 
         // Resolve target view. If internal, use a raw pointer to avoid conflicting
         // borrows with &mut self used by passes later.
@@ -2736,7 +2783,9 @@ impl Renderer {
             view_proj: self.camera_system.view_proj(),
             eye: self.camera_system.camera.eye,
         };
+        let _batch = frame_trace::stage(Stage::BatchBuild);
         let (mut packet, stats) = self.frame_builder.build(self.viewport, camera_packet);
+        drop(_batch);
 
         self.render_stats = stats;
 
@@ -2755,6 +2804,7 @@ impl Renderer {
             // Subir la cámara al renderer 2D puro
             let vp = self.camera_system.view_proj();
             let resolution = glam::Vec2::new(self.width as f32, self.height as f32);
+            let _upload = frame_trace::stage(Stage::PrepareUpload);
             self.renderer_2d_pure
                 .update_camera(&self.context.queue, vp, resolution);
 
@@ -2773,6 +2823,7 @@ impl Renderer {
                     world_per_px,
                 );
             }
+            drop(_upload);
 
             // ── Pure2D painter-order batcher (audit H3) ─────────────────────
             // Build a painter-order command list **without mutating** the
@@ -3161,6 +3212,8 @@ impl Renderer {
 
                 // Un único render pass: Clear → Shapes → Sprites
                 {
+                    let timing = self.gpu_timings.pass("Pure2D Main Pass");
+                    let _encode = frame_trace::stage(Stage::Encode);
                     let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("Pure2D Main Pass"),
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -3172,9 +3225,9 @@ impl Renderer {
                                 store: wgpu::StoreOp::Store,
                             },
                         })],
-                        // Sin depth en Pure2D: el Z-ordering es CPU-side vía z_index
+                        // Sin depth en Pure2D: el Z-ordering es CPU-side vA-a z_index
                         depth_stencil_attachment: None,
-                        timestamp_writes: None,
+                        timestamp_writes: timing.as_ref().map(|timing| timing.writes()),
                         occlusion_query_set: None,
                     });
 
@@ -3362,9 +3415,13 @@ impl Renderer {
             // UI Pass encima (texto, overlays, debug GUI)
             #[cfg(feature = "gui")]
             {
+                let timing = self.gpu_timings.pass("GUI Render Pass");
+                let _upload = frame_trace::stage(Stage::PrepareUpload);
                 self.ui_pass
                     .prepare(&self.context.device, &self.context.queue, &packet);
-                self.ui_pass.execute(
+                drop(_upload);
+                let _encode = frame_trace::stage(Stage::Encode);
+                self.ui_pass.execute_timed(
                     &self.context.device,
                     &self.context.queue,
                     encoder,
@@ -3372,7 +3429,9 @@ impl Renderer {
                     None,
                     None,
                     &packet,
+                    timing.as_ref(),
                 );
+                drop(_encode);
             }
 
             // Extra passes del usuario
@@ -3389,6 +3448,7 @@ impl Renderer {
                 );
             }
 
+            self.gpu_timings.end_frame(encoder);
             self.frame_builder.reclaim(packet);
             return;
         }
@@ -3397,9 +3457,13 @@ impl Renderer {
         if self.mode == RendererMode::Flat2D {
             #[cfg(feature = "gui")]
             {
+                let timing = self.gpu_timings.pass("GUI Render Pass");
+                let _upload = frame_trace::stage(Stage::PrepareUpload);
                 self.ui_pass
                     .prepare(&self.context.device, &self.context.queue, &packet);
-                self.ui_pass.execute(
+                drop(_upload);
+                let _encode = frame_trace::stage(Stage::Encode);
+                self.ui_pass.execute_timed(
                     &self.context.device,
                     &self.context.queue,
                     encoder,
@@ -3407,7 +3471,9 @@ impl Renderer {
                     None,
                     None,
                     &packet,
+                    timing.as_ref(),
                 );
+                drop(_encode);
             }
             for pass in &mut self.extra_passes {
                 pass.prepare(&self.context.device, &self.context.queue, &packet);
@@ -3421,6 +3487,7 @@ impl Renderer {
                     &packet,
                 );
             }
+            self.gpu_timings.end_frame(encoder);
             self.frame_builder.reclaim(packet);
             return;
         }
@@ -3865,6 +3932,7 @@ impl Renderer {
             );
         }
 
+        self.gpu_timings.end_frame(encoder);
         self.frame_builder.reclaim(packet);
     }
 
@@ -4481,7 +4549,13 @@ impl Renderer {
         } else {
             u64::from(width) * u64::from(height) * 4
         };
-        Ok(self.store_sprite_texture(texture, sampler, true, width, height, bytes))
+        let id = self.store_sprite_texture(texture, sampler, true, width, height, bytes);
+        ferrous_core::memory::register_gpu(
+            format!("2d:texture {id}"),
+            bytes,
+            ferrous_core::memory::Subsystem::Assets,
+        );
+        Ok(id)
     }
 
     /// Opens a temporal-accumulation sequence for the Pure2D path.
@@ -4889,6 +4963,17 @@ impl Renderer {
             return Ok(FontId2d::from(handle));
         }
         let key = baked.key;
+        let label = format!("font:atlas {}x{}", baked.tex_size, baked.glyph_size);
+        ferrous_core::memory::register_cpu(
+            format!("{label} pixels"),
+            baked.pixels.len() as u64,
+            ferrous_core::memory::Subsystem::Fonts,
+        );
+        ferrous_core::memory::register_gpu(
+            format!("{label} texture"),
+            u64::from(baked.tex_size) * u64::from(baked.tex_size) * 4,
+            ferrous_core::memory::Subsystem::Fonts,
+        );
         let font = std::sync::Arc::new(ferrous_font::Font {
             atlas: baked.upload(&self.context.device, &self.context.queue),
             icons: None,

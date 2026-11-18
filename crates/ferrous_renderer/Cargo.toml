@@ -29,6 +29,9 @@ lyon_tessellation = "1.0"
 pollster = "0.3"
 
 [dev-dependencies]
+ferrous_layout = { path = "../ferrous_layout" }
+ferrous_svg = { path = "../ferrous_svg" }
+ferrous_ui_core = { path = "../ferrous_ui_core" }
 # `divan` is the benchmark framework for the headless Pure2D harness.  It was
 # chosen over `criterion` because it is lighter, has no group/main boilerplate,
 # and its `AllocProfiler` reports allocations + bytes per iteration on stable
@@ -41,6 +44,10 @@ png = "0.17"
 
 [[bench]]
 name = "pure2d_headless"
+harness = false
+
+[[bench]]
+name = "subsystems"
 harness = false
 
 [features]

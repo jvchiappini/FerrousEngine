@@ -333,7 +333,7 @@ impl DeviceInit {
         let Some(context) = self.context.take() else {
             panic!("the renderer was already built for this device");
         };
-        let renderer = Box::new(Renderer::new_with_mode(
+        let mut renderer = Box::new(Renderer::new_with_mode(
             context,
             self.config.width,
             self.config.height,
@@ -342,6 +342,9 @@ impl DeviceInit {
             self.hdri_path.as_deref().map(std::path::Path::new),
             self.mode,
         ));
+        // Prompt 18 P0: the runner owns the frame trace; the headless export
+        // path never enables GPU timestamps.
+        renderer.enable_gpu_timings();
         startup::mark("engine: renderer built");
         (self, renderer)
     }
@@ -641,7 +644,7 @@ impl GraphicsState {
         };
         surface.configure(&context.device, &config);
 
-        let renderer = Box::new(Renderer::new_with_mode(
+        let mut renderer = Box::new(Renderer::new_with_mode(
             context,
             config.width,
             config.height,
@@ -650,6 +653,7 @@ impl GraphicsState {
             hdri_path.as_ref().map(std::path::Path::new),
             mode,
         ));
+        renderer.enable_gpu_timings();
         startup::mark("engine: renderer built");
 
         Self {

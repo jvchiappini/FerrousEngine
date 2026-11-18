@@ -193,8 +193,11 @@ impl<A: FerrousApp + 'static> ApplicationHandler for Runner<A> {
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {}
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        // Prompt 18 P0: account the callback in the next frame's
+        // `EventHandling` stage (no-op unless FERROUS_TRACE_FRAMES is on).
+        let _event = ferrous_core::frame_trace::event_guard();
         // Prompt 17 S3b: user input waits for the first frame, then is
-        // delivered in order. Closing, destruction and redraws pass at once.
+        // delivered in order.  Closing, destruction and redraws pass at once.
         #[cfg(not(target_arch = "wasm32"))]
         let event = match self.queue_while_starting(id, event) {
             Some(event) => event,

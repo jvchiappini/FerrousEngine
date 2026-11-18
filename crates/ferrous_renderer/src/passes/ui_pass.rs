@@ -58,6 +58,51 @@ impl UiPass {
         self.renderer
             .update_output_config(queue, width, height, format, sample_count);
     }
+
+    /// [`RenderPass::execute`] with an optional GPU timestamp pair
+    /// (prompt 18 P0).  The timing must outlive the render pass; the caller
+    /// keeps it in scope around this call.
+    #[allow(clippy::too_many_arguments)] // mirrors RenderPass::execute + timing
+    pub fn execute_timed(
+        &mut self,
+        _device: &Device,
+        _queue: &Queue,
+        encoder: &mut CommandEncoder,
+        color_view: &TextureView,
+        resolve_target: Option<&TextureView>,
+        _depth_view: Option<&TextureView>,
+        packet: &FramePacket,
+        timing: Option<&crate::gpu_timing::PassTiming>,
+    ) {
+        let ui_batch = packet.get::<GuiBatch>();
+        let empty = GuiBatch::new();
+        let batch = ui_batch.unwrap_or(&empty);
+        let timestamp_writes = timing.map(|timing| timing.writes());
+
+        if let Some(clear) = self.clear_color {
+            // Even if there's no UI, we must clear the screen if a clear color is set.
+            self.renderer.render_with_timestamps(
+                encoder,
+                color_view,
+                resolve_target,
+                batch,
+                wgpu::LoadOp::Clear(clear),
+                timestamp_writes,
+            );
+        } else {
+            // Only render if we have a batch and no clear is required (compositing).
+            if !batch.is_empty() {
+                self.renderer.render_with_timestamps(
+                    encoder,
+                    color_view,
+                    resolve_target,
+                    batch,
+                    wgpu::LoadOp::Load,
+                    timestamp_writes,
+                );
+            }
+        }
+    }
 }
 
 impl RenderPass for UiPass {
@@ -78,38 +123,23 @@ impl RenderPass for UiPass {
 
     fn execute(
         &mut self,
-        _device: &Device,
-        _queue: &Queue,
+        device: &Device,
+        queue: &Queue,
         encoder: &mut CommandEncoder,
         color_view: &TextureView,
         resolve_target: Option<&TextureView>,
-        _depth_view: Option<&TextureView>,
+        depth_view: Option<&TextureView>,
         packet: &FramePacket,
     ) {
-        let ui_batch = packet.get::<GuiBatch>();
-        let empty = GuiBatch::new();
-        let batch = ui_batch.unwrap_or(&empty);
-
-        if let Some(clear) = self.clear_color {
-            // Even if there's no UI, we must clear the screen if a clear color is set.
-            self.renderer.render(
-                encoder,
-                color_view,
-                resolve_target,
-                batch,
-                wgpu::LoadOp::Clear(clear),
-            );
-        } else {
-            // Only render if we have a batch and no clear is required (compositing).
-            if !batch.is_empty() {
-                self.renderer.render(
-                    encoder,
-                    color_view,
-                    resolve_target,
-                    batch,
-                    wgpu::LoadOp::Load,
-                );
-            }
-        }
+        self.execute_timed(
+            device,
+            queue,
+            encoder,
+            color_view,
+            resolve_target,
+            depth_view,
+            packet,
+            None,
+        );
     }
 }

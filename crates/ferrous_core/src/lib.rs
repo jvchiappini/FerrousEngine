@@ -77,6 +77,24 @@ pub mod metrics;
 /// Process startup tracing (marks, spans, table and JSON reports).
 pub mod startup;
 
+/// Per-frame stage timing (`FERROUS_TRACE_FRAMES=1`, JSON summary on exit).
+pub mod frame_trace;
+
+/// Byte-level GPU/CPU memory inventory.
+pub mod memory;
+
+/// Global allocation accounting.  Only compiled with the `alloc-stats`
+/// feature; a bench or test binary installs [`alloc_stats::CountingAllocator`].
+#[cfg(feature = "alloc-stats")]
+pub mod alloc_stats;
+
+/// The unit tests install the counting allocator when the feature is on, so
+/// the `alloc_stats` tests measure real allocations.  Integration tests and
+/// benches install it in their own crate root.
+#[cfg(all(test, feature = "alloc-stats"))]
+#[global_allocator]
+static TEST_ALLOC: alloc_stats::CountingAllocator = alloc_stats::CountingAllocator;
+
 /// Viewport rectangle (x, y, width, height) for 3-D rendering.
 pub mod viewport;
 

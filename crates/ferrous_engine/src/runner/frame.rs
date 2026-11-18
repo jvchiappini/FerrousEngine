@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use ferrous_assets::AssetState;
+use ferrous_core::frame_trace::{self, Stage};
 use ferrous_core::glam::Vec3;
 use ferrous_core::startup;
 use ferrous_ui_core::Rect;
@@ -110,6 +111,11 @@ impl<A: FerrousApp + 'static> Runner<A> {
         // application that also clears at the start of its own frame is
         // unaffected; it can remove its manual call.
         gfx.renderer.clear_2d();
+
+        // Prompt 18 P0: per-frame stage trace.  The guard closes the frame on
+        // every return path below; it is a no-op unless FERROUS_TRACE_FRAMES
+        // is enabled.
+        let _frame = frame_trace::begin_frame();
 
         // Wall-clock timing for the whole frame (update + draw + present).
         // Recorded on every return path below; `RenderContext::frame_ms()` and
@@ -231,7 +237,9 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 asset_server: &mut self.asset_server,
             };
 
+            let update_stage = frame_trace::stage(Stage::AppUpdate);
             self.app.update(&mut ctx);
+            drop(update_stage);
 
             let drops = std::mem::take(&mut self.pending_file_drops);
             for event in drops {
@@ -260,6 +268,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 self.viewport = ctx.viewport;
                 gfx.renderer.set_viewport(self.viewport);
             }
+            let _layout = frame_trace::stage(Stage::UiLayout);
             self.ui.update(
                 time.delta,
                 self.window_size.0 as f32,
@@ -322,21 +331,24 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 asset_server: &mut self.asset_server,
             };
 
-            if self.viewport.width > 0 && self.config.mode == AppMode::Game3D {
-                self.app.draw_3d(&mut ctx);
-            }
+            {
+                let _collect = frame_trace::stage(Stage::CommandCollection);
+                if self.viewport.width > 0 && self.config.mode == AppMode::Game3D {
+                    self.app.draw_3d(&mut ctx);
+                }
 
-            for gizmo in ctx.gizmos.drain(..) {
-                ctx.render.inner.queue_gizmo(gizmo);
-            }
+                for gizmo in ctx.gizmos.drain(..) {
+                    ctx.render.inner.queue_gizmo(gizmo);
+                }
 
-            if let Some(font) = self.font.as_deref() {
-                let mut dc = DrawContext {
-                    gui: &mut gui_batch,
-                    font,
-                    ctx: &mut ctx,
-                };
-                self.app.draw_ui(&mut dc);
+                if let Some(font) = self.font.as_deref() {
+                    let mut dc = DrawContext {
+                        gui: &mut gui_batch,
+                        font,
+                        ctx: &mut ctx,
+                    };
+                    self.app.draw_ui(&mut dc);
+                }
             }
 
             let viewport_rect = Rect {
@@ -346,8 +358,10 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 height: self.window_size.1 as f32,
             };
 
+            let _batch = frame_trace::stage(Stage::BatchBuild);
             let ui_render_batch = self.ui.render(viewport_rect, self.font.as_deref());
             gui_batch.extend(ui_render_batch);
+            drop(_batch);
 
             // A screenshot asked for during `update` or `draw_ui` is copied on
             // the frame that is about to be presented, so it shows exactly
@@ -362,15 +376,18 @@ impl<A: FerrousApp + 'static> Runner<A> {
             );
 
             // ── 3. RENDER FINAL ─────────────────────────────────────────────
-            let frame = match gfx.surface.get_current_texture() {
-                Ok(f) => f,
-                Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
-                    gfx.resize(self.window_size.0, self.window_size.1);
-                    gfx.renderer
-                        .record_frame_time(frame_start.elapsed().as_secs_f32() * 1000.0);
-                    return None;
+            let frame = {
+                let _wait = frame_trace::stage(Stage::PresentWait);
+                match gfx.surface.get_current_texture() {
+                    Ok(f) => f,
+                    Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
+                        gfx.resize(self.window_size.0, self.window_size.1);
+                        gfx.renderer
+                            .record_frame_time(frame_start.elapsed().as_secs_f32() * 1000.0);
+                        return None;
+                    }
+                    Err(e) => panic!("Surface error: {e:?}"),
                 }
-                Err(e) => panic!("Surface error: {e:?}"),
             };
             let view = frame
                 .texture
@@ -412,9 +429,15 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 );
                 buffer
             });
+            let _submit = frame_trace::stage(Stage::Submit);
             gfx.renderer.context.queue.submit(Some(encoder.finish()));
+            drop(_submit);
+            // Prompt 18 P0: start the non-blocking GPU timestamp readback.
+            gfx.renderer.after_submit();
 
+            let _present = frame_trace::stage(Stage::PresentWait);
             frame.present();
+            drop(_present);
             // Prompt 17 S3b: the first frame is on the swapchain. Show the
             // window now, so its first visible content is this frame.
             #[cfg(not(target_arch = "wasm32"))]
