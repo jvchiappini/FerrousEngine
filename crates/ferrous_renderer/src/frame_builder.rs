@@ -21,7 +21,7 @@ use crate::geometry::primitives::{
     cylinder::cylinder as create_cylinder,
     plane::plane as create_plane,
     quad::quad as create_quad,
-    shapes2d::{circle_2d, into_line_cap, into_line_join, line_2d, path_to_mesh, rect_2d},
+    shapes2d::{into_line_cap, into_line_join, Shape2dCache},
     sphere::sphere as create_sphere,
     torus::torus as create_torus,
 };
@@ -65,11 +65,14 @@ pub struct FrameBuilder {
     pub disc_cache: HashMap<(u32, u32, u32, u32), crate::geometry::Mesh>,
     /// Text3D meshes keyed by (text, depth_bits, bevel_enabled, bevel_thickness_bits, bevel_size_bits, quality).
     pub text3d_cache: HashMap<(String, u32, bool, u32, u32, u8), crate::geometry::Mesh>,
-    ///   Circle2D  → (tag=0, radius, resolution, do_fill, stroke_thickness, 0)
-    ///   Rect2D    → (tag=1, width, height, do_fill, stroke_thickness, 0)
-    ///   Line2D    → (tag=2, x0, y0, x1, y1, thickness)
-    ///   Path      → (tag=3, path_hash, do_fill, stroke_thickness, 0, 0)
-    pub shapes2d_cache: HashMap<(u8, u32, u32, u32, u32, u32), crate::geometry::Mesh>,
+    /// Bounded tessellation + upload cache for the `*2D` primitives and `Path`.
+    ///
+    /// The geometry key covers only the geometry inputs (points, commands,
+    /// fill/stroke presence and width, cap/join); colour, transform and entity
+    /// id are never part of it, so a colour-only or transform-only change
+    /// reuses the tessellation.  A second map keyed by `(geometry, colour)`
+    /// reuses the uploaded mesh.  See `shapes2d::Shape2dCache` for the bounds.
+    pub shapes2d_cache: Shape2dCache,
     /// Cache of procedurally-generated meshes registered via `register_mesh`.
     /// Always available (no feature gate) so that WASM procedural terrain
     /// and other runtime-generated geometry works without the `assets` feature.
@@ -120,7 +123,7 @@ impl FrameBuilder {
             capsule_cache: HashMap::new(),
             disc_cache: HashMap::new(),
             text3d_cache: HashMap::new(),
-            shapes2d_cache: HashMap::new(),
+            shapes2d_cache: Shape2dCache::new(),
             procedural_mesh_cache: HashMap::new(),
             #[cfg(feature = "assets")]
             mesh_cache: HashMap::new(),
@@ -492,95 +495,43 @@ impl FrameBuilder {
                     let do_fill = element.fill_color.is_some();
                     let f_c = element.fill_color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
                     let s_c = element.stroke_color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
-                    let f_c_bits =
-                        f_c[0].to_bits() ^ f_c[1].to_bits() ^ f_c[2].to_bits() ^ f_c[3].to_bits();
-                    let s_c_bits =
-                        s_c[0].to_bits() ^ s_c[1].to_bits() ^ s_c[2].to_bits() ^ s_c[3].to_bits();
-                    let key = (
-                        0u8,
-                        radius.to_bits(),
+                    self.shapes2d_cache.circle_mesh(
+                        device,
+                        *radius,
                         *resolution,
-                        do_fill as u32,
-                        element.stroke_thickness.to_bits(),
-                        f_c_bits ^ s_c_bits,
-                    );
-                    self.shapes2d_cache
-                        .entry(key)
-                        .or_insert_with(|| {
-                            circle_2d(
-                                device,
-                                *radius,
-                                *resolution,
-                                do_fill,
-                                element.stroke_thickness,
-                                f_c,
-                                s_c,
-                            )
-                        })
-                        .clone()
+                        do_fill,
+                        element.stroke_thickness,
+                        f_c,
+                        s_c,
+                    )
                 }
                 ElementKind::Rect2D { width, height } => {
                     let do_fill = element.fill_color.is_some();
                     let f_c = element.fill_color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
                     let s_c = element.stroke_color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
-                    let f_c_bits =
-                        f_c[0].to_bits() ^ f_c[1].to_bits() ^ f_c[2].to_bits() ^ f_c[3].to_bits();
-                    let s_c_bits =
-                        s_c[0].to_bits() ^ s_c[1].to_bits() ^ s_c[2].to_bits() ^ s_c[3].to_bits();
-                    let key = (
-                        1u8,
-                        width.to_bits(),
-                        height.to_bits(),
-                        do_fill as u32,
-                        element.stroke_thickness.to_bits(),
-                        f_c_bits ^ s_c_bits,
-                    );
-                    self.shapes2d_cache
-                        .entry(key)
-                        .or_insert_with(|| {
-                            rect_2d(
-                                device,
-                                *width,
-                                *height,
-                                do_fill,
-                                element.stroke_thickness,
-                                f_c,
-                                s_c,
-                            )
-                        })
-                        .clone()
+                    self.shapes2d_cache.rect_mesh(
+                        device,
+                        *width,
+                        *height,
+                        do_fill,
+                        element.stroke_thickness,
+                        f_c,
+                        s_c,
+                    )
                 }
                 ElementKind::Line2D { x0, y0, x1, y1, .. } => {
                     let s_c = element.stroke_color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
-                    let s_c_bits =
-                        s_c[0].to_bits() ^ s_c[1].to_bits() ^ s_c[2].to_bits() ^ s_c[3].to_bits();
-                    let t = element.stroke_thickness;
-                    let cap = element.line_cap_style;
-                    let join = element.line_join_style;
-                    let key = (
-                        2u8,
-                        x0.to_bits(),
-                        y0.to_bits(),
-                        x1.to_bits(),
-                        y1.to_bits(),
-                        t.to_bits() ^ s_c_bits ^ (cap as u32) ^ ((join as u32) << 8),
-                    );
-                    self.shapes2d_cache
-                        .entry(key)
-                        .or_insert_with(|| {
-                            line_2d(
-                                device,
-                                *x0,
-                                *y0,
-                                *x1,
-                                *y1,
-                                t,
-                                s_c,
-                                into_line_cap(cap),
-                                into_line_join(join),
-                            )
-                        })
-                        .clone()
+                    self.shapes2d_cache.line_mesh(
+                        device,
+                        *x0,
+                        *y0,
+                        *x1,
+                        *y1,
+                        element.stroke_thickness,
+                        s_c,
+                        into_line_cap(element.line_cap_style),
+                        into_line_join(element.line_join_style),
+                    )
                 }
                 ElementKind::Path => {
                     if let Some(path_data) = world
@@ -589,7 +540,7 @@ impl FrameBuilder {
                     {
                         let fill_c = element.fill_color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
                         let stroke_c = element.stroke_color.unwrap_or([1.0, 1.0, 1.0, 1.0]);
-                        path_to_mesh(
+                        self.shapes2d_cache.path_mesh(
                             device,
                             path_data,
                             element.fill_color.is_some(),

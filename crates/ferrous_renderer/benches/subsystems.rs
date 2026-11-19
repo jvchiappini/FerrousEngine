@@ -11,15 +11,17 @@
 
 use divan::AllocProfiler;
 use ferrous_2d::render::{ShapeInstance, SpriteInstance};
+use ferrous_core::scene::world::types::{PathCommand, PathData};
 use ferrous_font::{BakedAtlas, FontParser, LayoutData, TextAlign};
 use ferrous_gpu::EngineContext;
 use ferrous_layout::LayoutEngine;
+use ferrous_renderer::geometry::primitives::shapes2d::{path_to_mesh, Shape2dCache};
 use ferrous_renderer::headless::{Pure2dHarness, DEFAULT_FORMAT};
 use ferrous_svg::SvgMesh;
 use ferrous_ui_core::{LayoutContext, UiTree, Widget};
 use ferrous_ui_render::{GuiBatch, GuiQuad, GuiRenderer, SvgCommand, TextQuad};
 use glam::{Mat4, Quat, Vec2, Vec3};
-use lyon_tessellation::path::Path;
+use lyon_tessellation::path::{Path, Winding};
 use lyon_tessellation::{
     BuffersBuilder, FillOptions, FillTessellator, FillVertex, FillVertexConstructor, StrokeOptions,
     StrokeTessellator, StrokeVertex, StrokeVertexConstructor, VertexBuffers,
@@ -357,4 +359,195 @@ fn svg_mesh_upload(bencher: divan::Bencher) {
             gui.prepare(&context.queue, &batch);
             divan::black_box(vertices)
         });
+}
+
+// ── Path tessellation cache ───────────────────────────────────────────────
+//
+// `ElementKind::Path` in `frame_builder` goes through `Shape2dCache`: the first
+// build tessellates and uploads, every later build of the same geometry+colour
+// returns the cached `Mesh` (an `Arc` clone, no allocation, no lyon work).
+// The geometry key excludes colour and transform, so a colour-only change is a
+// mesh-cache miss (recolour) but never a re-tessellation.
+
+fn bench_path_data() -> PathData {
+    PathData {
+        commands: vec![
+            PathCommand::MoveTo(Vec2::new(0.0, 0.0)),
+            PathCommand::LineTo(Vec2::new(120.0, 0.0)),
+            PathCommand::LineTo(Vec2::new(120.0, 80.0)),
+            PathCommand::CubicTo(
+                Vec2::new(90.0, 110.0),
+                Vec2::new(30.0, 110.0),
+                Vec2::new(0.0, 80.0),
+            ),
+            PathCommand::Close,
+        ],
+    }
+}
+
+#[divan::bench]
+fn path_to_mesh_uncached(bencher: divan::Bencher) {
+    let context = pollster::block_on(EngineContext::new()).expect("gpu context");
+    let path = bench_path_data();
+    bencher.bench_local(|| {
+        divan::black_box(path_to_mesh(
+            &context.device,
+            &path,
+            true,
+            2.0,
+            [1.0, 1.0, 1.0, 1.0],
+            [0.0, 0.0, 0.0, 1.0],
+            lyon_tessellation::LineCap::Butt,
+            lyon_tessellation::LineJoin::Miter,
+        ))
+    });
+}
+
+#[divan::bench]
+fn path_tessellation_cold(bencher: divan::Bencher) {
+    let context = pollster::block_on(EngineContext::new()).expect("gpu context");
+    let path = bench_path_data();
+    bencher.bench_local(|| {
+        let mut cache = Shape2dCache::new();
+        divan::black_box(cache.path_mesh(
+            &context.device,
+            &path,
+            true,
+            2.0,
+            [1.0, 1.0, 1.0, 1.0],
+            [0.0, 0.0, 0.0, 1.0],
+            lyon_tessellation::LineCap::Butt,
+            lyon_tessellation::LineJoin::Miter,
+        ))
+    });
+}
+
+#[divan::bench]
+fn path_tessellation_cache_hit(bencher: divan::Bencher) {
+    let context = pollster::block_on(EngineContext::new()).expect("gpu context");
+    let path = bench_path_data();
+    let mut cache = Shape2dCache::new();
+    // Warm the geometry + mesh caches once.
+    let _ = cache.path_mesh(
+        &context.device,
+        &path,
+        true,
+        2.0,
+        [1.0, 1.0, 1.0, 1.0],
+        [0.0, 0.0, 0.0, 1.0],
+        lyon_tessellation::LineCap::Butt,
+        lyon_tessellation::LineJoin::Miter,
+    );
+    bencher.bench_local(|| {
+        divan::black_box(cache.path_mesh(
+            &context.device,
+            &path,
+            true,
+            2.0,
+            [1.0, 1.0, 1.0, 1.0],
+            [0.0, 0.0, 0.0, 1.0],
+            lyon_tessellation::LineCap::Butt,
+            lyon_tessellation::LineJoin::Miter,
+        ))
+    });
+}
+
+// ── Analytic SDF shapes vs lyon tessellation ─────────────────────────────
+//
+// Which path does what:
+// * **Pure2D / UI** already uses analytic SDF primitives, not lyon.  Every
+//   `ShapeInstance::circle`/`rect`/`line` is one canonical quad plus per-instance
+//   transform and colour; `assets/shaders/shape_2d.wgsl` computes the signed
+//   distance in the fragment shader.  `Renderer2d::draw_2d_path`
+//   (`renderer_core.rs:4527`) turns each `Path2d` segment into one SDF
+//   capsule/line instance, so a polyline is N instances, not N tessellations.
+// * **World-space `ElementKind::Circle2D`/`Rect2D`/`Line2D`/`Path`** still use
+//   lyon through `shapes2d.rs` (they are 3D meshes that can cast shadows).
+//
+// These two benches measure the CPU cost of encoding N SDF instances against
+// tessellating N lyon circles of the same radius.  They are CPU-only: no GPU
+// upload is included, so the comparison isolates geometry production.
+
+fn lyon_circle_path(radius: f32) -> Path {
+    let mut builder = Path::builder();
+    builder.add_circle(
+        lyon_tessellation::math::point(0.0, 0.0),
+        radius,
+        Winding::Positive,
+    );
+    builder.build()
+}
+
+#[divan::bench(args = [1, 100, 1000])]
+fn sdf_circle_instances(bencher: divan::Bencher, n: usize) {
+    let mut out: Vec<ShapeInstance> = Vec::with_capacity(n);
+    bencher.bench_local(|| {
+        out.clear();
+        for index in 0..n {
+            out.push(ShapeInstance::circle(
+                Vec2::new(index as f32, 0.0),
+                10.0,
+                [0.2, 0.6, 0.9, 1.0],
+            ));
+        }
+        divan::black_box(out.len())
+    });
+}
+
+#[divan::bench(args = [1, 100, 1000])]
+fn lyon_circle_fill_tessellation(bencher: divan::Bencher, n: usize) {
+    let path = lyon_circle_path(10.0);
+    let mut tessellator = FillTessellator::new();
+    let mut buffers: VertexBuffers<TessVertex, u32> = VertexBuffers::new();
+    bencher.bench_local(|| {
+        buffers.vertices.clear();
+        buffers.indices.clear();
+        for _ in 0..n {
+            tessellator
+                .tessellate_path(
+                    &path,
+                    &FillOptions::default(),
+                    &mut BuffersBuilder::new(&mut buffers, TessCtor),
+                )
+                .expect("circle fill");
+        }
+        divan::black_box((buffers.vertices.len(), buffers.indices.len()))
+    });
+}
+
+#[divan::bench(args = [1, 100, 1000])]
+fn lyon_circle_stroke_tessellation(bencher: divan::Bencher, n: usize) {
+    let path = lyon_circle_path(10.0);
+    let mut tessellator = StrokeTessellator::new();
+    let mut buffers: VertexBuffers<TessVertex, u32> = VertexBuffers::new();
+    bencher.bench_local(|| {
+        buffers.vertices.clear();
+        buffers.indices.clear();
+        for _ in 0..n {
+            tessellator
+                .tessellate_path(
+                    &path,
+                    &StrokeOptions::default()
+                        .with_line_width(2.0)
+                        .with_line_cap(lyon_tessellation::LineCap::Round)
+                        .with_line_join(lyon_tessellation::LineJoin::Round),
+                    &mut BuffersBuilder::new(&mut buffers, TessCtor),
+                )
+                .expect("circle stroke");
+        }
+        divan::black_box((buffers.vertices.len(), buffers.indices.len()))
+    });
+}
+
+// ── Atlas occupancy ───────────────────────────────────────────────────────
+
+/// Measures the fixed-cell glyph atlas utilisation.  The `occupancy()` scan is
+/// O(atlas texels); the bake itself is not included.
+#[divan::bench]
+fn glyph_atlas_occupancy(bencher: divan::Bencher) {
+    let parser = FontParser::new(roboto()).expect("font parser");
+    let atlas = BakedAtlas::build(&parser, &ferrous_font::charset::latin_western()).expect("atlas");
+    let occupancy = atlas.occupancy();
+    eprintln!("latin_western glyph atlas: {occupancy}");
+    bencher.bench_local(|| divan::black_box(atlas.occupancy()));
 }
