@@ -223,7 +223,15 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
         // and can ask for a frame only when the pointer changed something
         // visible. The pointer position is updated first so hover hit-testing
         // uses the event's position.
-        let is_cursor = matches!(event, WindowEvent::CursorMoved { .. });
+        // Prompt 18 P3: enter/leave are pointer events too. They change
+        // nothing visible unless the app's hover actually changes, so they
+        // follow the same opt-out as a move instead of forcing a frame.
+        let is_cursor = matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::CursorEntered { .. }
+                | WindowEvent::CursorLeft { .. }
+        );
         if let WindowEvent::CursorMoved { position, .. } = &event {
             #[cfg(target_arch = "wasm32")]
             let (mx, my) = (
