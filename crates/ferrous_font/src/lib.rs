@@ -29,7 +29,8 @@ pub mod tables;
 
 pub use atlas::{FontAtlas, GlyphMetrics, DEFAULT_GLYPH_SIZE};
 pub use baked::{
-    AtlasDecodeError, BakedAtlas, FontKey, ATLAS_FORMAT_VERSION, ATLAS_GENERATOR_VERSION,
+    AtlasDecodeError, AtlasOccupancy, BakedAtlas, FontKey, ATLAS_FORMAT_VERSION,
+    ATLAS_GENERATOR_VERSION,
 };
 pub use cache::{default_directory as default_cache_directory, AtlasCache, FontCacheConfig};
 pub use charset::{ascii, cyrillic, from_str as charset_from_str, latin_extended, latin_western};

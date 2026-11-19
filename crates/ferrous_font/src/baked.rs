@@ -68,6 +68,123 @@ const MAX_TABLE_LENGTH: u32 = 1 << 16;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FontKey(u128);
 
+/// How much of a fixed-cell MSDF atlas is actually used.
+///
+/// The bake allocates a square grid of `cell_size × cell_size` cells, one per
+/// glyph plus `.notdef`; cells are never shared or trimmed.  This report makes
+/// that allocation visible without changing the layout:
+///
+/// * [`Self::occupied_pixel_area`] is the area *allocated* to cells
+///   (`used_cells × cell_area`).
+/// * [`Self::ink_pixels`] is the number of texels whose RGB is not the neutral
+///   background (`255, 255, 255`): the glyph cover area plus the distance
+///   band.  It is the closest proxy for useful area in a fixed-cell layout and
+///   is what a variable-size packer would reclaim.
+///
+/// [`Self::occupancy`] is the allocated fraction (usually above 90 % for the
+/// square grid), while [`Self::ink_occupancy`] is the fraction of atlas area
+/// covered by distance-field texels (typically far lower, because a cell is
+/// square and glyphs are narrow and tall).
+///
+/// # Packing
+///
+/// The layout is deliberately left unchanged.  `occupancy` is the only metric a
+/// fixed-cell packer can move, and a square grid is already the tightest
+/// arrangement of equal squares inside a square atlas.  Improving
+/// `ink_occupancy` would require variable-size cells, which changes each
+/// glyph's MSDF raster size and its UV/em mapping — that cannot be
+/// byte-identical, so it is rejected for golden safety.  For the same reason
+/// `ATLAS_FORMAT_VERSION` / `ATLAS_GENERATOR_VERSION` are not bumped.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AtlasOccupancy {
+    /// Cells allocated for glyphs (requested characters plus `.notdef`).
+    pub used_cells: u32,
+    /// Side of one cell, in texels.
+    pub cell_size: u32,
+    /// Area of one cell, in texels.
+    pub cell_area: u64,
+    /// Total area allocated to cells, in texels (`used_cells × cell_area`).
+    pub occupied_pixel_area: u64,
+    /// Atlas texture side, in cells.
+    pub atlas_side: u32,
+    /// Total atlas area, in texels.
+    pub atlas_area: u64,
+    /// `occupied_pixel_area / atlas_area`, in `0.0..=1.0`.
+    pub occupancy: f32,
+    /// Texels whose RGB is not the neutral `255, 255, 255` background.
+    pub ink_pixels: u64,
+    /// `ink_pixels / atlas_area`, in `0.0..=1.0`.
+    pub ink_occupancy: f32,
+}
+
+impl AtlasOccupancy {
+    /// Measures a packed `Rgba8` atlas.
+    ///
+    /// `pixels` is the whole atlas, top-down, `(atlas_side * cell_size)^2 * 4`
+    /// bytes.  Counting ink is a single pass; it only runs when a bake asks
+    /// for the report, never per frame.
+    #[must_use]
+    pub fn measure(used_cells: u32, cell_size: u32, atlas_side: u32, pixels: &[u8]) -> Self {
+        let cell_area = u64::from(cell_size) * u64::from(cell_size);
+        let occupied_pixel_area = u64::from(used_cells).saturating_mul(cell_area);
+        let side_px = u64::from(atlas_side) * u64::from(cell_size);
+        let atlas_area = side_px.saturating_mul(side_px);
+        let ink_pixels = pixels
+            .chunks_exact(4)
+            .filter(|texel| texel[0] != 255 || texel[1] != 255 || texel[2] != 255)
+            .count() as u64;
+        let ratio = |part: u64| {
+            if atlas_area == 0 {
+                0.0
+            } else {
+                part as f32 / atlas_area as f32
+            }
+        };
+        Self {
+            used_cells,
+            cell_size,
+            cell_area,
+            occupied_pixel_area,
+            atlas_side,
+            atlas_area,
+            occupancy: ratio(occupied_pixel_area),
+            ink_pixels,
+            ink_occupancy: ratio(ink_pixels),
+        }
+    }
+
+    /// [`Self::occupancy`] as a percentage.
+    #[must_use]
+    pub fn percentage(&self) -> f32 {
+        self.occupancy * 100.0
+    }
+
+    /// [`Self::ink_occupancy`] as a percentage.
+    #[must_use]
+    pub fn ink_percentage(&self) -> f32 {
+        self.ink_occupancy * 100.0
+    }
+}
+
+impl fmt::Display for AtlasOccupancy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} / {} cells ({}x{} px) in a {}x{} cell atlas: {:.1}% allocated, {:.1}% ink ({}/{} px)",
+            self.used_cells,
+            self.atlas_side * self.atlas_side,
+            self.cell_size,
+            self.cell_size,
+            self.atlas_side,
+            self.atlas_side,
+            self.percentage(),
+            self.ink_percentage(),
+            self.ink_pixels,
+            self.atlas_area,
+        )
+    }
+}
+
 impl FontKey {
     /// Computes the key of the atlas `bytes` would produce for `chars`.
     ///
@@ -259,6 +376,9 @@ impl BakedAtlas {
         // The glyph tables are not a cache: they are the requested atlas, so
         // they cannot be evicted.  Refuse an absurd character set with a typed
         // error instead of letting a bake grow without bound.
+        if log::log_enabled!(log::Level::Debug) {
+            log::debug!("Font atlas occupancy: {}", atlas.occupancy());
+        }
         let table_bytes = atlas.table_bytes();
         if table_bytes > ATLAS_TABLE_BUDGET_BYTES {
             return Err(FontError::Atlas {
@@ -275,6 +395,19 @@ impl BakedAtlas {
     #[must_use]
     pub fn pixel_bytes(&self) -> u64 {
         self.pixels.len() as u64
+    }
+
+    /// Measures how much of this fixed-cell atlas is used.
+    ///
+    /// The accounting never changes the layout: cells stay `glyph_size` square
+    /// and the atlas stays `ceil(sqrt(cells))` cells wide.  Counting ink scans
+    /// `pixels`, so call this when reporting (a bake does it once at `debug`
+    /// level), not every frame.
+    #[must_use]
+    pub fn occupancy(&self) -> AtlasOccupancy {
+        let used_cells = self.metrics.len() as u32 + u32::from(self.notdef.is_some());
+        let atlas_side = self.tex_size.checked_div(self.glyph_size).unwrap_or(0);
+        AtlasOccupancy::measure(used_cells, self.glyph_size, atlas_side, &self.pixels)
     }
 
     /// Estimated bytes of the CPU glyph tables (metrics, indices, kerning).
@@ -449,6 +582,7 @@ impl BakedAtlas {
             notdef: self.notdef,
             key: self.key,
             layout_cache: Mutex::new(LayoutCache::new(LAYOUT_CACHE_BUDGET_BYTES)),
+            ascii_tables: std::sync::OnceLock::new(),
             inventory_prefix,
         }
     }
@@ -775,6 +909,55 @@ mod tests {
         let b = baked();
         assert_eq!(a.key, b.key);
         assert_eq!(a.pixels, b.pixels);
+    }
+
+    #[test]
+    fn occupancy_measure_has_exact_accounting() {
+        // A 2x2-cell atlas of 2x2 px cells (a 4x4 texel image) with one cell
+        // allocated and four texels of ink in it.
+        let mut pixels = vec![255u8; 4 * 4 * 4];
+        for row in 0..2 {
+            for column in 0..2 {
+                pixels[(row * 4 + column) * 4] = 0;
+            }
+        }
+        let occupancy = AtlasOccupancy::measure(1, 2, 2, &pixels);
+        assert_eq!(occupancy.used_cells, 1);
+        assert_eq!(occupancy.cell_area, 4);
+        assert_eq!(occupancy.occupied_pixel_area, 4);
+        assert_eq!(occupancy.atlas_area, 16);
+        assert!((occupancy.occupancy - 0.25).abs() < f32::EPSILON);
+        assert_eq!(occupancy.ink_pixels, 4);
+        assert!((occupancy.ink_occupancy - 0.25).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn occupancy_reports_deterministic_counts() {
+        let atlas = baked();
+        let occupancy = atlas.occupancy();
+        let used = atlas.metrics.len() as u32 + u32::from(atlas.notdef.is_some());
+        assert_eq!(occupancy.used_cells, used);
+        assert_eq!(occupancy.cell_size, atlas.glyph_size);
+        assert_eq!(occupancy.atlas_side, atlas.tex_size / atlas.glyph_size);
+        assert_eq!(
+            occupancy.atlas_area,
+            u64::from(atlas.tex_size) * u64::from(atlas.tex_size)
+        );
+        assert_eq!(
+            occupancy.occupied_pixel_area,
+            u64::from(used) * u64::from(atlas.glyph_size) * u64::from(atlas.glyph_size)
+        );
+        // The square grid is nearly full by construction for a small set.
+        assert!(occupancy.occupancy > 0.9);
+        assert!(occupancy.ink_pixels > 0);
+        assert!(occupancy.ink_pixels < occupancy.occupied_pixel_area);
+        // A second bake of the same inputs reports identical numbers.
+        assert_eq!(baked().occupancy(), occupancy);
+    }
+
+    #[test]
+    fn the_encoded_atlas_is_byte_for_byte_deterministic() {
+        assert_eq!(baked().encode(), baked().encode());
     }
 
     #[test]
