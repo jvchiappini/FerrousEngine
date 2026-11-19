@@ -151,7 +151,7 @@ pub struct SvgCommand {
 }
 
 /// Draw segment defining ranges for various primitives and an optional scissor.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct DrawSegment {
     pub quad_range: std::ops::Range<u32>,
     pub text_range: std::ops::Range<u32>,
