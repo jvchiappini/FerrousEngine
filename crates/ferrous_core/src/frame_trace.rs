@@ -463,7 +463,14 @@ fn clear_for_test() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
     use std::time::Duration;
+
+    /// The trace state is process-global, so these tests must not interleave.
+    fn lock() -> MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[test]
     fn nearest_rank_percentiles_are_stable() {
@@ -476,6 +483,7 @@ mod tests {
 
     #[test]
     fn stages_and_frames_are_recorded() {
+        let _guard = lock();
         force_enabled(true);
         clear_for_test();
         {
@@ -494,6 +502,7 @@ mod tests {
 
     #[test]
     fn a_frame_records_its_wall_time() {
+        let _guard = lock();
         force_enabled(true);
         clear_for_test();
         {
@@ -509,6 +518,7 @@ mod tests {
 
     #[test]
     fn a_disabled_trace_records_nothing() {
+        let _guard = lock();
         force_enabled(false);
         clear_for_test();
         {
