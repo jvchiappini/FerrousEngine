@@ -166,7 +166,9 @@ impl EngineContext {
         #[cfg(not(target_arch = "wasm32"))]
         log::info!(
             "[WGPU] Selected Adapter: {} ({:?}) - Backend: {:?}",
-            info.name, info.device_type, info.backend
+            info.name,
+            info.device_type,
+            info.backend
         );
         let backend = info.backend;
 
@@ -185,13 +187,16 @@ impl EngineContext {
         // Solicitar límites de búfer más grandes del adaptador para soportar escenas
         // grandes de voxels, pero con un tope para WebAssembly (32-bit).
         let phys_limits = adapter.limits();
-        
+
         #[cfg(target_arch = "wasm32")]
         {
             // WebAssembly tiene un espacio de direccionamiento de 4GB total.
             // No podemos pedir buffers de gigabytes para evitar "Memory Access Out of Bounds".
-            limits.max_storage_buffer_binding_size = phys_limits.max_storage_buffer_binding_size.min(256 * 1024 * 1024); // 256MB
-            limits.max_buffer_size = phys_limits.max_buffer_size.min(512 * 1024 * 1024); // 512MB
+            limits.max_storage_buffer_binding_size = phys_limits
+                .max_storage_buffer_binding_size
+                .min(256 * 1024 * 1024); // 256MB
+            limits.max_buffer_size = phys_limits.max_buffer_size.min(512 * 1024 * 1024);
+            // 512MB
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -239,10 +244,7 @@ impl EngineContext {
         // same adapter (the engine keys its cache file by vendor/device/driver
         // and version). `fallback: true` makes wgpu ignore stale or corrupt
         // data instead of failing.
-        let pipeline_cache = if device
-            .features()
-            .contains(wgpu::Features::PIPELINE_CACHE)
-        {
+        let pipeline_cache = if device.features().contains(wgpu::Features::PIPELINE_CACHE) {
             Some(Arc::new(unsafe {
                 device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
                     label: Some("Engine Pipeline Cache"),

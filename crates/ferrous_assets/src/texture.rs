@@ -270,7 +270,10 @@ impl Texture2d {
     /// Useful to pack many icons into one atlas texture.
     #[cfg(feature = "svg")]
     pub fn rasterize_svg(svg_data: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
-        Ok(svg_cache::global().rasterize(svg_data, width, height)?.as_ref().clone())
+        Ok(svg_cache::global()
+            .rasterize(svg_data, width, height)?
+            .as_ref()
+            .clone())
     }
 
     /// Rasterize an SVG and return a **shared** GPU texture from the
@@ -725,4 +728,3 @@ mod tests {
         );
     }
 }
-

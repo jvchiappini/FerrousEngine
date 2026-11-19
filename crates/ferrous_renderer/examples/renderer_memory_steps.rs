@@ -59,7 +59,15 @@ fn main() {
         }
     };
     step("device");
-    let mut renderer = Renderer::new_with_mode(context, WIDTH, HEIGHT, FORMAT, 4, None, RendererMode::Flat2D);
+    let mut renderer = Renderer::new_with_mode(
+        context,
+        WIDTH,
+        HEIGHT,
+        FORMAT,
+        4,
+        None,
+        RendererMode::Flat2D,
+    );
     step("renderer_flat2d");
     renderer.ensure_three_d();
     step("three_d");

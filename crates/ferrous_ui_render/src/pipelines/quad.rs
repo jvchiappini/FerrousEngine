@@ -1,5 +1,5 @@
-use wgpu::RenderPipeline;
 use crate::gpu_types::GuiQuad;
+use wgpu::RenderPipeline;
 
 // `gui.wgsl` reads locations 1..=10, whose last attribute (`z_order`) ends at
 // byte 92. The instance stride stays at the full 96 bytes because the same
@@ -51,25 +51,65 @@ pub fn create_quad_pipeline(
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[
                         // offset  0: pos      [f32; 2]
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 0,  shader_location: 1 },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 0,
+                            shader_location: 1,
+                        },
                         // offset  8: size     [f32; 2]
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 8,  shader_location: 2 },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 8,
+                            shader_location: 2,
+                        },
                         // offset 16: uv0      [f32; 2]
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 16, shader_location: 3 },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 16,
+                            shader_location: 3,
+                        },
                         // offset 24: uv1      [f32; 2]
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 24, shader_location: 4 },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 24,
+                            shader_location: 4,
+                        },
                         // offset 32: color    [f32; 4]
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 32, shader_location: 5 },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 32,
+                            shader_location: 5,
+                        },
                         // offset 48: color_b  [f32; 4]
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 48, shader_location: 6 },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 48,
+                            shader_location: 6,
+                        },
                         // offset 64: radii    [f32; 4]
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 64, shader_location: 7 },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 64,
+                            shader_location: 7,
+                        },
                         // offset 80: tex_index u32
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Uint32,    offset: 80, shader_location: 8 },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Uint32,
+                            offset: 80,
+                            shader_location: 8,
+                        },
                         // offset 84: flags    u32
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Uint32,    offset: 84, shader_location: 9 },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Uint32,
+                            offset: 84,
+                            shader_location: 9,
+                        },
                         // offset 88: z_order  f32
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32,   offset: 88, shader_location: 10 },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32,
+                            offset: 88,
+                            shader_location: 10,
+                        },
                     ],
                 },
             ],
@@ -93,7 +133,10 @@ pub fn create_quad_pipeline(
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),
-        multisample: wgpu::MultisampleState { count: sample_count, ..Default::default() },
+        multisample: wgpu::MultisampleState {
+            count: sample_count,
+            ..Default::default()
+        },
         multiview: None,
         cache,
     })

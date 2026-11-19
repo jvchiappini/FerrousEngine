@@ -5240,7 +5240,11 @@ impl Renderer {
             icons: None,
         });
         ferrous_core::memory::register_gpu(
-            format!("font:atlas {}px#{} texture", font.atlas.glyph_size, self.fonts_2d.len()),
+            format!(
+                "font:atlas {}px#{} texture",
+                font.atlas.glyph_size,
+                self.fonts_2d.len()
+            ),
             font.atlas.gpu_bytes(),
             ferrous_core::memory::Subsystem::Fonts,
         );

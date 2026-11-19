@@ -507,8 +507,7 @@ mod tests {
             [renderer]
             memory_hints = "memory_usage"
         "#;
-        let engine_cfg: EngineConfig =
-            toml::from_str(toml).expect("parse [renderer] memory_hints");
+        let engine_cfg: EngineConfig = toml::from_str(toml).expect("parse [renderer] memory_hints");
         let mut app_cfg = default_app_config();
         engine_cfg.apply_to(&mut app_cfg);
         assert!(matches!(

@@ -57,11 +57,11 @@ pub use ferrous_font::inventory;
 #[cfg(feature = "text")]
 pub use ferrous_font::Font;
 pub use gltf_loader::{load_gltf, AssetMesh, AssetModel, RawMaterial};
-#[cfg(feature = "gpu")]
-pub use texture::Texture2d;
 /// Content-keyed SVG raster cache (`svg` + `gpu`); see [`texture::SvgCache`].
 #[cfg(all(feature = "gpu", feature = "svg"))]
 pub use texture::SvgCache;
+#[cfg(feature = "gpu")]
+pub use texture::Texture2d;
 
 // ── re-exports: Phase 5 API ──────────────────────────────────────────────────
 // types moved to `ferrous_asset_types`

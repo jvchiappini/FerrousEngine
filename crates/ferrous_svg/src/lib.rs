@@ -64,11 +64,11 @@ impl SvgMesh {
     pub fn from_str(svg_content: &str) -> Result<Self, String> {
         let mut buffers: VertexBuffers<SvgVertex, u32> = VertexBuffers::new();
         let mut fill_tessellator = FillTessellator::new();
-        
+
         // Use a simple square if we don't have a real parser yet
         // In Phase 6 we will integrate usvg for full spec support.
         let mut builder = lyon_tessellation::path::Path::builder();
-        
+
         // Simple heuristic: if it contains "rect", let's draw a rect for now.
         // This is a placeholder for real SVG parsing.
         if svg_content.contains("<rect") {
@@ -78,17 +78,20 @@ impl SvgMesh {
             builder.line_to(lyon_tessellation::math::point(10.0, 90.0));
             builder.close();
         } else if svg_content.contains("<circle") {
-             // Draw a simple octagonal circle
-             for i in 0..8 {
-                 let angle = (i as f32) * std::f32::consts::PI * 0.25;
-                 let p = lyon_tessellation::math::point(
-                     50.0 + angle.cos() * 40.0,
-                     50.0 + angle.sin() * 40.0
-                 );
-                 if i == 0 { builder.begin(p); }
-                 else { builder.line_to(p); }
-             }
-             builder.close();
+            // Draw a simple octagonal circle
+            for i in 0..8 {
+                let angle = (i as f32) * std::f32::consts::PI * 0.25;
+                let p = lyon_tessellation::math::point(
+                    50.0 + angle.cos() * 40.0,
+                    50.0 + angle.sin() * 40.0,
+                );
+                if i == 0 {
+                    builder.begin(p);
+                } else {
+                    builder.line_to(p);
+                }
+            }
+            builder.close();
         } else {
             // Default placeholder triangle
             builder.begin(lyon_tessellation::math::point(50.0, 10.0));
@@ -96,7 +99,7 @@ impl SvgMesh {
             builder.line_to(lyon_tessellation::math::point(10.0, 90.0));
             builder.close();
         }
-        
+
         let path = builder.build();
 
         fill_tessellator
@@ -110,7 +113,12 @@ impl SvgMesh {
         Ok(Self {
             vertices: buffers.vertices,
             indices: buffers.indices,
-            bounding_box: SvgRect { x: 0.0, y: 0.0, width: 100.0, height: 100.0 },
+            bounding_box: SvgRect {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 100.0,
+            },
         })
     }
 }

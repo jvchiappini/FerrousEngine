@@ -22,8 +22,8 @@
 //! }
 //! ```
 
-use ferrous_asset_types::Asset;
 use anyhow::{bail, Context, Result};
+use ferrous_asset_types::Asset;
 use std::path::Path;
 
 // ---------------------------------------------------------------------------
