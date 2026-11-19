@@ -24,9 +24,10 @@
 //! frame-trace {"event":"frame-trace","frames":600,"stages":{...},...}
 //! ```
 //!
-//! Each stage reports the median, p90 and p99 in milliseconds.  When the
-//! `alloc-stats` feature is on, the same JSON carries allocations and touched
-//! bytes per frame (median/p90).
+//! Each stage reports the median, p90 and p99 in milliseconds, and so does the
+//! whole frame (`frame_ms`, from [`begin_frame`] to its close: event handling
+//! through present).  When the `alloc-stats` feature is on, the same JSON
+//! carries allocations and touched bytes per frame (median/p90).
 //!
 //! # Stages
 //!
@@ -113,6 +114,8 @@ static SUBMITS: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Clone, Copy)]
 struct FrameSample {
     stages: [f32; STAGE_COUNT],
+    /// Wall time of the whole frame, from `begin_frame` to its close.
+    total_ms: f32,
     /// Allocations made by the frame thread.
     allocations: u64,
     /// Bytes touched by the frame thread.
@@ -127,6 +130,7 @@ impl Default for FrameSample {
     fn default() -> Self {
         Self {
             stages: [0.0; STAGE_COUNT],
+            total_ms: 0.0,
             allocations: 0,
             allocated_bytes: 0,
             worker_allocations: 0,
@@ -140,6 +144,8 @@ struct State {
     frames: Vec<FrameSample>,
     current: FrameSample,
     started: bool,
+    /// When the open frame began; `total_ms` is its wall time.
+    frame_started: Option<Instant>,
     #[cfg(feature = "alloc-stats")]
     alloc_before: Option<crate::alloc_stats::Snapshot>,
     #[cfg(feature = "alloc-stats")]
@@ -189,6 +195,7 @@ pub fn begin_frame() -> FrameGuard {
         state.current.stages[Stage::EventHandling as usize] =
             EVENT_NS.swap(0, Ordering::Relaxed) as f32 / 1_000_000.0;
         state.started = true;
+        state.frame_started = Some(Instant::now());
         #[cfg(feature = "alloc-stats")]
         {
             state.alloc_before = Some(crate::alloc_stats::snapshot());
@@ -217,6 +224,9 @@ fn finish_locked(state: &mut State) {
     }
     #[allow(unused_mut)]
     let mut sample = std::mem::take(&mut state.current);
+    if let Some(started) = state.frame_started.take() {
+        sample.total_ms = started.elapsed().as_secs_f32() * 1000.0;
+    }
     #[cfg(feature = "alloc-stats")]
     if let (Some(before), Some(thread_before)) =
         (state.alloc_before.take(), state.thread_alloc_before.take())
@@ -372,6 +382,8 @@ pub fn report(gpu_passes: &[(String, f64)], gpu_unsupported: &[String]) {
         stages.insert(stage.name().to_owned(), stats(&values));
     }
 
+    let frame_totals: Vec<f32> = state.frames.iter().map(|frame| frame.total_ms).collect();
+
     let allocations: Vec<f32> = state
         .frames
         .iter()
@@ -406,6 +418,7 @@ pub fn report(gpu_passes: &[(String, f64)], gpu_unsupported: &[String]) {
         "gpu_submits": SUBMITS.load(Ordering::Relaxed),
         "alloc_stats": cfg!(feature = "alloc-stats"),
         "stages": stages,
+        "frame_ms": stats(&frame_totals),
         "allocations_per_frame": {
             "median": f64::from(percentile(&allocations, 0.5)),
             "p90": f64::from(percentile(&allocations, 0.9)),
@@ -440,6 +453,7 @@ fn clear_for_test() {
     state.frames.clear();
     state.current = FrameSample::default();
     state.started = false;
+    state.frame_started = None;
     EVENT_NS.store(0, Ordering::Relaxed);
     REPORTED.store(false, Ordering::Relaxed);
     PRESENTED.store(0, Ordering::Relaxed);
@@ -474,6 +488,21 @@ mod tests {
         let state = lock_state();
         assert_eq!(state.frames.len(), 1);
         assert!(state.frames[0].stages[Stage::AppUpdate as usize] >= 0.5);
+        drop(state);
+        force_enabled(false);
+    }
+
+    #[test]
+    fn a_frame_records_its_wall_time() {
+        force_enabled(true);
+        clear_for_test();
+        {
+            let _frame = begin_frame();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let state = lock_state();
+        assert_eq!(state.frames.len(), 1);
+        assert!(state.frames[0].total_ms >= 0.5);
         drop(state);
         force_enabled(false);
     }

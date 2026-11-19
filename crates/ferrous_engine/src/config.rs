@@ -38,6 +38,28 @@ use ferrous_renderer::RenderStyle;
 
 use crate::builder::AppConfig;
 
+/// Environment variable that overrides the device memory policy.
+///
+/// `FERROUS_MEMORY_HINTS=memory_usage` or `performance` selects the wgpu
+/// allocation strategy regardless of the mode or `ferrous.toml`; any other
+/// value (or none) keeps the configured choice.  It exists to compare both
+/// policies on the same binary; see `docs/memory.md`.
+pub const MEMORY_HINTS_ENV: &str = "FERROUS_MEMORY_HINTS";
+
+fn memory_hints_override() -> Option<wgpu::MemoryHints> {
+    let value = std::env::var_os(MEMORY_HINTS_ENV)?;
+    parse_memory_hints(&value.to_string_lossy())
+}
+
+/// Parses `memory_usage`/`performance` (and the accepted aliases).
+fn parse_memory_hints(value: &str) -> Option<wgpu::MemoryHints> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "memory_usage" | "memoryusage" | "memory" | "lean" => Some(wgpu::MemoryHints::MemoryUsage),
+        "performance" | "perf" => Some(wgpu::MemoryHints::Performance),
+        _ => None,
+    }
+}
+
 impl AppConfig {
     /// The [`wgpu::MemoryHints`] this configuration asks the device for.
     ///
@@ -47,15 +69,20 @@ impl AppConfig {
     /// [`crate::builder::AppMode::Game3D`] keeps
     /// [`wgpu::MemoryHints::Performance`].
     ///
+    /// `FERROUS_MEMORY_HINTS=memory_usage|performance` overrides both, for
+    /// measuring one policy against the other without a rebuild.
+    ///
     /// UI/editor apps allocate many small buffers and textures, where wgpu-hal's
     /// 128 MB free-list chunks are pure waste.  Games keep the
     /// throughput-oriented defaults because their resources are large enough to
     /// benefit from the bigger sub-allocations.
     #[must_use]
     pub fn effective_memory_hints(&self) -> wgpu::MemoryHints {
-        self.memory_hints.clone().unwrap_or(match self.mode {
-            crate::builder::AppMode::Flat2D => wgpu::MemoryHints::MemoryUsage,
-            crate::builder::AppMode::Game3D => wgpu::MemoryHints::Performance,
+        memory_hints_override().unwrap_or_else(|| {
+            self.memory_hints.clone().unwrap_or(match self.mode {
+                crate::builder::AppMode::Flat2D => wgpu::MemoryHints::MemoryUsage,
+                crate::builder::AppMode::Game3D => wgpu::MemoryHints::Performance,
+            })
         })
     }
 
@@ -200,13 +227,7 @@ impl EngineConfig {
 
         // [renderer] memory_hints
         if let Some(ref hints) = self.renderer.memory_hints {
-            let parsed = match hints.to_ascii_lowercase().as_str() {
-                "memory_usage" | "memoryusage" | "memory" | "lean" => {
-                    Some(wgpu::MemoryHints::MemoryUsage)
-                }
-                "performance" | "perf" => Some(wgpu::MemoryHints::Performance),
-                _ => None, // unrecognised → keep the current value
-            };
+            let parsed = parse_memory_hints(hints);
             if parsed.is_some() {
                 cfg.memory_hints = parsed;
             }
@@ -514,6 +535,19 @@ mod tests {
             app_cfg.memory_hints,
             Some(wgpu::MemoryHints::MemoryUsage)
         ));
+    }
+
+    #[test]
+    fn memory_hints_names_parse_and_reject_unknown_values() {
+        assert!(matches!(
+            parse_memory_hints("memory_usage"),
+            Some(wgpu::MemoryHints::MemoryUsage)
+        ));
+        assert!(matches!(
+            parse_memory_hints(" PERF "),
+            Some(wgpu::MemoryHints::Performance)
+        ));
+        assert!(parse_memory_hints("bogus").is_none());
     }
 
     #[test]
