@@ -5421,7 +5421,10 @@ impl Renderer {
                 );
                 return;
             };
-            entry.font.atlas.layout_block(text, style, &mut layout);
+            entry
+                .font
+                .atlas
+                .layout_block_glyphs(text, style, &mut layout);
             entry.font.atlas.px_range
         };
 
@@ -5498,6 +5501,25 @@ impl Renderer {
             self.text_batcher_2d
                 .push((font_id, instance, self.current_blend_2d));
         }
+    }
+
+    /// Characters of `text` that have no glyph in `font_id`.
+    ///
+    /// Allocation-free and O(text length with one map probe per character); it
+    /// exists so an app can show a missing-glyph badge without a full measure.
+    /// Returns `0` for a stale `FontId2d` (the same visible result as a font
+    /// that covers everything).
+    #[must_use]
+    pub fn missing_glyphs_2d(&self, font_id: FontId2d, text: &str) -> u32 {
+        let Some(entry) = self.fonts_2d.get(font_id.handle()) else {
+            log::warn!(
+                "missing_glyphs_2d called with a stale FontId2d (index {}, generation {})",
+                font_id.index(),
+                font_id.generation()
+            );
+            return 0;
+        };
+        entry.font.atlas.count_missing(text)
     }
 
     /// Lays out a whole text block without drawing it.

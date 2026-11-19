@@ -3,6 +3,11 @@
 use crate::gpu_types::TextQuad;
 use crate::gui_batch::GuiBatch;
 
+#[cfg(feature = "text")]
+use std::collections::{HashMap, VecDeque};
+#[cfg(feature = "text")]
+use std::sync::{Mutex, OnceLock};
+
 /// Glyph data needed to lay a run of text out on a baseline, in em units.
 ///
 /// Implemented for the engine font and for test fixtures, so placement (and
@@ -46,6 +51,155 @@ impl BaselineGlyphs for ferrous_assets::Font {
 
 /// Advance used for characters the font cannot draw, in em.
 const MISSING_ADVANCE_EM: f32 = 0.5;
+
+/// Byte budget for the GUI measure cache (4 MiB).
+///
+/// Measurement is pure arithmetic, so this only saves the per-character map
+/// probes on repeated labels; the budget keeps it far below the atlas caches.
+#[cfg(feature = "text")]
+const MEASURE_CACHE_BUDGET_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Key of one measured run.
+///
+/// `font` is the atlas key (identical font bytes and charset ⇒ identical
+/// metrics), `size_bits`/`tracking_bits` are the exact f32 inputs and
+/// `text_hash` is an FNV-1a digest; the exact text is kept in the entry so a
+/// hash collision is a miss rather than a wrong width.
+#[cfg(feature = "text")]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct MeasureKey {
+    font: u128,
+    size_bits: u32,
+    tracking_bits: u32,
+    text_hash: u64,
+}
+
+#[cfg(feature = "text")]
+struct MeasureEntry {
+    text: String,
+    width: f32,
+    bytes: u64,
+    /// Logical timestamp of the most recent access, for the LRU queue.
+    stamp: u64,
+}
+
+/// Byte-bounded least-recently-used cache of measured widths.
+///
+/// Lookups are amortised O(1): a hit updates one timestamp and appends to the
+/// queue; eviction pops stale queue entries, and the queue is compacted only
+/// when it outgrows the live entries by a constant factor.
+#[cfg(feature = "text")]
+struct MeasureCache {
+    max_bytes: u64,
+    bytes: u64,
+    clock: u64,
+    entries: HashMap<MeasureKey, MeasureEntry>,
+    order: VecDeque<(u64, MeasureKey)>,
+}
+
+#[cfg(feature = "text")]
+impl MeasureCache {
+    fn new(max_bytes: u64) -> Self {
+        Self {
+            max_bytes,
+            bytes: 0,
+            clock: 0,
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    #[cfg(test)]
+    fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    fn get(&mut self, key: MeasureKey, text: &str) -> Option<f32> {
+        let stamp = self.clock.wrapping_add(1);
+        let width = {
+            let entry = self.entries.get_mut(&key)?;
+            if entry.text != text {
+                return None;
+            }
+            entry.stamp = stamp;
+            entry.width
+        };
+        self.clock = stamp;
+        self.order.push_back((stamp, key));
+        self.compact_order();
+        Some(width)
+    }
+
+    /// Drops stale LRU queue entries once the queue outgrows the live entries.
+    ///
+    /// Compaction runs on hits as well as inserts: a UI that measures the same
+    /// labels every frame only ever takes the hit path, and without this the
+    /// queue would grow by one entry per measurement.
+    fn compact_order(&mut self) {
+        if self.order.len() > self.entries.len() * 2 + 64 {
+            let entries = &self.entries;
+            self.order
+                .retain(|(stamp, key)| entries.get(key).map(|entry| entry.stamp) == Some(*stamp));
+        }
+    }
+
+    fn insert(&mut self, key: MeasureKey, text: &str, width: f32) -> u64 {
+        let bytes = text.len() as u64
+            + std::mem::size_of::<MeasureEntry>() as u64
+            + std::mem::size_of::<MeasureKey>() as u64
+            + 48;
+        if bytes > self.max_bytes {
+            return self.bytes;
+        }
+        let stamp = self.clock.wrapping_add(1);
+        let previous_bytes = self.entries.get(&key).map_or(0, |entry| entry.bytes);
+        self.clock = stamp;
+        self.bytes = self.bytes.saturating_sub(previous_bytes);
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.entries.insert(
+            key,
+            MeasureEntry {
+                text: text.to_owned(),
+                width,
+                bytes,
+                stamp,
+            },
+        );
+        self.order.push_back((stamp, key));
+
+        while self.bytes > self.max_bytes {
+            let Some((candidate, key)) = self.order.pop_front() else {
+                break;
+            };
+            if self.entries.get(&key).map(|entry| entry.stamp) == Some(candidate) {
+                if let Some(removed) = self.entries.remove(&key) {
+                    self.bytes = self.bytes.saturating_sub(removed.bytes);
+                }
+            }
+        }
+        self.compact_order();
+        self.bytes
+    }
+}
+
+#[cfg(feature = "text")]
+static MEASURE_CACHE: OnceLock<Mutex<MeasureCache>> = OnceLock::new();
+
+#[cfg(feature = "text")]
+fn measure_cache() -> &'static Mutex<MeasureCache> {
+    MEASURE_CACHE.get_or_init(|| Mutex::new(MeasureCache::new(MEASURE_CACHE_BUDGET_BYTES)))
+}
+
+/// FNV-1a digest of the UTF-8 bytes of `text`.
+#[cfg(feature = "text")]
+fn text_hash(text: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for &byte in text.as_bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
 
 /// Calls `emit(pos, size, uv)` once per drawable glyph, laying `text` out on
 /// the baseline at `origin[1]` with its pen starting at `origin[0]`.
@@ -178,9 +332,27 @@ impl GuiBatch {
         self.update_last_segment();
     }
 
+    /// Measures a run without building any quads.
+    ///
+    /// Widths are cached per atlas key, size, tracking and text (a byte-budgeted
+    /// LRU).  The cache stores only the resulting width, never a quad, so this
+    /// path can never enqueue draw data.
     #[cfg(feature = "text")]
     pub fn measure_text(font: &ferrous_assets::Font, text: &str, size: f32) -> f32 {
-        text.chars()
+        let key = MeasureKey {
+            font: font.atlas.key.raw(),
+            size_bits: size.to_bits(),
+            tracking_bits: 0.0f32.to_bits(),
+            text_hash: text_hash(text),
+        };
+        let mut cache = measure_cache()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(width) = cache.get(key, text) {
+            return width;
+        }
+        let width: f32 = text
+            .chars()
             .map(|c| {
                 font.atlas
                     .metrics
@@ -188,7 +360,15 @@ impl GuiBatch {
                     .map(|m| m.advance * size)
                     .unwrap_or(size * 0.6)
             })
-            .sum()
+            .sum();
+        let bytes = cache.insert(key, text, width);
+        drop(cache);
+        ferrous_assets::inventory::register_cpu(
+            "ui text measure cache",
+            bytes,
+            ferrous_assets::inventory::Subsystem::Fonts,
+        );
+        width
     }
 
     #[cfg(feature = "text")]
@@ -434,5 +614,66 @@ mod baseline_tests {
         for_each_baseline_glyph(&Fixture, "a", [0.0, 0.0], 10.0, |_, quad, _| size = quad);
         assert!((size[0] - 16.0).abs() < 1e-4, "{size:?}");
         assert!((size[1] - 16.0).abs() < 1e-4, "{size:?}");
+    }
+}
+
+#[cfg(all(test, feature = "text"))]
+mod measure_cache_tests {
+    use super::*;
+
+    fn key(font: u128, size: f32, text: &str) -> MeasureKey {
+        MeasureKey {
+            font,
+            size_bits: size.to_bits(),
+            tracking_bits: 0.0f32.to_bits(),
+            text_hash: text_hash(text),
+        }
+    }
+
+    #[test]
+    fn a_hit_returns_the_cached_width_without_moving_the_budget() {
+        let mut cache = MeasureCache::new(4096);
+        let k = key(1, 16.0, "Hola");
+        assert_eq!(cache.insert(k, "Hola", 42.5), cache.bytes());
+        let bytes = cache.bytes();
+        assert_eq!(cache.get(k, "Hola"), Some(42.5));
+        assert_eq!(cache.bytes(), bytes, "a hit is free");
+    }
+
+    #[test]
+    fn a_hash_collision_is_a_miss() {
+        let mut cache = MeasureCache::new(4096);
+        let k = key(1, 16.0, "Hola");
+        cache.insert(k, "Hola", 42.5);
+        assert_eq!(cache.get(k, "Adios"), None);
+    }
+
+    #[test]
+    fn hits_do_not_grow_the_lru_queue_without_bound() {
+        // A UI that measures the same labels every frame only takes the hit
+        // path; the queue must not grow by one entry per measurement.
+        let mut cache = MeasureCache::new(4096);
+        let k = key(1, 16.0, "Hola");
+        cache.insert(k, "Hola", 42.5);
+        for _ in 0..10_000 {
+            assert_eq!(cache.get(k, "Hola"), Some(42.5));
+        }
+        assert!(
+            cache.order.len() <= cache.entries.len() * 2 + 64,
+            "queue stays bounded: {} entries, {} live",
+            cache.order.len(),
+            cache.entries.len()
+        );
+    }
+
+    #[test]
+    fn eviction_never_exceeds_the_byte_budget() {
+        let mut cache = MeasureCache::new(300);
+        for i in 0..100 {
+            let text = format!("line-{i}");
+            cache.insert(key(1, 16.0, &text), &text, i as f32);
+            assert!(cache.bytes() <= 300);
+        }
+        assert!(!cache.entries.is_empty());
     }
 }

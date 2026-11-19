@@ -77,6 +77,8 @@ pub struct FontAtlas {
     pub key: super::FontKey,
     /// LRU byte-budgeted cache of block layouts.
     pub(crate) layout_cache: Mutex<LayoutCache>,
+    /// ASCII fast-path table, built on first use from the maps above.
+    pub(crate) ascii_tables: std::sync::OnceLock<Box<super::layout::AsciiTables>>,
     /// Stable prefix for every inventory label this atlas owns.
     pub(crate) inventory_prefix: String,
 }
@@ -100,6 +102,9 @@ impl FontAtlas {
     }
 
     /// A pure-data view of this atlas for [`layout_line`].
+    ///
+    /// The ASCII fast-path table is built on first use from this atlas's own
+    /// maps, so it cannot outlive the atlas or disagree with it.
     pub fn layout_font(&self) -> LayoutFont<'_> {
         LayoutFont {
             metrics: &self.metrics,
@@ -108,6 +113,12 @@ impl FontAtlas {
             kerning: &self.kerning,
             gpos: &self.gpos,
             font: self.font_metrics,
+            ascii: Some(self.ascii_tables.get_or_init(|| {
+                Box::new(super::layout::AsciiTables::build(
+                    &self.metrics,
+                    &self.glyph_indices,
+                ))
+            })),
         }
     }
 
@@ -171,6 +182,63 @@ impl FontAtlas {
         metrics
     }
 
+    /// Characters that have no glyph in this atlas (whitespace excluded).
+    ///
+    /// This is the `missing_glyphs` count [`layout_block`] reports, computed
+    /// without laying out, allocating or touching the layout cache.  A caller
+    /// that only wants the warning badge (Motioner's text placeholder) must
+    /// not pay for a full measure per frame.
+    #[must_use]
+    pub fn count_missing(&self, text: &str) -> u32 {
+        let mut missing = 0u32;
+        for ch in text.chars() {
+            if !ch.is_whitespace() && !self.metrics.contains_key(&ch) {
+                missing = missing.saturating_add(1);
+            }
+        }
+        missing
+    }
+
+    /// Lays out a block for drawing, without copying its metrics.
+    ///
+    /// [`Self::layout_block`] returns [`TextMetrics`] by value, which clones the
+    /// per-line list on every cache hit — one heap allocation per text call,
+    /// i.e. one per glyph run on a frame that draws thousands of labels.  A
+    /// draw only needs the glyph records, so this variant fills `out` and skips
+    /// the metrics copy on a hit.  The records are exactly the ones
+    /// [`Self::layout_block`] would return.
+    pub fn layout_block_glyphs(&self, text: &str, style: TextStyle, out: &mut Vec<GlyphLayout>) {
+        let hit = {
+            let mut cache = self
+                .layout_cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            cache.get(text, style).map(|entry| {
+                out.clear();
+                out.extend_from_slice(&entry.glyphs);
+            })
+        };
+        if hit.is_some() {
+            return;
+        }
+
+        let metrics = layout_block(self.layout_font(), text, style, out);
+        let bytes = {
+            let mut cache = self
+                .layout_cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            cache.insert(text, style, out, &metrics)
+        };
+        if bytes > 0 {
+            inventory::register_cpu(
+                &format!("{} layout cache", self.inventory_prefix),
+                bytes,
+                inventory::Subsystem::Fonts,
+            );
+        }
+    }
+
     /// Bytes of the GPU texture this atlas owns (`Rgba8`, one mip level).
     #[must_use]
     pub fn gpu_bytes(&self) -> u64 {
@@ -210,7 +278,15 @@ impl FontAtlas {
     /// CPU + GPU bytes this atlas owns, for a memory report.
     #[must_use]
     pub fn cpu_bytes(&self) -> u64 {
-        self.table_bytes() + self.layout_cache_bytes()
+        self.table_bytes() + self.layout_cache_bytes() + self.ascii_table_bytes()
+    }
+
+    /// Bytes of the ASCII fast-path table, `0` until the first ASCII layout.
+    #[must_use]
+    pub fn ascii_table_bytes(&self) -> u64 {
+        self.ascii_tables
+            .get()
+            .map_or(0, |tables| tables.byte_size())
     }
 
     /// Every inventory entry this atlas owns, with stable labels.
@@ -244,6 +320,10 @@ impl FontAtlas {
             (
                 format!("{} layout cache", self.inventory_prefix),
                 self.layout_cache_bytes(),
+            ),
+            (
+                format!("{} ascii tables", self.inventory_prefix),
+                self.ascii_table_bytes(),
             ),
         ]
     }

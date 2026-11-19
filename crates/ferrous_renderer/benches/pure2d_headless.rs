@@ -32,7 +32,7 @@
 use divan::counter::BytesCount;
 use divan::AllocProfiler;
 use ferrous_2d::render::{FontId2d, ShapeInstance, SpriteInstance};
-use ferrous_font::TextAlign;
+use ferrous_font::{LayoutData, TextAlign, TextStyle};
 use ferrous_renderer::headless::{Pure2dHarness, DEFAULT_FORMAT};
 use ferrous_renderer::Render2dConfig;
 use glam::{Mat4, Quat, Vec2, Vec3};
@@ -543,5 +543,84 @@ fn pure2d_layers_three(bencher: divan::Bencher) {
     bencher.bench_local(|| {
         let report = fill(&mut harness);
         divan::black_box((report.layer_passes, harness.layer_textures_allocated()))
+    });
+}
+
+/// CPU layout tables for the text-shaping benchmarks (no GPU needed).
+fn layout_data() -> LayoutData {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let font_path = manifest.join("../../assets/fonts/Roboto-Regular.ttf");
+    let bytes = std::fs::read(&font_path).expect("Roboto-Regular.ttf");
+    LayoutData::from_bytes(&bytes, ferrous_font::charset::ascii()).expect("layout tables")
+}
+
+/// `len` printable ASCII characters, cycling through letters, digits and
+/// punctuation so the run exercises glyph lookups, spaces and kerning pairs.
+fn ascii_corpus(len: usize) -> String {
+    const SOURCE: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,;:!?-_";
+    SOURCE.chars().cycle().take(len).collect()
+}
+
+/// ASCII fast path: byte-indexed metrics/indices, no per-char UTF-8 decoding.
+#[divan::bench(args = [64usize, 256, 1024])]
+fn text_layout_ascii_fast(bencher: divan::Bencher, chars: usize) {
+    let data = layout_data();
+    let text = ascii_corpus(chars);
+    let style = TextStyle::at(24.0);
+    let font = data.layout_font();
+    let mut out = Vec::new();
+    let _ = ferrous_font::layout_block(font, &text, style, &mut out);
+
+    bencher
+        .bench_local(|| divan::black_box(ferrous_font::layout_block(font, &text, style, &mut out)));
+}
+
+/// General UTF-8 path on the same ASCII corpus, for a direct delta.
+#[divan::bench(args = [64usize, 256, 1024])]
+fn text_layout_ascii_general(bencher: divan::Bencher, chars: usize) {
+    let data = layout_data();
+    let text = ascii_corpus(chars);
+    let style = TextStyle::at(24.0);
+    let font = data.layout_font_general();
+    let mut out = Vec::new();
+    let _ = ferrous_font::layout_block(font, &text, style, &mut out);
+
+    bencher
+        .bench_local(|| divan::black_box(ferrous_font::layout_block(font, &text, style, &mut out)));
+}
+
+/// Mixed Unicode run (Greek, CJK and symbols): an ASCII-capable font view must
+/// fall back to the general path, and the two results stay comparable.
+const MIXED_TEXT: &str = "FerrousEngine \u{2014} \u{0394}\u{03bf}\u{03ba}\u{03b9}\u{03bc}\u{03ae} \
+     \u{03b1}\u{03b2}\u{03b3} \u{65e5}\u{672c}\u{8a9e} \u{2713} \u{2014} \
+     The quick brown fox 0123456789";
+
+#[divan::bench]
+fn text_layout_mixed_unicode_fast_font(bencher: divan::Bencher) {
+    let data = layout_data();
+    let style = TextStyle::at(24.0);
+    let font = data.layout_font();
+    let mut out = Vec::new();
+    let _ = ferrous_font::layout_block(font, MIXED_TEXT, style, &mut out);
+
+    bencher.bench_local(|| {
+        divan::black_box(ferrous_font::layout_block(
+            font, MIXED_TEXT, style, &mut out,
+        ))
+    });
+}
+
+#[divan::bench]
+fn text_layout_mixed_unicode_general(bencher: divan::Bencher) {
+    let data = layout_data();
+    let style = TextStyle::at(24.0);
+    let font = data.layout_font_general();
+    let mut out = Vec::new();
+    let _ = ferrous_font::layout_block(font, MIXED_TEXT, style, &mut out);
+
+    bencher.bench_local(|| {
+        divan::black_box(ferrous_font::layout_block(
+            font, MIXED_TEXT, style, &mut out,
+        ))
     });
 }

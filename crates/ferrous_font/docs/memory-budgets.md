@@ -9,7 +9,7 @@ and the SVG raster cache are process-global and least-recently-used.
 
 | Cache | Default budget | Eviction | Where |
 |---|---:|---|---|
-| Layout glyph cache (per `FontAtlas`) | 16 MiB | LRU entries, oldest first | `src/budget.rs:13`, `src/layout.rs:382-462` |
+| Layout glyph cache (per `FontAtlas`) | 16 MiB | LRU entries, oldest first | `src/budget.rs:13`, `src/layout.rs:399-601` |
 | Atlas glyph tables (per bake) | 16 MiB | none: a bake over budget is a typed error | `src/budget.rs:20`, `src/baked.rs:263-269` |
 | Baked atlas file cache | 64 MiB | oldest file modification time, newest file kept | `src/cache.rs:21`, `src/cache.rs:251-284` |
 | SVG raster cache | 64 MiB | oldest inserted pixel entry | `../../ferrous_assets/src/texture.rs:352`, `:433-459` |
@@ -23,18 +23,38 @@ bound (`src/baked.rs:263-269`).
 ## Layout glyph cache
 
 `FontAtlas::layout_block` keeps the glyph records and metrics it produced in a
-per-atlas LRU (`src/atlas.rs:133-170`). The key is the text hash plus the four
+per-atlas LRU (`src/atlas.rs:144-232`). The key is the text hash plus the four
 style values and the alignment; the value keeps the exact text so a hash
-collision is a miss, never a wrong layout (`src/layout.rs:341-360`). A hit
-copies the cached records into the caller's `Vec`, so the output is bit-for-bit
-the same as an uncached call and a reused buffer stays allocation-free
-(`src/layout.rs:407-462`).
+collision is a miss, never a wrong layout. A hit copies the cached records into
+the caller's `Vec`, so the output is bit-for-bit the same as an uncached call
+and a reused buffer stays allocation-free.
 
 The cache is bounded by `LAYOUT_CACHE_BUDGET_BYTES` (16 MiB,
 `src/budget.rs:13`). An entry larger than the whole budget is not cached, which
 avoids a single very long string thrashing every other entry
-(`src/layout.rs:435-436`). `FontAtlas::layout_cache_bytes` reports the current
-charge (`src/atlas.rs:203`).
+(`src/layout.rs:544-601`). `FontAtlas::layout_cache_bytes` reports the current
+charge (`src/atlas.rs:234`).
+
+Lookups are constant time (prompt 18 P4): one map probe, an exact-text compare
+and a constant number of pointer updates in an intrusive LRU over an entry
+arena (`src/layout.rs:383-601`). A hit allocates nothing; eviction recycles the
+slot and the entry keeps its glyph allocation.
+
+The ASCII fast path is a 128-entry metric/indices table derived from the atlas
+maps and built on first use, stored on the `FontAtlas` itself
+(`src/atlas.rs:249`). It is charged to the inventory under `ascii tables`.
+
+## Atlas occupancy
+
+`BakedAtlas::occupancy()` and `IconAtlas::occupancy()` report
+`ferrous_font::AtlasOccupancy`: used cells, cell area, allocated area, atlas
+area, allocation occupancy and ink occupancy (texels that are not the neutral
+background), plus a `Display` form for the bake log (`src/baked.rs:99-170`).
+Cells are a fixed 64-px grid, so allocation occupancy is `ceil(sqrt(n))^2`
+cells and cannot be improved by a tighter packer without changing cell size,
+which would change MSDF rasterisation and UVs. A best-fit packer was measured
+and rejected for golden safety in prompt 18 P4; the report is diagnostic, not a
+new packing policy.
 
 ## Inventory labels
 
@@ -55,7 +75,8 @@ same key from unregistering each other):
 | `glyph indices` | CPU | estimated map bytes |
 | `kern pairs` | CPU | estimated map bytes |
 | `gpos kerning` | CPU | explicit pairs plus class tables (`src/parser.rs:111-124`) |
-| `layout cache` | CPU | current LRU charge (`src/atlas.rs:203-208`) |
+| `layout cache` | CPU | current LRU charge (`src/atlas.rs:234-237`) |
+| `ascii tables` | CPU | 0 until the first ASCII layout, then one 128-entry table (`src/atlas.rs:249-252`) |
 
 `BakedAtlas::upload` registers the four CPU table labels automatically; the
 `texture` line is exposed for the renderer that owns the GPU bind group, so it is

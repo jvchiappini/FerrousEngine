@@ -12,12 +12,13 @@
 //! with `LayoutData` can never drift from what the renderer lays out.
 
 use rustc_hash::FxHashMap as HashMap;
+use std::sync::OnceLock;
 
 use crate::atlas::GlyphMetrics;
 use crate::budget::map_bytes;
 use crate::layout::{layout_block, layout_line, measure_block, measure_line};
 use crate::layout::{
-    GlyphLayout, GlyphQuad, LayoutFont, LineMetrics, TextAlign, TextMetrics, TextStyle,
+    AsciiTables, GlyphLayout, GlyphQuad, LayoutFont, LineMetrics, TextAlign, TextMetrics, TextStyle,
 };
 use crate::msdf_gen::{CELL_MAX, CELL_MIN};
 use crate::parser::{FontMetrics, FontParser, GposKerning, ParseError};
@@ -37,6 +38,8 @@ pub struct LayoutData {
     kerning: HashMap<(u16, u16), f32>,
     gpos: GposKerning,
     font: FontMetrics,
+    /// ASCII fast-path table, built on first [`Self::layout_font`] call.
+    ascii: OnceLock<Box<AsciiTables>>,
 }
 
 impl LayoutData {
@@ -97,12 +100,19 @@ impl LayoutData {
                 .collect(),
             gpos: parser.gpos_kerning().clone(),
             font: parser.metrics(),
+            ascii: OnceLock::new(),
         }
     }
 
     /// A pure-data view for [`crate::layout`] functions.
+    ///
+    /// The ASCII fast-path table is built lazily on the first call and reused
+    /// by every later call.
     #[must_use]
     pub fn layout_font(&self) -> LayoutFont<'_> {
+        let ascii = self
+            .ascii
+            .get_or_init(|| Box::new(AsciiTables::build(&self.metrics, &self.glyph_indices)));
         LayoutFont {
             metrics: &self.metrics,
             notdef: self.notdef.as_ref(),
@@ -110,6 +120,25 @@ impl LayoutData {
             kerning: &self.kerning,
             gpos: &self.gpos,
             font: self.font,
+            ascii: Some(ascii.as_ref()),
+        }
+    }
+
+    /// A view that always takes the general (UTF-8) layout path.
+    ///
+    /// Used to benchmark and verify the ASCII fast path against it; ordinary
+    /// callers want [`Self::layout_font`].
+    #[doc(hidden)]
+    #[must_use]
+    pub fn layout_font_general(&self) -> LayoutFont<'_> {
+        LayoutFont {
+            metrics: &self.metrics,
+            notdef: self.notdef.as_ref(),
+            glyph_indices: &self.glyph_indices,
+            kerning: &self.kerning,
+            gpos: &self.gpos,
+            font: self.font,
+            ascii: None,
         }
     }
 
@@ -296,5 +325,32 @@ mod tests {
     fn invalid_bytes_are_a_typed_error() {
         let error = LayoutData::from_bytes(b"not a font", ['A']).unwrap_err();
         assert!(matches!(error, FontError::Parse { .. }));
+    }
+
+    #[test]
+    fn ascii_fast_path_matches_the_general_path_on_a_real_font() {
+        let data = data();
+        let style = TextStyle {
+            size_px: 31.0,
+            align: TextAlign::Right,
+            tracking: 0.02,
+            line_height: 1.3,
+        };
+        let corpus = [
+            "AVATAR To Wa 0123456789",
+            "The quick brown fox jumps over the lazy dog!",
+            "mixed \u{0394}\u{03bf}\u{03ba}\u{03b9}\u{03bc}\u{03ae} \u{65e5}\u{672c}\u{8a9e} \u{2713}",
+        ];
+        let fast = data.layout_font();
+        let general = data.layout_font_general();
+        let mut fast_out = Vec::new();
+        let mut general_out = Vec::new();
+
+        for text in corpus {
+            let fast_metrics = layout_block(fast, text, style, &mut fast_out);
+            let general_metrics = layout_block(general, text, style, &mut general_out);
+            assert_eq!(fast_metrics, general_metrics, "metrics for {text:?}");
+            assert_eq!(fast_out, general_out, "glyphs for {text:?}");
+        }
     }
 }

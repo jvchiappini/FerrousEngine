@@ -20,7 +20,6 @@
 //!   describe the drawn shape rather than the atlas quad.
 
 use rustc_hash::{FxHashMap as HashMap, FxHasher};
-use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
 
@@ -360,7 +359,10 @@ impl LayoutKey {
     }
 }
 
-/// One cached block layout.
+/// Index value meaning "no entry" in the intrusive LRU list.
+const NIL: u32 = u32::MAX;
+
+/// One cached block layout, living in the cache's entry arena.
 pub(crate) struct CachedLayout {
     /// The exact text, used to reject hash collisions.
     text: String,
@@ -370,6 +372,12 @@ pub(crate) struct CachedLayout {
     pub(crate) metrics: TextMetrics,
     /// Charged bytes: text + glyphs + per-line metrics + entry overhead.
     bytes: u64,
+    /// Key of this entry, needed when it is unlinked from the arena.
+    key: LayoutKey,
+    /// Arena index of the more recently used entry (`NIL` at the head).
+    prev: u32,
+    /// Arena index of the less recently used entry (`NIL` at the tail).
+    next: u32,
 }
 
 /// Least-recently-used byte-bounded cache of block layouts.
@@ -379,11 +387,32 @@ pub(crate) struct CachedLayout {
 /// per-character work without changing a single output value.  The budget is
 /// [`crate::budget::LAYOUT_CACHE_BUDGET_BYTES`]; an entry larger than the whole
 /// budget is simply not cached.
+///
+/// # Complexity invariant
+///
+/// Lookups perform **one** hash-map probe (`index`), one exact-text compare and
+/// a constant number of pointer updates (unlink + push front).  There is no
+/// linear scan and no allocation on a hit; eviction unlinks the tail and pushes
+/// the slot onto the free list, also in constant time.  `entries` only grows
+/// while the free list is empty, so repeated frames reuse both the arena and
+/// each entry's glyph allocation.
 pub(crate) struct LayoutCache {
     max_bytes: u64,
     bytes: u64,
-    order: VecDeque<LayoutKey>,
-    entries: HashMap<LayoutKey, CachedLayout>,
+    entries: Vec<CachedLayout>,
+    index: HashMap<LayoutKey, u32>,
+    /// Arena index of the most recently used entry (`NIL` when empty).
+    head: u32,
+    /// Arena index of the least recently used entry (`NIL` when empty).
+    tail: u32,
+    /// First free arena slot, linked through `CachedLayout::next`.
+    free_head: u32,
+    /// Successful lookups, for the constant-time invariant test.
+    #[cfg_attr(not(test), allow(dead_code))]
+    hits: u64,
+    /// Failed lookups.
+    #[cfg_attr(not(test), allow(dead_code))]
+    misses: u64,
 }
 
 impl LayoutCache {
@@ -392,8 +421,13 @@ impl LayoutCache {
         Self {
             max_bytes,
             bytes: 0,
-            order: VecDeque::new(),
-            entries: HashMap::default(),
+            entries: Vec::new(),
+            index: HashMap::default(),
+            head: NIL,
+            tail: NIL,
+            free_head: NIL,
+            hits: 0,
+            misses: 0,
         }
     }
 
@@ -403,19 +437,100 @@ impl LayoutCache {
         self.bytes
     }
 
+    /// Number of cached entries.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn entry_count(&self) -> usize {
+        self.index.len()
+    }
+
+    /// Successful lookups since construction.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn hits(&self) -> u64 {
+        self.hits
+    }
+
+    /// Failed lookups since construction.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn misses(&self) -> u64 {
+        self.misses
+    }
+
+    /// Links `index` at the head (most recently used) of the LRU list.
+    fn push_front(&mut self, index: u32) {
+        let head = self.head;
+        let entry = &mut self.entries[index as usize];
+        entry.prev = NIL;
+        entry.next = head;
+        if head == NIL {
+            self.tail = index;
+        } else {
+            self.entries[head as usize].prev = index;
+        }
+        self.head = index;
+    }
+
+    /// Removes `index` from the LRU list, leaving it linked to nothing.
+    fn unlink(&mut self, index: u32) {
+        let (prev, next) = {
+            let entry = &self.entries[index as usize];
+            (entry.prev, entry.next)
+        };
+        if prev == NIL {
+            self.head = next;
+        } else {
+            self.entries[prev as usize].next = next;
+        }
+        if next == NIL {
+            self.tail = prev;
+        } else {
+            self.entries[next as usize].prev = prev;
+        }
+        let entry = &mut self.entries[index as usize];
+        entry.prev = NIL;
+        entry.next = NIL;
+    }
+
+    /// Drops the entry in arena slot `index`, releasing its buffers and
+    /// charging its bytes back.  Constant time.
+    fn remove(&mut self, index: u32) {
+        self.unlink(index);
+        let entry = &mut self.entries[index as usize];
+        let key = entry.key.clone();
+        let bytes = entry.bytes;
+        self.index.remove(&key);
+        self.bytes = self.bytes.saturating_sub(bytes);
+        // Release the per-entry allocations; the slot itself stays in the arena
+        // and is recycled through the free list.
+        entry.text = String::new();
+        entry.glyphs = Vec::new();
+        entry.metrics = TextMetrics::default();
+        entry.bytes = 0;
+        entry.next = self.free_head;
+        self.free_head = index;
+    }
+
     /// Looks up `text`/`style`, marking the entry as most recently used.
+    ///
+    /// This is the O(1) hot path: one map probe plus constant-time list work.
     pub(crate) fn get(&mut self, text: &str, style: TextStyle) -> Option<&CachedLayout> {
         let key = LayoutKey::new(text, style);
-        let entry = self.entries.get(&key)?;
-        if entry.text.as_str() != text {
+        let Some(&index) = self.index.get(&key) else {
+            self.misses += 1;
+            return None;
+        };
+        if self.entries[index as usize].text.as_str() != text {
+            self.misses += 1;
             return None;
         }
-        if let Some(position) = self.order.iter().position(|candidate| candidate == &key) {
-            if let Some(moved) = self.order.remove(position) {
-                self.order.push_back(moved);
-            }
+        if self.head != index {
+            self.unlink(index);
+            self.push_front(index);
         }
-        self.entries.get(&key)
+        self.hits += 1;
+        Some(&self.entries[index as usize])
     }
 
     /// Inserts `glyphs`/`metrics` and evicts least-recently-used entries until
@@ -436,28 +551,44 @@ impl LayoutCache {
             return self.bytes;
         }
         let key = LayoutKey::new(text, style);
-        if let Some(previous) = self.entries.remove(&key) {
-            self.bytes = self.bytes.saturating_sub(previous.bytes);
-            self.order.retain(|candidate| candidate != &key);
+        if let Some(&index) = self.index.get(&key) {
+            self.remove(index);
         }
-        self.entries.insert(
-            key.clone(),
-            CachedLayout {
-                text: text.to_owned(),
-                glyphs: glyphs.to_vec(),
-                metrics: metrics.clone(),
-                bytes,
-            },
-        );
-        self.order.push_back(key);
+        let slot = if self.free_head == NIL {
+            let index = self.entries.len() as u32;
+            self.entries.push(CachedLayout {
+                text: String::new(),
+                glyphs: Vec::new(),
+                metrics: TextMetrics::default(),
+                bytes: 0,
+                key: key.clone(),
+                prev: NIL,
+                next: NIL,
+            });
+            index
+        } else {
+            let index = self.free_head;
+            self.free_head = self.entries[index as usize].next;
+            index
+        };
+        self.entries[slot as usize] = CachedLayout {
+            text: text.to_owned(),
+            glyphs: glyphs.to_vec(),
+            metrics: metrics.clone(),
+            bytes,
+            key: key.clone(),
+            prev: NIL,
+            next: NIL,
+        };
+        self.index.insert(key, slot);
         self.bytes = self.bytes.saturating_add(bytes);
+        self.push_front(slot);
         while self.bytes > self.max_bytes {
-            let Some(oldest) = self.order.pop_front() else {
+            let oldest = self.tail;
+            if oldest == NIL {
                 break;
-            };
-            if let Some(removed) = self.entries.remove(&oldest) {
-                self.bytes = self.bytes.saturating_sub(removed.bytes);
             }
+            self.remove(oldest);
         }
         self.bytes
     }
@@ -522,8 +653,117 @@ mod layout_cache_tests {
         assert_eq!(cache.bytes(), 0);
         assert!(cache.get("a", TextStyle::at(16.0)).is_none());
     }
+
+    /// The hit path is documented as one map probe plus constant-time list
+    /// edits.  Exhausting the arena with 10k entries and then hitting every one
+    /// of them 10k times exercises the intrusive list without ever growing or
+    /// shrinking the arena; the byte and entry counts must not move, and the
+    /// hit counter must account for every lookup.  (No timing is asserted.)
+    #[test]
+    fn hits_are_constant_time_and_reuse_the_arena() {
+        let mut cache = LayoutCache::new(64 * 1024 * 1024);
+        let mut texts = Vec::with_capacity(10_000);
+        for i in 0..10_000 {
+            let text = format!("line-{i}");
+            cache.insert(&text, TextStyle::at(16.0), &[glyph('a')], &metrics());
+            texts.push(text);
+        }
+        assert_eq!(cache.entry_count(), 10_000);
+        let bytes = cache.bytes();
+        let capacity = cache.entries.capacity();
+
+        for round in 0..10_000 {
+            let text = &texts[round % texts.len()];
+            assert!(cache.get(text, TextStyle::at(16.0)).is_some());
+        }
+
+        assert_eq!(cache.hits(), 10_000);
+        assert_eq!(cache.misses(), 0);
+        assert_eq!(cache.entry_count(), 10_000);
+        assert_eq!(cache.bytes(), bytes, "a hit never changes charged bytes");
+        assert_eq!(
+            cache.entries.capacity(),
+            capacity,
+            "a hit never grows the arena"
+        );
+        assert!(cache.get("missing", TextStyle::at(16.0)).is_none());
+        assert_eq!(cache.misses(), 1);
+    }
+
+    #[test]
+    fn a_hit_refreshes_the_lru_order() {
+        let glyphs = [glyph('a')];
+        let one = {
+            let mut probe = LayoutCache::new(1 << 20);
+            probe.insert("a", TextStyle::at(16.0), &glyphs, &metrics());
+            probe.bytes()
+        };
+        let mut cache = LayoutCache::new(one * 2);
+        cache.insert("a", TextStyle::at(16.0), &glyphs, &metrics());
+        cache.insert("b", TextStyle::at(16.0), &glyphs, &metrics());
+        assert!(cache.get("a", TextStyle::at(16.0)).is_some());
+        cache.insert("c", TextStyle::at(16.0), &glyphs, &metrics());
+        assert!(
+            cache.get("a", TextStyle::at(16.0)).is_some(),
+            "the touched entry must survive"
+        );
+        assert!(
+            cache.get("b", TextStyle::at(16.0)).is_none(),
+            "the untouched entry is now the LRU"
+        );
+    }
 }
 
+/// ASCII-indexed copies of a font's glyph metric and glyph-index maps.
+///
+/// Built once per font and attached to [`LayoutFont::ascii`], this removes the
+/// per-character `char_indices` decoding and hash-map probes for ASCII text.
+/// Every entry is cloned from the same maps the general path reads, so both
+/// paths produce bit-identical records.  The table is indexed by the raw ASCII
+/// byte (`0..128`).
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct AsciiTables {
+    metrics: [Option<GlyphMetrics>; 128],
+    indices: [Option<u16>; 128],
+}
+
+impl AsciiTables {
+    /// Builds the ASCII table from the general layout maps.
+    #[must_use]
+    pub(crate) fn build(
+        metrics: &HashMap<char, GlyphMetrics>,
+        indices: &HashMap<char, u16>,
+    ) -> Self {
+        let metrics: [Option<GlyphMetrics>; 128] =
+            std::array::from_fn(|byte| metrics.get(&(byte as u8 as char)).cloned());
+        let indices: [Option<u16>; 128] =
+            std::array::from_fn(|byte| indices.get(&(byte as u8 as char)).copied());
+        Self { metrics, indices }
+    }
+
+    #[inline]
+    fn metric(&self, byte: u8) -> Option<&GlyphMetrics> {
+        self.metrics[byte as usize].as_ref()
+    }
+
+    #[inline]
+    fn index(&self, byte: u8) -> Option<u16> {
+        self.indices[byte as usize]
+    }
+
+    /// Bytes held by one table, for the memory inventory.
+    #[must_use]
+    pub fn byte_size(&self) -> u64 {
+        std::mem::size_of::<Self>() as u64
+    }
+}
+
+/// Tables shared by every atlas with the same [`crate::FontKey`].
+///
+/// Stored by [`crate::FontAtlas`] itself since P4: the atlas owns the maps the
+/// table is derived from, so the table lives and dies with it and no
+/// process-wide registry can outlive the fonts.
 /// Pure-data source for the layout functions.
 ///
 /// Obtain one from [`crate::FontAtlas::layout_font`], or build it by hand in
@@ -542,6 +782,10 @@ pub struct LayoutFont<'a> {
     pub gpos: &'a GposKerning,
     /// Vertical font metrics in em units.
     pub font: FontMetrics,
+    /// ASCII fast-path table, when the font has built one.  `None` keeps the
+    /// general path for every string.
+    #[doc(hidden)]
+    pub ascii: Option<&'a AsciiTables>,
 }
 
 impl LayoutFont<'_> {
@@ -672,6 +916,14 @@ fn layout_line_into<S: GlyphSink>(
     byte_base: usize,
     sink: &mut S,
 ) -> LineMetrics {
+    if let Some(ascii) = font.ascii {
+        if text.is_ascii() {
+            return layout_line_ascii(
+                font, ascii, text, size, align, tracking, line, baseline_y, byte_base, sink,
+            );
+        }
+    }
+
     sink.begin_line(line);
 
     let mut pen = 0.0f32;
@@ -712,6 +964,143 @@ fn layout_line_into<S: GlyphSink>(
         let glyph_index = font.glyph_indices.get(&c).copied();
 
         let Some(metric) = font.metrics.get(&c) else {
+            missing += 1;
+            match font.notdef {
+                Some(notdef) => {
+                    // Draw `.notdef`, but keep the advance of glyph 0.
+                    if let (Some(prev), Some(cur)) = (prev_glyph, glyph_index) {
+                        pen += font.kerning(prev, cur) * size;
+                    }
+                    let advance = notdef.advance;
+                    sink.glyph(glyph_from_metric(
+                        c,
+                        byte_range,
+                        line,
+                        pen,
+                        baseline_y,
+                        advance * size,
+                        notdef,
+                        size,
+                    ));
+                    pen += advance * size + after;
+                    prev_glyph = glyph_index.or(Some(0));
+                }
+                None => {
+                    sink.glyph(GlyphLayout {
+                        ch: c,
+                        byte_range,
+                        line,
+                        x: pen,
+                        baseline_y,
+                        advance: 0.0,
+                        quad: [0.0; 4],
+                        uv: [0.0; 4],
+                        ink: TextBounds::empty(),
+                        visible: false,
+                    });
+                    pen += after;
+                    prev_glyph = None;
+                }
+            }
+            continue;
+        };
+
+        if let (Some(prev), Some(cur)) = (prev_glyph, glyph_index) {
+            pen += font.kerning(prev, cur) * size;
+        }
+
+        sink.glyph(glyph_from_metric(
+            c,
+            byte_range,
+            line,
+            pen,
+            baseline_y,
+            metric.advance * size,
+            metric,
+            size,
+        ));
+        pen += metric.advance * size + after;
+        prev_glyph = glyph_index;
+    }
+
+    let shift = match align {
+        TextAlign::Left => 0.0,
+        TextAlign::Center => -pen * 0.5,
+        TextAlign::Right => -pen,
+    };
+    if shift != 0.0 {
+        sink.shift_line(shift);
+    }
+
+    LineMetrics {
+        advance: pen,
+        ascender: font.font.ascender * size,
+        descender: font.font.descender * size,
+        line_gap: font.font.line_gap * size,
+        quad_count: sink.quad_count(),
+        missing_glyphs: missing,
+    }
+}
+
+/// ASCII fast path for [`layout_line_into`].
+///
+/// Iterates `text.as_bytes()` directly (one byte per character, no UTF-8
+/// decoding) and reads the prebuilt [`AsciiTables`] instead of hashing each
+/// `char`.  The emission order, pen arithmetic, kerning calls and byte ranges
+/// are identical to the general path, so the glyph records compare equal.
+#[allow(clippy::too_many_arguments)] // mirrors `layout_line_into`
+fn layout_line_ascii<S: GlyphSink>(
+    font: LayoutFont<'_>,
+    ascii: &AsciiTables,
+    text: &str,
+    size: f32,
+    align: TextAlign,
+    tracking: f32,
+    line: u32,
+    baseline_y: f32,
+    byte_base: usize,
+    sink: &mut S,
+) -> LineMetrics {
+    sink.begin_line(line);
+
+    let bytes = text.as_bytes();
+    let last = bytes.len().saturating_sub(1);
+    let mut pen = 0.0f32;
+    let mut prev_glyph: Option<u16> = None;
+    let mut missing = 0u32;
+
+    for (byte, &raw) in bytes.iter().enumerate() {
+        let c = raw as char;
+        let byte_range = byte_base + byte..byte_base + byte + 1;
+        let after = if byte == last { 0.0 } else { tracking };
+
+        if c.is_whitespace() {
+            // Advance without a quad; kerning does not cross whitespace.
+            let advance = ascii
+                .metric(raw)
+                .map(|m| m.advance)
+                .or_else(|| ascii.metric(b' ').map(|m| m.advance))
+                .unwrap_or(0.3);
+            sink.glyph(GlyphLayout {
+                ch: c,
+                byte_range,
+                line,
+                x: pen,
+                baseline_y,
+                advance: advance * size,
+                quad: [0.0; 4],
+                uv: [0.0; 4],
+                ink: TextBounds::empty(),
+                visible: false,
+            });
+            pen += advance * size + after;
+            prev_glyph = None;
+            continue;
+        }
+
+        let glyph_index = ascii.index(raw);
+
+        let Some(metric) = ascii.metric(raw) else {
             missing += 1;
             match font.notdef {
                 Some(notdef) => {
@@ -1069,6 +1458,7 @@ mod tests {
                 line_gap: 0.1,
                 ..Default::default()
             },
+            ascii: None,
         }
     }
 
@@ -1414,5 +1804,71 @@ mod tests {
         assert!(out
             .iter()
             .all(|g| g.x.is_finite() && g.baseline_y.is_finite()));
+    }
+
+    fn ascii_maps() -> TestMaps {
+        let mut metrics = HashMap::default();
+        let mut indices = HashMap::default();
+        for byte in 32u8..=126 {
+            let c = byte as char;
+            metrics.insert(
+                c,
+                metric(0.35 + f32::from(byte % 9) * 0.02, f32::from(byte) / 256.0),
+            );
+            indices.insert(c, u16::from(byte));
+        }
+        metrics.insert(' ', metric(0.25, 0.0));
+        indices.insert(' ', 3);
+        let mut kerning = HashMap::default();
+        kerning.insert((u16::from(b'A'), u16::from(b'V')), -0.087);
+        kerning.insert((u16::from(b'V'), u16::from(b'A')), -0.04);
+        kerning.insert((u16::from(b'o'), u16::from(b'A')), 0.02);
+        (metrics, indices, kerning)
+    }
+
+    #[test]
+    fn ascii_fast_path_matches_the_general_path_exactly() {
+        let (metrics, indices, kerning) = ascii_maps();
+        let gpos = GposKerning::default();
+        let notdef = metric(0.4, 0.9);
+        let tables = AsciiTables::build(&metrics, &indices);
+        let general = font_with(&metrics, &indices, &kerning, &gpos, Some(&notdef));
+        let fast = LayoutFont {
+            ascii: Some(&tables),
+            ..general
+        };
+
+        let corpus = [
+            "",
+            "A",
+            "AV",
+            "The quick brown fox jumps over 13 lazy dogs.",
+            " !\"#$%&'()*+,-./0123456789:;<=>?@",
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+            "[\\]^_`{|}~",
+            "Hola, Mundo!",
+            "AV\nA o",
+            "mixed \u{0394}\u{03bf}\u{03ba}\u{03b9}\u{03bc}\u{03ae} \u{65e5}\u{672c}\u{8a9e} \u{2713}",
+        ];
+        let style = TextStyle {
+            size_px: 37.0,
+            align: TextAlign::Center,
+            tracking: 0.03,
+            line_height: 1.2,
+        };
+        let mut general_out = Vec::new();
+        let mut fast_out = Vec::new();
+
+        for text in corpus {
+            let general_metrics = layout_block(general, text, style, &mut general_out);
+            let fast_metrics = layout_block(fast, text, style, &mut fast_out);
+            assert_eq!(general_metrics, fast_metrics, "metrics for {text:?}");
+            assert_eq!(general_out, fast_out, "glyphs for {text:?}");
+            assert_eq!(
+                measure_block(general, text, style),
+                measure_block(fast, text, style),
+                "measurement for {text:?}"
+            );
+        }
     }
 }
