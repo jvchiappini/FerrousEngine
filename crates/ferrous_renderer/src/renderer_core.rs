@@ -5104,8 +5104,16 @@ impl Renderer {
         self.sprite_textures.remove(&texture_id);
         self.sprite_texture_sizes.remove(&texture_id);
         self.sprite_batcher_2d.remove_texture(texture_id);
-        if existed && !self.freed_sprite_texture_ids.contains(&texture_id) {
-            self.freed_sprite_texture_ids.push(texture_id);
+        if existed {
+            // The label is registered by `register_sprite_texture`; leaving it
+            // behind made the inventory grow with every freed texture.
+            ferrous_core::memory::unregister_gpu(
+                &format!("2d:texture {texture_id}"),
+                ferrous_core::memory::Subsystem::Assets,
+            );
+            if !self.freed_sprite_texture_ids.contains(&texture_id) {
+                self.freed_sprite_texture_ids.push(texture_id);
+            }
         }
     }
 
