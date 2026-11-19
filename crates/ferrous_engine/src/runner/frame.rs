@@ -189,6 +189,11 @@ impl<A: FerrousApp + 'static> Runner<A> {
                     startup::mark("engine: fonts ready");
                     gfx.renderer
                         .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
+                    ferrous_core::memory::register_gpu(
+                        "font:ui atlas texture",
+                        font.atlas.gpu_bytes(),
+                        ferrous_core::memory::Subsystem::Fonts,
+                    );
                     self.font = Some(std::sync::Arc::new(font));
                     self.font_asset_handle = None;
                 }

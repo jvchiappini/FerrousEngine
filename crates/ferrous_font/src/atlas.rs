@@ -4,14 +4,17 @@
 //! [`crate::BakedAtlas`]; this module adds the GPU texture the renderer samples.
 //! [`FontAtlas::new`] keeps the one-call behaviour of building and uploading.
 
+use super::budget::map_bytes;
+use super::inventory;
 use super::layout::{
-    layout_block, layout_line, measure_block, measure_line, GlyphLayout, LayoutFont, LineMetrics,
-    TextAlign, TextMetrics, TextStyle,
+    layout_block, layout_line, measure_block, measure_line, GlyphLayout, LayoutCache, LayoutFont,
+    LineMetrics, TextAlign, TextMetrics, TextStyle,
 };
 use super::parser::{FontMetrics, GposKerning};
 use super::BakedAtlas;
 use anyhow::Result;
 use rustc_hash::FxHashMap as HashMap;
+use std::sync::Mutex;
 
 /// Default MSDF cell size in texels.  One atlas cell stores one glyph.
 pub const DEFAULT_GLYPH_SIZE: u32 = 64;
@@ -72,6 +75,10 @@ pub struct FontAtlas {
     /// Two registrations with the same key produce the same atlas, which is
     /// what lets the renderer share one atlas between them.
     pub key: super::FontKey,
+    /// LRU byte-budgeted cache of block layouts.
+    pub(crate) layout_cache: Mutex<LayoutCache>,
+    /// Stable prefix for every inventory label this atlas owns.
+    pub(crate) inventory_prefix: String,
 }
 
 impl FontAtlas {
@@ -129,12 +136,145 @@ impl FontAtlas {
         style: TextStyle,
         out: &mut Vec<GlyphLayout>,
     ) -> TextMetrics {
-        layout_block(self.layout_font(), text, style, out)
+        // A hit copies the exact records the uncached path produced; the
+        // output is bit-identical, only the per-character work is skipped.
+        let cached_metrics = {
+            let mut cache = self
+                .layout_cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            cache.get(text, style).map(|entry| {
+                out.clear();
+                out.extend_from_slice(&entry.glyphs);
+                entry.metrics.clone()
+            })
+        };
+        if let Some(metrics) = cached_metrics {
+            return metrics;
+        }
+
+        let metrics = layout_block(self.layout_font(), text, style, out);
+        let bytes = {
+            let mut cache = self
+                .layout_cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            cache.insert(text, style, out, &metrics)
+        };
+        if bytes > 0 {
+            inventory::register_cpu(
+                &format!("{} layout cache", self.inventory_prefix),
+                bytes,
+                inventory::Subsystem::Fonts,
+            );
+        }
+        metrics
+    }
+
+    /// Bytes of the GPU texture this atlas owns (`Rgba8`, one mip level).
+    #[must_use]
+    pub fn gpu_bytes(&self) -> u64 {
+        let width = u64::from(self.texture.width());
+        let height = u64::from(self.texture.height());
+        width * height * 4
+    }
+
+    /// Bytes of the CPU glyph tables this atlas keeps.
+    #[must_use]
+    pub fn table_bytes(&self) -> u64 {
+        self.metrics_bytes()
+            + map_bytes::<char, u16>(self.glyph_indices.len())
+            + map_bytes::<(u16, u16), f32>(self.kerning.len())
+            + self.gpos.byte_size()
+            + self
+                .notdef
+                .as_ref()
+                .map_or(0, |_| std::mem::size_of::<GlyphMetrics>() as u64)
+    }
+
+    /// Bytes of the per-character metric map.
+    #[must_use]
+    pub fn metrics_bytes(&self) -> u64 {
+        map_bytes::<char, GlyphMetrics>(self.metrics.len())
+    }
+
+    /// Bytes currently charged to the layout cache.
+    #[must_use]
+    pub fn layout_cache_bytes(&self) -> u64 {
+        self.layout_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .bytes()
+    }
+
+    /// CPU + GPU bytes this atlas owns, for a memory report.
+    #[must_use]
+    pub fn cpu_bytes(&self) -> u64 {
+        self.table_bytes() + self.layout_cache_bytes()
+    }
+
+    /// Every inventory entry this atlas owns, with stable labels.
+    ///
+    /// A caller that has the `ferrous_core` inventory available can forward
+    /// these with `register_cpu` / `register_gpu`; the engine's `GuiRenderer`
+    /// installs the bridge so this happens automatically.
+    #[must_use]
+    pub fn inventory_entries(&self) -> Vec<(String, u64)> {
+        vec![
+            (
+                format!("{} texture", self.inventory_prefix),
+                self.gpu_bytes(),
+            ),
+            (
+                format!("{} glyph metrics", self.inventory_prefix),
+                self.metrics_bytes(),
+            ),
+            (
+                format!("{} glyph indices", self.inventory_prefix),
+                map_bytes::<char, u16>(self.glyph_indices.len()),
+            ),
+            (
+                format!("{} kern pairs", self.inventory_prefix),
+                map_bytes::<(u16, u16), f32>(self.kerning.len()),
+            ),
+            (
+                format!("{} gpos kerning", self.inventory_prefix),
+                self.gpos.byte_size(),
+            ),
+            (
+                format!("{} layout cache", self.inventory_prefix),
+                self.layout_cache_bytes(),
+            ),
+        ]
     }
 
     /// Measure a whole block without allocating glyph records (see
     /// [`measure_block`]).
     pub fn measure_block(&self, text: &str, style: TextStyle) -> TextMetrics {
         measure_block(self.layout_font(), text, style)
+    }
+}
+
+impl Drop for FontAtlas {
+    fn drop(&mut self) {
+        let prefix = &self.inventory_prefix;
+        inventory::unregister_gpu(&format!("{prefix} texture"), inventory::Subsystem::Fonts);
+        inventory::unregister_cpu(
+            &format!("{prefix} glyph metrics"),
+            inventory::Subsystem::Fonts,
+        );
+        inventory::unregister_cpu(
+            &format!("{prefix} glyph indices"),
+            inventory::Subsystem::Fonts,
+        );
+        inventory::unregister_cpu(&format!("{prefix} kern pairs"), inventory::Subsystem::Fonts);
+        inventory::unregister_cpu(
+            &format!("{prefix} gpos kerning"),
+            inventory::Subsystem::Fonts,
+        );
+        inventory::unregister_cpu(
+            &format!("{prefix} layout cache"),
+            inventory::Subsystem::Fonts,
+        );
     }
 }

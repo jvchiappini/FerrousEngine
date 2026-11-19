@@ -58,6 +58,9 @@ pub(crate) struct GpuInit {
     pub(crate) power_preference: wgpu::PowerPreference,
     pub(crate) pipeline_cache: Option<PipelineCacheConfig>,
     pub(crate) background: wgpu::Color,
+    /// Device allocation policy selected from [`AppConfig::memory_hints`] and
+    /// the app mode (see `docs/memory.md`).
+    pub(crate) memory_hints: wgpu::MemoryHints,
     /// Renderer mode the window starts in, so 2-D apps never build 3-D
     /// resources at startup (prompt 17 S4).
     pub(crate) mode: RendererMode,
@@ -77,6 +80,7 @@ impl GpuInit {
             power_preference: config.power_preference,
             pipeline_cache: config.pipeline_cache.clone(),
             background: config.background_color.to_wgpu(),
+            memory_hints: config.effective_memory_hints(),
             mode: renderer_mode_from(config.mode),
         }
     }
@@ -458,8 +462,11 @@ impl GraphicsState {
             .and_then(|config| PipelineCacheFile::for_adapter(config, &adapter.get_info()));
         let cache_data = cache_file.as_ref().and_then(PipelineCacheFile::load);
 
-        let context = match pollster::block_on(EngineContext::from_adapter_with_cache(
-            instance, adapter, cache_data,
+        let context = match pollster::block_on(EngineContext::from_adapter_with(
+            instance,
+            adapter,
+            cache_data,
+            init.memory_hints.clone(),
         )) {
             Ok(context) => context,
             Err(error) => panic!("GPU device creation failed: {error:?}"),
@@ -804,6 +811,7 @@ mod tests {
             power_preference: wgpu::PowerPreference::HighPerformance,
             pipeline_cache: None,
             background: wgpu::Color::BLACK,
+            memory_hints: wgpu::MemoryHints::Performance,
             mode: RendererMode::Full3D,
         }
     }

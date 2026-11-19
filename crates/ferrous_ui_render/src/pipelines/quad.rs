@@ -1,6 +1,15 @@
 use wgpu::RenderPipeline;
 use crate::gpu_types::GuiQuad;
 
+// `gui.wgsl` reads locations 1..=10, whose last attribute (`z_order`) ends at
+// byte 92. The instance stride stays at the full 96 bytes because the same
+// buffer feeds the ID pass, which additionally reads `node_id` at 92..96.
+const _: () = {
+    assert!(std::mem::size_of::<GuiQuad>() == 96);
+    assert!(std::mem::offset_of!(GuiQuad, z_order) == 88);
+    assert!(std::mem::offset_of!(GuiQuad, node_id) == 92);
+};
+
 pub fn create_quad_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,

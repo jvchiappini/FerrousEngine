@@ -103,6 +103,23 @@ impl GposKerning {
         self.pairs.len()
     }
 
+    /// Estimated bytes held by the GPOS kerning tables (pairs + class tables).
+    ///
+    /// Used by the atlas budget and the memory inventory; it is an estimate,
+    /// not an allocator measurement.
+    #[must_use]
+    pub fn byte_size(&self) -> u64 {
+        let pairs = crate::budget::map_bytes::<(u16, u16), f32>(self.pairs.len());
+        let classes = self.classes.iter().fold(0u64, |total, table| {
+            total
+                + std::mem::size_of::<ClassKerning>() as u64
+                + table.coverage.ranges.len() as u64 * 4
+                + (table.class1.ranges.len() + table.class2.ranges.len()) as u64 * 6
+                + table.values.len() as u64 * std::mem::size_of::<Option<f32>>() as u64
+        });
+        pairs.saturating_add(classes)
+    }
+
     /// Number of format-2 class subtables recovered.
     #[must_use]
     pub fn class_table_count(&self) -> usize {

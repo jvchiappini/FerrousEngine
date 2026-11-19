@@ -9,12 +9,16 @@ pub mod atlas;
 /// Pure-data baked atlases and their versioned binary form.
 pub mod baked;
 pub mod binary_reader;
+/// Byte budgets and size estimates for the font caches.
+pub mod budget;
 /// On-disk cache of baked atlases.
 pub mod cache;
 /// Pre-built Unicode character sets for atlas generation.
 pub mod charset;
 mod codec;
 pub mod icons;
+/// Optional bridge to the engine memory inventory.
+pub mod inventory;
 /// Pure-CPU single-line text layout (no GPU required).
 pub mod layout;
 pub mod layout_data;

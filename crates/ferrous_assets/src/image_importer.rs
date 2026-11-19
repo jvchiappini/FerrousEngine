@@ -66,6 +66,16 @@ impl ImageData {
     pub fn bytes_per_row(&self) -> u32 {
         self.width * 4
     }
+
+    /// CPU bytes held by the decoded RGBA8 pixels.
+    ///
+    /// `ImageData` owns the CPU copy until the renderer uploads it; an owner
+    /// that keeps it should forward this to the memory inventory with a label
+    /// that includes the asset path (the path is not stored here).
+    #[must_use]
+    pub fn cpu_bytes(&self) -> u64 {
+        self.pixels.len() as u64
+    }
 }
 
 impl Asset for ImageData {

@@ -38,6 +38,38 @@ use ferrous_renderer::RenderStyle;
 
 use crate::builder::AppConfig;
 
+impl AppConfig {
+    /// The [`wgpu::MemoryHints`] this configuration asks the device for.
+    ///
+    /// An explicit [`AppConfig::memory_hints`] always wins.  Otherwise the mode
+    /// decides: [`crate::builder::AppMode::Flat2D`] (and therefore the Pure2D
+    /// renderer) uses [`wgpu::MemoryHints::MemoryUsage`], and
+    /// [`crate::builder::AppMode::Game3D`] keeps
+    /// [`wgpu::MemoryHints::Performance`].
+    ///
+    /// UI/editor apps allocate many small buffers and textures, where wgpu-hal's
+    /// 128 MB free-list chunks are pure waste.  Games keep the
+    /// throughput-oriented defaults because their resources are large enough to
+    /// benefit from the bigger sub-allocations.
+    #[must_use]
+    pub fn effective_memory_hints(&self) -> wgpu::MemoryHints {
+        self.memory_hints.clone().unwrap_or(match self.mode {
+            crate::builder::AppMode::Flat2D => wgpu::MemoryHints::MemoryUsage,
+            crate::builder::AppMode::Game3D => wgpu::MemoryHints::Performance,
+        })
+    }
+
+    /// Sets [`AppConfig::memory_hints`].
+    ///
+    /// The default (`None`) already selects the right policy for the mode; use
+    /// this only to override it.  See [`Self::effective_memory_hints`].
+    #[must_use]
+    pub fn with_memory_hints(mut self, hints: wgpu::MemoryHints) -> Self {
+        self.memory_hints = Some(hints);
+        self
+    }
+}
+
 // ── Deserializable sub-structs ─────────────────────────────────────────────
 
 /// Top-level engine loop settings (inside `[engine]`).
@@ -84,6 +116,11 @@ pub struct RendererSection {
     pub style: Option<String>,
     /// MSAA sample count (`1`, `2`, or `4`).
     pub msaa: Option<u32>,
+    /// Device allocation policy: `"memory_usage"` or `"performance"`.
+    ///
+    /// Unset keeps the mode default (`memory_usage` for flat 2-D apps,
+    /// `performance` for 3-D games).  See `docs/memory.md`.
+    pub memory_hints: Option<String>,
     /// Path to an HDR environment map (`.exr` or `.hdr`) for IBL.
     pub hdri: Option<String>,
     /// Cel-shading sub-section.
@@ -159,6 +196,20 @@ impl EngineConfig {
         // [renderer] msaa (explicit override wins over quality-derived value)
         if let Some(msaa) = self.renderer.msaa {
             cfg.sample_count = msaa.clamp(1, 4);
+        }
+
+        // [renderer] memory_hints
+        if let Some(ref hints) = self.renderer.memory_hints {
+            let parsed = match hints.to_ascii_lowercase().as_str() {
+                "memory_usage" | "memoryusage" | "memory" | "lean" => {
+                    Some(wgpu::MemoryHints::MemoryUsage)
+                }
+                "performance" | "perf" => Some(wgpu::MemoryHints::Performance),
+                _ => None, // unrecognised → keep the current value
+            };
+            if parsed.is_some() {
+                cfg.memory_hints = parsed;
+            }
         }
 
         // [renderer] hdri
@@ -448,6 +499,49 @@ mod tests {
         let mut app_cfg = default_app_config();
         engine_cfg.apply_to(&mut app_cfg);
         assert_eq!(app_cfg.hdri_path.as_deref(), Some("assets/sky.exr"));
+    }
+
+    #[test]
+    fn apply_to_memory_hints() {
+        let toml = r#"
+            [renderer]
+            memory_hints = "memory_usage"
+        "#;
+        let engine_cfg: EngineConfig =
+            toml::from_str(toml).expect("parse [renderer] memory_hints");
+        let mut app_cfg = default_app_config();
+        engine_cfg.apply_to(&mut app_cfg);
+        assert!(matches!(
+            app_cfg.memory_hints,
+            Some(wgpu::MemoryHints::MemoryUsage)
+        ));
+    }
+
+    #[test]
+    fn memory_hints_follow_the_mode_when_unset() {
+        let flat = AppConfig {
+            mode: crate::builder::AppMode::Flat2D,
+            ..AppConfig::default()
+        };
+        assert!(matches!(
+            flat.effective_memory_hints(),
+            wgpu::MemoryHints::MemoryUsage
+        ));
+
+        let game = AppConfig {
+            mode: crate::builder::AppMode::Game3D,
+            ..AppConfig::default()
+        };
+        assert!(matches!(
+            game.effective_memory_hints(),
+            wgpu::MemoryHints::Performance
+        ));
+
+        let explicit = game.with_memory_hints(wgpu::MemoryHints::MemoryUsage);
+        assert!(matches!(
+            explicit.effective_memory_hints(),
+            wgpu::MemoryHints::MemoryUsage
+        ));
     }
 
     #[test]

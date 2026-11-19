@@ -1,6 +1,13 @@
 use wgpu::RenderPipeline;
 use crate::gpu_types::GuiQuad;
 
+// The ID pass is the only consumer of `node_id` (location 11, bytes 92..96);
+// its stride must therefore equal the full `GuiQuad` size.
+const _: () = {
+    assert!(std::mem::size_of::<GuiQuad>() == 96);
+    assert!(std::mem::offset_of!(GuiQuad, node_id) == 92);
+};
+
 pub fn create_id_pipeline(
     device: &wgpu::Device,
     pipeline_layout: &wgpu::PipelineLayout,

@@ -482,14 +482,24 @@ impl GuiBatch {
             && self.svg_commands.is_empty()
     }
 
+    /// Byte view of the live quad instances, ready for `write_buffer`.
+    ///
+    /// The slice covers exactly `quads.len()` instances (no spare capacity),
+    /// so the renderer never uploads the unused tail of its GPU buffer.
     pub fn as_quad_bytes(&self) -> &[u8] {
         bytemuck::cast_slice(&self.quads)
     }
 
+    /// Byte view of the live text glyph instances, ready for `write_buffer`.
+    ///
+    /// Covers exactly `text_quads.len()` instances, like [`Self::as_quad_bytes`].
     pub fn as_text_bytes(&self) -> &[u8] {
         bytemuck::cast_slice(&self.text_quads)
     }
 
+    /// Byte view of the live icon glyph instances, ready for `write_buffer`.
+    ///
+    /// Covers exactly `icon_quads.len()` instances, like [`Self::as_quad_bytes`].
     pub fn as_icon_bytes(&self) -> &[u8] {
         bytemuck::cast_slice(&self.icon_quads)
     }
@@ -598,6 +608,41 @@ mod tests {
         assert!(
             overlap_x > 0.0 && overlap_y > 0.0,
             "the joint quads must overlap (x {overlap_x}, y {overlap_y})"
+        );
+    }
+
+    #[test]
+    fn byte_views_cover_exactly_the_live_instances() {
+        let mut batch = GuiBatch::new();
+        assert!(batch.as_quad_bytes().is_empty());
+        assert!(batch.as_text_bytes().is_empty());
+        assert!(batch.as_icon_bytes().is_empty());
+
+        batch.rect(0.0, 0.0, 10.0, 10.0, [1.0; 4]);
+        let glyph = TextQuad {
+            pos: [0.0, 0.0],
+            size: [8.0, 8.0],
+            uv0: [0.0, 0.0],
+            uv1: [1.0, 1.0],
+            color: [1.0; 4],
+            z_order: 0.0,
+            node_id: 0,
+        };
+        batch.push_text(glyph);
+        batch.push_icon(glyph);
+
+        assert_eq!(
+            batch.as_quad_bytes().len(),
+            batch.quads.len() * std::mem::size_of::<GuiQuad>(),
+            "uploaded bytes must match the live instances, not the capacity"
+        );
+        assert_eq!(
+            batch.as_text_bytes().len(),
+            batch.text_quads.len() * std::mem::size_of::<TextQuad>()
+        );
+        assert_eq!(
+            batch.as_icon_bytes().len(),
+            batch.icon_quads.len() * std::mem::size_of::<TextQuad>()
         );
     }
 

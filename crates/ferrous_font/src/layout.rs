@@ -19,14 +19,16 @@
 //! * Ink bounds come from the `glyf` header, not from the MSDF cell, so they
 //!   describe the drawn shape rather than the atlas quad.
 
-use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::{FxHashMap as HashMap, FxHasher};
+use std::collections::VecDeque;
+use std::hash::{Hash, Hasher};
 use std::ops::Range;
 
 use crate::atlas::GlyphMetrics;
 use crate::parser::{FontMetrics, GposKerning};
 
 /// Horizontal alignment of one line relative to the pen origin.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum TextAlign {
     /// The pen origin is the start of the line.
     #[default]
@@ -329,6 +331,196 @@ impl TextMetrics {
     #[must_use]
     pub fn line_advance(&self, index: usize) -> Option<f32> {
         self.lines.get(index).map(|line| line.advance)
+    }
+}
+
+/// Key of one cached layout: the text hash, the four style values and the
+/// alignment.  The text itself is kept in the value so a hash collision is a
+/// miss rather than a wrong layout.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct LayoutKey {
+    text_hash: u64,
+    size_bits: u32,
+    tracking_bits: u32,
+    line_height_bits: u32,
+    align: TextAlign,
+}
+
+impl LayoutKey {
+    fn new(text: &str, style: TextStyle) -> Self {
+        let mut hasher = FxHasher::default();
+        text.hash(&mut hasher);
+        Self {
+            text_hash: hasher.finish(),
+            size_bits: style.size_px.to_bits(),
+            tracking_bits: style.tracking.to_bits(),
+            line_height_bits: style.line_height.to_bits(),
+            align: style.align,
+        }
+    }
+}
+
+/// One cached block layout.
+pub(crate) struct CachedLayout {
+    /// The exact text, used to reject hash collisions.
+    text: String,
+    /// The glyph records `layout_block` wrote.
+    pub(crate) glyphs: Vec<GlyphLayout>,
+    /// The metrics `layout_block` returned.
+    pub(crate) metrics: TextMetrics,
+    /// Charged bytes: text + glyphs + per-line metrics + entry overhead.
+    bytes: u64,
+}
+
+/// Least-recently-used byte-bounded cache of block layouts.
+///
+/// It is internal to [`crate::FontAtlas`]: the renderer asks for the same
+/// labels every frame, and caching the glyph records removes the repeated
+/// per-character work without changing a single output value.  The budget is
+/// [`crate::budget::LAYOUT_CACHE_BUDGET_BYTES`]; an entry larger than the whole
+/// budget is simply not cached.
+pub(crate) struct LayoutCache {
+    max_bytes: u64,
+    bytes: u64,
+    order: VecDeque<LayoutKey>,
+    entries: HashMap<LayoutKey, CachedLayout>,
+}
+
+impl LayoutCache {
+    /// A cache bounded by `max_bytes`.
+    pub(crate) fn new(max_bytes: u64) -> Self {
+        Self {
+            max_bytes,
+            bytes: 0,
+            order: VecDeque::new(),
+            entries: HashMap::default(),
+        }
+    }
+
+    /// Current charged bytes.
+    #[must_use]
+    pub(crate) fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    /// Looks up `text`/`style`, marking the entry as most recently used.
+    pub(crate) fn get(&mut self, text: &str, style: TextStyle) -> Option<&CachedLayout> {
+        let key = LayoutKey::new(text, style);
+        let entry = self.entries.get(&key)?;
+        if entry.text.as_str() != text {
+            return None;
+        }
+        if let Some(position) = self.order.iter().position(|candidate| candidate == &key) {
+            if let Some(moved) = self.order.remove(position) {
+                self.order.push_back(moved);
+            }
+        }
+        self.entries.get(&key)
+    }
+
+    /// Inserts `glyphs`/`metrics` and evicts least-recently-used entries until
+    /// the cache fits the budget.  Returns the new charged byte count.
+    pub(crate) fn insert(
+        &mut self,
+        text: &str,
+        style: TextStyle,
+        glyphs: &[GlyphLayout],
+        metrics: &TextMetrics,
+    ) -> u64 {
+        let bytes = text.len() as u64
+            + glyphs.len() as u64 * std::mem::size_of::<GlyphLayout>() as u64
+            + metrics.lines.len() as u64 * std::mem::size_of::<TextLineMetrics>() as u64
+            + std::mem::size_of::<TextMetrics>() as u64
+            + 64;
+        if bytes > self.max_bytes {
+            return self.bytes;
+        }
+        let key = LayoutKey::new(text, style);
+        if let Some(previous) = self.entries.remove(&key) {
+            self.bytes = self.bytes.saturating_sub(previous.bytes);
+            self.order.retain(|candidate| candidate != &key);
+        }
+        self.entries.insert(
+            key.clone(),
+            CachedLayout {
+                text: text.to_owned(),
+                glyphs: glyphs.to_vec(),
+                metrics: metrics.clone(),
+                bytes,
+            },
+        );
+        self.order.push_back(key);
+        self.bytes = self.bytes.saturating_add(bytes);
+        while self.bytes > self.max_bytes {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            if let Some(removed) = self.entries.remove(&oldest) {
+                self.bytes = self.bytes.saturating_sub(removed.bytes);
+            }
+        }
+        self.bytes
+    }
+}
+
+#[cfg(test)]
+mod layout_cache_tests {
+    use super::*;
+
+    fn glyph(text: char) -> GlyphLayout {
+        GlyphLayout {
+            ch: text,
+            byte_range: 0..text.len_utf8(),
+            line: 0,
+            x: 0.0,
+            baseline_y: 0.0,
+            advance: 0.0,
+            quad: [0.0; 4],
+            uv: [0.0; 4],
+            ink: TextBounds::empty(),
+            visible: false,
+        }
+    }
+
+    fn metrics() -> TextMetrics {
+        TextMetrics::default()
+    }
+
+    #[test]
+    fn a_hit_returns_the_inserted_glyphs_and_refreshes_lru_order() {
+        let mut cache = LayoutCache::new(1 << 20);
+        let glyphs = [glyph('a')];
+        cache.insert("a", TextStyle::at(16.0), &glyphs, &metrics());
+        let hit = cache.get("a", TextStyle::at(16.0)).expect("a hit");
+        assert_eq!(hit.glyphs.len(), 1);
+        assert_eq!(hit.text, "a");
+    }
+
+    #[test]
+    fn a_different_style_is_a_different_entry() {
+        let mut cache = LayoutCache::new(1 << 20);
+        let glyphs = [glyph('a')];
+        cache.insert("a", TextStyle::at(16.0), &glyphs, &metrics());
+        assert!(cache.get("a", TextStyle::at(17.0)).is_none());
+    }
+
+    #[test]
+    fn the_cache_evicts_until_it_fits_and_never_exceeds_the_budget() {
+        let mut cache = LayoutCache::new(400);
+        for text in ["a", "b", "c", "d"] {
+            let glyphs = [glyph(text.chars().next().unwrap_or('?'))];
+            cache.insert(text, TextStyle::at(16.0), &glyphs, &metrics());
+        }
+        assert!(cache.bytes() <= 400);
+        assert!(cache.get("a", TextStyle::at(16.0)).is_none());
+    }
+
+    #[test]
+    fn an_entry_larger_than_the_budget_is_not_cached() {
+        let mut cache = LayoutCache::new(16);
+        cache.insert("a", TextStyle::at(16.0), &[glyph('a')], &metrics());
+        assert_eq!(cache.bytes(), 0);
+        assert!(cache.get("a", TextStyle::at(16.0)).is_none());
     }
 }
 

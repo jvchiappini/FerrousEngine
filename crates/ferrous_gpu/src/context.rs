@@ -122,7 +122,7 @@ impl EngineContext {
         instance: wgpu::Instance,
         adapter: wgpu::Adapter,
     ) -> anyhow::Result<Self> {
-        Self::from_adapter_with_cache(instance, adapter, None).await
+        Self::from_adapter_with(instance, adapter, None, default_memory_hints()).await
     }
 
     /// [`Self::from_adapter`] that seeds the pipeline cache with `cache_data`.
@@ -130,10 +130,32 @@ impl EngineContext {
     /// The bytes must come from [`wgpu::PipelineCache::get_data`] of a previous
     /// run on the same adapter/driver.  wgpu tolerates stale or corrupt data
     /// (`fallback: true`), so a bad cache only costs a recompile.
+    ///
+    /// This keeps wgpu's default [`wgpu::MemoryHints::Performance`]; use
+    /// [`Self::from_adapter_with`] to select [`wgpu::MemoryHints::MemoryUsage`]
+    /// for small-resource applications.
     pub async fn from_adapter_with_cache(
         instance: wgpu::Instance,
         adapter: wgpu::Adapter,
         cache_data: Option<Vec<u8>>,
+    ) -> anyhow::Result<Self> {
+        Self::from_adapter_with(instance, adapter, cache_data, default_memory_hints()).await
+    }
+
+    /// [`Self::from_adapter_with_cache`] with explicit [`wgpu::MemoryHints`].
+    ///
+    /// `memory_hints` is forwarded to `wgpu::DeviceDescriptor`.  The engine
+    /// passes [`wgpu::MemoryHints::MemoryUsage`] for 2-D/editor apps (many small
+    /// resources, where wgpu-hal's 128 MB free-list chunks are wasted) and
+    /// [`wgpu::MemoryHints::Performance`] for 3-D games (large buffers benefit
+    /// from the bigger sub-allocations).  Callers that do not care keep the
+    /// historical [`wgpu::MemoryHints::Performance`] behaviour through
+    /// [`Self::from_adapter`] and [`Self::from_adapter_with_cache`].
+    pub async fn from_adapter_with(
+        instance: wgpu::Instance,
+        adapter: wgpu::Adapter,
+        cache_data: Option<Vec<u8>>,
+        memory_hints: wgpu::MemoryHints,
     ) -> anyhow::Result<Self> {
         let info = adapter.get_info();
         #[cfg(target_arch = "wasm32")]
@@ -204,7 +226,7 @@ impl EngineContext {
                     label: Some("Engine Device"),
                     required_features,
                     required_limits: limits,
-                    ..Default::default()
+                    memory_hints,
                 },
                 None,
             )
@@ -241,4 +263,9 @@ impl EngineContext {
             pipeline_cache,
         })
     }
+}
+
+/// wgpu's default allocation policy, kept for callers that do not opt in.
+fn default_memory_hints() -> wgpu::MemoryHints {
+    wgpu::MemoryHints::default()
 }

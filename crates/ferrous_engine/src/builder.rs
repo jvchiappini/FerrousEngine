@@ -142,6 +142,15 @@ pub struct AppConfig {
     /// backends that expose [`wgpu::Features::PIPELINE_CACHE`] (Vulkan in wgpu
     /// 23) use it; DX12, Metal and GL ignore it.
     pub pipeline_cache: Option<PipelineCacheConfig>,
+    /// wgpu's device allocation policy ([`wgpu::MemoryHints`]).
+    ///
+    /// `None` (the default) picks [`wgpu::MemoryHints::MemoryUsage`] for
+    /// [`AppMode::Flat2D`] apps and [`wgpu::MemoryHints::Performance`] for
+    /// [`AppMode::Game3D`]: a UI/editor app allocates many small resources,
+    /// where the 128 MB free-list chunks of the performance policy are waste,
+    /// while a 3-D game keeps the throughput-oriented defaults.  An explicit
+    /// value always wins.  See `docs/memory.md`.
+    pub memory_hints: Option<wgpu::MemoryHints>,
     /// Whether a pointer move requests a frame by itself (default `true`).
     ///
     /// Set it to `false` in an editor whose pointer moves often change
@@ -336,6 +345,7 @@ impl Default for AppConfig {
             backends: default_backends(),
             power_preference: wgpu::PowerPreference::HighPerformance,
             pipeline_cache: None,
+            memory_hints: None,
             redraw_on_pointer_move: true,
             visible: true,
             show_window_when_ready: true,
@@ -636,6 +646,18 @@ impl<A: FerrousApp + 'static> App<A> {
     /// the others ignore it.
     pub fn with_pipeline_cache(mut self, cache: PipelineCacheConfig) -> Self {
         self.config.pipeline_cache = Some(cache);
+        self
+    }
+
+    /// Overrides wgpu's device allocation policy
+    /// ([`AppConfig::memory_hints`]).
+    ///
+    /// The default (`None`) is mode-dependent: [`wgpu::MemoryHints::MemoryUsage`]
+    /// for 2-D/editor apps and [`wgpu::MemoryHints::Performance`] for 3-D games.
+    /// Pass a value explicitly only when the mode's default is wrong for the
+    /// app.  See `docs/memory.md`.
+    pub fn with_memory_hints(mut self, hints: wgpu::MemoryHints) -> Self {
+        self.config.memory_hints = Some(hints);
         self
     }
 

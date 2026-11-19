@@ -292,6 +292,11 @@ impl EffectUniformPool {
                     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 }));
+            ferrous_core::memory::register_gpu(
+                "2d:effect uniform pool",
+                self.buffers.len() as u64 * Self::SLOT_SIZE,
+                ferrous_core::memory::Subsystem::Renderer2d,
+            );
         }
         let index = self.used;
         self.used += 1;
@@ -1398,6 +1403,7 @@ impl Renderer {
             text_upload_scratch: Vec::new(),
             readback_manager: None,
         };
+        renderer.register_render_target_memory();
         // Build the 3-D resources now in `Full3D` (the pre-S4 behaviour); in
         // the 2-D modes they stay `None` until `ensure_three_d`.
         if mode == RendererMode::Full3D {
@@ -1517,6 +1523,7 @@ impl Renderer {
             )
         });
         self.apply_style_passes();
+        self.register_three_d_memory();
         self.mark_dirty();
     }
 
@@ -1641,6 +1648,7 @@ impl Renderer {
         // Offscreen layer textures are target-sized; a resize invalidates the
         // pool (the next layered frame recreates it at the new size).
         self.layer_res = None;
+        Self::unregister_layer_memory();
 
         // 3-D passes, only when they were built (prompt 17 S4).
         if let Some(world_pass) = self.world_pass.as_mut() {
@@ -1723,6 +1731,11 @@ impl Renderer {
             self.camera_system
                 .camera
                 .set_aspect(new_width as f32 / new_height as f32);
+        }
+
+        self.register_render_target_memory();
+        if self.world_pass.is_some() {
+            self.register_three_d_memory();
         }
     }
 
@@ -2052,6 +2065,253 @@ impl Renderer {
     #[must_use]
     pub fn memory_report_json(&self) -> String {
         ferrous_core::memory::report_json(24)
+    }
+
+    /// Registers (or refreshes) the swapchain-sized render-target attachments.
+    ///
+    /// Labels are stable, so a resize replaces each byte count instead of
+    /// adding a second entry.  A missing MSAA attachment is removed so a future
+    /// single-sample target cannot leave a stale entry behind.
+    fn register_render_target_memory(&self) {
+        use ferrous_core::memory::{register_gpu, unregister_gpu, Subsystem};
+        let rt = &self.render_target;
+        register_gpu(
+            "rt:color resolve",
+            texture_bytes(&rt.color.texture),
+            Subsystem::RenderTarget,
+        );
+        if let Some(texture) = &rt.color.msaa_texture {
+            register_gpu(
+                "rt:color msaa",
+                texture_bytes(texture),
+                Subsystem::RenderTarget,
+            );
+        } else {
+            unregister_gpu("rt:color msaa", Subsystem::RenderTarget);
+        }
+        register_gpu(
+            "rt:depth",
+            texture_bytes(&rt.depth.texture),
+            Subsystem::RenderTarget,
+        );
+    }
+
+    /// Registers (or refreshes) the lazily built 3-D group.
+    ///
+    /// The labels are stable and every call overwrites the previous sizes, so
+    /// calling [`Self::ensure_three_d`] twice or resizing cannot double count.
+    /// Resources without a persistent GPU allocation (skinning and gizmos
+    /// create their vertex buffers per frame) have nothing to register.
+    fn register_three_d_memory(&self) {
+        use ferrous_core::memory::{register_gpu, unregister_gpu, Subsystem};
+        let Some(world_pass) = self.world_pass.as_ref() else {
+            return;
+        };
+
+        register_gpu(
+            "3d:hdr resolve",
+            texture_bytes(&world_pass.hdr_texture.texture),
+            Subsystem::RenderTarget,
+        );
+        if let Some(texture) = &world_pass.hdr_texture.multisampled_texture {
+            register_gpu(
+                "3d:hdr msaa",
+                texture_bytes(texture),
+                Subsystem::RenderTarget,
+            );
+        } else {
+            unregister_gpu("3d:hdr msaa", Subsystem::RenderTarget);
+        }
+        register_gpu(
+            "3d:shadow map",
+            texture_bytes(&world_pass.shadow_resources.texture),
+            Subsystem::Renderer,
+        );
+
+        if let Some(buffer) = &self.instance_buf {
+            register_gpu(
+                "3d:instance buffer",
+                buffer.buffer.size(),
+                Subsystem::Renderer,
+            );
+        }
+        if let Some(buffer) = &self.shadow_instance_buf {
+            register_gpu(
+                "3d:shadow instance buffer",
+                buffer.buffer.size(),
+                Subsystem::Renderer,
+            );
+        }
+
+        if let Some(prepass) = &self.prepass {
+            register_gpu(
+                "3d:prepass normal-depth resolve",
+                texture_bytes(&prepass.normal_depth.texture),
+                Subsystem::Renderer,
+            );
+            if let Some(texture) = &prepass.normal_depth.multisampled_texture {
+                register_gpu(
+                    "3d:prepass normal-depth msaa",
+                    texture_bytes(texture),
+                    Subsystem::Renderer,
+                );
+            } else {
+                unregister_gpu("3d:prepass normal-depth msaa", Subsystem::Renderer);
+            }
+            // The prepass owns a private depth texture with exactly this size
+            // (same dimensions, Depth32Float, same sample count).
+            register_gpu(
+                "3d:prepass depth",
+                sized_texture_bytes(self.width, self.height, 4, self.sample_count),
+                Subsystem::Renderer,
+            );
+        }
+
+        if let Some(ssao) = &self.ssao_pass {
+            register_gpu(
+                "3d:ssao raw",
+                texture_bytes(&ssao.ssao_texture.texture),
+                Subsystem::Renderer,
+            );
+        }
+        if let Some(blur) = &self.ssao_blur_pass {
+            let bytes = texture_bytes(&blur.blurred.texture);
+            register_gpu("3d:ssao blurred", bytes, Subsystem::Renderer);
+            // The intermediate texture is private but has the same dimensions
+            // and format as `blurred`.
+            register_gpu("3d:ssao intermediate", bytes, Subsystem::Renderer);
+        }
+        if let Some(resources) = &self.ssao_resources {
+            register_gpu(
+                "3d:ssao kernel",
+                resources.kernel_buffer.size(),
+                Subsystem::Renderer,
+            );
+            register_gpu(
+                "3d:ssao params",
+                resources.params_buffer.size(),
+                Subsystem::Renderer,
+            );
+            register_gpu(
+                "3d:ssao noise",
+                texture_bytes(&resources.noise_texture),
+                Subsystem::Renderer,
+            );
+        }
+
+        if self.particle_system.is_some() {
+            // `ParticleSystem` keeps its buffers private and has no size
+            // getter; a particle is 8 f32 / 32 bytes and the emitter uniform
+            // is 16 f32 / 64 bytes at the 1M capacity `ensure_three_d` uses.
+            const PARTICLE_BYTES: u64 = 32;
+            const PARTICLES: u64 = 1_000_000;
+            const EMITTER_BYTES: u64 = 64;
+            register_gpu(
+                "3d:particles storage",
+                PARTICLES * PARTICLE_BYTES,
+                Subsystem::Renderer,
+            );
+            register_gpu("3d:particles emitter", EMITTER_BYTES, Subsystem::Renderer);
+        }
+
+        if let Some(post_process) = &self.post_process_pass {
+            if let Some(bloom) = &post_process.bloom_textures {
+                let bytes = bloom
+                    .textures
+                    .iter()
+                    .map(texture_bytes)
+                    .sum::<u64>()
+                    .saturating_add(texture_bytes(&bloom.acc_texture));
+                register_gpu("3d:bloom chain", bytes, Subsystem::Renderer);
+            } else {
+                unregister_gpu("3d:bloom chain", Subsystem::Renderer);
+            }
+        }
+
+        if self.aa_pass.is_some() {
+            // `AntialiasingPass` keeps its textures private; these are the
+            // exact allocations `on_resize` makes (AA-out RGBA16Float and the
+            // two SMAA RGBA8 textures, both swapchain-sized, plus the 1×1
+            // dummy).
+            let pixels = u64::from(self.width) * u64::from(self.height);
+            register_gpu("3d:aa output", pixels * 8, Subsystem::Renderer);
+            register_gpu("3d:aa smaa edge", pixels * 4, Subsystem::Renderer);
+            register_gpu("3d:aa smaa blend", pixels * 4, Subsystem::Renderer);
+            register_gpu("3d:aa dummy", 8, Subsystem::Renderer);
+        }
+    }
+
+    /// Registers (or refreshes) the pooled Pure2D layer resources.
+    ///
+    /// One aggregate entry per pool keeps the label set stable while the number
+    /// of layers changes: the byte count is recomputed from the live textures,
+    /// so recreation replaces it instead of adding to it.
+    fn register_layer_memory(&self) {
+        use ferrous_core::memory::{register_gpu, unregister_gpu, Subsystem};
+        let Some(res) = self.layer_res.as_ref() else {
+            Self::unregister_layer_memory();
+            return;
+        };
+        let layer_textures = res
+            .textures
+            .iter()
+            .flatten()
+            .map(|layer| texture_bytes(&layer.texture))
+            .sum::<u64>();
+        register_gpu("2d:layer textures", layer_textures, Subsystem::Renderer2d);
+
+        let effect_targets = res
+            .effect_targets
+            .iter()
+            .flatten()
+            .flat_map(|targets| targets.textures.iter())
+            .map(texture_bytes)
+            .sum::<u64>();
+        register_gpu(
+            "2d:layer effect targets",
+            effect_targets,
+            Subsystem::Renderer2d,
+        );
+
+        let mut backdrops = res
+            .layer_backdrops
+            .iter()
+            .flatten()
+            .map(|backdrop| texture_bytes(&backdrop.texture))
+            .sum::<u64>();
+        if let Some(backdrop) = &res.root_backdrop {
+            backdrops = backdrops.saturating_add(texture_bytes(&backdrop.texture));
+        }
+        register_gpu("2d:layer backdrops", backdrops, Subsystem::Renderer2d);
+
+        let uniforms = self
+            .effect_uniforms
+            .buffers
+            .iter()
+            .map(wgpu::Buffer::size)
+            .sum::<u64>();
+        register_gpu("2d:effect uniform pool", uniforms, Subsystem::Renderer2d);
+
+        if let Some(buffer) = &self.composite_buffer {
+            register_gpu(
+                "2d:composite instances",
+                buffer.size(),
+                Subsystem::Renderer2d,
+            );
+        } else {
+            unregister_gpu("2d:composite instances", Subsystem::Renderer2d);
+        }
+    }
+
+    /// Removes the pooled layer entries when the pool is dropped.
+    ///
+    /// The composite instance buffer and the effect uniform pool survive a
+    /// pool invalidation, so their entries stay valid.
+    fn unregister_layer_memory() {
+        use ferrous_core::memory::{unregister_gpu, Subsystem};
+        unregister_gpu("2d:layer textures", Subsystem::Renderer2d);
+        unregister_gpu("2d:layer effect targets", Subsystem::Renderer2d);
+        unregister_gpu("2d:layer backdrops", Subsystem::Renderer2d);
     }
 
     /// Enables per-pass GPU timestamps when the frame trace is on and the
@@ -2704,6 +2964,17 @@ impl Renderer {
                     prepass_ref.set_instance_buffer(bg);
                 },
                 &self.context.queue,
+            );
+            // `build_world_commands` may have grown the instance buffers.
+            ferrous_core::memory::register_gpu(
+                "3d:instance buffer",
+                instance_buf.buffer.size(),
+                ferrous_core::memory::Subsystem::Renderer,
+            );
+            ferrous_core::memory::register_gpu(
+                "3d:shadow instance buffer",
+                shadow_instance_buf.buffer.size(),
+                ferrous_core::memory::Subsystem::Renderer,
             );
         }
         self.frame_builder.scene_dirty = true;
@@ -4963,21 +5234,16 @@ impl Renderer {
             return Ok(FontId2d::from(handle));
         }
         let key = baked.key;
-        let label = format!("font:atlas {}x{}", baked.tex_size, baked.glyph_size);
-        ferrous_core::memory::register_cpu(
-            format!("{label} pixels"),
-            baked.pixels.len() as u64,
-            ferrous_core::memory::Subsystem::Fonts,
-        );
-        ferrous_core::memory::register_gpu(
-            format!("{label} texture"),
-            u64::from(baked.tex_size) * u64::from(baked.tex_size) * 4,
-            ferrous_core::memory::Subsystem::Fonts,
-        );
+        // The pixels are consumed by the upload; only the GPU atlas is kept.
         let font = std::sync::Arc::new(ferrous_font::Font {
             atlas: baked.upload(&self.context.device, &self.context.queue),
             icons: None,
         });
+        ferrous_core::memory::register_gpu(
+            format!("font:atlas {}px#{} texture", font.atlas.glyph_size, self.fonts_2d.len()),
+            font.atlas.gpu_bytes(),
+            ferrous_core::memory::Subsystem::Fonts,
+        );
         let bind_group = std::sync::Arc::new(
             self.context
                 .device
@@ -5661,6 +5927,7 @@ impl Renderer {
         if !size_changed {
             return;
         }
+        Self::unregister_layer_memory();
         let device = self.context.device.clone();
         let target_format = self.format;
         let sample_count = self.sample_count.max(1);
@@ -5807,6 +6074,7 @@ impl Renderer {
             bind_group,
         });
         res.textures_allocated += 1;
+        self.register_layer_memory();
     }
 
     /// Ensures the two effect scratch textures for `index` exist.
@@ -5824,6 +6092,7 @@ impl Renderer {
         res.effect_targets[index as usize] = Some(create_effect_targets(
             &device, res.format, res.width, res.height,
         ));
+        self.register_layer_memory();
     }
 
     /// Applies the effect chain of layer `index` to its finished texture.
@@ -5956,6 +6225,7 @@ impl Renderer {
                         mapped_at_creation: false,
                     }));
                 self.composite_capacity = capacity;
+                self.register_layer_memory();
             }
             if let Some(buffer) = &self.composite_buffer {
                 self.context.queue.write_buffer(
@@ -6166,6 +6436,7 @@ impl Renderer {
             height,
             "Pure2D Layer Backdrop",
         ));
+        self.register_layer_memory();
     }
 
     /// Ensures the destination snapshot used by the root plan.
@@ -6186,6 +6457,7 @@ impl Renderer {
             height,
             "Pure2D Root Backdrop",
         ));
+        self.register_layer_memory();
     }
 
     /// Executes `plan` into `dest_view`, splitting the pass around
@@ -6853,4 +7125,40 @@ fn encode_effect_composite(
     pass.set_bind_group(0, &bind_group, &[]);
     pass.draw(0..3, 0..1);
     1
+}
+
+/// GPU bytes held by `texture`, counting every mip level, array layer and
+/// sample.
+///
+/// Uses the format's block size (4 bytes per texel for the render-target
+/// formats here) so the inventory matches what wgpu allocates instead of
+/// assuming RGBA8.  A format whose copy size is unknown (`Depth24Plus`) falls
+/// back to 4 bytes; the engine does not create one.
+fn texture_bytes(texture: &wgpu::Texture) -> u64 {
+    let size = texture.size();
+    let format = texture.format();
+    let (block_width, block_height) = format.block_dimensions();
+    let block_bytes = u64::from(format.block_copy_size(None).unwrap_or(4));
+    let mut width = size.width.max(1);
+    let mut height = size.height.max(1);
+    let mut bytes = 0u64;
+    for _ in 0..texture.mip_level_count() {
+        let blocks_x = u64::from(width.div_ceil(block_width));
+        let blocks_y = u64::from(height.div_ceil(block_height));
+        bytes = bytes.saturating_add(blocks_x * blocks_y * block_bytes);
+        width = (width / 2).max(1);
+        height = (height / 2).max(1);
+    }
+    bytes
+        .saturating_mul(u64::from(texture.depth_or_array_layers()))
+        .saturating_mul(u64::from(texture.sample_count()))
+}
+
+/// Bytes of a single-mip, single-layer 2-D texture with the given texel size
+/// and sample count.
+fn sized_texture_bytes(width: u32, height: u32, block_bytes: u64, sample_count: u32) -> u64 {
+    u64::from(width)
+        .saturating_mul(u64::from(height))
+        .saturating_mul(block_bytes)
+        .saturating_mul(u64::from(sample_count))
 }

@@ -34,6 +34,9 @@ pub enum Subsystem {
     Gui,
     /// Engine render passes and their intermediate targets.
     Renderer,
+    /// The swapchain-sized renderer attachments: colour resolve, MSAA colour
+    /// and depth.
+    RenderTarget,
     /// Font atlases (GPU texture and CPU pixels/metrics).
     Fonts,
     /// Decoded images, video frames and their GPU textures.
@@ -52,6 +55,7 @@ impl Subsystem {
             Subsystem::Renderer2d => "renderer_2d",
             Subsystem::Gui => "gui",
             Subsystem::Renderer => "renderer",
+            Subsystem::RenderTarget => "render_target",
             Subsystem::Fonts => "fonts",
             Subsystem::Assets => "assets",
             Subsystem::Engine => "engine",

@@ -14,6 +14,7 @@
 use rustc_hash::FxHashMap as HashMap;
 
 use crate::atlas::GlyphMetrics;
+use crate::budget::map_bytes;
 use crate::layout::{layout_block, layout_line, measure_block, measure_line};
 use crate::layout::{
     GlyphLayout, GlyphQuad, LayoutFont, LineMetrics, TextAlign, TextMetrics, TextStyle,
@@ -155,6 +156,47 @@ impl LayoutData {
         out: &mut Vec<GlyphLayout>,
     ) -> TextMetrics {
         layout_block(self.layout_font(), text, style, out)
+    }
+
+    /// Estimated bytes of the CPU layout tables.
+    ///
+    /// These maps are bounded by the character set passed to
+    /// [`Self::from_parser`]; unlike the layout glyph cache they are the data
+    /// the caller asked for, so they are not evicted.
+    #[must_use]
+    pub fn table_bytes(&self) -> u64 {
+        map_bytes::<char, GlyphMetrics>(self.metrics.len())
+            + map_bytes::<char, u16>(self.glyph_indices.len())
+            + map_bytes::<(u16, u16), f32>(self.kerning.len())
+            + self.gpos.byte_size()
+            + self
+                .notdef
+                .as_ref()
+                .map_or(0, |_| std::mem::size_of::<GlyphMetrics>() as u64)
+    }
+
+    /// Inventory entries for these tables, using `label_prefix` (for example
+    /// `layout:<font key>`) so two fonts never collide.
+    #[must_use]
+    pub fn inventory_entries(&self, label_prefix: &str) -> Vec<(String, u64)> {
+        vec![
+            (
+                format!("{label_prefix} glyph metrics"),
+                map_bytes::<char, GlyphMetrics>(self.metrics.len()),
+            ),
+            (
+                format!("{label_prefix} glyph indices"),
+                map_bytes::<char, u16>(self.glyph_indices.len()),
+            ),
+            (
+                format!("{label_prefix} kern pairs"),
+                map_bytes::<(u16, u16), f32>(self.kerning.len()),
+            ),
+            (
+                format!("{label_prefix} gpos kerning"),
+                self.gpos.byte_size(),
+            ),
+        ]
     }
 
     /// Splits the tables into the pieces an atlas needs.

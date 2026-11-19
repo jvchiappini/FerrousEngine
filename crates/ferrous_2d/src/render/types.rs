@@ -146,6 +146,12 @@ impl From<FontId2d> for Handle {
 /// `color` is a **straight** linear RGBA colour (not premultiplied); the text
 /// shader premultiplies when it writes the fragment.
 ///
+/// Wire layout (116 bytes, 4-byte aligned, no padding): `transform_c0..c3`
+/// at 0/16/32/48, `color` at 64, `uv_rect` at 80, `params` at 96 and
+/// `gradient` at 112. `params.y`, `params.z` and `params.w` are not read by
+/// `text_2d.wgsl`; shrinking the slot to a scalar would change the shader
+/// interface, so it is kept as a `vec4`.
+///
 /// The model matrix maps the canonical local quad `[0, 1]²` (Y up) to the
 /// glyph's pixel rectangle, exactly like [`SpriteInstance`] maps its own quad,
 /// so rotation, non-uniform scale and parent transforms compose the same way.
@@ -1216,6 +1222,31 @@ impl From<&ShapeInstance> for ShapeGpu {
     }
 }
 
+// These four types are uploaded verbatim (or packed and then uploaded) and the
+// pipelines derive their strides from `size_of`; any field or alignment drift
+// would corrupt every 2-D draw. Fail at compile time instead.
+const _: () = {
+    assert!(std::mem::size_of::<SpriteInstance>() == 112);
+    assert!(std::mem::offset_of!(SpriteInstance, properties) == 96);
+
+    assert!(std::mem::size_of::<TextInstance>() == 116);
+    assert!(std::mem::offset_of!(TextInstance, params) == 96);
+    assert!(std::mem::offset_of!(TextInstance, gradient) == 112);
+
+    assert!(std::mem::size_of::<ShapeInstance>() == 120);
+    assert!(std::mem::offset_of!(ShapeInstance, ext1) == 112);
+
+    assert!(std::mem::size_of::<ShapeGpu>() == 68);
+    assert!(std::mem::offset_of!(ShapeGpu, flags) == 40);
+    assert!(std::mem::offset_of!(ShapeGpu, ext0) == 44);
+    assert!(std::mem::offset_of!(ShapeGpu, gradient) == 64);
+
+    assert!(std::mem::align_of::<SpriteInstance>() == 4);
+    assert!(std::mem::align_of::<TextInstance>() == 4);
+    assert!(std::mem::align_of::<ShapeInstance>() == 4);
+    assert!(std::mem::align_of::<ShapeGpu>() == 4);
+};
+
 /// IEEE 754 binary32 → binary16, round-to-nearest-even (no external crate).
 #[inline]
 pub fn f32_to_f16(v: f32) -> u16 {
@@ -1434,6 +1465,29 @@ mod gpu_pack_tests {
             assert!(p.x >= min.x - 1e-5 && p.y >= min.y - 1e-5);
             assert!(p.x <= max.x + 1e-5 && p.y <= max.y + 1e-5);
         }
+    }
+
+    #[test]
+    fn instance_wire_layouts_match_their_descriptors() {
+        assert_eq!(std::mem::size_of::<SpriteInstance>(), 112);
+        assert_eq!(SpriteInstance::descriptor().array_stride, 112);
+        assert_eq!(SpriteInstance::descriptor().attributes.len(), 7);
+        assert_eq!(SpriteInstance::descriptor().attributes[6].offset, 96);
+
+        assert_eq!(std::mem::size_of::<TextInstance>(), 116);
+        assert_eq!(TextInstance::descriptor().array_stride, 116);
+        assert_eq!(TextInstance::descriptor().attributes.len(), 8);
+        assert_eq!(TextInstance::descriptor().attributes[7].offset, 112);
+
+        assert_eq!(std::mem::size_of::<ShapeGpu>(), 68);
+        assert_eq!(ShapeGpu::descriptor().array_stride, 68);
+        assert_eq!(ShapeGpu::descriptor().attributes.len(), 9);
+        assert_eq!(ShapeGpu::descriptor().attributes[8].offset, 64);
+
+        // `ShapeInstance` is the authoring type; the renderer uploads
+        // `ShapeGpu::pack` of it. Its size is pinned so the packer's input
+        // contract cannot drift unnoticed.
+        assert_eq!(std::mem::size_of::<ShapeInstance>(), 120);
     }
 }
 

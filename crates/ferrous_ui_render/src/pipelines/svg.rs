@@ -1,6 +1,14 @@
 use wgpu::RenderPipeline;
 use ferrous_svg::SvgVertex;
 
+// `svg.wgsl` consumes all three attributes; the last one (`z_order`) ends at
+// byte 28, which is exactly the struct size: no trailing padding.
+const _: () = {
+    assert!(std::mem::size_of::<SvgVertex>() == 28);
+    assert!(std::mem::offset_of!(SvgVertex, color) == 8);
+    assert!(std::mem::offset_of!(SvgVertex, z_order) == 24);
+};
+
 pub fn create_svg_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,

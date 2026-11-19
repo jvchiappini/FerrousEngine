@@ -1,6 +1,14 @@
 use crate::gpu_types::TextQuad;
 use wgpu::RenderPipeline;
 
+// The text and icon pipelines expose all seven instance attributes;
+// `node_id` (location 7, bytes 52..56) is declared by `text.wgsl` but not read
+// by its body, so the stride must still cover it.
+const _: () = {
+    assert!(std::mem::size_of::<TextQuad>() == 56);
+    assert!(std::mem::offset_of!(TextQuad, node_id) == 52);
+};
+
 pub fn create_text_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,

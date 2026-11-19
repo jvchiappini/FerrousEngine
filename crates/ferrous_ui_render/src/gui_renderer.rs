@@ -13,6 +13,50 @@ use ferrous_core::memory::{self, Subsystem};
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
+/// Forwards the `ferrous_font` / `ferrous_assets` cache inventory to
+/// [`ferrous_core::memory`].
+///
+/// `ferrous_font` has no dependency on `ferrous_core`; the first
+/// [`GuiRenderer`] installs this process-global sink, so every later atlas,
+/// glyph table or decoded-image registration appears in `memory_report`.
+#[cfg(feature = "text")]
+fn install_memory_inventory() {
+    ferrous_assets::inventory::install(register_cache_memory, unregister_cache_memory);
+}
+
+#[cfg(feature = "text")]
+fn register_cache_memory(
+    label: &str,
+    bytes: u64,
+    side: ferrous_assets::inventory::MemorySide,
+    subsystem: ferrous_assets::inventory::Subsystem,
+) {
+    let subsystem = match subsystem {
+        ferrous_assets::inventory::Subsystem::Fonts => Subsystem::Fonts,
+        ferrous_assets::inventory::Subsystem::Assets => Subsystem::Assets,
+    };
+    match side {
+        ferrous_assets::inventory::MemorySide::Cpu => memory::register_cpu(label, bytes, subsystem),
+        ferrous_assets::inventory::MemorySide::Gpu => memory::register_gpu(label, bytes, subsystem),
+    }
+}
+
+#[cfg(feature = "text")]
+fn unregister_cache_memory(
+    label: &str,
+    side: ferrous_assets::inventory::MemorySide,
+    subsystem: ferrous_assets::inventory::Subsystem,
+) {
+    let subsystem = match subsystem {
+        ferrous_assets::inventory::Subsystem::Fonts => Subsystem::Fonts,
+        ferrous_assets::inventory::Subsystem::Assets => Subsystem::Assets,
+    };
+    match side {
+        ferrous_assets::inventory::MemorySide::Cpu => memory::unregister_cpu(label, subsystem),
+        ferrous_assets::inventory::MemorySide::Gpu => memory::unregister_gpu(label, subsystem),
+    }
+}
+
 /// Main UI rendering engine on the GPU.
 pub struct GuiRenderer {
     pub device: Arc<wgpu::Device>,
@@ -61,9 +105,11 @@ pub struct GuiRenderer {
     pub depth_texture: wgpu::Texture,
     pub depth_view: wgpu::TextureView,
 
-    // GPU ID Hit-Testing
-    pub id_texture: wgpu::Texture,
-    pub id_view: wgpu::TextureView,
+    // GPU ID Hit-Testing.  The full-size id texture is allocated lazily on the
+    // first hit test (see [`Self::ensure_id_target`]); most UI sessions never
+    // pick, so paying for it at start-up was wasted VRAM.
+    pub id_texture: Option<wgpu::Texture>,
+    pub id_view: Option<wgpu::TextureView>,
     pub id_staging_buffer: wgpu::Buffer,
 
     pub format: wgpu::TextureFormat,
@@ -86,6 +132,8 @@ impl GuiRenderer {
         sample_count: u32,
         pipeline_cache: Option<Arc<wgpu::PipelineCache>>,
     ) -> Self {
+        #[cfg(feature = "text")]
+        install_memory_inventory();
         let layouts = Layouts::new(&device);
 
         // Standard buffers
@@ -256,22 +304,10 @@ impl GuiRenderer {
         });
         let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        // ID Buffer
-        let id_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("GUI ID Texture"),
-            size: wgpu::Extent3d {
-                width: width.max(1),
-                height: height.max(1),
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R32Uint,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let id_view = id_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // ID Buffer: only the 4-byte staging target is created eagerly.  The
+        // full-size `R32Uint` texture is allocated by `ensure_id_target` on the
+        // first pick/readback (it is used only by the separate id pass, so the
+        // visual pass and every golden are unaffected).
         let id_staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("GUI ID Staging Buffer"),
             size: 4,
@@ -314,12 +350,7 @@ impl GuiRenderer {
         memory::register_gpu("gui:dummy texture", 4, Subsystem::Gui);
         memory::register_gpu(
             "gui:depth texture",
-            u64::from(width.max(1)) * u64::from(height.max(1)) * 4 * u64::from(sample_count),
-            Subsystem::Gui,
-        );
-        memory::register_gpu(
-            "gui:id texture",
-            u64::from(width.max(1)) * u64::from(height.max(1)) * 4,
+            Self::depth_texture_bytes(width, height, sample_count),
             Subsystem::Gui,
         );
         memory::register_gpu("gui:id staging", id_staging_buffer.size(), Subsystem::Gui);
@@ -359,8 +390,8 @@ impl GuiRenderer {
             resolution,
             depth_texture,
             depth_view,
-            id_texture,
-            id_view,
+            id_texture: None,
+            id_view: None,
             id_staging_buffer,
             format,
             sample_count,
@@ -438,12 +469,59 @@ impl GuiRenderer {
             );
         }
 
-        // Resize Depth
-        self.depth_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("GUI Depth Texture Resized"),
+        // Resize Depth.  There is exactly one depth target: replacing the view
+        // and then the texture drops the previous pair, so a resize can never
+        // keep two full-size depth buffers alive.
+        let (depth_texture, depth_view) =
+            Self::create_depth_target(&self.device, width, height, sample_count);
+        self.depth_view = depth_view;
+        self.depth_texture = depth_texture;
+        memory::register_gpu(
+            "gui:depth texture",
+            Self::depth_texture_bytes(width, height, sample_count),
+            Subsystem::Gui,
+        );
+
+        // Resize ID only when the target exists: it is lazy and must not be
+        // allocated by a resize.  Dropping both handles before allocating the
+        // replacement keeps the peak at one id texture, not two.
+        if self.id_texture.is_some() {
+            self.id_view = None;
+            self.id_texture = None;
+            let (id_texture, id_view) = Self::create_id_target(&self.device, width, height);
+            memory::register_gpu(
+                "gui:id texture",
+                Self::id_texture_bytes(width, height),
+                Subsystem::Gui,
+            );
+            self.id_texture = Some(id_texture);
+            self.id_view = Some(id_view);
+        }
+    }
+
+    /// Bytes of the full-size GUI depth texture for `width × height` at
+    /// `sample_count` samples (`Depth32Float` = 4 bytes per texel).
+    fn depth_texture_bytes(width: u32, height: u32, sample_count: u32) -> u64 {
+        u64::from(width.max(1)) * u64::from(height.max(1)) * 4 * u64::from(sample_count)
+    }
+
+    /// Bytes of the full-size `R32Uint` id texture (`4` bytes per texel).
+    fn id_texture_bytes(width: u32, height: u32) -> u64 {
+        u64::from(width.max(1)) * u64::from(height.max(1)) * 4
+    }
+
+    /// Creates the single full-size depth target.
+    fn create_depth_target(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+        sample_count: u32,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("GUI Depth Texture"),
             size: wgpu::Extent3d {
-                width,
-                height,
+                width: width.max(1),
+                height: height.max(1),
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -453,21 +531,21 @@ impl GuiRenderer {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
-        self.depth_view = self
-            .depth_texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        memory::register_gpu(
-            "gui:depth texture",
-            u64::from(width.max(1)) * u64::from(height.max(1)) * 4 * u64::from(sample_count),
-            Subsystem::Gui,
-        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        (texture, view)
+    }
 
-        // Resize ID
-        self.id_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("GUI ID Texture Resized"),
+    /// Creates the single full-size id target used by GPU hit testing.
+    fn create_id_target(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("GUI ID Texture"),
             size: wgpu::Extent3d {
-                width,
-                height,
+                width: width.max(1),
+                height: height.max(1),
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -477,14 +555,41 @@ impl GuiRenderer {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        self.id_view = self
-            .id_texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        (texture, view)
+    }
+
+    /// Allocates the full-size id texture on first use, or after a resize.
+    ///
+    /// The id pass is separate from the visual pass, so a target that is never
+    /// requested does not exist and no rendered pixel changes.  Callers that
+    /// hit-test through [`Self::read_pixel_id`] or [`Self::hit_test_gpu`] do
+    /// not need to call this: those methods ensure it themselves.
+    pub fn ensure_id_target(&mut self) {
+        let width = self.resolution[0].max(1.0) as u32;
+        let height = self.resolution[1].max(1.0) as u32;
+        if let (Some(texture), Some(_)) = (&self.id_texture, &self.id_view) {
+            if texture.width() == width && texture.height() == height {
+                return;
+            }
+        }
+        // Drop the old target before allocating the replacement.
+        self.id_view = None;
+        self.id_texture = None;
+        let (id_texture, id_view) = Self::create_id_target(&self.device, width, height);
         memory::register_gpu(
             "gui:id texture",
-            u64::from(width.max(1)) * u64::from(height.max(1)) * 4,
+            Self::id_texture_bytes(width, height),
             Subsystem::Gui,
         );
+        self.id_texture = Some(id_texture);
+        self.id_view = Some(id_view);
+    }
+
+    /// Whether the lazy id target is currently allocated.
+    #[must_use]
+    pub fn has_id_target(&self) -> bool {
+        self.id_texture.is_some() && self.id_view.is_some()
     }
 
     /// Enable/disable the UI image bind-group cache (audit H8).
@@ -918,18 +1023,34 @@ impl GuiRenderer {
         }));
     }
 
+    /// Encodes the id pass and copies the id of pixel `(x, y)` into the staging
+    /// buffer, allocating the id target on first use.
+    ///
+    /// The returned receiver fires once the staging buffer is mapped.  Call
+    /// [`Self::fetch_pixel_id`] after the command buffer has been submitted.
     pub fn read_pixel_id(
-        &self,
+        &mut self,
         encoder: &mut wgpu::CommandEncoder,
         x: u32,
         y: u32,
         batch: &GuiBatch,
     ) -> crossbeam_channel::Receiver<u32> {
+        self.ensure_id_target();
+        // `ensure_id_target` always leaves both handles set; the `else`
+        // branches keep the runtime path panic-free if a future implementation
+        // changes that.
+        let Some(id_view) = self.id_view.as_ref() else {
+            return crossbeam_channel::bounded(1).1;
+        };
+        let Some(id_texture) = self.id_texture.as_ref() else {
+            return crossbeam_channel::bounded(1).1;
+        };
+
         if !batch.quads.is_empty() {
             let mut id_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("GUI ID Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.id_view,
+                    view: id_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -956,7 +1077,7 @@ impl GuiRenderer {
 
         encoder.copy_texture_to_buffer(
             wgpu::ImageCopyTexture {
-                texture: &self.id_texture,
+                texture: id_texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d { x, y, z: 0 },
                 aspect: wgpu::TextureAspect::All,
@@ -987,7 +1108,14 @@ impl GuiRenderer {
         receiver
     }
 
+    /// Reads the id staged by the last [`Self::read_pixel_id`] call.
+    ///
+    /// Returns `0` when the id target was never allocated, so a stray call
+    /// cannot touch an unmapped buffer.
     pub fn fetch_pixel_id(&self) -> u32 {
+        if self.id_texture.is_none() {
+            return 0;
+        }
         let view = self.id_staging_buffer.slice(..).get_mapped_range();
         let id_val = u32::from_le_bytes([view[0], view[1], view[2], view[3]]);
         drop(view);
@@ -998,7 +1126,7 @@ impl GuiRenderer {
     /// Orchestrates a GPU-based hit test for a single pixel.
     /// This is normally called during Event Dispatch if AABB check returns custom widgets.
     pub fn hit_test_gpu(
-        &self,
+        &mut self,
         _queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         x: u32,

@@ -17,6 +17,20 @@ impl std::fmt::Debug for Texture2d {
     }
 }
 
+impl Texture2d {
+    /// GPU bytes held by this texture (one mip level).
+    ///
+    /// `Rgba8`/`Rgba8UnormSrgb` are 4 bytes per texel and the HDR helper's
+    /// `Rgba16Float` is 8; any other format falls back to 4.
+    #[must_use]
+    pub fn gpu_bytes(&self) -> u64 {
+        let bytes_per_texel = match self.texture.format() {
+            wgpu::TextureFormat::Rgba16Float => 8,
+            _ => 4,
+        };
+        u64::from(self.texture.width()) * u64::from(self.texture.height()) * bytes_per_texel
+    }
+}
 
 impl Texture2d {
     /// Create a texture from raw RGBA8 data.  Caller must ensure `data` has
@@ -82,6 +96,13 @@ impl Texture2d {
 
     /// Load an image file from disk (any format supported by the `image`
     /// crate) and upload it to a GPU texture.
+    ///
+    /// This low-level helper always creates a new texture.  Path dedup lives in
+    /// [`crate::AssetServer::load`] (`server.rs:173-185`) and SVG content dedup
+    /// in the feature-gated `SvgCache` (`texture.rs:361-372`); a caller that
+    /// needs one GPU texture per file should register through the renderer's
+    /// texture registry or keep the returned handle instead of calling this
+    /// twice.
     pub fn from_file<P: AsRef<Path>>(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -349,6 +370,52 @@ mod svg_cache {
         }
     }
 
+    #[cfg(feature = "text")]
+    impl SvgKey {
+        fn label(self, kind: &str) -> String {
+            format!(
+                "asset:svg:{:016x}:{}x{} {kind}",
+                self.content_hash, self.width, self.height
+            )
+        }
+    }
+
+    #[cfg(feature = "text")]
+    fn register_pixels(key: SvgKey, bytes: usize) {
+        crate::inventory::register_cpu(
+            &key.label("pixels"),
+            bytes as u64,
+            crate::inventory::Subsystem::Assets,
+        );
+    }
+
+    #[cfg(not(feature = "text"))]
+    fn register_pixels(_key: SvgKey, _bytes: usize) {}
+
+    #[cfg(feature = "text")]
+    fn register_texture(key: SvgKey, bytes: u64) {
+        crate::inventory::register_gpu(
+            &key.label("texture"),
+            bytes,
+            crate::inventory::Subsystem::Assets,
+        );
+    }
+
+    #[cfg(not(feature = "text"))]
+    fn register_texture(_key: SvgKey, _bytes: u64) {}
+
+    #[cfg(feature = "text")]
+    fn unregister_entry(key: SvgKey) {
+        crate::inventory::unregister_cpu(&key.label("pixels"), crate::inventory::Subsystem::Assets);
+        crate::inventory::unregister_gpu(
+            &key.label("texture"),
+            crate::inventory::Subsystem::Assets,
+        );
+    }
+
+    #[cfg(not(feature = "text"))]
+    fn unregister_entry(_key: SvgKey) {}
+
     struct Entry {
         pixels: Arc<Vec<u8>>,
         texture: Option<Arc<Texture2d>>,
@@ -362,13 +429,16 @@ mod svg_cache {
     }
 
     impl Inner {
-        fn insert(&mut self, key: SvgKey, entry: Entry) {
+        /// Inserts `entry` and returns the keys evicted to stay inside the
+        /// pixel budget.  The caller unregisters their inventory labels.
+        fn insert(&mut self, key: SvgKey, entry: Entry) -> Vec<SvgKey> {
             if self.entries.insert(key, entry).is_none() {
                 self.order.push_back(key);
             } else {
                 self.order.retain(|k| *k != key);
                 self.order.push_back(key);
             }
+            let mut evicted = Vec::new();
             self.bytes = self.entries.values().map(|e| e.pixels.len()).sum();
             while self.bytes > self.max_bytes {
                 let Some(oldest) = self.order.pop_front() else {
@@ -376,8 +446,10 @@ mod svg_cache {
                 };
                 if let Some(removed) = self.entries.remove(&oldest) {
                     self.bytes = self.bytes.saturating_sub(removed.pixels.len());
+                    evicted.push(oldest);
                 }
             }
+            evicted
         }
     }
 
@@ -401,37 +473,69 @@ mod svg_cache {
 
         /// Number of cached entries (tests / diagnostics).
         pub fn cached_len(&self) -> usize {
-            self.inner.lock().unwrap().entries.len()
+            self.inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .entries
+                .len()
         }
 
         /// Drop every entry (pixels and shared textures).
         pub fn clear(&self) {
-            let mut inner = self.inner.lock().unwrap();
-            inner.entries.clear();
-            inner.order.clear();
-            inner.bytes = 0;
+            let keys: Vec<SvgKey> = {
+                let mut inner = self
+                    .inner
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let keys: Vec<SvgKey> = inner.entries.keys().copied().collect();
+                inner.entries.clear();
+                inner.order.clear();
+                inner.bytes = 0;
+                keys
+            };
+            for key in keys {
+                unregister_entry(key);
+            }
         }
 
         /// Rasterise `svg_data` to tightly packed, premultiplied RGBA8,
         /// reusing cached pixels for an identical `(content, width, height)`.
         pub fn rasterize(&self, svg_data: &[u8], width: u32, height: u32) -> Result<Arc<Vec<u8>>> {
             let key = key_for(svg_data, width, height);
-            if let Some(entry) = self.inner.lock().unwrap().entries.get(&key) {
+            if let Some(entry) = self
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .entries
+                .get(&key)
+            {
                 return Ok(Arc::clone(&entry.pixels));
             }
             // Rasterise without holding the lock; single-threaded callers.
             let pixels = Arc::new(rasterize_svg(svg_data, width, height)?);
-            let mut inner = self.inner.lock().unwrap();
-            if let Some(entry) = inner.entries.get(&key) {
-                return Ok(Arc::clone(&entry.pixels));
+            let evicted = {
+                let mut inner = self
+                    .inner
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if let Some(entry) = inner.entries.get(&key) {
+                    return Ok(Arc::clone(&entry.pixels));
+                }
+                inner.insert(
+                    key,
+                    Entry {
+                        pixels: Arc::clone(&pixels),
+                        texture: None,
+                    },
+                )
+            };
+            let cached = !evicted.contains(&key);
+            for evicted_key in evicted {
+                unregister_entry(evicted_key);
             }
-            inner.insert(
-                key,
-                Entry {
-                    pixels: Arc::clone(&pixels),
-                    texture: None,
-                },
-            );
+            if cached {
+                register_pixels(key, pixels.len());
+            }
             Ok(pixels)
         }
 
@@ -446,23 +550,45 @@ mod svg_cache {
             height: u32,
         ) -> Result<Arc<Texture2d>> {
             let key = key_for(svg_data, width, height);
-            if let Some(entry) = self.inner.lock().unwrap().entries.get(&key) {
+            if let Some(entry) = self
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .entries
+                .get(&key)
+            {
                 if let Some(texture) = &entry.texture {
                     return Ok(Arc::clone(texture));
                 }
             }
             let pixels = self.rasterize(svg_data, width, height)?;
             let texture = Arc::new(Texture2d::from_rgba8(device, queue, width, height, &pixels));
-            let mut inner = self.inner.lock().unwrap();
-            match inner.entries.get_mut(&key) {
-                Some(entry) => entry.texture = Some(Arc::clone(&texture)),
-                None => inner.insert(
-                    key,
-                    Entry {
-                        pixels: Arc::clone(&pixels),
-                        texture: Some(Arc::clone(&texture)),
-                    },
-                ),
+            let evicted = {
+                let mut inner = self
+                    .inner
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                match inner.entries.get_mut(&key) {
+                    Some(entry) => {
+                        entry.texture = Some(Arc::clone(&texture));
+                        Vec::new()
+                    }
+                    None => inner.insert(
+                        key,
+                        Entry {
+                            pixels: Arc::clone(&pixels),
+                            texture: Some(Arc::clone(&texture)),
+                        },
+                    ),
+                }
+            };
+            let cached = !evicted.contains(&key);
+            for evicted_key in evicted {
+                unregister_entry(evicted_key);
+            }
+            if cached {
+                register_pixels(key, pixels.len());
+                register_texture(key, texture.gpu_bytes());
             }
             Ok(texture)
         }

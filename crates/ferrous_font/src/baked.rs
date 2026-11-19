@@ -13,12 +13,29 @@ use rustc_hash::FxHashMap as HashMap;
 use std::fmt;
 
 use crate::atlas::{FontAtlas, GlyphMetrics, DEFAULT_GLYPH_SIZE};
+use crate::budget::{map_bytes, ATLAS_TABLE_BUDGET_BYTES, LAYOUT_CACHE_BUDGET_BYTES};
 use crate::cache::AtlasCache;
 use crate::codec::{Reader, Writer};
+use crate::inventory;
+use crate::layout::LayoutCache;
 use crate::layout_data::LayoutData;
 use crate::msdf_gen::{generate_msdf, CELL_MAX, CELL_MIN, PIXEL_RANGE};
 use crate::parser::{FontMetrics, FontParser, GposKerning, ParseError};
 use crate::FontError;
+use std::sync::Mutex;
+
+/// Distinguishes two `FontAtlas` instances that share a `FontKey`, so their
+/// inventory labels never unregister each other.
+static NEXT_ATLAS_INSTANCE: Mutex<usize> = Mutex::new(0);
+
+fn next_atlas_instance() -> usize {
+    let mut next = NEXT_ATLAS_INSTANCE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let instance = *next;
+    *next = (*next).wrapping_add(1);
+    instance
+}
 
 /// Version of the baked-atlas binary layout written by [`BakedAtlas::encode`].
 ///
@@ -225,7 +242,7 @@ impl BakedAtlas {
             glyph.size = [glyph_size as f32, glyph_size as f32];
         }
 
-        Ok(Self {
+        let atlas = Self {
             key: FontKey::of(parser.data(), chars),
             glyph_size,
             tex_size,
@@ -238,7 +255,72 @@ impl BakedAtlas {
             gpos,
             font_metrics,
             pixels,
-        })
+        };
+        // The glyph tables are not a cache: they are the requested atlas, so
+        // they cannot be evicted.  Refuse an absurd character set with a typed
+        // error instead of letting a bake grow without bound.
+        let table_bytes = atlas.table_bytes();
+        if table_bytes > ATLAS_TABLE_BUDGET_BYTES {
+            return Err(FontError::Atlas {
+                message: format!(
+                    "glyph tables are {table_bytes} bytes, over the {} byte atlas budget",
+                    ATLAS_TABLE_BUDGET_BYTES
+                ),
+            });
+        }
+        Ok(atlas)
+    }
+
+    /// Bytes of the packed `Rgba8` MSDF pixels.
+    #[must_use]
+    pub fn pixel_bytes(&self) -> u64 {
+        self.pixels.len() as u64
+    }
+
+    /// Estimated bytes of the CPU glyph tables (metrics, indices, kerning).
+    #[must_use]
+    pub fn table_bytes(&self) -> u64 {
+        map_bytes::<char, GlyphMetrics>(self.metrics.len())
+            + map_bytes::<char, u16>(self.glyph_indices.len())
+            + map_bytes::<(u16, u16), f32>(self.kerning.len())
+            + self.gpos.byte_size()
+            + self
+                .notdef
+                .as_ref()
+                .map_or(0, |_| std::mem::size_of::<GlyphMetrics>() as u64)
+    }
+
+    /// CPU bytes of this baked atlas (pixels plus tables).
+    #[must_use]
+    pub fn cpu_bytes(&self) -> u64 {
+        self.pixel_bytes().saturating_add(self.table_bytes())
+    }
+
+    /// Inventory entries for the CPU half of the atlas, with stable labels.
+    ///
+    /// The pixels are dropped by [`Self::upload`] once the texture owns them,
+    /// so an owner that keeps a baked atlas alive should register these; an
+    /// owner that uploads immediately should register the returned
+    /// [`FontAtlas`] entries instead.
+    #[must_use]
+    pub fn inventory_entries(&self) -> Vec<(String, u64)> {
+        let prefix = format!("font:{} baked", self.key.hex());
+        vec![
+            (format!("{prefix} pixels"), self.pixel_bytes()),
+            (
+                format!("{prefix} glyph metrics"),
+                map_bytes::<char, GlyphMetrics>(self.metrics.len()),
+            ),
+            (
+                format!("{prefix} glyph indices"),
+                map_bytes::<char, u16>(self.glyph_indices.len()),
+            ),
+            (
+                format!("{prefix} kern pairs"),
+                map_bytes::<(u16, u16), f32>(self.kerning.len()),
+            ),
+            (format!("{prefix} gpos kerning"), self.gpos.byte_size()),
+        ]
     }
 
     /// [`Self::build`] through `cache`: a hit returns the stored atlas without
@@ -325,6 +407,33 @@ impl BakedAtlas {
             ..Default::default()
         });
 
+        let instance = next_atlas_instance();
+        let inventory_prefix = format!("font:{}#{instance}", self.key.hex());
+        // The texture now owns the pixels; the CPU half is the glyph tables.
+        // Register the CPU caches with the process inventory when the host
+        // installed the bridge.  The GPU texture is registered by the renderer
+        // that owns the bind group, so this path does not double-count it.
+        inventory::register_cpu(
+            &format!("{inventory_prefix} glyph metrics"),
+            map_bytes::<char, GlyphMetrics>(self.metrics.len()),
+            inventory::Subsystem::Fonts,
+        );
+        inventory::register_cpu(
+            &format!("{inventory_prefix} glyph indices"),
+            map_bytes::<char, u16>(self.glyph_indices.len()),
+            inventory::Subsystem::Fonts,
+        );
+        inventory::register_cpu(
+            &format!("{inventory_prefix} kern pairs"),
+            map_bytes::<(u16, u16), f32>(self.kerning.len()),
+            inventory::Subsystem::Fonts,
+        );
+        inventory::register_cpu(
+            &format!("{inventory_prefix} gpos kerning"),
+            self.gpos.byte_size(),
+            inventory::Subsystem::Fonts,
+        );
+
         FontAtlas {
             texture,
             view,
@@ -339,6 +448,8 @@ impl BakedAtlas {
             gpos: self.gpos,
             notdef: self.notdef,
             key: self.key,
+            layout_cache: Mutex::new(LayoutCache::new(LAYOUT_CACHE_BUDGET_BYTES)),
+            inventory_prefix,
         }
     }
 
@@ -664,6 +775,18 @@ mod tests {
         let b = baked();
         assert_eq!(a.key, b.key);
         assert_eq!(a.pixels, b.pixels);
+    }
+
+    #[test]
+    fn cpu_bytes_match_the_baked_buffers() {
+        let atlas = baked();
+        let expected_pixels = u64::from(atlas.tex_size) * u64::from(atlas.tex_size) * 4;
+        assert_eq!(atlas.pixel_bytes(), expected_pixels);
+        assert!(atlas.table_bytes() > 0);
+        assert_eq!(
+            atlas.cpu_bytes(),
+            atlas.pixel_bytes().saturating_add(atlas.table_bytes())
+        );
     }
 
     #[test]

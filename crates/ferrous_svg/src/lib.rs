@@ -15,6 +15,11 @@ pub struct SvgRect {
 }
 
 /// Represents a GPU-ready triangle mesh generated from an SVG.
+///
+/// `indices` are `u32` because the UI renderer concatenates several meshes
+/// into one arena before a single indexed draw; the arena offset can exceed
+/// `u16::MAX` once a frame carries more than 65 536 vertices. A u16 path would
+/// therefore need a capacity guard in the renderer, not only in this crate.
 #[derive(Debug, Clone, Default)]
 pub struct SvgMesh {
     pub vertices: Vec<SvgVertex>,
@@ -22,6 +27,17 @@ pub struct SvgMesh {
     pub bounding_box: SvgRect,
 }
 
+/// One vertex of a tessellated SVG: position, straight RGBA colour and depth.
+///
+/// Memory layout (28 bytes total, 4-byte aligned, no padding):
+/// - offset  0: position [f32; 2]
+/// - offset  8: color    [f32; 4]
+/// - offset 24: z_order  f32
+///
+/// The UI path overwrites `color` and `z_order` per draw command
+/// (`gui_renderer.rs` prepares each upload from the command), but both fields
+/// remain part of the vertex layout because that is the interface consumed by
+/// `svg.wgsl` and the GUI pipeline declares all three attributes.
 #[derive(Copy, Clone, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct SvgVertex {
@@ -29,6 +45,15 @@ pub struct SvgVertex {
     pub color: [f32; 4],
     pub z_order: f32,
 }
+
+// The GUI uploads this struct verbatim and the SVG pipeline derives its stride
+// from `size_of::<SvgVertex>()`; a layout drift would silently shear meshes.
+const _: () = {
+    assert!(std::mem::size_of::<SvgVertex>() == 28);
+    assert!(std::mem::align_of::<SvgVertex>() == 4);
+    assert!(std::mem::offset_of!(SvgVertex, color) == 8);
+    assert!(std::mem::offset_of!(SvgVertex, z_order) == 24);
+};
 
 impl SvgMesh {
     /// Parses an SVG string and tessellates it into a triangle mesh.

@@ -181,6 +181,11 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
                     );
                     gfx.renderer
                         .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
+                    ferrous_core::memory::register_gpu(
+                        "font:ui atlas texture",
+                        font.atlas.gpu_bytes(),
+                        ferrous_core::memory::Subsystem::Fonts,
+                    );
                     *font_slot_clone.borrow_mut() = Some(font);
                 }
 
