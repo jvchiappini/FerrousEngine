@@ -201,7 +201,8 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: EngineEvent) {
         // A worker finished (or asked for a frame): in on-demand mode this is
-        // what turns a background result into exactly one presented frame.
+        // what turns a background result into exactly one presented frame. It
+        // is not an input, so it does not feed `input_to_present_ms`.
         self.redraw.on_input();
     }
 
@@ -258,6 +259,12 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
                 // Prompt 18 P1: one frame to process the input. A pointer
                 // move is opt-out: the app's `on_window_event` decides.
                 if !is_cursor || self.config.redraw_on_pointer_move {
+                    // Prompt 18 P6: the presented frame answers this input
+                    // instant. Only an event that asks for a redraw counts:
+                    // recording every event (a pointer move the app opted out
+                    // of, a focus change, a worker wake) attributed stale
+                    // instants to later timer-driven frames.
+                    ferrous_core::frame_trace::record_input(Instant::now());
                     self.redraw.on_input();
                 }
             }

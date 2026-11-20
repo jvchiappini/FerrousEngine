@@ -64,8 +64,8 @@ pub use renderer_passes::RendererPasses;
 pub use renderer_core::{
     Camera, CameraSystem, CelShadedPass, Controller, FlatShadedPass, FrameBuilder, GizmoSystem,
     GpuCamera, InstanceBuffer, InstancingPipeline, OutlinePass, PostProcessPass, PrePass,
-    RenderPass, RenderStats, RenderTarget, SsaoBlurPass, SsaoPass, TextureUpdateError, Viewport,
-    WorldPass,
+    RenderPass, RenderStats, RenderTarget, RenderTargetHandle, SsaoBlurPass, SsaoPass,
+    TextureUpdateError, Viewport, WorldPass,
 };
 // Antialiasing
 pub use passes::{AntialiasingMode, AntialiasingPass, FxaaParams};

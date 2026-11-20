@@ -519,6 +519,48 @@ fn union_rects(rects: impl Iterator<Item = Rect>) -> Option<Rect> {
         .reduce(|acc, rect| acc.union(rect))
 }
 
+/// Appends each source texture only when the destination does not already hold
+/// the same `Arc`, and returns the source-slot -> destination-slot mapping.
+///
+/// Identity is `Arc::ptr_eq`, so two independently loaded textures that happen
+/// to look the same stay separate slots while the exact same asset is reused.
+#[cfg(any(feature = "assets", test))]
+fn merge_texture_slots<T>(
+    destination: &mut Vec<std::sync::Arc<T>>,
+    source: impl IntoIterator<Item = std::sync::Arc<T>>,
+) -> Vec<u32> {
+    source
+        .into_iter()
+        .map(|texture| {
+            if let Some(position) = destination
+                .iter()
+                .position(|candidate| std::sync::Arc::ptr_eq(candidate, &texture))
+            {
+                return position as u32;
+            }
+            destination.push(texture);
+            (destination.len() - 1) as u32
+        })
+        .collect()
+}
+
+/// Rewrites textured quads from source-batch slots to `remap`'s slots.
+///
+/// Quads without [`TEXTURED_BIT`] are solids (or gradient/border/line
+/// primitives) and keep `tex_index = 0`.  An out-of-range index falls back to
+/// `0` instead of panicking, matching the "solids stay 0" contract.
+#[cfg(any(feature = "assets", test))]
+fn remap_texture_indices(quads: &mut [GuiQuad], remap: &[u32]) {
+    if remap.is_empty() {
+        return;
+    }
+    for quad in quads {
+        if quad.flags & TEXTURED_BIT != 0 {
+            quad.tex_index = remap.get(quad.tex_index as usize).copied().unwrap_or(0);
+        }
+    }
+}
+
 /// Union of the screenspace rects of `quads`, or `None` when empty.
 fn quad_damage(quads: &[GuiQuad]) -> Option<Rect> {
     union_rects(quads.iter().map(|quad| rect_of(quad.pos, quad.size)))
@@ -664,11 +706,28 @@ impl GuiBatch {
         self.update_last_segment();
     }
 
+    /// Appends another batch, remapping its texture slots into this one.
+    ///
+    /// Quads keep painting order, segments are rebased and the damage union is
+    /// merged.  Textured quads are rewritten from the source batch's slot
+    /// numbering to the destination's: each texture is appended only when it is
+    /// not already present (`Arc::ptr_eq`), so extending the same cached panel
+    /// twice does not grow `textures`.  Solid quads keep `tex_index = 0`.
     pub fn extend(&mut self, mut other: GuiBatch) {
         let q_offset = self.quads.len() as u32;
         let t_offset = self.text_quads.len() as u32;
         let i_offset = self.icon_quads.len() as u32;
         let s_offset = self.svg_commands.len() as u32;
+
+        #[cfg(feature = "assets")]
+        {
+            // Reuse the destination's slots and append only new arcs.  The
+            // mapping is indexed by the *source* slot, so every quad that
+            // sampled source slot N now samples the destination slot for the
+            // same texture.
+            let remap = merge_texture_slots(&mut self.textures, other.textures.drain(..));
+            remap_texture_indices(&mut other.quads, &remap);
+        }
 
         for seg in &mut other.segments {
             seg.quad_range.start += q_offset;
@@ -693,10 +752,49 @@ impl GuiBatch {
                 None => Some(other_damage),
             };
         }
+    }
+
+    /// Appends a borrowed batch, remapping its texture slots into this one.
+    ///
+    /// The retained-panel path in an immediate-mode client composes cached
+    /// panel batches every frame; cloning the cached batch first would copy the
+    /// primitives twice and allocate.  This appends the same data as
+    /// [`Self::extend`] without taking ownership: only new texture arcs are
+    /// cloned (an `Arc` bump), the primitives are copied once.
+    pub fn extend_from(&mut self, other: &GuiBatch) {
+        let q_offset = self.quads.len() as u32;
+        let t_offset = self.text_quads.len() as u32;
+        let i_offset = self.icon_quads.len() as u32;
+        let s_offset = self.svg_commands.len() as u32;
 
         #[cfg(feature = "assets")]
-        {
-            self.textures.extend(other.textures);
+        let remap = merge_texture_slots(&mut self.textures, other.textures.iter().cloned());
+
+        for seg in &other.segments {
+            let mut segment = seg.clone();
+            segment.quad_range.start += q_offset;
+            segment.quad_range.end += q_offset;
+            segment.text_range.start += t_offset;
+            segment.text_range.end += t_offset;
+            segment.icon_range.start += i_offset;
+            segment.icon_range.end += i_offset;
+            segment.svg_range.start += s_offset;
+            segment.svg_range.end += s_offset;
+            self.segments.push(segment);
+        }
+        self.quads.extend_from_slice(&other.quads);
+        self.text_quads.extend_from_slice(&other.text_quads);
+        self.icon_quads.extend_from_slice(&other.icon_quads);
+        self.svg_commands.extend_from_slice(&other.svg_commands);
+
+        #[cfg(feature = "assets")]
+        remap_texture_indices(&mut self.quads[q_offset as usize..], &remap);
+
+        if let Some(other_damage) = other.damage_union {
+            self.damage_union = match self.damage_union {
+                Some(current) => Some(current.union(other_damage)),
+                None => Some(other_damage),
+            };
         }
     }
 
@@ -1236,6 +1334,86 @@ mod tests {
             overlap_x > 0.0 && overlap_y > 0.0,
             "the joint quads must overlap (x {overlap_x}, y {overlap_y})"
         );
+    }
+
+    #[test]
+    fn texture_slots_remap_into_the_destination_and_dedup() {
+        let texture_a = std::sync::Arc::new(1u32);
+        let texture_b = std::sync::Arc::new(2u32);
+
+        // Destination already has B; source slots are [A, B].
+        let mut destination = vec![texture_b.clone()];
+        let remap =
+            merge_texture_slots(&mut destination, vec![texture_a.clone(), texture_b.clone()]);
+        assert_eq!(remap, vec![1, 0], "A is new, B reuses destination slot 0");
+        assert_eq!(destination.len(), 2, "one different texture was added");
+
+        // Extending again must not grow the texture list.
+        let remap_again = merge_texture_slots(&mut destination, vec![texture_a, texture_b]);
+        assert_eq!(remap_again, vec![1, 0]);
+        assert_eq!(destination.len(), 2, "the same arcs are reused");
+    }
+
+    #[test]
+    fn remapping_rewrites_textured_quads_and_leaves_solids_at_slot_zero() {
+        let solid = GuiQuad::solid([0.0; 2], [1.0; 2], [1.0; 4], [0.0; 4], 0, 0.0, 0);
+        let mut textured = solid;
+        textured.flags = TEXTURED_BIT;
+        textured.tex_index = 1;
+        let mut quads = [solid, textured];
+
+        remap_texture_indices(&mut quads, &[4, 7]);
+
+        assert_eq!(quads[0].tex_index, 0, "a solid keeps slot 0");
+        assert_eq!(quads[1].tex_index, 7, "source slot 1 -> destination slot 7");
+    }
+
+    #[test]
+    fn extending_merges_damage_and_rebases_segments() {
+        let mut destination = GuiBatch::new();
+        destination.rect(0.0, 0.0, 10.0, 10.0, [1.0; 4]);
+
+        let mut source = GuiBatch::new();
+        source.push_clip(rect(40.0, 40.0, 100.0, 100.0));
+        source.rect(50.0, 50.0, 10.0, 10.0, [0.0, 0.0, 1.0, 1.0]);
+
+        destination.extend(source);
+
+        assert_eq!(
+            destination.damage_union,
+            Some(rect(0.0, 0.0, 60.0, 60.0)),
+            "the two rects union into the bounding box"
+        );
+        let last = destination.segments.last().expect("a segment");
+        assert_eq!(last.quad_range, 1..2, "the appended quad is rebased");
+        assert_eq!(last.scissor, Some(rect(40.0, 40.0, 100.0, 100.0)));
+    }
+
+    #[test]
+    fn extend_from_appends_like_extend_without_consuming_the_source() {
+        let mut destination = GuiBatch::new();
+        destination.rect(0.0, 0.0, 10.0, 10.0, [1.0; 4]);
+
+        let mut source = GuiBatch::new();
+        source.push_clip(rect(40.0, 40.0, 100.0, 100.0));
+        source.rect(50.0, 50.0, 10.0, 10.0, [0.0, 0.0, 1.0, 1.0]);
+
+        destination.extend_from(&source);
+        destination.extend_from(&source);
+
+        assert_eq!(
+            destination.quads.len(),
+            3,
+            "one destination quad plus the source twice"
+        );
+        assert_eq!(
+            source.quads.len(),
+            1,
+            "the borrowed source keeps its primitives"
+        );
+        let last = destination.segments.last().expect("a segment");
+        assert_eq!(last.quad_range, 2..3, "the second append is rebased");
+        assert_eq!(last.scissor, Some(rect(40.0, 40.0, 100.0, 100.0)));
     }
 
     #[test]

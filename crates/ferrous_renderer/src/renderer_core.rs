@@ -25,7 +25,7 @@ pub use crate::passes::{
     CelShadedPass, FlatShadedPass, OutlinePass, ParticleSystem, PostProcessPass, PrePass,
     ProceduralSkyPass, SkinningPass, SkyMode, SsaoBlurPass, SsaoPass, WorldPass,
 };
-pub use crate::render_target::RenderTarget;
+pub use crate::render_target::{RenderTarget, RenderTargetHandle};
 pub use crate::resources::InstanceBuffer;
 pub use camera::{Camera, Controller, GpuCamera};
 pub use camera_system::CameraSystem;
@@ -241,6 +241,12 @@ struct LayerTexture {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
     bind_group: std::sync::Arc<wgpu::BindGroup>,
+    /// Effective resolution factor used to allocate this texture.
+    scale: f32,
+    /// Allocated width in texels.
+    width: u32,
+    /// Allocated height in texels.
+    height: u32,
 }
 
 /// A destination snapshot used by backdrop-aware layer compositing.
@@ -883,7 +889,12 @@ struct View2dCommand {
 
 pub struct Renderer {
     pub context: EngineContext,
-    pub render_target: RenderTarget,
+    /// Internal colour + depth target.
+    ///
+    /// `Flat2D`/`Pure2D` construct it lazily, so the 11.52 MB at 1600x900 are
+    /// only allocated when a pass actually renders into it.  `Full3D` keeps the
+    /// eager behaviour.
+    pub render_target: RenderTargetHandle,
 
     // -- Built-in passes (direct typed access, zero-cost) --------------------
     /// 3-D world pass: instancing pipelines, shadow map, HDR target and sky.
@@ -1211,7 +1222,14 @@ impl Renderer {
         let device = &context.device;
 
         log::info!("[WGPU] Creating Renderer with {}x MSAA", sample_count);
-        let rt = RenderTarget::new(device, width, height, format, sample_count);
+        // The 3-D path needs the depth attachment on every frame, so keep the
+        // eager allocation there.  The 2-D modes render straight to the surface
+        // and only materialize the internal target if a caller renders into it.
+        let rt = if mode == RendererMode::Full3D {
+            RenderTargetHandle::new_eager(device, width, height, format, sample_count)
+        } else {
+            RenderTargetHandle::new_lazy(width, height, format, sample_count)
+        };
 
         let layouts = PipelineLayouts::new(device);
 
@@ -1461,6 +1479,11 @@ impl Renderer {
             return;
         }
         let device = self.context.device.clone();
+        // A renderer built in a 2-D mode starts with an unallocated internal
+        // target; the 3-D passes need its depth attachment immediately.
+        if self.render_target.ensure_allocated(&device) {
+            self.register_render_target_memory();
+        }
         let queue = self.context.queue.clone();
         let hdr_format = crate::render_target::HdrTexture::FORMAT;
         let sample_count = self.sample_count;
@@ -2149,12 +2172,20 @@ impl Renderer {
     fn register_render_target_memory(&self) {
         use ferrous_core::memory::{register_gpu, unregister_gpu, Subsystem};
         let rt = &self.render_target;
+        let Some(color) = rt.color() else {
+            // Lazy 2-D target not materialized yet: nothing is resident, and
+            // stale labels from a previous allocation must disappear.
+            unregister_gpu("rt:color resolve", Subsystem::RenderTarget);
+            unregister_gpu("rt:color msaa", Subsystem::RenderTarget);
+            unregister_gpu("rt:depth", Subsystem::RenderTarget);
+            return;
+        };
         register_gpu(
             "rt:color resolve",
-            texture_bytes(&rt.color.texture),
+            texture_bytes(&color.texture),
             Subsystem::RenderTarget,
         );
-        if let Some(texture) = &rt.color.msaa_texture {
+        if let Some(texture) = &color.msaa_texture {
             register_gpu(
                 "rt:color msaa",
                 texture_bytes(texture),
@@ -2163,11 +2194,15 @@ impl Renderer {
         } else {
             unregister_gpu("rt:color msaa", Subsystem::RenderTarget);
         }
-        register_gpu(
-            "rt:depth",
-            texture_bytes(&rt.depth.texture),
-            Subsystem::RenderTarget,
-        );
+        if let Some(depth) = rt.depth() {
+            register_gpu(
+                "rt:depth",
+                texture_bytes(&depth.texture),
+                Subsystem::RenderTarget,
+            );
+        } else {
+            unregister_gpu("rt:depth", Subsystem::RenderTarget);
+        }
     }
 
     /// Registers (or refreshes) the lazily built 3-D group.
@@ -3107,6 +3142,18 @@ impl Renderer {
         self.gpu_timings.poll(&self.context.device);
         self.gpu_timings.begin_frame();
 
+        // Materialize the internal target before borrowing it.  A 3-D frame
+        // always needs its depth attachment, even when it presents to an
+        // external view; a 2-D frame needs it only for `RenderDest::Target`.
+        let needs_target = matches!(&dest, RenderDest::Target)
+            || !matches!(self.mode, RendererMode::Pure2D | RendererMode::Flat2D);
+        if needs_target {
+            let device = self.context.device.clone();
+            if self.render_target.ensure_allocated(&device) {
+                self.register_render_target_memory();
+            }
+        }
+
         // Resolve target view. If internal, use a raw pointer to avoid conflicting
         // borrows with &mut self used by passes later.
         let (target_view, target_texture) = match dest {
@@ -3116,8 +3163,16 @@ impl Renderer {
                 // Both references point into `self.render_target`, which is not
                 // mutated while the frame is being encoded.  The raw-pointer
                 // dance keeps the immutable borrows disjoint from `&mut self`.
-                let view = &*(self.render_target.color_view() as *const wgpu::TextureView);
-                let texture = &*std::ptr::addr_of!(self.render_target.color.texture);
+                let view = &*(self
+                    .render_target
+                    .color_view()
+                    .expect("the target is allocated before a Target render")
+                    as *const wgpu::TextureView);
+                let texture = &*(self
+                    .render_target
+                    .color_texture()
+                    .expect("the target is allocated before a Target render")
+                    as *const wgpu::Texture);
                 (view, Some(texture))
             },
         };
@@ -3912,8 +3967,8 @@ impl Renderer {
 
         let dummy_view = self
             .render_target
-            .color
-            .texture
+            .color_texture()
+            .expect("the 3-D path has an allocated colour target")
             .create_view(&wgpu::TextureViewDescriptor::default());
 
         // -- 1. Depth-Normal Prepass (required by SSAO) ------------------------
@@ -3932,7 +3987,11 @@ impl Renderer {
                 encoder,
                 &dummy_view,
                 None,
-                Some(&self.render_target.depth.view), // share main depth buffer
+                Some(
+                    self.render_target
+                        .depth_view()
+                        .expect("the 3-D path has a depth attachment"),
+                ), // share main depth buffer
                 &packet,
             );
         }
@@ -4028,7 +4087,11 @@ impl Renderer {
                 encoder,
                 &dummy_view,
                 None,
-                Some(&self.render_target.depth.view),
+                Some(
+                    self.render_target
+                        .depth_view()
+                        .expect("the 3-D path has a depth attachment"),
+                ),
                 &packet,
             );
         }
@@ -4057,7 +4120,10 @@ impl Renderer {
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.render_target.depth.view,
+                    view: self
+                        .render_target
+                        .depth_view()
+                        .expect("the 3-D path has a depth attachment"),
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
@@ -4100,7 +4166,11 @@ impl Renderer {
                         encoder,
                         scene_view,
                         scene_rt,
-                        Some(&self.render_target.depth.view),
+                        Some(
+                            self.render_target
+                                .depth_view()
+                                .expect("the 3-D path has a depth attachment"),
+                        ),
                         &packet,
                     );
                 }
@@ -4113,7 +4183,11 @@ impl Renderer {
                             encoder,
                             scene_view,
                             scene_rt,
-                            Some(&self.render_target.depth.view),
+                            Some(
+                                self.render_target
+                                    .depth_view()
+                                    .expect("the 3-D path has a depth attachment"),
+                            ),
                             &packet,
                         );
                     }
@@ -4131,7 +4205,11 @@ impl Renderer {
                         encoder,
                         scene_view,
                         scene_rt,
-                        Some(&self.render_target.depth.view),
+                        Some(
+                            self.render_target
+                                .depth_view()
+                                .expect("the 3-D path has a depth attachment"),
+                        ),
                         &packet,
                     );
                 }
@@ -4154,7 +4232,9 @@ impl Renderer {
                 encoder,
                 scene_view,
                 scene_rt,
-                &self.render_target.depth.view,
+                self.render_target
+                    .depth_view()
+                    .expect("the 3-D path has a depth attachment"),
                 &self.camera_system.gpu.bind_group,
             );
         }
@@ -4195,7 +4275,10 @@ impl Renderer {
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.render_target.depth.view,
+                    view: self
+                        .render_target
+                        .depth_view()
+                        .expect("the 3-D path has a depth attachment"),
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
@@ -4983,7 +5066,11 @@ impl Renderer {
         weight: f32,
     ) -> Result<(), ferrous_2d::render::AccumulationError> {
         use ferrous_2d::render::AccumulationError;
-        let source = self.render_target.color_view();
+        let Some(source) = self.render_target.color_view() else {
+            return Err(AccumulationError::Unsupported {
+                reason: "the internal render target is not allocated; render to it first",
+            });
+        };
         let Some(accumulation) = self.accumulation_2d.as_mut() else {
             return Err(AccumulationError::NotBegun);
         };
@@ -5031,8 +5118,12 @@ impl Renderer {
     /// [`ferrous_2d::render::AccumulationError::ZeroWeight`].
     pub fn resolve_accumulation_2d(&mut self) -> Result<(), ferrous_2d::render::AccumulationError> {
         use ferrous_2d::render::AccumulationError;
-        let format = self.render_target.color.format;
-        let target = self.render_target.color_view();
+        let format = self.render_target.format();
+        let Some(target) = self.render_target.color_view() else {
+            return Err(AccumulationError::Unsupported {
+                reason: "the internal render target is not allocated; render to it first",
+            });
+        };
         let Some(accumulation) = self.accumulation_2d.as_mut() else {
             return Err(AccumulationError::NotBegun);
         };
@@ -6056,13 +6147,10 @@ impl Renderer {
     /// Builds (or rebuilds) the per-format layer pipelines and invalidates the
     /// texture pool when the target size changed.
     fn ensure_layer_resources(&mut self) {
-        // Opt-in intermediate resolution (prompt 18 P5).  `1.0` is the exact
-        // identity, so the default keeps today's pixels and every golden.
-        let (layer_width, layer_height) = crate::render_config::scaled_extent(
-            self.width,
-            self.height,
-            self.render_2d_config.layer_resolution_scale,
-        );
+        // The pool stores the *target* size; each layer applies its own scale
+        // (adaptive leading-blur factor or the explicit P5 override) when its
+        // texture is created.  The identity scale keeps today's pixels.
+        let (layer_width, layer_height) = (self.width, self.height);
         let size_changed = match &self.layer_res {
             Some(res) => res.width != layer_width || res.height != layer_height,
             None => true,
@@ -6168,6 +6256,10 @@ impl Renderer {
 
     /// Ensures the pooled offscreen texture for `index` exists.
     fn ensure_layer_texture(&mut self, index: u32) {
+        let scale = self.layers_2d.get(index as usize).map_or(1.0, |record| {
+            self.render_2d_config.effective_layer_scale(&record.effects)
+        });
+        let (width, height) = crate::render_config::scaled_extent(self.width, self.height, scale);
         let device = self.context.device.clone();
         let Some(res) = self.layer_res.as_mut() else {
             return;
@@ -6175,14 +6267,33 @@ impl Renderer {
         while res.textures.len() <= index as usize {
             res.textures.push(None);
         }
-        if res.textures[index as usize].is_some() {
+        let reuse = res.textures[index as usize].as_mut().is_some_and(|layer| {
+            let same = layer.width == width && layer.height == height;
+            if same {
+                // Rounding can map two nearby factors to the same extent; keep
+                // the kernel/offset scaling aligned with the requested factor.
+                layer.scale = scale;
+            }
+            same
+        });
+        if reuse {
             return;
         }
+        // A size change invalidates the per-layer scratch and backdrop too.
+        while res.effect_targets.len() <= index as usize {
+            res.effect_targets.push(None);
+        }
+        res.effect_targets[index as usize] = None;
+        while res.layer_backdrops.len() <= index as usize {
+            res.layer_backdrops.push(None);
+        }
+        res.layer_backdrops[index as usize] = None;
+
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Pure2D Layer Texture"),
             size: wgpu::Extent3d {
-                width: res.width.max(1),
-                height: res.height.max(1),
+                width: width.max(1),
+                height: height.max(1),
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -6215,6 +6326,9 @@ impl Renderer {
             texture,
             view,
             bind_group,
+            scale,
+            width,
+            height,
         });
         res.textures_allocated += 1;
         self.register_layer_memory();
@@ -6232,9 +6346,16 @@ impl Renderer {
         if res.effect_targets[index as usize].is_some() {
             return;
         }
-        res.effect_targets[index as usize] = Some(create_effect_targets(
-            &device, res.format, res.width, res.height,
-        ));
+        let Some((width, height)) = res
+            .textures
+            .get(index as usize)
+            .and_then(|entry| entry.as_ref())
+            .map(|layer| (layer.width, layer.height))
+        else {
+            return;
+        };
+        res.effect_targets[index as usize] =
+            Some(create_effect_targets(&device, res.format, width, height));
         self.register_layer_memory();
     }
 
@@ -6253,6 +6374,11 @@ impl Renderer {
             Some(record) if !record.effects.is_empty() => record.effects.as_slice(),
             _ => return 0,
         };
+        let scale = res
+            .textures
+            .get(index as usize)
+            .and_then(|entry| entry.as_ref())
+            .map_or(1.0, |layer| layer.scale);
         run_effect_chain(
             &self.context.device,
             &self.context.queue,
@@ -6260,6 +6386,7 @@ impl Renderer {
             res,
             index,
             effects,
+            scale,
             &mut self.effect_uniforms,
         )
     }
@@ -6562,9 +6689,17 @@ impl Renderer {
     /// Ensures the destination snapshot used by layer `index`'s plan.
     fn ensure_layer_backdrop(&mut self, index: u32) {
         let device = self.context.device.clone();
-        let (format, width, height) = match &self.layer_res {
-            Some(res) => (res.format, res.width, res.height),
-            None => return,
+        let Some((format, width, height)) = self.layer_res.as_ref().map(|res| {
+            let layer = res
+                .textures
+                .get(index as usize)
+                .and_then(|entry| entry.as_ref());
+            match layer {
+                Some(layer) => (res.format, layer.width, layer.height),
+                None => (res.format, res.width, res.height),
+            }
+        }) else {
+            return;
         };
         let Some(res) = self.layer_res.as_mut() else {
             return;
@@ -7050,6 +7185,7 @@ fn run_effect_chain(
     res: &LayerResources,
     index: u32,
     effects: &[Effect2d],
+    scale: f32,
     uniforms: &mut EffectUniformPool,
 ) -> u32 {
     let Some(layer) = res.textures.get(index as usize).and_then(Option::as_ref) else {
@@ -7064,11 +7200,19 @@ fn run_effect_chain(
     };
     let views = [&layer.view, &targets.views[0], &targets.views[1]];
     let textures = [&layer.texture, &targets.textures[0], &targets.textures[1]];
+    // The layer texture is scaled; the effect radii and offsets are in target
+    // pixels, so convert them to texels of this texture to keep the on-screen
+    // blur/shadow identical to the 1.0 path.
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
 
     let mut current = 0usize;
     let mut passes = 0u32;
     for effect in effects {
-        let kernel = BlurKernel2d::new(effect.blur_radius());
+        let kernel = BlurKernel2d::new(effect.blur_radius() * scale);
         // With three textures, current + 1 and current + 2 are always free
         // and distinct, so every pass reads and writes different textures.
         let horizontal = (current + 1) % 3;
@@ -7105,7 +7249,7 @@ fn run_effect_chain(
             } => {
                 let uniform = EffectUniform2d {
                     color,
-                    offset,
+                    offset: [offset[0] * scale, offset[1] * scale],
                     mode: 0.0,
                     strength: opacity,
                 };

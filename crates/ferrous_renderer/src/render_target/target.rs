@@ -235,3 +235,186 @@ impl LazyRenderTarget {
         self.depth = None;
     }
 }
+
+/// The renderer-owned swapchain-sized target, eager or lazy.
+///
+/// The renderer stores one of these and keeps the eager [`RenderTarget`] for
+/// the full 3-D path, where the depth attachment and the colour resolve are
+/// needed on every frame.  `Flat2D`/`Pure2D` applications render straight to
+/// the surface, so their internal target is built as a [`LazyRenderTarget`]
+/// and allocates nothing until a pass actually renders into it.
+///
+/// The accessors mirror [`RenderTarget`] but return `Option` because a lazy
+/// target can be unallocated.  [`Self::ensure_allocated`] materializes it, and
+/// [`Self::is_allocated`] reports whether the colour + depth pair exists.  The
+/// memory inventory labels are unchanged once the target is materialized.
+pub struct RenderTargetHandle {
+    storage: RenderTargetStorage,
+    format: wgpu::TextureFormat,
+    sample_count: u32,
+    /// Logical width; matches the allocated textures while they exist.
+    pub width: u32,
+    /// Logical height; matches the allocated textures while they exist.
+    pub height: u32,
+}
+
+enum RenderTargetStorage {
+    /// The pre-P6 value: colour + depth exist from construction.
+    Eager(RenderTarget),
+    /// Colour + depth are created on the first render into the target.
+    Lazy(LazyRenderTarget),
+}
+
+impl RenderTargetHandle {
+    /// Creates an eager target, allocating colour + depth immediately.
+    #[must_use]
+    pub fn new_eager(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+        sample_count: u32,
+    ) -> Self {
+        Self {
+            storage: RenderTargetStorage::Eager(RenderTarget::new(
+                device,
+                width,
+                height,
+                format,
+                sample_count,
+            )),
+            format,
+            sample_count,
+            width,
+            height,
+        }
+    }
+
+    /// Creates a lazy target.  No GPU memory is allocated until
+    /// [`Self::ensure_allocated`] runs.
+    #[must_use]
+    pub fn new_lazy(
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+        sample_count: u32,
+    ) -> Self {
+        Self {
+            storage: RenderTargetStorage::Lazy(LazyRenderTarget::new(width, height)),
+            format,
+            sample_count,
+            width,
+            height,
+        }
+    }
+
+    /// Materializes a lazy target at its current logical size.
+    ///
+    /// Returns `true` when the colour + depth pair was created (or recreated)
+    /// by this call.  Eager targets are always allocated and return `false`.
+    pub fn ensure_allocated(&mut self, device: &wgpu::Device) -> bool {
+        match &mut self.storage {
+            RenderTargetStorage::Eager(_) => false,
+            RenderTargetStorage::Lazy(lazy) => lazy.ensure_color_depth(
+                device,
+                self.width,
+                self.height,
+                self.format,
+                self.sample_count,
+            ),
+        }
+    }
+
+    /// Whether the colour + depth pair currently exists.
+    #[must_use]
+    pub fn is_allocated(&self) -> bool {
+        match &self.storage {
+            RenderTargetStorage::Eager(_) => true,
+            RenderTargetStorage::Lazy(lazy) => lazy.is_allocated(),
+        }
+    }
+
+    /// The colour attachment, or `None` while a lazy target is unallocated.
+    #[must_use]
+    pub fn color(&self) -> Option<&ColorTarget> {
+        match &self.storage {
+            RenderTargetStorage::Eager(target) => Some(&target.color),
+            RenderTargetStorage::Lazy(lazy) => lazy.color(),
+        }
+    }
+
+    /// The depth attachment, or `None` while a lazy target is unallocated.
+    #[must_use]
+    pub fn depth(&self) -> Option<&DepthTarget> {
+        match &self.storage {
+            RenderTargetStorage::Eager(target) => Some(&target.depth),
+            RenderTargetStorage::Lazy(lazy) => lazy.depth(),
+        }
+    }
+
+    /// The colour `(attachment, resolve_target)` pair, when allocated.
+    #[must_use]
+    pub fn color_views(&self) -> Option<(&wgpu::TextureView, Option<&wgpu::TextureView>)> {
+        self.color().map(ColorTarget::attachment_views)
+    }
+
+    /// The single-sample resolve view, when allocated.
+    #[must_use]
+    pub fn color_view(&self) -> Option<&wgpu::TextureView> {
+        self.color().map(|color| &color.view)
+    }
+
+    /// The single-sample resolve texture, when allocated.
+    #[must_use]
+    pub fn color_texture(&self) -> Option<&wgpu::Texture> {
+        self.color().map(|color| &color.texture)
+    }
+
+    /// The depth view, when allocated.
+    #[must_use]
+    pub fn depth_view(&self) -> Option<&wgpu::TextureView> {
+        self.depth().map(|depth| &depth.view)
+    }
+
+    /// The format the target was created with.
+    #[must_use]
+    pub fn format(&self) -> wgpu::TextureFormat {
+        self.format
+    }
+
+    /// The sample count the target was created with.
+    #[must_use]
+    pub fn sample_count(&self) -> u32 {
+        self.sample_count
+    }
+
+    /// Updates the logical size, reallocating only allocated attachments.
+    pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+        if width == self.width && height == self.height {
+            return;
+        }
+        self.width = width;
+        self.height = height;
+        match &mut self.storage {
+            RenderTargetStorage::Eager(target) => target.resize(device, width, height),
+            RenderTargetStorage::Lazy(lazy) => lazy.resize(device, width, height),
+        }
+    }
+
+    /// Drops the colour + depth attachments.  The next
+    /// [`Self::ensure_allocated`] (or the next eager render) recreates them.
+    pub fn release(&mut self) {
+        if matches!(&self.storage, RenderTargetStorage::Eager(_)) {
+            self.storage =
+                RenderTargetStorage::Lazy(LazyRenderTarget::new(self.width, self.height));
+        } else if let RenderTargetStorage::Lazy(lazy) = &mut self.storage {
+            lazy.release();
+        }
+    }
+
+    /// Whether the colour + depth attachments are allocated on first use.
+    #[must_use]
+    pub fn is_lazy(&self) -> bool {
+        matches!(&self.storage, RenderTargetStorage::Lazy(_))
+    }
+}

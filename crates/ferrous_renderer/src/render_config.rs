@@ -108,15 +108,27 @@ pub struct Render2dConfig {
     /// path (the batches are still alive and their buffers are not touched).
     pub static_batches: bool,
     /// Resolution multiplier for the offscreen layer and effect textures of the
-    /// layered Pure2D path.  `1.0` (default) allocates them at the surface
-    /// size, reproducing today's pixels exactly; a value in `(0.0, 1.0)` trades
-    /// sharpness for VRAM and fill rate, and values above `1.0` supersample.
+    /// layered Pure2D path.  `1.0` (default) is the sentinel that lets
+    /// [`layer_scale_adaptive`](Self::layer_scale_adaptive) choose per layer;
+    /// any other finite positive value is an explicit override applied to every
+    /// layer.  A value in `(0.0, 1.0)` trades sharpness for VRAM and fill rate,
+    /// and values above `1.0` supersample.
     ///
     /// The dimensions are derived with [`scaled_extent`], so the scale is
     /// clamped to a finite positive value and every axis stays at least one
-    /// texel.  The value is only consulted when the layer pool is built or
-    /// rebuilt; changing it takes effect on the next layered frame.
+    /// texel.  Changing it recreates the layer textures on the next layered
+    /// frame.
     pub layer_resolution_scale: f32,
+    /// Use a per-layer adaptive resolution factor instead of the single
+    /// [`layer_resolution_scale`](Self::layer_resolution_scale).  Default
+    /// `true`.
+    ///
+    /// A layer whose effect chain starts with a [`Blur`](ferrous_2d::render::Effect2d::Blur)
+    /// renders at `min(1, k / radius)` (see
+    /// [`ferrous_2d::render::adaptive_layer_scale`]); every other layer keeps
+    /// `1.0`.  Calling [`with_layer_resolution_scale`](Self::with_layer_resolution_scale)
+    /// turns this off: an explicit override wins and applies to every layer.
+    pub layer_scale_adaptive: bool,
     /// Allocate and use the GUI pass depth attachment for Early-Z.  Default
     /// `true`, which is the current behaviour.  When `false`, a consumer may
     /// skip the full-size GUI depth texture and its per-frame clear; the visual
@@ -137,7 +149,9 @@ pub struct Render2dConfig {
 }
 
 impl Render2dConfig {
-    /// Sets [`layer_resolution_scale`](Self::layer_resolution_scale).
+    /// Sets [`layer_resolution_scale`](Self::layer_resolution_scale) as an
+    /// explicit override for every layer and disables
+    /// [`layer_scale_adaptive`](Self::layer_scale_adaptive).
     ///
     /// Non-finite and non-positive values are treated as `1.0` when the layer
     /// pool is built, so this method stores the value as given and leaves the
@@ -145,7 +159,41 @@ impl Render2dConfig {
     #[must_use]
     pub fn with_layer_resolution_scale(mut self, scale: f32) -> Self {
         self.layer_resolution_scale = scale;
+        self.layer_scale_adaptive = false;
         self
+    }
+
+    /// Enables or disables the per-layer adaptive factor.
+    ///
+    /// Disabling it makes [`layer_resolution_scale`](Self::layer_resolution_scale)
+    /// the explicit override for every layer.  Enabling it restores the `1.0`
+    /// sentinel, so the per-layer factor applies again.
+    #[must_use]
+    pub fn with_adaptive_layer_scale(mut self, adaptive: bool) -> Self {
+        self.layer_scale_adaptive = adaptive;
+        if adaptive {
+            self.layer_resolution_scale = 1.0;
+        }
+        self
+    }
+
+    /// The scale a layer's offscreen textures should use.
+    ///
+    /// With [`layer_scale_adaptive`](Self::layer_scale_adaptive) the leading
+    /// blur factor applies as long as `layer_resolution_scale` is the default
+    /// `1.0`.  Any non-default explicit value, or
+    /// `layer_scale_adaptive == false`, makes the explicit scale win for every
+    /// layer.  Invalid explicit values fall back to `1.0`.
+    #[must_use]
+    pub fn effective_layer_scale(&self, effects: &[ferrous_2d::render::Effect2d]) -> f32 {
+        let default_scale = (self.layer_resolution_scale - 1.0).abs() <= 1e-6;
+        if self.layer_scale_adaptive && default_scale {
+            ferrous_2d::render::adaptive_layer_scale(effects)
+        } else if self.layer_resolution_scale.is_finite() && self.layer_resolution_scale > 0.0 {
+            self.layer_resolution_scale
+        } else {
+            1.0
+        }
     }
 
     /// Sets [`ui_depth`](Self::ui_depth).
@@ -208,6 +256,7 @@ impl Default for Render2dConfig {
             cull_margin: 4.0,
             static_batches: true,
             layer_resolution_scale: 1.0,
+            layer_scale_adaptive: true,
             ui_depth: true,
             effect_scissor: false,
             overdraw_enabled: false,
@@ -229,6 +278,7 @@ mod tests {
         assert!(cfg.cull_margin >= 4.0, "default margin must be AA-safe");
         assert!(cfg.static_batches);
         assert_eq!(cfg.layer_resolution_scale, 1.0);
+        assert!(cfg.layer_scale_adaptive);
         assert!(cfg.ui_depth);
         assert!(!cfg.effect_scissor);
         assert!(!cfg.overdraw_enabled);
@@ -266,5 +316,35 @@ mod tests {
         ] {
             assert_eq!(Antialiasing2d::from_mode(aa.to_mode()), aa);
         }
+    }
+
+    #[test]
+    fn an_explicit_layer_scale_overrides_the_adaptive_factor() {
+        use ferrous_2d::render::Effect2d;
+
+        let blur = [Effect2d::Blur { radius: 16.0 }];
+        let adaptive = Render2dConfig::default();
+        assert_eq!(adaptive.effective_layer_scale(&blur), 0.25);
+
+        let forced_one = adaptive.with_layer_resolution_scale(1.0);
+        assert!(!forced_one.layer_scale_adaptive);
+        assert_eq!(forced_one.effective_layer_scale(&blur), 1.0);
+
+        let forced_half = adaptive.with_layer_resolution_scale(0.5);
+        assert_eq!(forced_half.effective_layer_scale(&blur), 0.5);
+
+        // A direct non-default assignment is an override too (the default 1.0
+        // must remain the "use the adaptive factor" sentinel).
+        let mut direct = adaptive;
+        direct.layer_resolution_scale = 0.75;
+        assert_eq!(direct.effective_layer_scale(&blur), 0.75);
+
+        // Invalid explicit values keep the identity.
+        let invalid = adaptive.with_layer_resolution_scale(f32::NAN);
+        assert_eq!(invalid.effective_layer_scale(&blur), 1.0);
+
+        // Restoring the adaptive factor resets the 1.0 sentinel.
+        let adaptive_again = forced_half.with_adaptive_layer_scale(true);
+        assert_eq!(adaptive_again.effective_layer_scale(&blur), 0.25);
     }
 }

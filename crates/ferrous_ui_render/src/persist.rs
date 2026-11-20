@@ -258,6 +258,30 @@ impl PersistentUiTarget {
         &self.pending
     }
 
+    /// Pixel area covered by the last [`Self::take_damage`] result.
+    ///
+    /// This is the area that [`Self::copy_damage`] will move.  It is `0` before
+    /// the first `take_damage` and after a frame with no invalidation.
+    #[must_use]
+    pub fn damage_area(&self) -> u64 {
+        self.pending.iter().map(|rect| rect.area()).sum()
+    }
+
+    /// Fraction of a `width x height` window covered by the last damage set,
+    /// in `0.0..=1.0`.
+    ///
+    /// A zero-sized window (or no damage) returns `0.0`.  This is the value a
+    /// consumer feeds to `frame_trace::record_ui_damage` when it wants the
+    /// damaged fraction in the per-frame trace.
+    #[must_use]
+    pub fn damage_fraction(&self, width: u32, height: u32) -> f32 {
+        let window = u64::from(width) * u64::from(height);
+        if window == 0 {
+            return 0.0;
+        }
+        (self.damage_area() as f64 / window as f64).min(1.0) as f32
+    }
+
     /// Copies every damage rectangle from the persistent texture into the
     /// texture behind `dst_view`.
     ///
@@ -557,5 +581,13 @@ mod tests {
         .collect();
         merge_into(&mut damage, &mut scratch);
         assert_eq!(damage, vec![rect(10, 10, 150, 80)]);
+    }
+
+    #[test]
+    fn damage_area_and_fraction_start_at_zero() {
+        let target = super::PersistentUiTarget::new();
+        assert_eq!(target.damage_area(), 0);
+        assert_eq!(target.damage_fraction(1600, 900), 0.0);
+        assert_eq!(target.damage_fraction(0, 0), 0.0);
     }
 }

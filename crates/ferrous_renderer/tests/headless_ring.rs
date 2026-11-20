@@ -278,6 +278,63 @@ fn submit_and_non_blocking_render_never_poll_but_blocking_render_does() {
     );
 }
 
+/// Every pipelined frame must be byte-identical to the synchronous path and
+/// come back in submission order.
+#[test]
+fn pipelined_readback_matches_the_synchronous_path() {
+    let _guard = GPU_LOCK.lock().unwrap();
+    let mut h = match Pure2dHarness::with_readback_ring(WIDTH, HEIGHT, TextureFormat::Rgba8Unorm, 3)
+    {
+        Ok(h) => h,
+        Err(err) => {
+            println!("[skip] headless GPU unavailable: {err}");
+            return;
+        }
+    };
+
+    let mut sync_frames: Vec<Vec<u8>> = Vec::new();
+    let mut next_taken = 0usize;
+    for color in &COLORS {
+        draw_solid(&mut h, *color);
+        h.submit_readback().expect("submit pipelined frame");
+
+        let mut synchronous = Vec::new();
+        h.read_pixels_into(&mut synchronous)
+            .expect("synchronous readback");
+        sync_frames.push(synchronous);
+
+        if h.pending_readbacks() >= 3 {
+            let mut pipelined = Vec::new();
+            assert!(
+                h.take_readback(&mut pipelined).expect("take oldest"),
+                "a full ring must yield the oldest frame"
+            );
+            assert_eq!(
+                pipelined, sync_frames[next_taken],
+                "frame {next_taken} differs between the ring and the synchronous path"
+            );
+            next_taken += 1;
+        }
+    }
+
+    h.flush_readbacks(|frame_index, bytes| {
+        let index = frame_index as usize;
+        assert_eq!(
+            bytes,
+            sync_frames[index].as_slice(),
+            "frame {index} differs between the ring and the synchronous path"
+        );
+        next_taken = index + 1;
+    })
+    .expect("flush the ring");
+
+    assert_eq!(
+        next_taken,
+        COLORS.len(),
+        "every frame must be compared once"
+    );
+}
+
 #[test]
 fn steady_state_ring_creates_no_new_staging_buffers() {
     let _guard = GPU_LOCK.lock().unwrap();

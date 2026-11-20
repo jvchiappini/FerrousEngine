@@ -39,6 +39,51 @@ pub const MAX_BLUR_RADIUS: f32 = 48.0;
 /// Largest number of effects a single layer may carry.
 pub const MAX_EFFECTS_PER_LAYER: usize = 8;
 
+/// Numerator of the adaptive layer-resolution scale.
+///
+/// A layer whose chain starts with a Gaussian blur of radius `r` is rendered
+/// at `min(1, ADAPTIVE_LAYER_SCALE_K / r)` (clamped to
+/// [`MIN_ADAPTIVE_LAYER_SCALE`]).  `9` is measured against the golden
+/// tolerance: a 9 px blurred layer still renders at `1.0` and stays
+/// byte-identical to the committed still, while an 18 px blur renders at `0.5`
+/// and a 36 px blur at `0.25` (at `4` the 9 px golden moved by 8/255, i.e.
+/// outside the 2/255 tolerance).
+pub const ADAPTIVE_LAYER_SCALE_K: f32 = 9.0;
+
+/// Smallest adaptive layer-resolution scale.
+///
+/// A hard backstop: with `ADAPTIVE_LAYER_SCALE_K = 9` the largest kernel radius
+/// (48 px) already renders at `0.1875`, so the floor is never reached today; it
+/// keeps a future larger radius from shrinking a layer into nothing.
+pub const MIN_ADAPTIVE_LAYER_SCALE: f32 = 0.125;
+
+/// Resolution factor for a layer whose effect chain starts with a blur.
+///
+/// Only a **leading** [`Effect2d::Blur`] shrinks the layer: it is the effect
+/// that discards high frequencies first, so the layer can be rasterized at a
+/// fraction of the target resolution without a visible loss.  Any other chain
+/// (empty, drop shadow first, glow first, blur later) returns `1.0`.
+///
+/// The formula is `min(1, ADAPTIVE_LAYER_SCALE_K / r)` clamped to
+/// [`MIN_ADAPTIVE_LAYER_SCALE`]; invalid radii fall back to `1.0`.  The renderer
+/// also scales the blur radius and drop-shadow offset by this factor, so the
+/// screen-space result keeps the document's radius.
+#[must_use]
+pub fn adaptive_layer_scale(effects: &[Effect2d]) -> f32 {
+    let Some(Effect2d::Blur { radius }) = effects.first() else {
+        return 1.0;
+    };
+    let radius = if radius.is_finite() {
+        radius.clamp(0.0, MAX_BLUR_RADIUS)
+    } else {
+        0.0
+    };
+    if radius <= 0.0 {
+        return 1.0;
+    }
+    (ADAPTIVE_LAYER_SCALE_K / radius).clamp(MIN_ADAPTIVE_LAYER_SCALE, 1.0)
+}
+
 /// A normalized, symmetric Gaussian kernel.
 ///
 /// `taps` counts the samples on one side of the centre, including the centre
@@ -375,6 +420,73 @@ mod tests {
             }
             .blur_radius(),
             MAX_BLUR_RADIUS
+        );
+    }
+
+    #[test]
+    fn adaptive_layer_scale_is_a_table() {
+        let cases: [(&str, Vec<Effect2d>, f32); 7] = [
+            ("no effect", Vec::new(), 1.0),
+            ("blur 0.5", vec![Effect2d::Blur { radius: 0.5 }], 1.0),
+            ("blur 4", vec![Effect2d::Blur { radius: 4.0 }], 1.0),
+            ("blur 9", vec![Effect2d::Blur { radius: 9.0 }], 1.0),
+            ("blur 18", vec![Effect2d::Blur { radius: 18.0 }], 0.5),
+            ("blur 36", vec![Effect2d::Blur { radius: 36.0 }], 0.25),
+            (
+                "shadow first",
+                vec![Effect2d::DropShadow {
+                    color: [0.0; 4],
+                    offset: [0.0, 4.0],
+                    blur: 16.0,
+                    opacity: 1.0,
+                }],
+                1.0,
+            ),
+        ];
+        for (label, effects, expected) in cases {
+            let scale = adaptive_layer_scale(&effects);
+            assert!(
+                (scale - expected).abs() < 1e-6,
+                "{label}: scale {scale}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn adaptive_layer_scale_only_looks_at_the_first_effect() {
+        let effects = [
+            Effect2d::Glow {
+                color: [1.0; 4],
+                radius: 16.0,
+                intensity: 1.0,
+            },
+            Effect2d::Blur { radius: 16.0 },
+        ];
+        assert_eq!(adaptive_layer_scale(&effects), 1.0);
+    }
+
+    #[test]
+    fn adaptive_layer_scale_clamps_invalid_radii() {
+        assert_eq!(adaptive_layer_scale(&[Effect2d::Blur { radius: 0.0 }]), 1.0);
+        assert_eq!(
+            adaptive_layer_scale(&[Effect2d::Blur {
+                radius: f32::INFINITY
+            }]),
+            1.0
+        );
+        // The largest kernel radius still renders above the hard floor: with
+        // K = 9 the smallest factor is 9 / 48.
+        assert!(
+            (adaptive_layer_scale(&[Effect2d::Blur {
+                radius: MAX_BLUR_RADIUS
+            }]) - ADAPTIVE_LAYER_SCALE_K / MAX_BLUR_RADIUS)
+                .abs()
+                < 1e-6
+        );
+        assert!(
+            adaptive_layer_scale(&[Effect2d::Blur {
+                radius: MAX_BLUR_RADIUS
+            }]) >= MIN_ADAPTIVE_LAYER_SCALE
         );
     }
 }

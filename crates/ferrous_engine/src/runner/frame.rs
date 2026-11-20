@@ -552,6 +552,28 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 .record_frame_time(frame_start.elapsed().as_secs_f32() * 1000.0);
 
             // Important: Clear damage regions after rendering
+            //
+            // Only a UI tree that actually damaged something reports here.  An
+            // app that paints its own chrome (an immediate-mode painter) may
+            // have already called `record_ui_damage` for this frame; writing a
+            // zero from the unused tree would overwrite that value.
+            if frame_trace::enabled() && !self.ui.tree.damage_regions.is_empty() {
+                let (width, height) = self.window_size;
+                let damaged = self
+                    .ui
+                    .tree
+                    .damage_regions
+                    .iter()
+                    .map(|rect| f64::from(rect.width.max(0.0)) * f64::from(rect.height.max(0.0)))
+                    .sum::<f64>();
+                let window = f64::from(width) * f64::from(height);
+                let fraction = if window > 0.0 {
+                    (damaged / window) as f32
+                } else {
+                    0.0
+                };
+                frame_trace::record_ui_damage(fraction);
+            }
             self.ui.clear_damage();
 
             // Sincronizar y obtener los bytes si era una pasada de exportación.

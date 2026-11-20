@@ -31,17 +31,28 @@ harness.read_pixel_checked(x, y)?;        // 1x1 copy into a small buffer
 
 ```rust
 harness.render_frame();
-harness.submit_readback()?;   // records a copy into the next of two slots
+harness.submit_readback()?;   // records a copy into the next free ring slot
 // ... render frame N+1 ...
-if harness.take_readback(&mut out)? { /* frame N's bytes */ }
+if harness.take_readback(&mut out)? { /* oldest frame's bytes */ }
 ```
 
-The harness keeps a two-slot ring of persistent staging buffers. Frame N's copy
-overlaps frame N+1's rendering and results come out in submission order with one
-frame of latency. At most two copies may be in flight; a third `submit_readback`
-returns `ReadbackError::Busy`. Both `submit_readback` and `take_readback` reuse
-the slot buffers and the caller's `Vec`, so steady-state frames allocate no GPU
-buffer and do not grow the output.
+The harness keeps a ring of persistent staging buffers: three by default and
+never fewer than two (`with_readback_ring` / `set_readback_ring_size`).  Each
+slot is mapped asynchronously as soon as its copy is submitted, so frame N's
+copy overlaps frame N+1's rendering and results come out in submission order
+with a small latency.  A full ring returns `ReadbackError::Busy` from
+`submit_readback`; `readback_frame` handles that by taking the oldest frame
+first.  `submit_readback` never polls, `take_readback` waits only for the
+frame it is returning, and a failed map is reported once with the frame index
+while its slot is recycled.
+
+Both the pipelined ring and the immediate `read_pixels_into` path copy the
+same texels and return tightly packed RGBA8, so their bytes are identical for
+the same frame.  `tests/headless_ring.rs` pins the equivalence, in-order
+delivery, steady-state buffer reuse and the typed map failure.  The caller of
+`read_pixels_into` (for example an exporter) can switch to
+`submit_readback`/`readback_frame` without any engine-side signature change;
+the synchronous method stays available for one-shot reads.
 
 ## Harness configuration
 

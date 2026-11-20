@@ -21,6 +21,8 @@ today.
 | `invalidate(rect)` | Adds a pixel rectangle (top-left, Y-down). Rounded **out** (floor origin, ceil far edge) and clipped to the target. Zero-sized, negative, NaN or fully off-target rectangles are dropped. |
 | `invalidate_all()` | Marks the whole target (first frame, resize, format change). |
 | `take_damage() -> Vec<Rect>` | Merges overlapping **and edge-touching** rectangles, clips, drains the accumulator, and returns them in pixels. The merged set stays available through `pending_damage()` for `copy_damage`. |
+| `damage_area() -> u64` | Pixel area covered by the last `take_damage` result, i.e. the area `copy_damage` will move. `0` before the first call. |
+| `damage_fraction(width, height) -> f32` | `damage_area() / (width * height)`, clamped to `0.0..=1.0`; `0.0` for an empty window. Feed it to `frame_trace::record_ui_damage`. |
 | `copy_damage(encoder, dst_texture, dst_view) -> DamageCopy` | One `CommandEncoder::copy_texture_to_texture` per damage rect (origin, extent, depth 1). Reports rect count and bytes copied. |
 | `view()`, `size()`, `format()`, `full_bytes()` | Inspection; `view()` is `None` until `ensure` succeeds. |
 

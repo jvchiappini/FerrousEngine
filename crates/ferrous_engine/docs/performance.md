@@ -29,7 +29,18 @@ The trace records:
 - `gpu_frame` counters (`draw_calls`, `bind_group_binds`, `buffer_binds`,
   `pipeline_binds`, `scissor_changes`, `ui_segments`, `gpu_passes`);
 - `gpu_passes_ms`, the median GPU milliseconds per instrumented pass;
+- `input_to_present_ms` (median, p50, p90, p99, samples), the time from the
+  newest input/device event the frame answers to `SurfaceTexture::present`;
+- `ui_damage` (median, p90, p99), the damaged window fraction in `0.0..=1.0`
+  when the UI tree reports damage;
 - `vram_mb`, sampled from the memory registry.
+
+`input_to_present_ms` counts only frames that answered an input: the runner
+calls `frame_trace::record_input` for window/device events and
+`record_present` after `present()`.  A timer-only frame contributes no sample,
+so the percentiles are not diluted by idle frames.  `ui_damage` comes from the
+UI tree's damage regions divided by the window area; a frame with no damage
+reports `0.0`.
 
 Use `p99` and the per-pass split together.  A high CPU stage with a flat GPU
 map points at the CPU; a high `gpu_passes_ms` entry points at that pass.
@@ -116,23 +127,31 @@ At 1600x900 (1,440,000 texels):
 | Full3D HDR, 4x | 46.08 MB | 23.04 MB | 11.52 MB | 80.64 MB |
 | Pure2D surface target, 1x (4-byte format) | 5.76 MB | 5.76 MB | — | 11.52 MB |
 
+The Pure2D/Flat2D row is only paid when the application actually renders into
+the internal target.  Those modes construct a lazy target, so a normal
+present-to-surface app allocates none of it at startup; the pair is created by
+`render_to_internal_target` (or by the first 3-D use) and the memory inventory
+gains the `rt:color resolve` / `rt:depth` entries at that point.
+
 Enabling 4x MSAA in a mode that uses the HDR path multiplies the color and
 depth attachments by four and adds a full-size resolve.  In the 2D modes the
 sample count stays one, so this cost does not appear.
 
 ## Intermediate resolution
 
-`Render2dConfig` (`crates/ferrous_renderer/src/render_config.rs`) exposes three
-opt-in knobs.  All defaults reproduce previous pixels exactly.
+`Render2dConfig` (`crates/ferrous_renderer/src/render_config.rs`) exposes the
+following knobs.  All defaults reproduce previous pixels exactly except the
+adaptive layer factor, which is part of the default performance policy.
 
 | Field | Default | Effect |
 |---|---|---|
-| `layer_resolution_scale` | `1.0` | Offscreen layer/effect texture size as a multiplier of the surface |
+| `layer_resolution_scale` | `1.0` | Explicit offscreen layer/effect texture multiplier (override) |
+| `layer_scale_adaptive` | `true` | Per-layer `min(1, 4 / blur_radius)` factor for blur-first layers |
 | `ui_depth` | `true` | Allocate/use the GUI depth attachment for Early-Z |
 | `effect_scissor` | `false` | Restrict blur/effect/mask passes to the active layer rectangle |
 
-Build them with `with_layer_resolution_scale`, `with_ui_depth` and
-`with_effect_scissor`, then hand the config back through
+Build them with `with_layer_resolution_scale`, `with_adaptive_layer_scale`,
+`with_ui_depth` and `with_effect_scissor`, then hand the config back through
 `Renderer::set_render_2d_config` (or `RenderContext::set_render_2d_config`).
 
 `scaled_extent(width, height, scale)` is the single implementation of the
@@ -149,16 +168,38 @@ The layer pool, effect scratch targets, backdrop snapshots and the layer
 viewport should all use the same scaled extent.  `1.0` is an exact identity,
 so the default layered path allocates at surface size.
 
+### Adaptive layer scale (default)
+
+`layer_scale_adaptive` (default `true`) replaces the single factor with a
+per-layer one.  A layer whose effect chain starts with `Blur` radius `r`
+renders at `min(1, 4 / r)`, clamped to `0.125`; every other layer stays at
+`1.0`.  The renderer scales the blur radius and drop-shadow offset by the same
+factor, so the picture keeps the document's radius.  This lowers both the
+layer textures and their effect scratch targets; the GUI depth and the root
+target are unchanged.  See `crates/ferrous_2d/docs/effects.md` for the table.
+
+`with_layer_resolution_scale(scale)` (and `FERROUS_LAYER_SCALE`) remains an
+explicit override: it disables the adaptive factor and applies `scale` to every
+layer, including layers without a blur.
+
+To A/B the adaptive policy on a real composition, run the same scene twice with
+`FERROUS_TRACE_FRAMES=1`: once with the environment variable unset (adaptive)
+and once with `FERROUS_LAYER_SCALE=1` (forced full resolution).  Compare the
+`2d:layer textures` and `2d:layer effect targets` entries in the memory report
+and the layered pass timings in the trace.  `-11.52 MB` is the fixed saving
+from the lazy internal target; the adaptive scale adds a scene-dependent
+saving on top of it.
+
 ### Lazy swapchain target
 
-`RenderTarget::new` allocates a color resolve plus a depth attachment eagerly.
-A `Pure2D` application that renders straight to the surface never reads its
-internal target, so those attachments are dead weight.  `RenderTarget::lazy`
-returns a `LazyRenderTarget` (`crates/ferrous_renderer/src/render_target/target.rs`)
-that allocates nothing until `ensure_color_depth(device, width, height, format,
-samples)` is called.  Call it only when the frame actually renders to
-`RenderDest::Target`; a view/surface frame skips the allocation.  The eager
-constructor remains for callers that need the attachments at construction.
+The renderer stores a `RenderTargetHandle`
+(`crates/ferrous_renderer/src/render_target/target.rs`).  `Full3D` constructs
+the eager `RenderTarget`; `Flat2D`/`Pure2D` construct the lazy form, which
+allocates nothing until `ensure_allocated` runs.  `render_internal` calls it
+only when the frame renders to `RenderDest::Target`, and `ensure_three_d` calls
+it before the 3-D passes need the depth attachment.  `is_allocated()` and the
+memory inventory expose the state; the accessors return `Option` while the
+target is unallocated.  The eager constructor remains for the 3-D path.
 
 ## P5 baseline
 

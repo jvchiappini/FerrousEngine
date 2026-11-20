@@ -162,7 +162,10 @@ impl Renderer {
         let descriptor = ferrous_core::scene::MaterialDescriptor::default();
         let device = self.gpu.context.device.clone();
         let queue = self.gpu.context.queue.clone();
-        let handle = self.gpu.material_registry().create(&device, &queue, &descriptor);
+        let handle = self
+            .gpu
+            .material_registry()
+            .create(&device, &queue, &descriptor);
 
         let material = MaterialComponent { handle, descriptor };
 
@@ -222,7 +225,10 @@ impl Renderer {
         };
         let device = self.gpu.context.device.clone();
         let queue = self.gpu.context.queue.clone();
-        let handle = self.gpu.material_registry().create(&device, &queue, &descriptor);
+        let handle = self
+            .gpu
+            .material_registry()
+            .create(&device, &queue, &descriptor);
         let mut material = MaterialComponent { handle, descriptor };
 
         let element = Element {
@@ -368,7 +374,10 @@ impl Renderer {
 
         let device = self.gpu.context.device.clone();
         let queue = self.gpu.context.queue.clone();
-        let handle = self.gpu.material_registry().create(&device, &queue, &descriptor);
+        let handle = self
+            .gpu
+            .material_registry()
+            .create(&device, &queue, &descriptor);
 
         let material = MaterialComponent { handle, descriptor };
 
@@ -724,7 +733,13 @@ impl Renderer {
 
         // 4. Copy to readback buffer if available
         if let Some(readback) = &self.gpu.readback_manager {
-            readback.copy_to_buffer(&mut encoder, self.gpu.render_target.color_texture());
+            readback.copy_to_buffer(
+                &mut encoder,
+                self.gpu
+                    .render_target
+                    .color_texture()
+                    .expect("render_to_internal_target allocated the target"),
+            );
 
             self.gpu.context.queue.submit(Some(encoder.finish()));
 
@@ -765,7 +780,13 @@ impl Renderer {
         self.gpu.render_to_internal_target(&mut encoder, None);
 
         if let Some(readback) = &self.gpu.readback_manager {
-            readback.copy_to_buffer(&mut encoder, self.gpu.render_target.color_texture());
+            readback.copy_to_buffer(
+                &mut encoder,
+                self.gpu
+                    .render_target
+                    .color_texture()
+                    .expect("render_to_internal_target allocated the target"),
+            );
             self.gpu.context.queue.submit(Some(encoder.finish()));
 
             #[cfg(not(target_arch = "wasm32"))]

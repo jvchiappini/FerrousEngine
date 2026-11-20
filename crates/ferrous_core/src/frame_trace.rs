@@ -29,6 +29,12 @@
 //! through present).  When the `alloc-stats` feature is on, the same JSON
 //! carries allocations and touched bytes per frame (median/p90).
 //!
+//! The report also carries `input_to_present_ms` (median, p50, p90, p99,
+//! samples) and `ui_damage` (median, p90, p99).  [`record_input`] stores the
+//! newest input/device event instant and [`record_present`] consumes it after
+//! `present()`; a frame that answered no input contributes no sample.
+//! [`record_ui_damage`] stores the damaged window fraction for the frame.
+//!
 //! # Stages
 //!
 //! [`Stage`] is a fixed list, not a string map: the hot path indexes an array.
@@ -37,7 +43,10 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 use serde_json::{json, Map, Value};
 
@@ -116,6 +125,10 @@ struct FrameSample {
     stages: [f32; STAGE_COUNT],
     /// Wall time of the whole frame, from `begin_frame` to its close.
     total_ms: f32,
+    /// Input instant -> present delta, present only when an input was pending.
+    input_to_present_ms: Option<f32>,
+    /// Damaged window fraction in `0.0..=1.0`, present only when reported.
+    ui_damage: Option<f32>,
     /// Allocations made by the frame thread.
     allocations: u64,
     /// Bytes touched by the frame thread.
@@ -131,6 +144,8 @@ impl Default for FrameSample {
         Self {
             stages: [0.0; STAGE_COUNT],
             total_ms: 0.0,
+            input_to_present_ms: None,
+            ui_damage: None,
             allocations: 0,
             allocated_bytes: 0,
             worker_allocations: 0,
@@ -146,6 +161,8 @@ struct State {
     started: bool,
     /// When the open frame began; `total_ms` is its wall time.
     frame_started: Option<Instant>,
+    /// The newest input instant waiting for the next present.
+    pending_input: Option<Instant>,
     #[cfg(feature = "alloc-stats")]
     alloc_before: Option<crate::alloc_stats::Snapshot>,
     #[cfg(feature = "alloc-stats")]
@@ -319,13 +336,49 @@ pub fn record_event(start: Instant) {
     EVENT_NS.fetch_add(nanos, Ordering::Relaxed);
 }
 
+/// Records the input instant the next presented frame answers.
+///
+/// One pending value is kept; a newer input before the present replaces it, and
+/// [`record_present`] consumes it.  The disabled path costs one branch.
+pub fn record_input(at: Instant) {
+    if !enabled() {
+        return;
+    }
+    lock_state().pending_input = Some(at);
+}
+
+/// Records the damaged fraction of the window for this frame, in `0.0..=1.0`.
+///
+/// Values outside the range are clamped; non-finite values are recorded as
+/// `0.0`.  The disabled path costs one branch.
+pub fn record_ui_damage(fraction: f32) {
+    if !enabled() {
+        return;
+    }
+    let fraction = if fraction.is_finite() {
+        fraction.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    lock_state().current.ui_damage = Some(fraction);
+}
+
 /// Counts a presented frame.
 ///
 /// The runner calls this after `SurfaceTexture::present`; an idle on-demand
-/// app must leave this counter unchanged.
+/// app must leave this counter unchanged.  When an input instant is pending,
+/// this also records `now - input` as the frame's `input_to_present_ms` and
+/// clears the pending value.
 pub fn record_present() {
-    if enabled() {
-        PRESENTED.fetch_add(1, Ordering::Relaxed);
+    if !enabled() {
+        return;
+    }
+    PRESENTED.fetch_add(1, Ordering::Relaxed);
+    let now = Instant::now();
+    let mut state = lock_state();
+    if let Some(at) = state.pending_input.take() {
+        let millis = now.saturating_duration_since(at).as_secs_f32() * 1000.0;
+        state.current.input_to_present_ms = Some(millis);
     }
 }
 
@@ -390,6 +443,16 @@ pub fn report(
     }
 
     let frame_totals: Vec<f32> = state.frames.iter().map(|frame| frame.total_ms).collect();
+    let input_to_present: Vec<f32> = state
+        .frames
+        .iter()
+        .filter_map(|frame| frame.input_to_present_ms)
+        .collect();
+    let ui_damage: Vec<f32> = state
+        .frames
+        .iter()
+        .filter_map(|frame| frame.ui_damage)
+        .collect();
 
     let allocations: Vec<f32> = state
         .frames
@@ -426,6 +489,18 @@ pub fn report(
         "alloc_stats": cfg!(feature = "alloc-stats"),
         "stages": stages,
         "frame_ms": stats(&frame_totals),
+        "input_to_present_ms": {
+            "median": f64::from(percentile(&input_to_present, 0.5)),
+            "p50": f64::from(percentile(&input_to_present, 0.5)),
+            "p90": f64::from(percentile(&input_to_present, 0.9)),
+            "p99": f64::from(percentile(&input_to_present, 0.99)),
+            "samples": input_to_present.len(),
+        },
+        "ui_damage": {
+            "median": f64::from(percentile(&ui_damage, 0.5)),
+            "p90": f64::from(percentile(&ui_damage, 0.9)),
+            "p99": f64::from(percentile(&ui_damage, 0.99)),
+        },
         "allocations_per_frame": {
             "median": f64::from(percentile(&allocations, 0.5)),
             "p90": f64::from(percentile(&allocations, 0.9)),
@@ -470,6 +545,7 @@ fn clear_for_test() {
     state.current = FrameSample::default();
     state.started = false;
     state.frame_started = None;
+    state.pending_input = None;
     EVENT_NS.store(0, Ordering::Relaxed);
     REPORTED.store(false, Ordering::Relaxed);
     PRESENTED.store(0, Ordering::Relaxed);
@@ -529,6 +605,74 @@ mod tests {
         assert_eq!(state.frames.len(), 1);
         assert!(state.frames[0].total_ms >= 0.5);
         drop(state);
+        force_enabled(false);
+    }
+
+    #[test]
+    fn a_synthetic_input_records_one_input_to_present_sample() {
+        let _guard = lock();
+        force_enabled(true);
+        clear_for_test();
+
+        let input = Instant::now();
+        {
+            let _frame = begin_frame();
+            record_input(input);
+            std::thread::sleep(Duration::from_millis(2));
+            record_present();
+        }
+
+        let state = lock_state();
+        assert_eq!(state.frames.len(), 1);
+        let sample = state.frames[0]
+            .input_to_present_ms
+            .expect("a present after an input must produce a sample");
+        assert!(
+            (1.0..250.0).contains(&sample),
+            "input-to-present {sample} ms is outside the plausible range"
+        );
+        assert!(
+            state.pending_input.is_none(),
+            "the input must be consumed by the present"
+        );
+        drop(state);
+        force_enabled(false);
+    }
+
+    #[test]
+    fn a_timer_only_frame_records_no_input_to_present_sample() {
+        let _guard = lock();
+        force_enabled(true);
+        clear_for_test();
+
+        {
+            let _frame = begin_frame();
+            std::thread::sleep(Duration::from_millis(1));
+            record_present();
+        }
+        assert!(
+            lock_state().frames[0].input_to_present_ms.is_none(),
+            "a frame that answered no input must not report a delta"
+        );
+
+        force_enabled(false);
+    }
+
+    #[test]
+    fn a_newer_input_replaces_the_pending_one_and_ui_damage_clamps() {
+        let _guard = lock();
+        force_enabled(true);
+        clear_for_test();
+
+        let _frame = begin_frame();
+        record_input(Instant::now());
+        record_input(Instant::now());
+        record_ui_damage(2.0);
+        assert_eq!(lock_state().current.ui_damage, Some(1.0));
+        record_ui_damage(f32::NAN);
+        assert_eq!(lock_state().current.ui_damage, Some(0.0));
+        drop(_frame);
+
         force_enabled(false);
     }
 

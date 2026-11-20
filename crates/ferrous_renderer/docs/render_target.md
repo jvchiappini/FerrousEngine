@@ -5,11 +5,15 @@ Reference for RenderTarget — off-screen rendering, MSAA, and pixel readback.
 # RenderTarget
 
 `RenderTarget` is the compositor-aware colour + depth target used by the
-renderer for all draw output.  It supports 4× MSAA out of the box and
+renderer for all draw output.  It supports 4x MSAA out of the box and
 exposes the resolved single-sample colour texture for use as a GUI quad
 background or for CPU-side pixel readback.
 
+The renderer stores a [`RenderTargetHandle`](#rendertargethandle-lazy-target)
+instead of a bare `RenderTarget`, so the 2-D modes can defer the allocation.
+
 ## Types
+
 
 ### `RenderTarget`
 
@@ -66,9 +70,60 @@ pub struct DepthTarget {
 The depth format is always `Depth32Float`.  The sample count must match
 the colour target — `RenderTarget::new` ensures this.
 
+## RenderTargetHandle (lazy target)
+
+`Renderer::render_target` is a `RenderTargetHandle`:
+
+```rust
+pub struct RenderTargetHandle { /* eager RenderTarget or LazyRenderTarget */ }
+
+impl RenderTargetHandle {
+    pub fn new_eager(device, width, height, format, sample_count) -> Self;
+    pub fn new_lazy(width, height, format, sample_count) -> Self;
+    pub fn ensure_allocated(&mut self, device) -> bool;
+    pub fn is_allocated(&self) -> bool;
+    pub fn is_lazy(&self) -> bool;
+    pub fn color(&self) -> Option<&ColorTarget>;
+    pub fn depth(&self) -> Option<&DepthTarget>;
+    pub fn color_view(&self) -> Option<&wgpu::TextureView>;
+    pub fn color_texture(&self) -> Option<&wgpu::Texture>;
+    pub fn depth_view(&self) -> Option<&wgpu::TextureView>;
+    pub fn resize(&mut self, device, width, height);
+    pub fn release(&mut self);
+}
+```
+
+`Full3D` constructs the eager form, because the depth attachment and the colour
+resolve are used every frame.  `Flat2D`/`Pure2D` present straight to the
+surface, so they construct the lazy form: at 1600x900 the colour resolve
+(5.76 MB) plus the `Depth32Float` depth (5.76 MB) would be 11.52 MB of unused
+VRAM.
+
+`ensure_allocated` is called by `render_to_internal_target` (and by
+`ensure_three_d` before the 3-D passes).  Until then:
+
+- `is_allocated()` is `false`,
+- every accessor returns `None`,
+- the memory inventory has no `rt:color resolve`, `rt:color msaa` or `rt:depth`
+  entry.
+
+Once materialized the allocation, formats, sample counts and inventory labels
+match `RenderTarget::new` byte for byte.  `resize` only records the new logical
+size while the target is unallocated; `release` drops the attachments and
+keeps the logical size.
+
+```rust
+// 2-D: no allocation at construction.
+assert!(!renderer.render_target.is_allocated());
+// ... first render into the internal target ...
+renderer.render_to_internal_target(&mut encoder, None);
+assert!(renderer.render_target.is_allocated());
+```
+
 ## MSAA
 
-The `Renderer` creates its `RenderTarget` with `sample_count = 4`:
+The `Renderer` creates its eager `RenderTarget` with the configured sample
+count (4 by default in `Full3D`):
 
 ```rust
 let render_target = RenderTarget::new(&ctx.device, width, height, 4);
@@ -104,8 +159,8 @@ copies/resolves into `surface_view` at the end of `WorldPass::execute`.
 ```rust
 renderer.render_to_target(&ctx);
 
-// Access the resolved texture afterwards
-let texture = renderer.render_target().color_texture();
+// Access the resolved texture afterwards (allocated by the Target render)
+let texture = renderer.render_target.color_texture().expect("allocated");
 ```
 
 The resolved texture has `TEXTURE_BINDING | COPY_SRC` usage.  You can:
@@ -120,7 +175,7 @@ The resolved texture has `COPY_SRC` usage.  Copy it to a mapped buffer
 to read pixels on the CPU:
 
 ```rust
-let texture = renderer.render_target().color_texture();
+let texture = renderer.render_target.color_texture().expect("allocated");
 let width   = renderer.width();
 let height  = renderer.height();
 

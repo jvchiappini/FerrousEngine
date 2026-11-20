@@ -56,6 +56,44 @@ opaque, so an opaque shape keeps its own colour and gets a halo.  It does not
 change coverage and can exceed 1 on the `Rgba16Float` layer target; the final
 composite into an 8-bit target clamps.
 
+## Adaptive layer resolution
+
+A layer whose effect chain **starts** with `Blur { radius }` can be rasterized
+below the target resolution: the blur discards the high frequencies the
+downsample would lose.  The default factor is
+
+```text
+scale = clamp(min(1, ADAPTIVE_LAYER_SCALE_K / radius),
+              MIN_ADAPTIVE_LAYER_SCALE, 1.0)
+```
+
+with `ADAPTIVE_LAYER_SCALE_K = 9.0` and `MIN_ADAPTIVE_LAYER_SCALE = 0.125`.
+`9.0` is measured against the golden tolerance: a 9 px blurred layer renders
+at `1.0` and stays byte-identical to the committed still (at `4.0` it moved by
+8/255, outside the 2/255 tolerance).  Beyond that the kernel keeps at least
+nine source texels per blur radius, i.e. `sigma = radius / 2` is at least 4.5
+texels in the scaled layer.  In practice:
+
+| leading effect | layer scale |
+|---|---:|
+| none, drop shadow, glow | 1.0 |
+| `Blur` radius 0.5, 1, 4, 9 | 1.0 |
+| `Blur` radius 18 | 0.5 |
+| `Blur` radius 36 | 0.25 |
+| `Blur` radius 48 | 0.1875 |
+
+Only a leading `Blur` qualifies.  The renderer also multiplies the kernel
+radius and the drop-shadow offset by the layer scale, so the on-screen blur
+and offset keep the document's pixel values.
+
+The factor is pure and exposed as
+`ferrous_2d::render::adaptive_layer_scale(&effects)`.
+`Render2dConfig::effective_layer_scale(&effects)` applies it by default.
+`Render2dConfig::with_layer_resolution_scale(scale)` (and therefore
+`FERROUS_LAYER_SCALE`) is an explicit override: it disables the adaptive factor
+and uses `scale` for every layer, including layers without a blur.
+`with_adaptive_layer_scale(true)` turns the adaptive factor back on.
+
 ## The blur kernel
 
 `BlurKernel2d::new(radius)` (or the `gaussian_kernel` shorthand) is a pure,
