@@ -46,6 +46,121 @@ pub struct Frame2dCounters {
     pub static_batches_drawn: u32,
     /// Shape instances covered by the retained static batches drawn this frame.
     pub static_instances_drawn: u32,
+    /// `set_pipeline` calls actually issued this frame.
+    ///
+    /// The plain helpers bind unconditionally, so with them this equals the
+    /// draw-call count.  The `render_*_cached` variants skip a bind the cache
+    /// already holds, and only the calls they actually issue are counted here.
+    pub pipeline_binds: u32,
+    /// `set_bind_group` calls actually issued this frame (see
+    /// [`Self::pipeline_binds`]).
+    pub bind_group_binds: u32,
+    /// `set_vertex_buffer` + `set_index_buffer` calls actually issued this
+    /// frame (see [`Self::pipeline_binds`]).
+    pub buffer_binds: u32,
+    /// Render passes opened by the 2D renderer this frame.
+    pub passes: u32,
+}
+
+/// Reusable render-pass state cache for the 2D draw helpers (prompt 18 P5).
+///
+/// Each slot stores the identity of the last object bound to it, so a
+/// `render_*_cached` helper can skip a `set_pipeline` / `set_bind_group` /
+/// `set_vertex_buffer` / `set_index_buffer` call when the slot already holds
+/// that object.  A cache belongs to one render pass: create it with
+/// `DrawState2d::default()` (or [`DrawState2d::new`]) right after
+/// `begin_render_pass` so state from another pass cannot leak in.
+///
+/// The cached helpers are strictly an optimization over the plain ones: the
+/// draw calls, their order, the buffers and the pipelines are identical, only
+/// redundant state transitions are omitted.  The plain helpers create a fresh
+/// cache internally, so they keep issuing every bind exactly as before.
+///
+/// Only the cached helpers update the cache.  A draw issued through a plain
+/// helper (or through `render_grid` / `render_static_shapes*` / the `_on`
+/// variants) can change the pass state behind the cache's back, so start a
+/// fresh cache after any such call instead of reusing a stale one.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct DrawState2d {
+    pipeline: Option<u64>,
+    bind0: Option<u64>,
+    bind1: Option<u64>,
+    vb: Option<u64>,
+    ib: Option<u64>,
+}
+
+impl DrawState2d {
+    /// A cache with no slot bound, for use at the start of a render pass.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[inline]
+    fn set_pipeline(
+        &mut self,
+        pass: &mut wgpu::RenderPass<'_>,
+        pipeline: &wgpu::RenderPipeline,
+    ) -> bool {
+        let id = pipeline as *const wgpu::RenderPipeline as u64;
+        if self.pipeline == Some(id) {
+            return false;
+        }
+        pass.set_pipeline(pipeline);
+        self.pipeline = Some(id);
+        true
+    }
+
+    #[inline]
+    fn set_bind0(&mut self, pass: &mut wgpu::RenderPass<'_>, bind_group: &wgpu::BindGroup) -> bool {
+        let id = bind_group as *const wgpu::BindGroup as u64;
+        if self.bind0 == Some(id) {
+            return false;
+        }
+        pass.set_bind_group(0, bind_group, &[]);
+        self.bind0 = Some(id);
+        true
+    }
+
+    #[inline]
+    fn set_bind1(&mut self, pass: &mut wgpu::RenderPass<'_>, bind_group: &wgpu::BindGroup) -> bool {
+        let id = bind_group as *const wgpu::BindGroup as u64;
+        if self.bind1 == Some(id) {
+            return false;
+        }
+        pass.set_bind_group(1, bind_group, &[]);
+        self.bind1 = Some(id);
+        true
+    }
+
+    #[inline]
+    fn set_vertex(&mut self, pass: &mut wgpu::RenderPass<'_>, buffer: &wgpu::Buffer) -> bool {
+        let id = buffer as *const wgpu::Buffer as u64;
+        if self.vb == Some(id) {
+            return false;
+        }
+        pass.set_vertex_buffer(0, buffer.slice(..));
+        self.vb = Some(id);
+        true
+    }
+
+    #[inline]
+    fn set_index(
+        &mut self,
+        pass: &mut wgpu::RenderPass<'_>,
+        buffer: &wgpu::Buffer,
+        format: wgpu::IndexFormat,
+    ) -> bool {
+        let id = buffer as *const wgpu::Buffer as u64;
+        // One buffer never switches index width in this renderer, so the
+        // buffer identity alone decides whether the binding is redundant.
+        if self.ib == Some(id) {
+            return false;
+        }
+        pass.set_index_buffer(buffer.slice(..), format);
+        self.ib = Some(id);
+        true
+    }
 }
 
 /// Owns the 2D instance/camera buffers and pipelines and issues 2D draw calls.
@@ -98,6 +213,10 @@ pub struct Renderer2d {
     counters_culled_instances: AtomicU32,
     counters_static_batches_drawn: AtomicU32,
     counters_static_instances_drawn: AtomicU32,
+    counters_pipeline_binds: AtomicU32,
+    counters_bind_group_binds: AtomicU32,
+    counters_buffer_binds: AtomicU32,
+    counters_passes: AtomicU32,
 
     /// Reusable staging buffer for the flattened sprite upload.  Reusing it
     /// turns the per-frame `Vec::with_capacity` + `extend` (one heap alloc and
@@ -370,6 +489,10 @@ impl Renderer2d {
             counters_culled_instances: AtomicU32::new(0),
             counters_static_batches_drawn: AtomicU32::new(0),
             counters_static_instances_drawn: AtomicU32::new(0),
+            counters_pipeline_binds: AtomicU32::new(0),
+            counters_bind_group_binds: AtomicU32::new(0),
+            counters_buffer_binds: AtomicU32::new(0),
+            counters_passes: AtomicU32::new(0),
             scratch_sprites: Vec::new(),
             scratch_shapes: Vec::new(),
             scratch_reuse: true,
@@ -655,6 +778,7 @@ impl Renderer2d {
         rpass.set_pipeline(&self.grid_pipeline.wgpu_pipeline);
         rpass.set_bind_group(0, bg, &[]);
         rpass.draw(0..3, 0..1);
+        self.record_grid_draw();
     }
 
     /// Enables / replaces / disables (`None`) the procedural background grid.
@@ -714,6 +838,7 @@ impl Renderer2d {
         rpass.set_pipeline(&self.grid_pipeline.wgpu_pipeline);
         rpass.set_bind_group(0, &self.grid_bind_group, &[]);
         rpass.draw(0..3, 0..1);
+        self.record_grid_draw();
     }
 
     /// Resets the per-frame instrumentation.  Call once at the start of every
@@ -733,6 +858,15 @@ impl Renderer2d {
             .store(0, Ordering::Relaxed);
         self.counters_static_instances_drawn
             .store(0, Ordering::Relaxed);
+        self.counters_pipeline_binds.store(0, Ordering::Relaxed);
+        self.counters_bind_group_binds.store(0, Ordering::Relaxed);
+        self.counters_buffer_binds.store(0, Ordering::Relaxed);
+        self.counters_passes.store(0, Ordering::Relaxed);
+    }
+
+    /// Records that the caller opened one 2D render pass this frame.
+    pub fn record_pass(&self) {
+        self.counters_passes.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Adds `n` instances to the per-frame culled counter.  Called by the
@@ -762,7 +896,26 @@ impl Renderer2d {
             culled_instances: self.counters_culled_instances.load(Ordering::Relaxed),
             static_batches_drawn: self.counters_static_batches_drawn.load(Ordering::Relaxed),
             static_instances_drawn: self.counters_static_instances_drawn.load(Ordering::Relaxed),
+            pipeline_binds: self.counters_pipeline_binds.load(Ordering::Relaxed),
+            bind_group_binds: self.counters_bind_group_binds.load(Ordering::Relaxed),
+            buffer_binds: self.counters_buffer_binds.load(Ordering::Relaxed),
+            passes: self.counters_passes.load(Ordering::Relaxed),
         }
+    }
+
+    #[inline]
+    fn record_state_binds_with(&self, pipelines: u32, bind_groups: u32, buffers: u32) {
+        self.counters_pipeline_binds
+            .fetch_add(pipelines, Ordering::Relaxed);
+        self.counters_bind_group_binds
+            .fetch_add(bind_groups, Ordering::Relaxed);
+        self.counters_buffer_binds
+            .fetch_add(buffers, Ordering::Relaxed);
+    }
+
+    #[inline]
+    fn record_state_binds(&self, bind_groups: u32, buffers: u32) {
+        self.record_state_binds_with(1, bind_groups, buffers);
     }
 
     #[inline]
@@ -770,6 +923,8 @@ impl Renderer2d {
         self.counters_draw_calls.fetch_add(1, Ordering::Relaxed);
         self.counters_shape_draw_calls
             .fetch_add(1, Ordering::Relaxed);
+        // One camera bind group, one vertex buffer.
+        self.record_state_binds(1, 1);
     }
 
     #[inline]
@@ -777,6 +932,8 @@ impl Renderer2d {
         self.counters_draw_calls.fetch_add(1, Ordering::Relaxed);
         self.counters_sprite_draw_calls
             .fetch_add(1, Ordering::Relaxed);
+        // Camera + texture bind groups, one instance vertex buffer.
+        self.record_state_binds(2, 1);
     }
 
     #[inline]
@@ -784,6 +941,7 @@ impl Renderer2d {
         self.counters_draw_calls.fetch_add(1, Ordering::Relaxed);
         self.counters_text_draw_calls
             .fetch_add(1, Ordering::Relaxed);
+        self.record_state_binds(2, 1);
     }
 
     #[inline]
@@ -791,6 +949,15 @@ impl Renderer2d {
         self.counters_draw_calls.fetch_add(1, Ordering::Relaxed);
         self.counters_mesh_draw_calls
             .fetch_add(1, Ordering::Relaxed);
+        // Camera + texture bind groups, vertex + index buffers.
+        self.record_state_binds(2, 2);
+    }
+
+    #[inline]
+    fn record_grid_draw(&self) {
+        self.counters_draw_calls.fetch_add(1, Ordering::Relaxed);
+        // Grid uniform bind group, no vertex buffer (generated triangle).
+        self.record_state_binds(1, 0);
     }
 
     /// Update the Orthographic Camera Matrix and Resolution
@@ -1114,15 +1281,37 @@ impl Renderer2d {
         count: u32,
         mode: BlendMode2d,
     ) {
+        let mut state = DrawState2d::new();
+        self.render_text_range_blend_cached(render_pass, &mut state, font_bg, offset, count, mode);
+    }
+
+    /// [`Self::render_text_range_blend`] reusing a [`DrawState2d`] cache.
+    ///
+    /// Identical draws and state, but a slot that already holds the same
+    /// pipeline/bind group/vertex buffer is not rebound.  Counters count only
+    /// the calls actually issued.
+    pub fn render_text_range_blend_cached(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        state: &mut DrawState2d,
+        font_bg: &wgpu::BindGroup,
+        offset: u32,
+        count: u32,
+        mode: BlendMode2d,
+    ) {
         if count == 0 {
             return;
         }
-        render_pass.set_pipeline(self.text_pipeline.pipeline(mode));
-        render_pass.set_bind_group(0, &self.text_camera_bind_group, &[]);
-        render_pass.set_bind_group(1, font_bg, &[]);
-        render_pass.set_vertex_buffer(0, self.text_instance_buffer.slice(..));
+        let pipelines =
+            u32::from(state.set_pipeline(render_pass, self.text_pipeline.pipeline(mode)));
+        let bind_groups = u32::from(state.set_bind0(render_pass, &self.text_camera_bind_group))
+            + u32::from(state.set_bind1(render_pass, font_bg));
+        let buffers = u32::from(state.set_vertex(render_pass, &self.text_instance_buffer));
         render_pass.draw(0..4, offset..(offset + count));
-        self.record_text_draw();
+        self.counters_draw_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters_text_draw_calls
+            .fetch_add(1, Ordering::Relaxed);
+        self.record_state_binds_with(pipelines, bind_groups, buffers);
     }
 
     /// Text range with an explicit camera bind group (multi-viewport path).
@@ -1155,15 +1344,43 @@ impl Renderer2d {
         count: u32,
         mode: BlendMode2d,
     ) {
+        let mut state = DrawState2d::new();
+        self.render_text_range_bg_blend_cached(
+            render_pass,
+            &mut state,
+            camera_bg,
+            font_bg,
+            offset,
+            count,
+            mode,
+        );
+    }
+
+    /// [`Self::render_text_range_bg_blend`] reusing a [`DrawState2d`] cache.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_text_range_bg_blend_cached(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        state: &mut DrawState2d,
+        camera_bg: &wgpu::BindGroup,
+        font_bg: &wgpu::BindGroup,
+        offset: u32,
+        count: u32,
+        mode: BlendMode2d,
+    ) {
         if count == 0 {
             return;
         }
-        render_pass.set_pipeline(self.text_pipeline.pipeline(mode));
-        render_pass.set_bind_group(0, camera_bg, &[]);
-        render_pass.set_bind_group(1, font_bg, &[]);
-        render_pass.set_vertex_buffer(0, self.text_instance_buffer.slice(..));
+        let pipelines =
+            u32::from(state.set_pipeline(render_pass, self.text_pipeline.pipeline(mode)));
+        let bind_groups = u32::from(state.set_bind0(render_pass, camera_bg))
+            + u32::from(state.set_bind1(render_pass, font_bg));
+        let buffers = u32::from(state.set_vertex(render_pass, &self.text_instance_buffer));
         render_pass.draw(0..4, offset..(offset + count));
-        self.record_text_draw();
+        self.counters_draw_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters_text_draw_calls
+            .fetch_add(1, Ordering::Relaxed);
+        self.record_state_binds_with(pipelines, bind_groups, buffers);
     }
 
     /// Renders the prepared sprite instances.
@@ -1229,11 +1446,14 @@ impl Renderer2d {
         if batcher.instances.is_empty() {
             return;
         }
-        render_pass.set_pipeline(self.shape_pipeline.pipeline(mode));
-        render_pass.set_bind_group(0, &self.shape_camera_bind_group, &[]);
-        render_pass.set_vertex_buffer(0, self.shape_instance_buffer.slice(..));
-        render_pass.draw(0..4, 0..batcher.instances.len() as u32);
-        self.record_shape_draw();
+        let mut state = DrawState2d::new();
+        self.render_shapes_range_blend_cached(
+            render_pass,
+            &mut state,
+            0,
+            batcher.instances.len() as u32,
+            mode,
+        );
     }
 
     /// Renders a contiguous range `[offset, offset + count)` of shape instances
@@ -1256,14 +1476,31 @@ impl Renderer2d {
         count: u32,
         mode: BlendMode2d,
     ) {
+        let mut state = DrawState2d::new();
+        self.render_shapes_range_blend_cached(render_pass, &mut state, offset, count, mode);
+    }
+
+    /// [`Self::render_shapes_range_blend`] reusing a [`DrawState2d`] cache.
+    pub fn render_shapes_range_blend_cached(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        state: &mut DrawState2d,
+        offset: u32,
+        count: u32,
+        mode: BlendMode2d,
+    ) {
         if count == 0 {
             return;
         }
-        render_pass.set_pipeline(self.shape_pipeline.pipeline(mode));
-        render_pass.set_bind_group(0, &self.shape_camera_bind_group, &[]);
-        render_pass.set_vertex_buffer(0, self.shape_instance_buffer.slice(..));
+        let pipelines =
+            u32::from(state.set_pipeline(render_pass, self.shape_pipeline.pipeline(mode)));
+        let bind_groups = u32::from(state.set_bind0(render_pass, &self.shape_camera_bind_group));
+        let buffers = u32::from(state.set_vertex(render_pass, &self.shape_instance_buffer));
         render_pass.draw(0..4, offset..(offset + count));
-        self.record_shape_draw();
+        self.counters_draw_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters_shape_draw_calls
+            .fetch_add(1, Ordering::Relaxed);
+        self.record_state_binds_with(pipelines, bind_groups, buffers);
     }
 
     /// Same as [`Self::render_shapes_range`] with an explicit camera bind group
@@ -1287,14 +1524,32 @@ impl Renderer2d {
         count: u32,
         mode: BlendMode2d,
     ) {
+        let mut state = DrawState2d::new();
+        self.render_shapes_range_bg_blend_cached(render_pass, &mut state, bg, offset, count, mode);
+    }
+
+    /// [`Self::render_shapes_range_bg_blend`] reusing a [`DrawState2d`] cache.
+    pub fn render_shapes_range_bg_blend_cached(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        state: &mut DrawState2d,
+        bg: &wgpu::BindGroup,
+        offset: u32,
+        count: u32,
+        mode: BlendMode2d,
+    ) {
         if count == 0 {
             return;
         }
-        render_pass.set_pipeline(self.shape_pipeline.pipeline(mode));
-        render_pass.set_bind_group(0, bg, &[]);
-        render_pass.set_vertex_buffer(0, self.shape_instance_buffer.slice(..));
+        let pipelines =
+            u32::from(state.set_pipeline(render_pass, self.shape_pipeline.pipeline(mode)));
+        let bind_groups = u32::from(state.set_bind0(render_pass, bg));
+        let buffers = u32::from(state.set_vertex(render_pass, &self.shape_instance_buffer));
         render_pass.draw(0..4, offset..(offset + count));
-        self.record_shape_draw();
+        self.counters_draw_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters_shape_draw_calls
+            .fetch_add(1, Ordering::Relaxed);
+        self.record_state_binds_with(pipelines, bind_groups, buffers);
     }
 
     /// Draws a **persistent** shape instance buffer as a single instanced draw
@@ -1414,18 +1669,45 @@ impl Renderer2d {
         get_texture_bind_group: impl Fn(u32) -> Option<&'a wgpu::BindGroup>,
         mode: BlendMode2d,
     ) {
+        let mut state = DrawState2d::new();
+        self.render_sprites_range_blend_cached(
+            render_pass,
+            &mut state,
+            tex_id,
+            offset,
+            count,
+            get_texture_bind_group,
+            mode,
+        );
+    }
+
+    /// [`Self::render_sprites_range_blend`] reusing a [`DrawState2d`] cache.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_sprites_range_blend_cached<'a>(
+        &'a self,
+        render_pass: &mut wgpu::RenderPass<'a>,
+        state: &mut DrawState2d,
+        tex_id: u32,
+        offset: u32,
+        count: u32,
+        get_texture_bind_group: impl Fn(u32) -> Option<&'a wgpu::BindGroup>,
+        mode: BlendMode2d,
+    ) {
         if count == 0 {
             return;
         }
         let Some(bg) = get_texture_bind_group(tex_id) else {
             return;
         };
-        render_pass.set_pipeline(self.pipeline.pipeline(mode));
-        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-        render_pass.set_bind_group(1, bg, &[]);
-        render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
+        let pipelines = u32::from(state.set_pipeline(render_pass, self.pipeline.pipeline(mode)));
+        let bind_groups = u32::from(state.set_bind0(render_pass, &self.camera_bind_group))
+            + u32::from(state.set_bind1(render_pass, bg));
+        let buffers = u32::from(state.set_vertex(render_pass, &self.instance_buffer));
         render_pass.draw(0..4, offset..(offset + count));
-        self.record_sprite_draw();
+        self.counters_draw_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters_sprite_draw_calls
+            .fetch_add(1, Ordering::Relaxed);
+        self.record_state_binds_with(pipelines, bind_groups, buffers);
     }
 
     /// Sprite range with an explicit camera bind group (multi-viewport path).
@@ -1461,18 +1743,47 @@ impl Renderer2d {
         get_texture_bind_group: impl Fn(u32) -> Option<&'a wgpu::BindGroup>,
         mode: BlendMode2d,
     ) {
+        let mut state = DrawState2d::new();
+        self.render_sprites_range_bg_blend_cached(
+            render_pass,
+            &mut state,
+            camera_bg,
+            tex_id,
+            offset,
+            count,
+            get_texture_bind_group,
+            mode,
+        );
+    }
+
+    /// [`Self::render_sprites_range_bg_blend`] reusing a [`DrawState2d`] cache.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_sprites_range_bg_blend_cached<'a>(
+        &'a self,
+        render_pass: &mut wgpu::RenderPass<'a>,
+        state: &mut DrawState2d,
+        camera_bg: &'a wgpu::BindGroup,
+        tex_id: u32,
+        offset: u32,
+        count: u32,
+        get_texture_bind_group: impl Fn(u32) -> Option<&'a wgpu::BindGroup>,
+        mode: BlendMode2d,
+    ) {
         if count == 0 {
             return;
         }
         let Some(bg) = get_texture_bind_group(tex_id) else {
             return;
         };
-        render_pass.set_pipeline(self.pipeline.pipeline(mode));
-        render_pass.set_bind_group(0, camera_bg, &[]);
-        render_pass.set_bind_group(1, bg, &[]);
-        render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
+        let pipelines = u32::from(state.set_pipeline(render_pass, self.pipeline.pipeline(mode)));
+        let bind_groups = u32::from(state.set_bind0(render_pass, camera_bg))
+            + u32::from(state.set_bind1(render_pass, bg));
+        let buffers = u32::from(state.set_vertex(render_pass, &self.instance_buffer));
         render_pass.draw(0..4, offset..(offset + count));
-        self.record_sprite_draw();
+        self.counters_draw_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters_sprite_draw_calls
+            .fetch_add(1, Ordering::Relaxed);
+        self.record_state_binds_with(pipelines, bind_groups, buffers);
     }
 }
 
@@ -1538,16 +1849,45 @@ impl Renderer2d {
         index_count: u32,
         mode: BlendMode2d,
     ) {
+        let mut state = DrawState2d::new();
+        self.render_meshes_range_blend_cached(
+            render_pass,
+            &mut state,
+            texture_bg,
+            first_index,
+            index_count,
+            mode,
+        );
+    }
+
+    /// [`Self::render_meshes_range_blend`] reusing a [`DrawState2d`] cache.
+    pub fn render_meshes_range_blend_cached(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        state: &mut DrawState2d,
+        texture_bg: &wgpu::BindGroup,
+        first_index: u32,
+        index_count: u32,
+        mode: BlendMode2d,
+    ) {
         if index_count == 0 {
             return;
         }
-        render_pass.set_pipeline(self.mesh_pipeline.pipeline(mode));
-        render_pass.set_bind_group(0, &self.mesh_camera_bind_group, &[]);
-        render_pass.set_bind_group(1, texture_bg, &[]);
-        render_pass.set_vertex_buffer(0, self.mesh_vertex_buffer.slice(..));
-        render_pass.set_index_buffer(self.mesh_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        let pipelines =
+            u32::from(state.set_pipeline(render_pass, self.mesh_pipeline.pipeline(mode)));
+        let bind_groups = u32::from(state.set_bind0(render_pass, &self.mesh_camera_bind_group))
+            + u32::from(state.set_bind1(render_pass, texture_bg));
+        let buffers = u32::from(state.set_vertex(render_pass, &self.mesh_vertex_buffer))
+            + u32::from(state.set_index(
+                render_pass,
+                &self.mesh_index_buffer,
+                wgpu::IndexFormat::Uint32,
+            ));
         render_pass.draw_indexed(first_index..(first_index + index_count), 0, 0..1);
-        self.record_mesh_draw();
+        self.counters_draw_calls.fetch_add(1, Ordering::Relaxed);
+        self.counters_mesh_draw_calls
+            .fetch_add(1, Ordering::Relaxed);
+        self.record_state_binds_with(pipelines, bind_groups, buffers);
     }
 
     /// Draws an indexed mesh range with an explicit pipeline (offscreen layer

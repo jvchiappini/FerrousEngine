@@ -5,6 +5,117 @@ use ferrous_renderer::RenderStyle;
 use crate::redraw::RedrawPolicy;
 use crate::traits::FerrousApp;
 
+/// Environment variable that selects the surface present mode at runtime.
+///
+/// Accepted values are `fifo`, `fifo_relaxed`, `mailbox` and `auto_no_vsync`
+/// (surrounding whitespace and case are ignored).  An explicit value wins over
+/// [`AppConfig::present_mode`], which in turn wins over the
+/// [`AppConfig::vsync`] alias; see [`PresentMode`] and `docs/present.md`.
+pub const PRESENT_MODE_ENV: &str = "FERROUS_PRESENT_MODE";
+
+/// How the swapchain presents a finished frame.
+///
+/// Three sources choose the mode, in decreasing precedence:
+///
+/// 1. `FERROUS_PRESENT_MODE` (see [`PRESENT_MODE_ENV`]).
+/// 2. [`AppConfig::present_mode`], set with [`AppConfig::with_present_mode`]
+///    or [`App::with_present_mode`].
+/// 3. The historical [`AppConfig::vsync`] alias: `true` maps to
+///    [`PresentMode::Fifo`] and `false` to [`PresentMode::AutoNoVsync`] when no
+///    explicit mode is set.
+///
+/// The surface capability list has the final say: a mode the adapter does not
+/// expose falls back to [`PresentMode::Fifo`] with a logged warning. `Fifo` is
+/// the only mode wgpu guarantees across backends. See `docs/present.md`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum PresentMode {
+    /// Lock presentation to the display's vertical blank: no tearing and one
+    /// queued frame. The default and the safest choice.
+    #[default]
+    Fifo,
+    /// Tear-free at the refresh rate, but a late frame presents immediately
+    /// instead of waiting for the next vblank
+    /// (`VK_PRESENT_MODE_FIFO_RELAXED_KHR`).
+    FifoRelaxed,
+    /// Tear-free and uncapped: a new frame replaces the pending one instead of
+    /// queueing. Some drivers still cap it to the display refresh rate.
+    Mailbox,
+    /// Uncapped and immediate; may tear. wgpu maps it to the first no-vsync
+    /// mode the backend exposes (`Immediate`, then `Mailbox`, then `Fifo`).
+    AutoNoVsync,
+}
+
+impl PresentMode {
+    /// The canonical lower-case name (`fifo`, `fifo_relaxed`, `mailbox`,
+    /// `auto_no_vsync`), as accepted by [`Self::parse`] and
+    /// [`PRESENT_MODE_ENV`].
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Fifo => "fifo",
+            Self::FifoRelaxed => "fifo_relaxed",
+            Self::Mailbox => "mailbox",
+            Self::AutoNoVsync => "auto_no_vsync",
+        }
+    }
+
+    /// Parses a present-mode name.
+    ///
+    /// Matching is case-insensitive and ignores surrounding whitespace;
+    /// `fiforelaxed` and `autonovsync` are accepted as spellings without the
+    /// underscore. An unknown value returns `None`.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "fifo" => Some(Self::Fifo),
+            "fifo_relaxed" | "fiforelaxed" => Some(Self::FifoRelaxed),
+            "mailbox" => Some(Self::Mailbox),
+            "auto_no_vsync" | "autonovsync" => Some(Self::AutoNoVsync),
+            _ => None,
+        }
+    }
+
+    /// Reads [`PRESENT_MODE_ENV`].
+    ///
+    /// Returns `None` when the variable is unset or cannot be parsed. An
+    /// unknown value is logged with the accepted names so a typo does not
+    /// silently change pacing instead of selecting a different mode.
+    #[must_use]
+    pub fn from_env() -> Option<Self> {
+        let raw = std::env::var_os(PRESENT_MODE_ENV)?;
+        let value = raw.to_string_lossy();
+        match Self::parse(&value) {
+            Some(mode) => Some(mode),
+            None => {
+                log::warn!(
+                    "{}={value:?} is not a present mode; expected one of \
+                     fifo, fifo_relaxed, mailbox, auto_no_vsync (leaving the configured mode)",
+                    PRESENT_MODE_ENV
+                );
+                None
+            }
+        }
+    }
+}
+
+/// Resolves the present mode from its three sources, in precedence order.
+///
+/// Kept separate from [`AppConfig::effective_present_mode`] so the decision is
+/// a pure function the tests can drive without touching the process
+/// environment.
+#[must_use]
+pub fn resolve_present_mode(
+    env: Option<PresentMode>,
+    configured: Option<PresentMode>,
+    vsync: bool,
+) -> PresentMode {
+    env.or(configured).unwrap_or(if vsync {
+        PresentMode::Fifo
+    } else {
+        PresentMode::AutoNoVsync
+    })
+}
+
 /// Selects which engine subsystems the runner initialises and which frame
 /// callbacks it invokes.
 ///
@@ -41,7 +152,20 @@ pub struct AppConfig {
     /// Enable vertical sync — locks GPU present to monitor refresh rate,
     /// eliminating tearing and capping GPU usage to the refresh rate.
     /// Default: `true`.
+    ///
+    /// This is the historical alias for the present mode: `true` selects
+    /// [`PresentMode::Fifo`] and `false` selects [`PresentMode::AutoNoVsync`]
+    /// only when neither [`present_mode`](Self::present_mode) nor
+    /// `FERROUS_PRESENT_MODE` is set. See [`PresentMode`] and
+    /// `docs/present.md`.
     pub vsync: bool,
+    /// Explicit swapchain present mode.
+    ///
+    /// `None` (the default) keeps the [`vsync`](Self::vsync) alias in charge.
+    /// `Some(mode)` overrides `vsync`; `FERROUS_PRESENT_MODE` overrides both.
+    /// The surface capability list decides what actually runs: an unsupported
+    /// mode falls back to [`PresentMode::Fifo`] with a logged warning.
+    pub present_mode: Option<PresentMode>,
     /// Whether the user can resize the window. Defaults to `true`.
     pub resizable: bool,
     /// Whether the window should show OS-native decorations (title bar, minimize /
@@ -327,6 +451,7 @@ impl Default for AppConfig {
             font_path: None,
             font_bytes: None,
             vsync: true,
+            present_mode: None,
             resizable: true,
             decorations: true,
             background_color: Color::rgb(0.1, 0.1, 0.1),
@@ -351,6 +476,29 @@ impl Default for AppConfig {
             show_window_when_ready: true,
             window_show_timeout: DEFAULT_SHOW_TIMEOUT,
         }
+    }
+}
+
+impl AppConfig {
+    /// The present mode this configuration resolves to.
+    ///
+    /// Precedence: `FERROUS_PRESENT_MODE` > [`Self::present_mode`] >
+    /// [`Self::vsync`] (`true` = [`PresentMode::Fifo`], `false` =
+    /// [`PresentMode::AutoNoVsync`]). An unknown environment value is logged
+    /// and ignored, leaving the next source in charge.
+    #[must_use]
+    pub fn effective_present_mode(&self) -> PresentMode {
+        resolve_present_mode(PresentMode::from_env(), self.present_mode, self.vsync)
+    }
+
+    /// Selects an explicit present mode, overriding [`Self::vsync`].
+    ///
+    /// See [`Self::effective_present_mode`] for the full precedence order and
+    /// `docs/present.md` for the trade-offs of each mode.
+    #[must_use]
+    pub fn with_present_mode(mut self, mode: PresentMode) -> Self {
+        self.present_mode = Some(mode);
+        self
     }
 }
 
@@ -412,8 +560,22 @@ impl<A: FerrousApp + 'static> App<A> {
     }
 
     /// Enable or disable vertical sync (default: enabled).
+    ///
+    /// Kept as the historical alias for [`PresentMode::Fifo`] /
+    /// [`PresentMode::AutoNoVsync`]. An explicit
+    /// [`with_present_mode`](Self::with_present_mode) overrides it, and
+    /// `FERROUS_PRESENT_MODE` overrides both.
     pub fn with_vsync(mut self, vsync: bool) -> Self {
         self.config.vsync = vsync;
+        self
+    }
+
+    /// Selects an explicit swapchain present mode (default: [`PresentMode::Fifo`]).
+    ///
+    /// Overrides [`with_vsync`](Self::with_vsync); `FERROUS_PRESENT_MODE` still
+    /// wins at runtime. See `docs/present.md` for the platform notes.
+    pub fn with_present_mode(mut self, mode: PresentMode) -> Self {
+        self.config.present_mode = Some(mode);
         self
     }
 
@@ -694,5 +856,92 @@ impl<A: FerrousApp + 'static> App<A> {
     /// Start the event loop. This call blocks until the window is closed.
     pub fn run(self) {
         crate::runner::run_internal(self.config, self.app_state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn present_mode_defaults_to_fifo_and_the_config_leaves_it_unset() {
+        assert_eq!(PresentMode::default(), PresentMode::Fifo);
+        assert_eq!(AppConfig::default().present_mode, None);
+        assert!(AppConfig::default().vsync);
+    }
+
+    #[test]
+    fn present_mode_names_parse_case_insensitively() {
+        for (name, mode) in [
+            ("fifo", PresentMode::Fifo),
+            ("  FIFO_RELAXED ", PresentMode::FifoRelaxed),
+            ("fiforelaxed", PresentMode::FifoRelaxed),
+            ("Mailbox", PresentMode::Mailbox),
+            ("auto_no_vsync", PresentMode::AutoNoVsync),
+            ("AUTONOVSYNC", PresentMode::AutoNoVsync),
+        ] {
+            assert_eq!(PresentMode::parse(name), Some(mode), "{name}");
+        }
+        assert_eq!(PresentMode::parse("bogus"), None);
+        assert_eq!(PresentMode::parse(""), None);
+    }
+
+    #[test]
+    fn every_present_mode_round_trips_through_its_name() {
+        for mode in [
+            PresentMode::Fifo,
+            PresentMode::FifoRelaxed,
+            PresentMode::Mailbox,
+            PresentMode::AutoNoVsync,
+        ] {
+            assert_eq!(PresentMode::parse(mode.name()), Some(mode));
+        }
+    }
+
+    #[test]
+    fn present_mode_precedence_is_env_then_config_then_vsync() {
+        assert_eq!(
+            resolve_present_mode(
+                Some(PresentMode::Mailbox),
+                Some(PresentMode::FifoRelaxed),
+                true
+            ),
+            PresentMode::Mailbox
+        );
+        assert_eq!(
+            resolve_present_mode(None, Some(PresentMode::FifoRelaxed), false),
+            PresentMode::FifoRelaxed
+        );
+        assert_eq!(resolve_present_mode(None, None, true), PresentMode::Fifo);
+        assert_eq!(
+            resolve_present_mode(None, None, false),
+            PresentMode::AutoNoVsync
+        );
+    }
+
+    #[test]
+    fn with_present_mode_overrides_the_vsync_alias() {
+        let config = AppConfig {
+            vsync: false,
+            ..AppConfig::default()
+        };
+        let config = config.with_present_mode(PresentMode::Mailbox);
+        assert_eq!(config.present_mode, Some(PresentMode::Mailbox));
+        assert!(!config.vsync);
+        // The environment is deliberately not touched here: the resolver is
+        // the pure part `effective_present_mode` uses.
+        assert_eq!(
+            resolve_present_mode(None, config.present_mode, config.vsync),
+            PresentMode::Mailbox
+        );
+    }
+
+    #[test]
+    fn app_builder_forwards_the_present_mode() {
+        struct TestApp;
+        impl FerrousApp for TestApp {}
+
+        let app = App::new(TestApp).with_present_mode(PresentMode::Mailbox);
+        assert_eq!(app.config.present_mode, Some(PresentMode::Mailbox));
     }
 }

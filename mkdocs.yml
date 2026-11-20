@@ -43,6 +43,7 @@ nav:
     - Configuration (ferrous.toml): ferrous_engine/config.md
     - Startup trace: ferrous_engine/startup.md
     - GPU memory: ferrous_engine/memory.md
+    - Performance & GPU timing: ferrous_engine/performance.md
     - Redraw policy: ferrous_engine/redraw.md
   - ferrous_2d — 2D Rendering:
     - Overview: ferrous_2d/README.md

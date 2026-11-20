@@ -241,6 +241,7 @@ fn effects_compose_with_group_opacity() {
     harness
         .push_layer_with_effects(
             Layer2d {
+                bounds: None,
                 opacity: 0.5,
                 blend: CompositeMode2d::Normal,
                 depth: 0.0,

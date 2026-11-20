@@ -30,6 +30,9 @@ docs/
 ├── app-context.md         ← AppContext field & method reference
 ├── render-context.md      ← RenderContext method reference
 └── config.md              ← ferrous.toml & AppConfig fields
+- performance.md         GPU instruments, pass timing, MSAA and target sizes
+- present.md             present modes (Fifo/FifoRelaxed/Mailbox) and pacing
+- memory.md              memory hints and the GPU/CPU inventory
 ```
 
 ## Re-exported types

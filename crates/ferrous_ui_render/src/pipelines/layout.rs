@@ -1,6 +1,10 @@
-use std::num::NonZeroU64;
-use wgpu::{BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, PipelineLayout, PipelineLayoutDescriptor, ShaderStages, BindingType, BufferBindingType, TextureSampleType, TextureViewDimension, SamplerBindingType};
 use crate::MAX_TEXTURE_SLOTS;
+use std::num::NonZeroU64;
+use wgpu::{
+    BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingType,
+    BufferBindingType, PipelineLayout, PipelineLayoutDescriptor, SamplerBindingType, ShaderStages,
+    TextureSampleType, TextureViewDimension,
+};
 
 pub struct Layouts {
     pub uniform_layout: BindGroupLayout,

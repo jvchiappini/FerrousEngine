@@ -7,16 +7,44 @@
 //! not expose `TIMESTAMP_QUERY`, [`GpuTimings::supported`] is false and the
 //! summary reports `unsupported`; the renderer keeps working.
 //!
-//! Only passes whose descriptor accepts `timestamp_writes` are instrumented
-//! (the Pure2D main pass and the GUI pass in P0).  A pass that is not
-//! instrumented is named in the report as unsupported by the caller.
+//! Only passes whose descriptor accepts `timestamp_writes` are instrumented.
+//! The non-layered Pure2D path writes `Pure2D Main Pass` and the GUI path
+//! writes `GUI Render Pass`.  The layered Pure2D path reserves the labels
+//! `Pure2D Layered Prefix`, `Pure2D Layered Main`, `Pure2D Plan`,
+//! `Pure2D Backdrop Composite`, `Pure2D Mask`, `Pure2D Blur Effect` and
+//! `Pure2D Effect Composite`; each label appears once its pass descriptor
+//! supplies `timestamp_writes`.  A pass that is not instrumented is named in
+//! the report as unsupported by the caller.
 
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 
 /// Maximum number of instrumented passes per frame (two queries each).
-const MAX_PASSES: u32 = 8;
+///
+/// The budget covers every timestampable pass a frame can encode without
+/// quietly dropping labels:
+///
+/// | Label | Count per frame |
+/// |-------|-----------------|
+/// | `Pure2D Layered Prefix Pass` | 1 |
+/// | `Pure2D Layered Main Pass` | 1 |
+/// | `Pure2D Main Pass` (non-layered) | 1 |
+/// | `Pure2D Plan Pass` | up to 8 |
+/// | `Pure2D Backdrop Composite Pass` | up to 8 |
+/// | `Pure2D Mask Pass` | up to `MAX_EFFECTS_PER_LAYER` |
+/// | `Pure2D Blur Effect Pass` | 2 per effect, per layer |
+/// | `Pure2D Effect Composite Pass` | 1 per effect, per layer |
+/// | `GUI Render Pass` | 1 |
+///
+/// A layered frame is dominated by blur (two passes per effect) and effect
+/// composites, so the old budget of 8 reserved its two queries for the main
+/// and GUI passes and left every layer/effect pass uninstrumented.  Twenty-four
+/// entries (48 queries at 16 bytes each) fit comfortably within typical
+/// adapter query-set limits while covering a practical layer/effect graph.  A pass
+/// beyond the budget still renders; `pass` returns `None` and only its timing
+/// is missing.
+const MAX_PASSES: u32 = 24;
 
 /// A map result plus the pass labels/query indices it belongs to.
 type PendingReadback = (

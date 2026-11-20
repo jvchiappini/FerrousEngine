@@ -84,6 +84,7 @@ fn draw_scene(harness: &mut Pure2dHarness, font: Option<FontId2d>) {
     harness
         .push_layer_with_effects(
             Layer2d {
+                bounds: None,
                 opacity: 0.8,
                 blend: CompositeMode2d::Screen,
                 depth: 0.5,

@@ -60,6 +60,53 @@ llevan los extremos en coordenadas locales al quad y `radii.x` lleva la media
 anchura. `gui.wgsl` calcula la distancia exacta al segmento por fragmento, así
 que las diagonales quedan anti-aliased y los dos extremos son redondos.
 
+### Modelo de estado por segmento (P5)
+
+El bucle de `GuiRenderer::render_with_timestamps` mantiene un estado de bind
+local al render pass y solo emite una llamada de estado cuando el slot cambia:
+
+| Estado | Cuándo se enlaza |
+|--------|------------------|
+| `set_scissor_rect` | Una vez por segmento (único estado legítimo por segmento). |
+| Grupo 0 (uniforme) | Una vez por pass; es idéntico para los pipelines de quad, texto e iconos. |
+| Grupo 1 | Al cambiar de atlas: imagen (quads), fuente (texto) o iconos. |
+| Pipeline | Al cambiar entre `transparent`, `text` y `svg`. Texto e iconos comparten `text`. |
+| VB slot 0 | Quad compartido por quads, texto e iconos; el SVG usa su propio VB. |
+| VB slot 1 | Buffer de instancias: quads, texto o iconos. |
+| Índice | Buffer de quads en `Uint16`; el SVG usa su buffer en `Uint32`. |
+
+Consecuencias:
+
+- El vertex buffer del quad y el índice `Uint16` se enlazan en el primer rango
+  que los necesita y no se repiten mientras ningún SVG los sustituya. Si un
+  segmento SVG los reemplaza, el siguiente rango de quad/texto/icono los vuelve
+  a enlazar mediante la caché; nunca asume que siguen puestos.
+- Texto reaprovecha el VB/índice del quad; iconos reaprovechan además el
+  pipeline de texto y solo reenlazan su buffer de instancias y su grupo 1.
+- El SVG enlaza su propio VB e índice `Uint32` una vez por segmento con SVG.
+- Los segmentos posteriores no dependen del último grupo 1 enlazado: cada
+  rango enlaza el suyo solo si la caché no lo tiene ya.
+
+El render pass de ID (`read_pixel_id`) es independiente y no usa esta caché.
+
+### Contadores de trabajo GPU (P5)
+
+`UiFrameCounters` (devuelto por `GuiRenderer::frame_counters`) cuenta
+**llamadas realmente emitidas**, no rangos ni cambios de identidad:
+
+- `passes`: render passes abiertos por el renderer de UI (0 o 1).
+- `segments`: segmentos visitados (uno por cambio de scissor).
+- `scissor_changes`: llamadas a `set_scissor_rect`.
+- `draw_calls`: llamadas a `draw_indexed`.
+- `pipeline_binds`: llamadas a `set_pipeline`.
+- `bind_group_binds`: llamadas a `set_bind_group`.
+- `buffer_binds`: llamadas a `set_vertex_buffer` + `set_index_buffer`.
+
+Antes de P5 cada rango de primitiva reenlazaba pipeline, grupo 0, grupo 1 y
+todos los buffers, así que `pipeline_binds` era igual a `draw_calls`. Con la
+caché, un frame con el mismo contenido reporta menos binds pero exactamente
+los mismos `draw_calls` y `segments`, requisito de identidad de píxeles.
+
 ---
 
 ## 🚀 Trait `ToBatches`
@@ -87,7 +134,7 @@ impl ToBatches for RenderCommand {
 | Característica | Implementación |
 |----------------|----------------|
 | Bordes redondeados | Calculados en el fragment shader (`gui.wgsl`) mediante SDF para radios arbitrarios por esquina. |
-| Array de texturas | Hasta 8 texturas simultáneas por lote usando `BindingType::Texture` con `count: NonZeroU32`. |
+| Array de texturas | `MAX_TEXTURE_SLOTS = 16` texturas simultáneas por lote en nativo (8 en wasm) usando `BindingType::Texture` con `count: NonZeroU32`. `GuiBatch::reserve_texture_slot` hace `panic!` al superar el límite; los slots libres se rellenan con la última textura al construir el bind group. |
 | Pila de scissor | Intersección automática en `push_clip`; `current_scissor` se restaura en `pop_clip`. |
 | Buffers dinámicos | Si el conteo de instancias supera la capacidad, se re-crea el buffer de GPU automáticamente. |
 | MSAA | `sample_count` configurable en `GuiRenderer::new`. |

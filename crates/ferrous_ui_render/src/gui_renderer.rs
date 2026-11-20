@@ -6,10 +6,15 @@
 use crate::gpu_types::{GuiQuad, TextQuad};
 use crate::gui_batch::GuiBatch;
 use crate::pipelines::{
-    id::create_id_pipeline, layout::Layouts, quad::create_quad_pipeline, text::create_text_pipeline,
+    id::create_id_pipeline,
+    layout::Layouts,
+    overdraw::{create_overdraw_pipeline, create_overdraw_text_pipeline},
+    quad::create_quad_pipeline,
+    text::create_text_pipeline,
 };
 use crate::MAX_TEXTURE_SLOTS;
 use ferrous_core::memory::{self, Subsystem};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
@@ -57,6 +62,49 @@ fn unregister_cache_memory(
     }
 }
 
+/// Per-frame GPU work counters for the GUI pass (prompt 18 P5).
+///
+/// Every field counts *calls actually issued*, not primitive ranges or
+/// identity switches.  Since the render loop caches bind state per pass, a
+/// field only grows when a slot genuinely changes; before the cache existed
+/// `pipeline_binds` always equalled `draw_calls`.  The numbers are what the
+/// phase report compares before and after batching work.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct UiFrameCounters {
+    /// Render passes opened by the GUI renderer this frame (0 or 1).
+    pub passes: u32,
+    /// Draw segments visited (one per scissor change).
+    pub segments: u32,
+    /// `set_scissor_rect` calls.
+    pub scissor_changes: u32,
+    /// `draw_indexed` calls.
+    pub draw_calls: u32,
+    /// `set_pipeline` calls actually issued (not the number of draws).
+    pub pipeline_binds: u32,
+    /// `set_bind_group` calls actually issued.
+    pub bind_group_binds: u32,
+    /// `set_vertex_buffer` + `set_index_buffer` calls actually issued.
+    pub buffer_binds: u32,
+}
+
+/// Identity of the last object bound to each render-pass slot (prompt 18 P5).
+///
+/// The GUI pass used to rebind pipeline, bind groups and the shared quad
+/// vertex/index buffers for every primitive range of every segment.  This
+/// cache lets the loop skip a `set_*` call when the slot already holds the
+/// same object.  It is local to one pass: the caller creates it with
+/// `PassBindState::default()` after `begin_render_pass`, so stale state from a
+/// previous pass can never leak in.
+#[derive(Debug, Default, Clone, Copy)]
+struct PassBindState {
+    pipeline: Option<u64>,
+    bind0: Option<u64>,
+    bind1: Option<u64>,
+    vertex0: Option<u64>,
+    vertex1: Option<u64>,
+    index: Option<u64>,
+}
+
 /// Main UI rendering engine on the GPU.
 pub struct GuiRenderer {
     pub device: Arc<wgpu::Device>,
@@ -66,6 +114,13 @@ pub struct GuiRenderer {
     pub text_pipeline: wgpu::RenderPipeline,
     pub svg_pipeline: wgpu::RenderPipeline,
     pub id_pipeline: wgpu::RenderPipeline,
+    /// Diagnostic pipelines that add a fixed heat colour per fragment instead
+    /// of the normal shading (prompt 18 P5).  Never selected unless
+    /// [`Self::set_overdraw`] enables the view.
+    pub overdraw_quad_pipeline: wgpu::RenderPipeline,
+    pub overdraw_text_pipeline: wgpu::RenderPipeline,
+    /// Runtime toggle for the overdraw debug view.
+    overdraw_enabled: bool,
 
     pub vertex_buffer: wgpu::Buffer,
     pub index_buffer: wgpu::Buffer,
@@ -101,9 +156,14 @@ pub struct GuiRenderer {
     svg_scratch_indices: Vec<u32>,
     pub resolution: [f32; 2],
 
-    // Depth Buffer for Early-Z
-    pub depth_texture: wgpu::Texture,
-    pub depth_view: wgpu::TextureView,
+    // Depth Buffer for Early-Z.  `None` when the consumer disabled it
+    // (`Render2dConfig::ui_depth == false`): the normal UI pipelines never
+    // write depth, so the attachment is inert and its full-size texture is
+    // pure VRAM (5.76 MB at 1600x900).
+    pub depth_texture: Option<wgpu::Texture>,
+    pub depth_view: Option<wgpu::TextureView>,
+    /// Whether the GUI pass allocates/uses a depth attachment.
+    ui_depth: bool,
 
     // GPU ID Hit-Testing.  The full-size id texture is allocated lazily on the
     // first hit test (see [`Self::ensure_id_target`]); most UI sessions never
@@ -120,6 +180,16 @@ pub struct GuiRenderer {
     /// recompiling (audit M18).  `None` on backends without
     /// `wgpu::Features::PIPELINE_CACHE`.
     pipeline_cache: Option<Arc<wgpu::PipelineCache>>,
+
+    // Per-frame instrumentation (atomics: `render_with_timestamps` takes
+    // `&self`).
+    counters_passes: AtomicU32,
+    counters_segments: AtomicU32,
+    counters_scissor_changes: AtomicU32,
+    counters_draw_calls: AtomicU32,
+    counters_pipeline_binds: AtomicU32,
+    counters_bind_group_binds: AtomicU32,
+    counters_buffer_binds: AtomicU32,
 }
 
 impl GuiRenderer {
@@ -254,12 +324,14 @@ impl GuiRenderer {
 
         // Pipelines
         let cache = pipeline_cache.as_deref();
+        let depth_format = Some(wgpu::TextureFormat::Depth32Float);
         let opaque_pipeline = create_quad_pipeline(
             &device,
             format,
             &layouts.quad_pipeline_layout,
             sample_count,
             true,
+            depth_format,
             cache,
         );
         let transparent_pipeline = create_quad_pipeline(
@@ -268,6 +340,7 @@ impl GuiRenderer {
             &layouts.quad_pipeline_layout,
             sample_count,
             false,
+            depth_format,
             cache,
         );
         let text_pipeline = create_text_pipeline(
@@ -276,6 +349,7 @@ impl GuiRenderer {
             &layouts.text_pipeline_layout,
             sample_count,
             false,
+            depth_format,
             cache,
         );
         let svg_pipeline = crate::pipelines::svg::create_svg_pipeline(
@@ -283,9 +357,26 @@ impl GuiRenderer {
             format,
             &layouts.quad_pipeline_layout,
             sample_count,
+            depth_format,
             cache,
         );
         let id_pipeline = create_id_pipeline(&device, &layouts.quad_pipeline_layout, cache);
+        let overdraw_quad_pipeline = create_overdraw_pipeline(
+            &device,
+            format,
+            &layouts.quad_pipeline_layout,
+            sample_count,
+            depth_format,
+            cache,
+        );
+        let overdraw_text_pipeline = create_overdraw_text_pipeline(
+            &device,
+            format,
+            &layouts.text_pipeline_layout,
+            sample_count,
+            depth_format,
+            cache,
+        );
 
         // Depth Buffer for Early-Z
         let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -303,6 +394,8 @@ impl GuiRenderer {
             view_formats: &[],
         });
         let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth_texture = Some(depth_texture);
+        let depth_view = Some(depth_view);
 
         // ID Buffer: only the 4-byte staging target is created eagerly.  The
         // full-size `R32Uint` texture is allocated by `ensure_id_target` on the
@@ -365,6 +458,9 @@ impl GuiRenderer {
             text_pipeline,
             svg_pipeline,
             id_pipeline,
+            overdraw_quad_pipeline,
+            overdraw_text_pipeline,
+            overdraw_enabled: false,
             vertex_buffer,
             index_buffer,
             instance_buffer,
@@ -390,17 +486,162 @@ impl GuiRenderer {
             resolution,
             depth_texture,
             depth_view,
+            ui_depth: true,
             id_texture: None,
             id_view: None,
             id_staging_buffer,
             format,
             sample_count,
             pipeline_cache,
+            counters_passes: AtomicU32::new(0),
+            counters_segments: AtomicU32::new(0),
+            counters_scissor_changes: AtomicU32::new(0),
+            counters_draw_calls: AtomicU32::new(0),
+            counters_pipeline_binds: AtomicU32::new(0),
+            counters_bind_group_binds: AtomicU32::new(0),
+            counters_buffer_binds: AtomicU32::new(0),
         }
+    }
+
+    /// Enables or disables the overdraw debug view (prompt 18 P5).
+    ///
+    /// When enabled, the quad and text/icon ranges are drawn with additive
+    /// diagnostic pipelines that accumulate `OVERDRAW_HEAT` per fragment, so a
+    /// bright pixel means many overlapping fragments.  Default off; it changes
+    /// the picture on purpose and is never used by goldens.
+    pub fn set_overdraw(&mut self, enabled: bool) {
+        self.overdraw_enabled = enabled;
+    }
+
+    /// Enables or disables the GUI depth attachment (prompt 18 P5).
+    ///
+    /// The normal UI pipelines never write depth, so in a 2D mode the
+    /// full-size `Depth32Float` target is inert: disabling it frees 5.76 MB at
+    /// 1600x900 with identical pixels. Re-enabling recreates it at the current
+    /// resolution.
+    pub fn set_ui_depth(&mut self, enabled: bool) {
+        if self.ui_depth == enabled {
+            return;
+        }
+        self.ui_depth = enabled;
+        let width = self.resolution[0].max(1.0) as u32;
+        let height = self.resolution[1].max(1.0) as u32;
+        if enabled {
+            let (texture, view) =
+                Self::create_depth_target(&self.device, width, height, self.sample_count);
+            self.depth_texture = Some(texture);
+            self.depth_view = Some(view);
+            memory::register_gpu(
+                "gui:depth texture",
+                Self::depth_texture_bytes(width, height, self.sample_count),
+                Subsystem::Gui,
+            );
+        } else {
+            self.depth_texture = None;
+            self.depth_view = None;
+            memory::unregister_gpu("gui:depth texture", Subsystem::Gui);
+        }
+        // The pipelines declare the depth attachment format, so they must be
+        // rebuilt for the new pass layout.
+        self.rebuild_pipelines(self.format, self.sample_count);
+    }
+
+    /// Snapshot of the GUI pass counters accumulated by the last
+    /// [`Self::render_with_timestamps`] call.
+    pub fn frame_counters(&self) -> UiFrameCounters {
+        UiFrameCounters {
+            passes: self.counters_passes.load(Ordering::Relaxed),
+            segments: self.counters_segments.load(Ordering::Relaxed),
+            scissor_changes: self.counters_scissor_changes.load(Ordering::Relaxed),
+            draw_calls: self.counters_draw_calls.load(Ordering::Relaxed),
+            pipeline_binds: self.counters_pipeline_binds.load(Ordering::Relaxed),
+            bind_group_binds: self.counters_bind_group_binds.load(Ordering::Relaxed),
+            buffer_binds: self.counters_buffer_binds.load(Ordering::Relaxed),
+        }
+    }
+
+    fn reset_frame_counters(&self) {
+        self.counters_passes.store(0, Ordering::Relaxed);
+        self.counters_segments.store(0, Ordering::Relaxed);
+        self.counters_scissor_changes.store(0, Ordering::Relaxed);
+        self.counters_draw_calls.store(0, Ordering::Relaxed);
+        self.counters_pipeline_binds.store(0, Ordering::Relaxed);
+        self.counters_bind_group_binds.store(0, Ordering::Relaxed);
+        self.counters_buffer_binds.store(0, Ordering::Relaxed);
     }
 
     pub fn resize(&mut self, queue: &wgpu::Queue, width: u32, height: u32) {
         self.update_output_config(queue, width, height, self.format, self.sample_count);
+    }
+
+    /// Rebuilds every GUI pipeline for `format`/`sample_count`.
+    ///
+    /// The depth attachment is part of the pipeline state: a pipeline built
+    /// with `Depth32Float` cannot be used in a pass without a depth attachment
+    /// (and vice versa), so toggling [`Self::set_ui_depth`] rebuilds them.
+    fn rebuild_pipelines(&mut self, format: wgpu::TextureFormat, sample_count: u32) {
+        log::debug!(
+            "[GuiRenderer] Rebuilding pipelines for format={:?}, sample_count={}",
+            format,
+            sample_count
+        );
+        let cache = self.pipeline_cache.as_deref();
+        let depth_format = if self.ui_depth {
+            Some(wgpu::TextureFormat::Depth32Float)
+        } else {
+            None
+        };
+        self.opaque_pipeline = create_quad_pipeline(
+            &self.device,
+            format,
+            &self.layouts.quad_pipeline_layout,
+            sample_count,
+            true,
+            depth_format,
+            cache,
+        );
+        self.transparent_pipeline = create_quad_pipeline(
+            &self.device,
+            format,
+            &self.layouts.quad_pipeline_layout,
+            sample_count,
+            false,
+            depth_format,
+            cache,
+        );
+        self.text_pipeline = create_text_pipeline(
+            &self.device,
+            format,
+            &self.layouts.text_pipeline_layout,
+            sample_count,
+            false,
+            depth_format,
+            cache,
+        );
+        self.svg_pipeline = crate::pipelines::svg::create_svg_pipeline(
+            &self.device,
+            format,
+            &self.layouts.quad_pipeline_layout,
+            sample_count,
+            depth_format,
+            cache,
+        );
+        self.overdraw_quad_pipeline = create_overdraw_pipeline(
+            &self.device,
+            format,
+            &self.layouts.quad_pipeline_layout,
+            sample_count,
+            depth_format,
+            cache,
+        );
+        self.overdraw_text_pipeline = create_overdraw_text_pipeline(
+            &self.device,
+            format,
+            &self.layouts.text_pipeline_layout,
+            sample_count,
+            depth_format,
+            cache,
+        );
     }
 
     pub fn update_output_config(
@@ -435,52 +676,28 @@ impl GuiRenderer {
                 format,
                 sample_count
             );
-            let cache = self.pipeline_cache.as_deref();
-            self.opaque_pipeline = create_quad_pipeline(
-                &self.device,
-                format,
-                &self.layouts.quad_pipeline_layout,
-                sample_count,
-                true,
-                cache,
-            );
-            self.transparent_pipeline = create_quad_pipeline(
-                &self.device,
-                format,
-                &self.layouts.quad_pipeline_layout,
-                sample_count,
-                false,
-                cache,
-            );
-            self.text_pipeline = create_text_pipeline(
-                &self.device,
-                format,
-                &self.layouts.text_pipeline_layout,
-                sample_count,
-                false,
-                cache,
-            );
-            self.svg_pipeline = crate::pipelines::svg::create_svg_pipeline(
-                &self.device,
-                format,
-                &self.layouts.quad_pipeline_layout,
-                sample_count,
-                cache,
-            );
+            self.rebuild_pipelines(format, sample_count);
         }
 
         // Resize Depth.  There is exactly one depth target: replacing the view
         // and then the texture drops the previous pair, so a resize can never
-        // keep two full-size depth buffers alive.
-        let (depth_texture, depth_view) =
-            Self::create_depth_target(&self.device, width, height, sample_count);
-        self.depth_view = depth_view;
-        self.depth_texture = depth_texture;
-        memory::register_gpu(
-            "gui:depth texture",
-            Self::depth_texture_bytes(width, height, sample_count),
-            Subsystem::Gui,
-        );
+        // keep two full-size depth buffers alive.  A disabled (`ui_depth ==
+        // false`) pass allocates nothing.
+        if self.ui_depth {
+            let (depth_texture, depth_view) =
+                Self::create_depth_target(&self.device, width, height, sample_count);
+            self.depth_view = Some(depth_view);
+            self.depth_texture = Some(depth_texture);
+            memory::register_gpu(
+                "gui:depth texture",
+                Self::depth_texture_bytes(width, height, sample_count),
+                Subsystem::Gui,
+            );
+        } else {
+            self.depth_view = None;
+            self.depth_texture = None;
+            memory::unregister_gpu("gui:depth texture", Subsystem::Gui);
+        }
 
         // Resize ID only when the target exists: it is lazy and must not be
         // allocated by a resize.  Dropping both handles before allocating the
@@ -840,6 +1057,104 @@ impl GuiRenderer {
         }
     }
 
+    #[inline]
+    fn bind_pipeline_cached(
+        &self,
+        rpass: &mut wgpu::RenderPass<'_>,
+        state: &mut PassBindState,
+        pipeline: &wgpu::RenderPipeline,
+    ) {
+        let id = pipeline as *const wgpu::RenderPipeline as u64;
+        if state.pipeline != Some(id) {
+            rpass.set_pipeline(pipeline);
+            state.pipeline = Some(id);
+            self.counters_pipeline_binds.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[inline]
+    fn bind_group_cached(
+        &self,
+        rpass: &mut wgpu::RenderPass<'_>,
+        slot: u32,
+        bound: &mut Option<u64>,
+        bind_group: &wgpu::BindGroup,
+    ) {
+        let id = bind_group as *const wgpu::BindGroup as u64;
+        if *bound != Some(id) {
+            rpass.set_bind_group(slot, bind_group, &[]);
+            *bound = Some(id);
+            self.counters_bind_group_binds
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[inline]
+    fn bind_group0_cached(
+        &self,
+        rpass: &mut wgpu::RenderPass<'_>,
+        state: &mut PassBindState,
+        bind_group: &wgpu::BindGroup,
+    ) {
+        self.bind_group_cached(rpass, 0, &mut state.bind0, bind_group);
+    }
+
+    #[inline]
+    fn bind_group1_cached(
+        &self,
+        rpass: &mut wgpu::RenderPass<'_>,
+        state: &mut PassBindState,
+        bind_group: &wgpu::BindGroup,
+    ) {
+        self.bind_group_cached(rpass, 1, &mut state.bind1, bind_group);
+    }
+
+    #[inline]
+    fn bind_vertex0_cached(
+        &self,
+        rpass: &mut wgpu::RenderPass<'_>,
+        state: &mut PassBindState,
+        buffer: &wgpu::Buffer,
+    ) {
+        let id = buffer as *const wgpu::Buffer as u64;
+        if state.vertex0 != Some(id) {
+            rpass.set_vertex_buffer(0, buffer.slice(..));
+            state.vertex0 = Some(id);
+            self.counters_buffer_binds.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[inline]
+    fn bind_vertex1_cached(
+        &self,
+        rpass: &mut wgpu::RenderPass<'_>,
+        state: &mut PassBindState,
+        buffer: &wgpu::Buffer,
+    ) {
+        let id = buffer as *const wgpu::Buffer as u64;
+        if state.vertex1 != Some(id) {
+            rpass.set_vertex_buffer(1, buffer.slice(..));
+            state.vertex1 = Some(id);
+            self.counters_buffer_binds.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[inline]
+    fn bind_index_cached(
+        &self,
+        rpass: &mut wgpu::RenderPass<'_>,
+        state: &mut PassBindState,
+        buffer: &wgpu::Buffer,
+        format: wgpu::IndexFormat,
+    ) {
+        let id = buffer as *const wgpu::Buffer as u64;
+        if state.index != Some(id) {
+            rpass.set_index_buffer(buffer.slice(..), format);
+            state.index = Some(id);
+            self.counters_buffer_binds.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     /// Fase RENDER: Ejecuta los comandos de dibujo sobre la vista proporcionada.
     pub fn render(
         &self,
@@ -854,7 +1169,7 @@ impl GuiRenderer {
 
     /// [`Self::render`] with an optional per-pass GPU timestamp pair.
     ///
-    /// The caller keeps the [`ferrous_renderer::gpu_timing::PassTiming`] alive
+    /// The caller keeps the `ferrous_renderer::gpu_timing::PassTiming` alive
     /// until the pass ends; this method only borrows its descriptor fragment.
     pub fn render_with_timestamps(
         &self,
@@ -865,10 +1180,12 @@ impl GuiRenderer {
         load_op: wgpu::LoadOp<wgpu::Color>,
         timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
     ) {
+        self.reset_frame_counters();
         if batch.segments.is_empty() && matches!(load_op, wgpu::LoadOp::Load) {
             return;
         }
 
+        self.counters_passes.store(1, Ordering::Relaxed);
         let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("GUI Render Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -879,13 +1196,15 @@ impl GuiRenderer {
                     store: wgpu::StoreOp::Store,
                 },
             })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &self.depth_view,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: None,
+            depth_stencil_attachment: self.depth_view.as_ref().map(|view| {
+                wgpu::RenderPassDepthStencilAttachment {
+                    view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }
             }),
             occlusion_query_set: None,
             timestamp_writes,
@@ -905,7 +1224,17 @@ impl GuiRenderer {
             return;
         }
 
+        // State cache for this pass.  `set_scissor_rect` (the only legitimate
+        // per-segment state) does not invalidate any of these slots, so the
+        // invariant bind group 0 / quad vertex buffer / Uint16 index buffer are
+        // issued once and reused.  A segment that first draws SVG changes the
+        // vertex slot 0 and the index buffer, so a later quad/text/icon range
+        // re-establishes them through the cache instead of assuming they are
+        // still bound.
+        let mut state = PassBindState::default();
+
         for segment in &batch.segments {
+            self.counters_segments.fetch_add(1, Ordering::Relaxed);
             // Apply scissor if present, intersected with base_scissor
             let (sx, sy, sw, sh) = if let Some(s) = segment.scissor {
                 let sx = (s.x.max(base_sx as f32) as u32).min(base_sx + base_sw);
@@ -921,6 +1250,8 @@ impl GuiRenderer {
 
             if sw > 0 && sh > 0 {
                 rpass.set_scissor_rect(sx, sy, sw, sh);
+                self.counters_scissor_changes
+                    .fetch_add(1, Ordering::Relaxed);
             } else {
                 continue;
             }
@@ -928,47 +1259,88 @@ impl GuiRenderer {
             // Draw Quads (Using transparent pipeline to support blended edges/shadows safely)
             // TODO: En Fase 5 implementaremos el split Opaque/Transparent por segmento
             if !segment.quad_range.is_empty() {
-                rpass.set_pipeline(&self.transparent_pipeline);
-                rpass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                rpass.set_bind_group(1, &self.image_bind_group, &[]);
-                rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                rpass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-                rpass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                let quad_pipeline = if self.overdraw_enabled {
+                    &self.overdraw_quad_pipeline
+                } else {
+                    &self.transparent_pipeline
+                };
+                self.bind_pipeline_cached(&mut rpass, &mut state, quad_pipeline);
+                self.bind_group0_cached(&mut rpass, &mut state, &self.uniform_bind_group);
+                self.bind_group1_cached(&mut rpass, &mut state, &self.image_bind_group);
+                self.bind_vertex0_cached(&mut rpass, &mut state, &self.vertex_buffer);
+                self.bind_vertex1_cached(&mut rpass, &mut state, &self.instance_buffer);
+                self.bind_index_cached(
+                    &mut rpass,
+                    &mut state,
+                    &self.index_buffer,
+                    wgpu::IndexFormat::Uint16,
+                );
                 rpass.draw_indexed(0..6, 0, segment.quad_range.clone());
+                self.counters_draw_calls.fetch_add(1, Ordering::Relaxed);
             }
 
             // Draw Text
             if !segment.text_range.is_empty() {
                 if let Some(font_bg) = &self.font_bind_group {
-                    rpass.set_pipeline(&self.text_pipeline);
-                    rpass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                    rpass.set_bind_group(1, font_bg, &[]);
-                    rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                    rpass.set_vertex_buffer(1, self.text_instance_buffer.slice(..));
-                    rpass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                    // Shares the quad vertex buffer, Uint16 index buffer and
+                    // (with icons) the text pipeline; only the instance buffer
+                    // and the atlas bind group differ.
+                    let text_pipeline = if self.overdraw_enabled {
+                        &self.overdraw_text_pipeline
+                    } else {
+                        &self.text_pipeline
+                    };
+                    self.bind_pipeline_cached(&mut rpass, &mut state, text_pipeline);
+                    self.bind_group0_cached(&mut rpass, &mut state, &self.uniform_bind_group);
+                    self.bind_group1_cached(&mut rpass, &mut state, font_bg);
+                    self.bind_vertex0_cached(&mut rpass, &mut state, &self.vertex_buffer);
+                    self.bind_vertex1_cached(&mut rpass, &mut state, &self.text_instance_buffer);
+                    self.bind_index_cached(
+                        &mut rpass,
+                        &mut state,
+                        &self.index_buffer,
+                        wgpu::IndexFormat::Uint16,
+                    );
                     rpass.draw_indexed(0..6, 0, segment.text_range.clone());
+                    self.counters_draw_calls.fetch_add(1, Ordering::Relaxed);
                 }
             }
 
             // Draw Icons (Same pipeline as text, different bind group)
             if !segment.icon_range.is_empty() {
                 if let Some(icon_bg) = &self.icon_bind_group {
-                    rpass.set_pipeline(&self.text_pipeline);
-                    rpass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                    rpass.set_bind_group(1, icon_bg, &[]);
-                    rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                    rpass.set_vertex_buffer(1, self.icon_instance_buffer.slice(..));
-                    rpass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                    let icon_pipeline = if self.overdraw_enabled {
+                        &self.overdraw_text_pipeline
+                    } else {
+                        &self.text_pipeline
+                    };
+                    self.bind_pipeline_cached(&mut rpass, &mut state, icon_pipeline);
+                    self.bind_group0_cached(&mut rpass, &mut state, &self.uniform_bind_group);
+                    self.bind_group1_cached(&mut rpass, &mut state, icon_bg);
+                    self.bind_vertex0_cached(&mut rpass, &mut state, &self.vertex_buffer);
+                    self.bind_vertex1_cached(&mut rpass, &mut state, &self.icon_instance_buffer);
+                    self.bind_index_cached(
+                        &mut rpass,
+                        &mut state,
+                        &self.index_buffer,
+                        wgpu::IndexFormat::Uint16,
+                    );
                     rpass.draw_indexed(0..6, 0, segment.icon_range.clone());
+                    self.counters_draw_calls.fetch_add(1, Ordering::Relaxed);
                 }
             }
 
             // Draw SVG
             if !segment.svg_range.is_empty() {
-                rpass.set_pipeline(&self.svg_pipeline);
-                rpass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                rpass.set_vertex_buffer(0, self.svg_vertex_buffer.slice(..));
-                rpass.set_index_buffer(self.svg_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                self.bind_pipeline_cached(&mut rpass, &mut state, &self.svg_pipeline);
+                self.bind_group0_cached(&mut rpass, &mut state, &self.uniform_bind_group);
+                self.bind_vertex0_cached(&mut rpass, &mut state, &self.svg_vertex_buffer);
+                self.bind_index_cached(
+                    &mut rpass,
+                    &mut state,
+                    &self.svg_index_buffer,
+                    wgpu::IndexFormat::Uint32,
+                );
 
                 // We need to calculate the index range.
                 // This is a bit tricky if we don't store index offsets per command.
@@ -984,6 +1356,7 @@ impl GuiRenderer {
 
                 if start_idx < end_idx {
                     rpass.draw_indexed(start_idx..end_idx, 0, 0..1);
+                    self.counters_draw_calls.fetch_add(1, Ordering::Relaxed);
                 }
             }
         }

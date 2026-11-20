@@ -338,10 +338,15 @@ fn frame_2d_stats_reports_live_pure2d_counters() {
     // Next frame with no geometry: the counters must have been reset.
     h.begin_frame();
     let _ = h.render_frame();
-    assert_eq!(
-        h.renderer().frame_2d_stats(),
-        ferrous_2d::render::Frame2dCounters::default(),
-        "counters must reset at frame start"
+    let empty = h.renderer().frame_2d_stats();
+    assert_eq!(empty.draw_calls, 0, "counters must reset at frame start");
+    assert_eq!(empty.instances_uploaded, 0);
+    assert_eq!(empty.pipeline_binds, 0);
+    assert_eq!(empty.bind_group_binds, 0);
+    assert_eq!(empty.buffer_binds, 0);
+    assert!(
+        empty.passes <= 1,
+        "an empty frame opens at most the main pass"
     );
 }
 

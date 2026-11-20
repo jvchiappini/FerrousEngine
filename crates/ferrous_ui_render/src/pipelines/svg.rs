@@ -14,6 +14,7 @@ pub fn create_svg_pipeline(
     format: wgpu::TextureFormat,
     pipeline_layout: &wgpu::PipelineLayout,
     sample_count: u32,
+    depth_format: Option<wgpu::TextureFormat>,
     cache: Option<&wgpu::PipelineCache>,
 ) -> RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -63,8 +64,8 @@ pub fn create_svg_pipeline(
             compilation_options: Default::default(),
         }),
         primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: wgpu::TextureFormat::Depth32Float,
+        depth_stencil: depth_format.map(|format| wgpu::DepthStencilState {
+            format,
             depth_write_enabled: false,
             depth_compare: wgpu::CompareFunction::LessEqual,
             stencil: wgpu::StencilState::default(),

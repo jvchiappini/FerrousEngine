@@ -107,6 +107,95 @@ pub struct Render2dConfig {
     /// A/B comparison against pushing the same geometry through the immediate
     /// path (the batches are still alive and their buffers are not touched).
     pub static_batches: bool,
+    /// Resolution multiplier for the offscreen layer and effect textures of the
+    /// layered Pure2D path.  `1.0` (default) allocates them at the surface
+    /// size, reproducing today's pixels exactly; a value in `(0.0, 1.0)` trades
+    /// sharpness for VRAM and fill rate, and values above `1.0` supersample.
+    ///
+    /// The dimensions are derived with [`scaled_extent`], so the scale is
+    /// clamped to a finite positive value and every axis stays at least one
+    /// texel.  The value is only consulted when the layer pool is built or
+    /// rebuilt; changing it takes effect on the next layered frame.
+    pub layer_resolution_scale: f32,
+    /// Allocate and use the GUI pass depth attachment for Early-Z.  Default
+    /// `true`, which is the current behaviour.  When `false`, a consumer may
+    /// skip the full-size GUI depth texture and its per-frame clear; the visual
+    /// result is unchanged for the normal painter-ordered UI.
+    pub ui_depth: bool,
+    /// Restrict the full-target blur, effect-composite and mask passes to the
+    /// active layer rectangle instead of clearing and drawing the whole
+    /// surface.  Default `false` (the whole surface is covered, reproducing
+    /// today's pixels).  Enabling it is only correct when the scaled layer
+    /// rectangle is used as the pass viewport/scissor; see
+    /// [`layer_resolution_scale`](Self::layer_resolution_scale).
+    pub effect_scissor: bool,
+    /// Draw the UI with the overdraw debug pipelines (prompt 18 P5).  Default
+    /// `false`: normal shading.  When `true` every fragment adds a fixed heat
+    /// colour so overlap is visible; it changes the picture on purpose and is
+    /// never part of a golden.
+    pub overdraw_enabled: bool,
+}
+
+impl Render2dConfig {
+    /// Sets [`layer_resolution_scale`](Self::layer_resolution_scale).
+    ///
+    /// Non-finite and non-positive values are treated as `1.0` when the layer
+    /// pool is built, so this method stores the value as given and leaves the
+    /// clamping to [`scaled_extent`].
+    #[must_use]
+    pub fn with_layer_resolution_scale(mut self, scale: f32) -> Self {
+        self.layer_resolution_scale = scale;
+        self
+    }
+
+    /// Sets [`ui_depth`](Self::ui_depth).
+    #[must_use]
+    pub fn with_ui_depth(mut self, enabled: bool) -> Self {
+        self.ui_depth = enabled;
+        self
+    }
+
+    /// Sets [`effect_scissor`](Self::effect_scissor).
+    #[must_use]
+    pub fn with_effect_scissor(mut self, enabled: bool) -> Self {
+        self.effect_scissor = enabled;
+        self
+    }
+
+    /// Sets [`overdraw_enabled`](Self::overdraw_enabled).
+    #[must_use]
+    pub fn with_overdraw(mut self, enabled: bool) -> Self {
+        self.overdraw_enabled = enabled;
+        self
+    }
+}
+
+/// Scales `width x height` by `scale`, clamping every axis to at least one
+/// texel.
+///
+/// The helper is pure and shared by the layer/effect allocation sites and by
+/// callers that need to know the effective intermediate extent.  A non-finite
+/// or non-positive scale is treated as `1.0`, so a bad configuration cannot
+/// produce a zero-sized texture (which wgpu rejects).  Rounding is
+/// `round-half-away-from-zero` through `f32::round`; at the default `1.0` the
+/// result is exactly `(width, height)`, so default rendering is pixel
+/// identical.
+#[must_use]
+pub fn scaled_extent(width: u32, height: u32, scale: f32) -> (u32, u32) {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let axis = |value: u32| -> u32 {
+        let scaled = (value as f32 * scale).round();
+        if scaled.is_finite() && scaled >= 1.0 {
+            scaled as u32
+        } else {
+            1
+        }
+    };
+    (axis(width), axis(height))
 }
 
 impl Default for Render2dConfig {
@@ -118,6 +207,10 @@ impl Default for Render2dConfig {
             cull_2d: true,
             cull_margin: 4.0,
             static_batches: true,
+            layer_resolution_scale: 1.0,
+            ui_depth: true,
+            effect_scissor: false,
+            overdraw_enabled: false,
         }
     }
 }
@@ -135,11 +228,42 @@ mod tests {
         assert!(cfg.cull_2d);
         assert!(cfg.cull_margin >= 4.0, "default margin must be AA-safe");
         assert!(cfg.static_batches);
+        assert_eq!(cfg.layer_resolution_scale, 1.0);
+        assert!(cfg.ui_depth);
+        assert!(!cfg.effect_scissor);
+        assert!(!cfg.overdraw_enabled);
+    }
+
+    #[test]
+    fn scaled_extent_default_is_the_identity() {
+        assert_eq!(scaled_extent(1600, 900, 1.0), (1600, 900));
+        assert_eq!(scaled_extent(1, 1, 1.0), (1, 1));
+    }
+
+    #[test]
+    fn scaled_extent_scales_and_rounds() {
+        assert_eq!(scaled_extent(1600, 900, 0.5), (800, 450));
+        assert_eq!(scaled_extent(1920, 1080, 0.75), (1440, 810));
+        assert_eq!(scaled_extent(100, 100, 1.5), (150, 150));
+    }
+
+    #[test]
+    fn scaled_extent_clamps_to_one_texel() {
+        assert_eq!(scaled_extent(1600, 900, 0.0), (1600, 900));
+        assert_eq!(scaled_extent(0, 0, 1.0), (1, 1));
+        assert_eq!(scaled_extent(10, 10, 0.01), (1, 1));
+        assert_eq!(scaled_extent(10, 10, f32::NAN), (10, 10));
+        assert_eq!(scaled_extent(10, 10, f32::INFINITY), (10, 10));
+        assert_eq!(scaled_extent(10, 10, -2.0), (10, 10));
     }
 
     #[test]
     fn antialiasing_round_trips_through_internal_mode() {
-        for aa in [Antialiasing2d::Off, Antialiasing2d::Fxaa, Antialiasing2d::Smaa] {
+        for aa in [
+            Antialiasing2d::Off,
+            Antialiasing2d::Fxaa,
+            Antialiasing2d::Smaa,
+        ] {
             assert_eq!(Antialiasing2d::from_mode(aa.to_mode()), aa);
         }
     }

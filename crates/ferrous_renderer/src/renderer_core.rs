@@ -1258,7 +1258,22 @@ impl Renderer {
         let ui_pass = UiPass::new(ui_renderer);
 
         // -- Antialiasing state (the pass itself is 3-D-only) -----------------
-        let render_2d_config = Render2dConfig::default();
+        let mut render_2d_config = Render2dConfig::default();
+        // Measurement hook for the P5 pass budget: the layered/effect targets
+        // can be built at `scale < 1` without a code change.  Invalid or
+        // missing values keep the 1.0 identity.
+        if let Ok(scale) = std::env::var("FERROUS_LAYER_SCALE") {
+            if let Ok(scale) = scale.parse::<f32>() {
+                render_2d_config = render_2d_config.with_layer_resolution_scale(scale);
+            }
+        }
+        // `FERROUS_OVERDRAW=1` turns on the diagnostic overdraw view (P5).
+        if matches!(
+            std::env::var("FERROUS_OVERDRAW").as_deref(),
+            Ok("1") | Ok("true") | Ok("on")
+        ) {
+            render_2d_config = render_2d_config.with_overdraw(true);
+        }
 
         let renderer_2d = Renderer2d::new_with_cache(
             context.device.clone(),
@@ -1410,6 +1425,14 @@ impl Renderer {
             renderer.ensure_three_d();
         } else {
             renderer.set_mode(mode);
+        }
+        // Apply the startup 2-D debug flags once (the runtime setter does the
+        // same for later changes).
+        #[cfg(feature = "gui")]
+        {
+            renderer
+                .ui_pass
+                .set_overdraw(renderer.render_2d_config.overdraw_enabled);
         }
         renderer
     }
@@ -1780,6 +1803,12 @@ impl Renderer {
                 target_format,
                 target_samples,
             );
+            // The GUI pipelines never write depth, so the depth attachment is
+            // inert in the 2D modes: disabling it frees a full-size
+            // Depth32Float target (5.76 MB at 1600x900) with identical pixels
+            // (prompt 18 P5).
+            let two_d = matches!(mode, RendererMode::Pure2D | RendererMode::Flat2D);
+            self.ui_pass.set_ui_depth(!two_d);
         }
         self.mark_dirty();
     }
@@ -1940,6 +1969,8 @@ impl Renderer {
         #[cfg(feature = "gui")]
         self.ui_pass
             .set_bind_group_cache(config.ui_bind_group_cache);
+        #[cfg(feature = "gui")]
+        self.ui_pass.set_overdraw(config.overdraw_enabled);
         self.mark_dirty();
     }
 
@@ -2048,6 +2079,49 @@ impl Renderer {
     /// allocation.  Returns zeroes before the first 2D frame.
     pub fn frame_2d_stats(&self) -> ferrous_2d::render::Frame2dCounters {
         self.renderer_2d_pure.frame_counters()
+    }
+
+    /// Merges the 2-D and GUI counters of this frame into [`Self::render_stats`].
+    ///
+    /// Called once per frame after the 2-D and UI passes; 3-D draw calls from
+    /// the frame builder are kept and the 2-D/GUI calls are added.
+    fn merge_gpu_frame_stats(&mut self) {
+        let f2 = self.renderer_2d_pure.frame_counters();
+        self.render_stats.draw_calls = self.render_stats.draw_calls.saturating_add(f2.draw_calls);
+        self.render_stats.gpu_passes = self.render_stats.gpu_passes.saturating_add(f2.passes);
+        self.render_stats.pipeline_binds = self
+            .render_stats
+            .pipeline_binds
+            .saturating_add(f2.pipeline_binds);
+        self.render_stats.bind_group_binds = self
+            .render_stats
+            .bind_group_binds
+            .saturating_add(f2.bind_group_binds);
+        self.render_stats.buffer_binds = self
+            .render_stats
+            .buffer_binds
+            .saturating_add(f2.buffer_binds);
+        #[cfg(feature = "gui")]
+        {
+            let ui = self.ui_pass.frame_counters();
+            self.render_stats.draw_calls =
+                self.render_stats.draw_calls.saturating_add(ui.draw_calls);
+            self.render_stats.gpu_passes = self.render_stats.gpu_passes.saturating_add(ui.passes);
+            self.render_stats.pipeline_binds = self
+                .render_stats
+                .pipeline_binds
+                .saturating_add(ui.pipeline_binds);
+            self.render_stats.bind_group_binds = self
+                .render_stats
+                .bind_group_binds
+                .saturating_add(ui.bind_group_binds);
+            self.render_stats.buffer_binds = self
+                .render_stats
+                .buffer_binds
+                .saturating_add(ui.buffer_binds);
+            self.render_stats.scissor_changes = ui.scissor_changes;
+            self.render_stats.ui_segments = ui.segments;
+        }
     }
 
     /// GPU and CPU memory registered by the engine subsystems.
@@ -3484,6 +3558,7 @@ impl Renderer {
                 // Un único render pass: Clear → Shapes → Sprites
                 {
                     let timing = self.gpu_timings.pass("Pure2D Main Pass");
+                    self.renderer_2d_pure.record_pass();
                     let _encode = frame_trace::stage(Stage::Encode);
                     let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("Pure2D Main Pass"),
@@ -3522,17 +3597,21 @@ impl Renderer {
                             if let Some(bg) = self.renderer_2d_pure.view_shape_bg(i) {
                                 let start = v.shape_start.min(shape_upload_len) as u32;
                                 let end = v.shape_end.min(shape_upload_len) as u32;
-                                self.renderer_2d_pure.render_shapes_range_bg(
+                                let mut state = ferrous_2d::render::DrawState2d::new();
+                                self.renderer_2d_pure.render_shapes_range_bg_blend_cached(
                                     &mut rpass,
+                                    &mut state,
                                     bg,
                                     start,
                                     end.saturating_sub(start),
+                                    ferrous_2d::render::BlendMode2d::Normal,
                                 );
                             }
                         }
                         // Sprites are not segmented by view yet; draw them once in
                         // the first view so they still appear.
                         if let Some(bg) = self.renderer_2d_pure.view_sprite_bg(0) {
+                            let mut state = ferrous_2d::render::DrawState2d::new();
                             let sprite_bgs = &self.sprite_bind_groups;
                             for draw in &coalesced {
                                 if let Coalesced2dDraw::Sprites {
@@ -3545,8 +3624,9 @@ impl Renderer {
                                     let bg_fn = |id: u32| -> Option<&wgpu::BindGroup> {
                                         sprite_bgs.get(&id).map(|b| b.as_ref())
                                     };
-                                    self.renderer_2d_pure.render_sprites_range_bg_blend(
-                                        &mut rpass, bg, texture_id, start, count, bg_fn, blend,
+                                    self.renderer_2d_pure.render_sprites_range_bg_blend_cached(
+                                        &mut rpass, &mut state, bg, texture_id, start, count,
+                                        bg_fn, blend,
                                     );
                                 }
                                 if let Coalesced2dDraw::Meshes {
@@ -3557,8 +3637,9 @@ impl Renderer {
                                 } = *draw
                                 {
                                     if let Some(texture_bg) = sprite_bgs.get(&texture_id) {
-                                        self.renderer_2d_pure.render_meshes_range_blend(
+                                        self.renderer_2d_pure.render_meshes_range_blend_cached(
                                             &mut rpass,
+                                            &mut state,
                                             texture_bg.as_ref(),
                                             start,
                                             count,
@@ -3571,6 +3652,7 @@ impl Renderer {
                         // Text is not segmented by view yet either; draw it once in
                         // the first view.
                         if let Some(cam_bg) = self.renderer_2d_pure.view_text_bg(0) {
+                            let mut state = ferrous_2d::render::DrawState2d::new();
                             for draw in &coalesced {
                                 if let Coalesced2dDraw::Text {
                                     font,
@@ -3580,8 +3662,9 @@ impl Renderer {
                                 } = *draw
                                 {
                                     if let Some(entry) = self.fonts_2d.get(font.handle()) {
-                                        self.renderer_2d_pure.render_text_range_bg_blend(
+                                        self.renderer_2d_pure.render_text_range_bg_blend_cached(
                                             &mut rpass,
+                                            &mut state,
                                             cam_bg,
                                             &entry.bind_group,
                                             start,
@@ -3605,7 +3688,10 @@ impl Renderer {
                         self.emit_static_2d_batches(&mut rpass, None, false);
 
                         // Emit the runs in painter order.  Texture bind groups are
-                        // resolved per sprite run.
+                        // resolved per sprite run.  One bind-state cache for the
+                        // whole pass: consecutive runs of the same kind/texture/
+                        // blend skip the redundant `set_*` calls (prompt 18 P5).
+                        let mut draw_state = ferrous_2d::render::DrawState2d::new();
                         let sprite_bgs = &self.sprite_bind_groups;
                         for draw in &coalesced {
                             match *draw {
@@ -3614,8 +3700,13 @@ impl Renderer {
                                     count,
                                     blend,
                                 } => {
-                                    self.renderer_2d_pure
-                                        .render_shapes_range_blend(&mut rpass, start, count, blend);
+                                    self.renderer_2d_pure.render_shapes_range_blend_cached(
+                                        &mut rpass,
+                                        &mut draw_state,
+                                        start,
+                                        count,
+                                        blend,
+                                    );
                                 }
                                 Coalesced2dDraw::Sprites {
                                     texture_id,
@@ -3626,8 +3717,14 @@ impl Renderer {
                                     let bg_fn = |id: u32| -> Option<&wgpu::BindGroup> {
                                         sprite_bgs.get(&id).map(|bg| bg.as_ref())
                                     };
-                                    self.renderer_2d_pure.render_sprites_range_blend(
-                                        &mut rpass, texture_id, start, count, bg_fn, blend,
+                                    self.renderer_2d_pure.render_sprites_range_blend_cached(
+                                        &mut rpass,
+                                        &mut draw_state,
+                                        texture_id,
+                                        start,
+                                        count,
+                                        bg_fn,
+                                        blend,
                                     );
                                 }
                                 Coalesced2dDraw::Meshes {
@@ -3637,8 +3734,9 @@ impl Renderer {
                                     blend,
                                 } => {
                                     if let Some(texture_bg) = sprite_bgs.get(&texture_id) {
-                                        self.renderer_2d_pure.render_meshes_range_blend(
+                                        self.renderer_2d_pure.render_meshes_range_blend_cached(
                                             &mut rpass,
+                                            &mut draw_state,
                                             texture_bg.as_ref(),
                                             start,
                                             count,
@@ -3653,8 +3751,9 @@ impl Renderer {
                                     blend,
                                 } => {
                                     if let Some(entry) = self.fonts_2d.get(font.handle()) {
-                                        self.renderer_2d_pure.render_text_range_blend(
+                                        self.renderer_2d_pure.render_text_range_blend_cached(
                                             &mut rpass,
+                                            &mut draw_state,
                                             &entry.bind_group,
                                             start,
                                             count,
@@ -3719,6 +3818,7 @@ impl Renderer {
                 );
             }
 
+            self.merge_gpu_frame_stats();
             self.gpu_timings.end_frame(encoder);
             self.frame_builder.reclaim(packet);
             return;
@@ -3758,6 +3858,7 @@ impl Renderer {
                     &packet,
                 );
             }
+            self.merge_gpu_frame_stats();
             self.gpu_timings.end_frame(encoder);
             self.frame_builder.reclaim(packet);
             return;
@@ -4203,6 +4304,7 @@ impl Renderer {
             );
         }
 
+        self.merge_gpu_frame_stats();
         self.gpu_timings.end_frame(encoder);
         self.frame_builder.reclaim(packet);
     }
@@ -5954,8 +6056,15 @@ impl Renderer {
     /// Builds (or rebuilds) the per-format layer pipelines and invalidates the
     /// texture pool when the target size changed.
     fn ensure_layer_resources(&mut self) {
+        // Opt-in intermediate resolution (prompt 18 P5).  `1.0` is the exact
+        // identity, so the default keeps today's pixels and every golden.
+        let (layer_width, layer_height) = crate::render_config::scaled_extent(
+            self.width,
+            self.height,
+            self.render_2d_config.layer_resolution_scale,
+        );
         let size_changed = match &self.layer_res {
-            Some(res) => res.width != self.width || res.height != self.height,
+            Some(res) => res.width != layer_width || res.height != layer_height,
             None => true,
         };
         if !size_changed {
@@ -6052,8 +6161,8 @@ impl Renderer {
             sampler,
             textures: Vec::new(),
             textures_allocated: 0,
-            width: self.width,
-            height: self.height,
+            width: layer_width,
+            height: layer_height,
         });
     }
 
@@ -6350,6 +6459,7 @@ impl Renderer {
                 // static batches go into their own pass first and the plan runs
                 // afterwards with `Load`.
                 {
+                    let timing = self.gpu_timings.pass("Pure2D Layered Prefix Pass");
                     let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("Pure2D Layered Prefix Pass"),
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -6361,7 +6471,7 @@ impl Renderer {
                             },
                         })],
                         depth_stencil_attachment: None,
-                        timestamp_writes: None,
+                        timestamp_writes: timing.as_ref().map(|t| t.writes()),
                         occlusion_query_set: None,
                     });
                     self.renderer_2d_pure.render_grid(&mut rpass);
@@ -6388,6 +6498,8 @@ impl Renderer {
                 );
             }
         } else {
+            self.renderer_2d_pure.record_pass();
+            let timing = self.gpu_timings.pass("Pure2D Layered Main Pass");
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Pure2D Layered Main Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -6399,7 +6511,7 @@ impl Renderer {
                     },
                 })],
                 depth_stencil_attachment: None,
-                timestamp_writes: None,
+                timestamp_writes: timing.as_ref().map(|t| t.writes()),
                 occlusion_query_set: None,
             });
             self.renderer_2d_pure.render_grid(&mut rpass);

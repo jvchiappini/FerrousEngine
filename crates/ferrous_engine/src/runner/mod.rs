@@ -45,7 +45,14 @@ pub(crate) fn run_internal<A: FerrousApp + 'static>(config: AppConfig, app: A) {
         .as_ref()
         .map(|gfx| gfx.renderer.gpu_timings_summary())
         .unwrap_or_default();
-    frame_trace::report(&gpu_passes, &gpu_unsupported);
+    // Last frame's GPU work counters (prompt 18 P5).
+    let gpu_frame = runner
+        .graphics
+        .as_ref()
+        .map_or(ferrous_core::render_stats::RenderStats::default(), |gfx| {
+            gfx.renderer.render_stats
+        });
+    frame_trace::report(&gpu_passes, &gpu_unsupported, &gpu_frame);
     if let Some(gfx) = runner.graphics.as_ref() {
         eprintln!("memory-report {}", gfx.renderer.memory_report_json());
     }
@@ -99,7 +106,13 @@ pub(crate) fn run_plugin_app(mut builder: crate::plugin::AppBuilder) {
             .as_ref()
             .map(|gfx| gfx.renderer.gpu_timings_summary())
             .unwrap_or_default();
-        frame_trace::report(&gpu_passes, &gpu_unsupported);
+        let gpu_frame = runner
+            .graphics
+            .as_ref()
+            .map_or(ferrous_core::render_stats::RenderStats::default(), |gfx| {
+                gfx.renderer.render_stats
+            });
+        frame_trace::report(&gpu_passes, &gpu_unsupported, &gpu_frame);
         if let Some(gfx) = runner.graphics.as_ref() {
             eprintln!("memory-report {}", gfx.renderer.memory_report_json());
         }

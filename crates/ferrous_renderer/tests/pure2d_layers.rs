@@ -74,6 +74,7 @@ fn group_opacity_has_no_internal_overlap() {
 
     h.begin_frame();
     h.push_layer(Layer2d {
+        bounds: None,
         opacity: 0.5,
         blend: CompositeMode2d::Normal,
         depth: 0.0,
@@ -113,6 +114,7 @@ fn layer_depth_orders_the_whole_layer() {
     h.begin_frame();
     h.draw_shape(rect(Vec2::ZERO, 60.0, [1.0, 0.0, 0.0, 1.0], 1.0));
     h.push_layer(Layer2d {
+        bounds: None,
         opacity: 1.0,
         blend: CompositeMode2d::Normal,
         depth: 2.0,
@@ -149,12 +151,14 @@ fn nested_layer_opacities_multiply() {
 
     h.begin_frame();
     h.push_layer(Layer2d {
+        bounds: None,
         opacity: 0.5,
         blend: CompositeMode2d::Normal,
         depth: 0.0,
     })
     .expect("outer");
     h.push_layer(Layer2d {
+        bounds: None,
         opacity: 0.5,
         blend: CompositeMode2d::Normal,
         depth: 0.0,
@@ -191,6 +195,7 @@ fn layer_multiply_blend_matches_the_formula() {
     h.begin_frame();
     h.draw_shape(rect(Vec2::ZERO, 60.0, [0.5, 1.0, 0.5, 1.0], 0.0));
     h.push_layer(Layer2d {
+        bounds: None,
         opacity: 1.0,
         blend: CompositeMode2d::Multiply,
         depth: 1.0,
@@ -245,6 +250,7 @@ fn text_inside_a_layer_matches_outside() {
 
     h.begin_frame();
     h.push_layer(Layer2d {
+        bounds: None,
         opacity: 1.0,
         blend: CompositeMode2d::Normal,
         depth: 0.0,
@@ -360,6 +366,7 @@ fn layer_texture_pool_is_reused_across_frames() {
         h.begin_frame();
         for i in 0..3 {
             h.push_layer(Layer2d {
+                bounds: None,
                 opacity: 0.75,
                 blend: CompositeMode2d::Normal,
                 depth: i as f32,
@@ -401,6 +408,7 @@ fn layered_frame_is_deterministic() {
         h.begin_frame();
         h.draw_shape(rect(Vec2::ZERO, 50.0, [0.0, 0.25, 0.5, 1.0], 0.0));
         h.push_layer(Layer2d {
+            bounds: None,
             opacity: 0.6,
             blend: CompositeMode2d::Screen,
             depth: 1.0,
@@ -408,6 +416,7 @@ fn layered_frame_is_deterministic() {
         .expect("push");
         h.draw_shape(rect(Vec2::new(4.0, 0.0), 30.0, [1.0, 0.0, 0.0, 0.5], 0.0));
         h.push_layer(Layer2d {
+            bounds: None,
             opacity: 0.5,
             blend: CompositeMode2d::Add,
             depth: 2.0,

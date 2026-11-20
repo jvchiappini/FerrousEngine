@@ -21,6 +21,7 @@ use ferrous_gpu::EngineContext;
 use ferrous_renderer::{Renderer, RendererMode};
 use winit::window::Window;
 
+use crate::builder::PresentMode;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::builder::{AppConfig, PipelineCacheConfig};
 use ferrous_core::startup;
@@ -51,7 +52,9 @@ pub struct GraphicsState {
 pub(crate) struct GpuInit {
     pub(crate) width: u32,
     pub(crate) height: u32,
-    pub(crate) vsync: bool,
+    /// Resolved present mode: `FERROUS_PRESENT_MODE` > `AppConfig::present_mode`
+    /// > the `vsync` alias (see `docs/present.md`).
+    pub(crate) present_mode: PresentMode,
     pub(crate) sample_count: u32,
     pub(crate) hdri_path: Option<String>,
     pub(crate) backends: Vec<wgpu::Backends>,
@@ -73,7 +76,7 @@ impl GpuInit {
         Self {
             width: config.width,
             height: config.height,
-            vsync: config.vsync,
+            present_mode: config.effective_present_mode(),
             sample_count: config.sample_count,
             hdri_path: config.hdri_path.clone(),
             backends: config.backends.clone(),
@@ -126,6 +129,41 @@ pub fn backend_order_from(
         crate::builder::default_backends()
     } else {
         configured.to_vec()
+    }
+}
+
+/// Maps an engine [`PresentMode`] to its wgpu value.
+#[must_use]
+pub(crate) fn to_wgpu_present_mode(mode: PresentMode) -> wgpu::PresentMode {
+    match mode {
+        PresentMode::Fifo => wgpu::PresentMode::Fifo,
+        PresentMode::FifoRelaxed => wgpu::PresentMode::FifoRelaxed,
+        PresentMode::Mailbox => wgpu::PresentMode::Mailbox,
+        PresentMode::AutoNoVsync => wgpu::PresentMode::AutoNoVsync,
+    }
+}
+
+/// Whether a surface's capability list exposes `mode`.
+#[must_use]
+pub(crate) fn present_mode_supported(mode: PresentMode, supported: &[wgpu::PresentMode]) -> bool {
+    supported.contains(&to_wgpu_present_mode(mode))
+}
+
+/// The mode that is actually configured on the surface.
+///
+/// `Fifo` is the only present mode wgpu guarantees on every backend, so it is
+/// the fallback for a surface that does not list the requested mode. The
+/// caller logs the fallback (with the supported list) so a capability
+/// downgrade never changes pacing silently.
+#[must_use]
+pub(crate) fn pick_present_mode(
+    mode: PresentMode,
+    supported: &[wgpu::PresentMode],
+) -> wgpu::PresentMode {
+    if present_mode_supported(mode, supported) {
+        to_wgpu_present_mode(mode)
+    } else {
+        wgpu::PresentMode::Fifo
     }
 }
 
@@ -486,15 +524,20 @@ impl GraphicsState {
             .find(|f| f.is_srgb())
             .or_else(|| caps.formats.iter().copied().find(|f| !f.is_srgb()))
             .unwrap_or(caps.formats[0]);
-        // PresentMode::Fifo        = hard vsync (locked to monitor refresh)
-        // PresentMode::AutoNoVsync = fully uncapped, no tearing guarantee
-        // Note: Mailbox is avoided because on NVIDIA/Vulkan it can still be
-        // driver-capped to the monitor refresh rate, behaving like vsync.
-        let present_mode = if init.vsync {
-            wgpu::PresentMode::Fifo
-        } else {
-            wgpu::PresentMode::AutoNoVsync
-        };
+        // The app/env chooses the mode (see `docs/present.md`), but the
+        // surface has the final say: `FifoRelaxed` and `Mailbox` are optional
+        // in wgpu and are missing on some Windows/DX12 and GL configurations.
+        // An unsupported request falls back to Fifo with a warning that names
+        // both the requested mode and the supported list.
+        let requested_present_mode = init.present_mode;
+        if !present_mode_supported(requested_present_mode, &caps.present_modes) {
+            log::warn!(
+                "present mode {requested_present_mode:?} is not supported by this surface; \
+                 falling back to Fifo (supported: {:?})",
+                caps.present_modes
+            );
+        }
+        let present_mode = pick_present_mode(requested_present_mode, &caps.present_modes);
 
         let config = wgpu::SurfaceConfiguration {
             // `COPY_SRC` lets `AppContext::request_screenshot` read the
@@ -512,6 +555,13 @@ impl GraphicsState {
             present_mode,
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
+            // Kept at wgpu's default 2 on purpose. A lower value (1) removes
+            // the spare queued frame but changes pacing instead of reducing
+            // latency: the CPU then blocks in `get_current_texture` on the
+            // previous frame, and a slow frame has no buffer to fall into,
+            // which can starve the swapchain and show up as stutter. Present
+            // mode is the pacing knob this engine exposes; see
+            // `docs/present.md`.
             desired_maximum_frame_latency: 2,
         };
 
@@ -629,11 +679,20 @@ impl GraphicsState {
             .find(|f| f.is_srgb())
             .or_else(|| caps.formats.iter().copied().find(|f| !f.is_srgb()))
             .unwrap_or(caps.formats[0]);
-        let present_mode = if vsync {
-            wgpu::PresentMode::Fifo
-        } else {
-            wgpu::PresentMode::AutoNoVsync
-        };
+        // On the web the runner still forwards only `vsync`; `FERROUS_PRESENT_MODE`
+        // is honoured here when the host sets it, and the same capability
+        // check applies. AppConfig::present_mode reaches this path once the
+        // runner forwards it (see `docs/present.md`).
+        let requested_present_mode =
+            crate::builder::resolve_present_mode(PresentMode::from_env(), None, vsync);
+        if !present_mode_supported(requested_present_mode, &caps.present_modes) {
+            log::warn!(
+                "present mode {requested_present_mode:?} is not supported by this surface; \
+                 falling back to Fifo (supported: {:?})",
+                caps.present_modes
+            );
+        }
+        let present_mode = pick_present_mode(requested_present_mode, &caps.present_modes);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | if crate::screenshot::supports_copy_src(&caps) {
@@ -647,6 +706,9 @@ impl GraphicsState {
             present_mode,
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
+            // Same reasoning as the desktop path: 2 is wgpu's default and the
+            // extra queued frame keeps a slow frame from starving the
+            // swapchain. Pacing is chosen with the present mode, not here.
             desired_maximum_frame_latency: 2,
         };
         surface.configure(&context.device, &config);
@@ -804,7 +866,7 @@ mod tests {
         GpuInit {
             width: 800,
             height: 600,
-            vsync: true,
+            present_mode: PresentMode::Fifo,
             sample_count: 1,
             hdri_path: None,
             backends,
@@ -860,6 +922,63 @@ mod tests {
         #[cfg(target_os = "macos")]
         assert_eq!(order, vec![wgpu::Backends::METAL]);
         assert!(!order.is_empty());
+    }
+
+    #[test]
+    fn every_present_mode_maps_to_wgpu() {
+        assert_eq!(
+            to_wgpu_present_mode(PresentMode::Fifo),
+            wgpu::PresentMode::Fifo
+        );
+        assert_eq!(
+            to_wgpu_present_mode(PresentMode::FifoRelaxed),
+            wgpu::PresentMode::FifoRelaxed
+        );
+        assert_eq!(
+            to_wgpu_present_mode(PresentMode::Mailbox),
+            wgpu::PresentMode::Mailbox
+        );
+        assert_eq!(
+            to_wgpu_present_mode(PresentMode::AutoNoVsync),
+            wgpu::PresentMode::AutoNoVsync
+        );
+    }
+
+    #[test]
+    fn a_supported_present_mode_is_kept() {
+        let supported = [wgpu::PresentMode::Fifo, wgpu::PresentMode::Mailbox];
+        assert!(present_mode_supported(PresentMode::Mailbox, &supported));
+        assert_eq!(
+            pick_present_mode(PresentMode::Mailbox, &supported),
+            wgpu::PresentMode::Mailbox
+        );
+    }
+
+    #[test]
+    fn an_unsupported_present_mode_falls_back_to_fifo() {
+        let supported = [wgpu::PresentMode::Fifo, wgpu::PresentMode::AutoNoVsync];
+        assert!(!present_mode_supported(PresentMode::Mailbox, &supported));
+        assert!(!present_mode_supported(
+            PresentMode::FifoRelaxed,
+            &supported
+        ));
+        assert_eq!(
+            pick_present_mode(PresentMode::Mailbox, &supported),
+            wgpu::PresentMode::Fifo
+        );
+        assert_eq!(
+            pick_present_mode(PresentMode::FifoRelaxed, &supported),
+            wgpu::PresentMode::Fifo
+        );
+        assert_eq!(
+            pick_present_mode(PresentMode::AutoNoVsync, &supported),
+            wgpu::PresentMode::AutoNoVsync
+        );
+        // Fifo is the fallback even if a broken capability list omits it.
+        assert_eq!(
+            pick_present_mode(PresentMode::Mailbox, &[]),
+            wgpu::PresentMode::Fifo
+        );
     }
 
     fn info(driver_info: &str) -> wgpu::AdapterInfo {

@@ -16,6 +16,7 @@ pub fn create_quad_pipeline(
     pipeline_layout: &wgpu::PipelineLayout,
     sample_count: u32,
     depth_write_enabled: bool,
+    depth_format: Option<wgpu::TextureFormat>,
     cache: Option<&wgpu::PipelineCache>,
 ) -> RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -126,8 +127,8 @@ pub fn create_quad_pipeline(
             compilation_options: Default::default(),
         }),
         primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: wgpu::TextureFormat::Depth32Float,
+        depth_stencil: depth_format.map(|format| wgpu::DepthStencilState {
+            format,
             depth_write_enabled,
             depth_compare: wgpu::CompareFunction::LessEqual,
             stencil: wgpu::StencilState::default(),

@@ -365,7 +365,14 @@ fn stats(values: &[f32]) -> Value {
 /// `gpu_passes` is the `(pass, milliseconds)` list from the renderer; pass an
 /// empty slice when timestamps are unavailable. `gpu_unsupported` names the
 /// passes that could not be timed.
-pub fn report(gpu_passes: &[(String, f64)], gpu_unsupported: &[String]) {
+/// `gpu_frame` is the last frame's GPU work counters (draw calls, state binds,
+/// passes). It is reported once so the harness can attribute CPU/GPU cost to
+/// the draws the frame actually issued.
+pub fn report(
+    gpu_passes: &[(String, f64)],
+    gpu_unsupported: &[String],
+    gpu_frame: &crate::render_stats::RenderStats,
+) {
     if !enabled() || REPORTED.swap(true, Ordering::Relaxed) {
         return;
     }
@@ -437,6 +444,15 @@ pub fn report(gpu_passes: &[(String, f64)], gpu_unsupported: &[String]) {
         },
         "gpu_passes": gpu,
         "gpu_unsupported": gpu_unsupported,
+        "gpu_frame": {
+            "draw_calls": gpu_frame.draw_calls,
+            "gpu_passes": gpu_frame.gpu_passes,
+            "pipeline_binds": gpu_frame.pipeline_binds,
+            "bind_group_binds": gpu_frame.bind_group_binds,
+            "buffer_binds": gpu_frame.buffer_binds,
+            "scissor_changes": gpu_frame.scissor_changes,
+            "ui_segments": gpu_frame.ui_segments,
+        },
     });
     eprintln!("frame-trace {}", payload);
 }

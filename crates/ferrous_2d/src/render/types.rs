@@ -1734,20 +1734,47 @@ pub struct Layer2d {
     pub blend: CompositeMode2d,
     /// Depth of the whole layer in the parent's painter order.
     pub depth: f32,
+    /// Optional axis-aligned bound the layer content covers.
+    ///
+    /// Stored as `[x, y, width, height]` in target pixels, with the same
+    /// top-left origin as the target.  It is a hint for scissoring the layer's
+    /// offscreen passes (effects, masks and the plan) to the region the layer
+    /// can touch.  `None` means the **full target**, which is the current
+    /// behaviour; the renderer must treat `None` as "do not scissor".
+    ///
+    /// The rect is not validated or clamped at push time and does not affect
+    /// compositing: a caller that sets it must include the effect margin
+    /// (for a Gaussian blur at least the kernel radius, i.e.
+    /// `ceil(1.5 * radius)` pixels) and any shadow offset.
+    pub bounds: Option<[f32; 4]>,
 }
 
 impl Layer2d {
     /// Builds a layer description.
     ///
     /// `opacity` is clamped to `0.0..=1.0` at push time; non-finite values are
-    /// rejected with [`LayerError::InvalidOpacity`].
+    /// rejected with [`LayerError::InvalidOpacity`].  The layer covers the full
+    /// target (`bounds == None`) unless [`Self::with_bounds`] is used.
     pub fn new(opacity: f32, blend: impl Into<CompositeMode2d>, depth: f32) -> Self {
         let blend = blend.into();
         Self {
             opacity,
             blend,
             depth,
+            bounds: None,
         }
+    }
+
+    /// Sets the target-pixel rect the layer content covers.
+    ///
+    /// `bounds` is `[x, y, width, height]` in target pixels (top-left origin).
+    /// Use it to let the renderer scissor the layer's offscreen passes to the
+    /// region the layer can touch; [`None`] keeps the full target.  The rect is
+    /// a hint and is not clamped by this builder.
+    #[must_use]
+    pub const fn with_bounds(mut self, bounds: [f32; 4]) -> Self {
+        self.bounds = Some(bounds);
+        self
     }
 }
 
@@ -1757,6 +1784,7 @@ impl Default for Layer2d {
             opacity: 1.0,
             blend: CompositeMode2d::Normal,
             depth: 0.0,
+            bounds: None,
         }
     }
 }
@@ -1997,5 +2025,29 @@ impl CompositeInstance {
                 },
             ],
         }
+    }
+}
+
+#[cfg(test)]
+mod layer_bounds_tests {
+    use super::*;
+
+    #[test]
+    fn default_layer_covers_the_full_target() {
+        assert_eq!(Layer2d::default().bounds, None);
+        assert_eq!(Layer2d::new(1.0, CompositeMode2d::Normal, 0.0).bounds, None);
+    }
+
+    #[test]
+    fn with_bounds_round_trips_the_rect() {
+        let rect = [10.0, 20.0, 300.0, 150.0];
+        let layer = Layer2d::new(0.5, CompositeMode2d::Add, 3.0).with_bounds(rect);
+        assert_eq!(layer.bounds, Some(rect));
+        assert_eq!(layer.opacity, 0.5);
+        assert_eq!(layer.blend, CompositeMode2d::Add);
+        assert_eq!(layer.depth, 3.0);
+
+        let copy = layer;
+        assert_eq!(copy.bounds, Some(rect));
     }
 }

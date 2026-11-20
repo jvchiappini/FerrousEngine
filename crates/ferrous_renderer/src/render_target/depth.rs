@@ -15,13 +15,17 @@ impl DepthTarget {
 
     pub fn new(device: &wgpu::Device, width: u32, height: u32, sample_count: u32) -> Self {
         let (texture, view) = Self::make(device, width, height, sample_count);
-        Self { texture, view, sample_count }
+        Self {
+            texture,
+            view,
+            sample_count,
+        }
     }
 
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
         let (t, v) = Self::make(device, width, height, self.sample_count);
         self.texture = t;
-        self.view    = v;
+        self.view = v;
     }
 
     fn make(
@@ -30,14 +34,17 @@ impl DepthTarget {
         height: u32,
         sample_count: u32,
     ) -> (wgpu::Texture, wgpu::TextureView) {
-        let tex = texture::create_render_texture(device, &RenderTextureDesc {
-            label: "Depth Texture",
-            width,
-            height,
-            format: Self::FORMAT,
-            sample_count,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        });
+        let tex = texture::create_render_texture(
+            device,
+            &RenderTextureDesc {
+                label: "Depth Texture",
+                width,
+                height,
+                format: Self::FORMAT,
+                sample_count,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            },
+        );
         let view = texture::default_view(&tex);
         (tex, view)
     }

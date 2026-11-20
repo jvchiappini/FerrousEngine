@@ -512,6 +512,7 @@ fn pure2d_layers_three(bencher: divan::Bencher) {
         .enumerate()
         {
             h.push_layer(ferrous_2d::render::Layer2d {
+                bounds: None,
                 opacity: 0.75,
                 blend,
                 depth: 1.0 + i as f32,

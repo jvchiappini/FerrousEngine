@@ -6,4 +6,4 @@ pub mod target;
 
 pub use bloom::BloomTextures;
 pub use hdr::HdrTexture;
-pub use target::RenderTarget;
+pub use target::{LazyRenderTarget, RenderTarget};

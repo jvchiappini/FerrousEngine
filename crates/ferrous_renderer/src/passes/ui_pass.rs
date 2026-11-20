@@ -1,4 +1,4 @@
-/// UI overlay pass — composites GUI quads and text on top of the scene.
+/// UI overlay pass â€” composites GUI quads and text on top of the scene.
 ///
 /// Reads `ferrous_ui_render::GuiBatch` from the
 /// `FramePacket` extras map (inserted by the app layer).  If it is
@@ -31,6 +31,21 @@ impl UiPass {
 
     pub fn set_font_atlas(&mut self, view: &wgpu::TextureView, sampler: &wgpu::Sampler) {
         self.renderer.set_font_atlas(view, sampler);
+    }
+
+    /// Enables or disables the GUI depth attachment (prompt 18 P5).
+    pub fn set_ui_depth(&mut self, enabled: bool) {
+        self.renderer.set_ui_depth(enabled);
+    }
+
+    /// Enables the overdraw debug view for the GUI pass (prompt 18 P5).
+    pub fn set_overdraw(&mut self, enabled: bool) {
+        self.renderer.set_overdraw(enabled);
+    }
+
+    /// Per-frame GPU work counters of the last GUI pass (prompt 18 P5).
+    pub fn frame_counters(&self) -> ferrous_ui_render::UiFrameCounters {
+        self.renderer.frame_counters()
     }
 
     /// Toggle the UI image bind-group cache (audit H8).  Forwarded to the

@@ -26,19 +26,27 @@ impl ColorTarget {
         sample_count: u32,
     ) -> Self {
         let (texture, view) = Self::make_resolve(device, width, height, format);
-        let (msaa_texture, msaa_view) = Self::make_msaa(device, width, height, format, sample_count);
+        let (msaa_texture, msaa_view) =
+            Self::make_msaa(device, width, height, format, sample_count);
 
-        Self { texture, view, msaa_texture, msaa_view, format, sample_count }
+        Self {
+            texture,
+            view,
+            msaa_texture,
+            msaa_view,
+            format,
+            sample_count,
+        }
     }
 
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
         let (t, v) = Self::make_resolve(device, width, height, self.format);
         self.texture = t;
-        self.view    = v;
+        self.view = v;
 
         let (mt, mv) = Self::make_msaa(device, width, height, self.format, self.sample_count);
         self.msaa_texture = mt;
-        self.msaa_view    = mv;
+        self.msaa_view = mv;
     }
 
     /// Returns `(render_view, resolve_target)` — the correct pair to pass to
@@ -59,16 +67,19 @@ impl ColorTarget {
         height: u32,
         format: wgpu::TextureFormat,
     ) -> (wgpu::Texture, wgpu::TextureView) {
-        let tex = texture::create_render_texture(device, &RenderTextureDesc {
-            label: "Color Resolve Texture",
-            width,
-            height,
-            format,
-            sample_count: 1,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
-        });
+        let tex = texture::create_render_texture(
+            device,
+            &RenderTextureDesc {
+                label: "Color Resolve Texture",
+                width,
+                height,
+                format,
+                sample_count: 1,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC,
+            },
+        );
         let view = texture::default_view(&tex);
         (tex, view)
     }
@@ -83,14 +94,17 @@ impl ColorTarget {
         if sample_count <= 1 {
             return (None, None);
         }
-        let tex = texture::create_render_texture(device, &RenderTextureDesc {
-            label: "Color MSAA Texture",
-            width,
-            height,
-            format,
-            sample_count,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        });
+        let tex = texture::create_render_texture(
+            device,
+            &RenderTextureDesc {
+                label: "Color MSAA Texture",
+                width,
+                height,
+                format,
+                sample_count,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            },
+        );
         let view = texture::default_view(&tex);
         (Some(tex), Some(view))
     }

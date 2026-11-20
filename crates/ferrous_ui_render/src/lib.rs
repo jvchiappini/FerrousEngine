@@ -6,6 +6,8 @@ pub mod gadgets;
 pub mod gpu_types;
 pub mod gui_batch;
 pub mod gui_renderer;
+pub mod overdraw;
+pub mod persist;
 pub mod pipelines;
 pub mod text_utils;
 pub mod to_batches;
@@ -13,7 +15,8 @@ pub mod to_batches;
 // Re-exports
 pub use gpu_types::{DrawSegment, GuiQuad, SvgCommand, TextQuad};
 pub use gui_batch::GuiBatch;
-pub use gui_renderer::GuiRenderer;
+pub use gui_renderer::{GuiRenderer, UiFrameCounters};
+pub use persist::PersistentUiTarget;
 pub use to_batches::ToBatches;
 
 /// Maximum number of distinct textures that can be referenced in a single draw batch.
