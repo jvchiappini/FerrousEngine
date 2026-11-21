@@ -24,7 +24,7 @@ today.
 | `damage_area() -> u64` | Pixel area covered by the last `take_damage` result, i.e. the area `copy_damage` will move. `0` before the first call. |
 | `damage_fraction(width, height) -> f32` | `damage_area() / (width * height)`, clamped to `0.0..=1.0`; `0.0` for an empty window. Feed it to `frame_trace::record_ui_damage`. |
 | `copy_damage(encoder, dst_texture, dst_view) -> DamageCopy` | One `CommandEncoder::copy_texture_to_texture` per damage rect (origin, extent, depth 1). Reports rect count and bytes copied. |
-| `view()`, `size()`, `format()`, `full_bytes()` | Inspection; `view()` is `None` until `ensure` succeeds. |
+| `view()`, `texture()`, `size()`, `format()`, `full_bytes()` | Inspection; `view()`/`texture()` are `None` until `ensure` succeeds. |
 
 Allocation: steady state is allocation-free. The target keeps three private
 vectors (accumulated damage, merge scratch, merged result) that are cleared in
@@ -203,6 +203,21 @@ middle of a frame, treat it as `invalidate_all`.
 - **Damage modelling is the real work.** `GuiBatch::damage_union` is a single
   union, so the engine UI's damage collapses to one rectangle as soon as two
   distant widgets change. Per-node damage lists are a P6 change, not this one.
+
+## P7: opt-in present path
+
+Prompt 18 P7 wires the smallest correct consumer: `UiPresenter`
+(`crates/ferrous_ui_render/src/ui_present.rs`) owns a `PersistentUiTarget` and
+puts it on the surface with either a full-image `copy_texture_to_texture`
+(bit-exact, needs surface `COPY_DST`) or a full-screen nearest-sampler blit
+(only needs `RENDER_ATTACHMENT`). Both cover the whole image because the
+acquired swapchain image changes between frames.
+
+`AppConfig::persistent_ui` (default `false`) enables it for `Flat2D` when the
+GUI damage is under `persistent_ui_break_even` (default `0.71`). The current
+wiring still repaints the whole composition into the persistent target, so it
+is pixel-identical but adds a full-frame copy; the partial `LoadOp::Load`
+repaint described above remains future work.
 
 ## Keep / reject criterion
 

@@ -45,6 +45,7 @@ nav:
     - GPU memory: ferrous_engine/memory.md
     - Performance & GPU timing: ferrous_engine/performance.md
     - Redraw policy: ferrous_engine/redraw.md
+    - Present modes & persistent UI: ferrous_engine/present.md
   - ferrous_2d — 2D Rendering:
     - Overview: ferrous_2d/README.md
     - Text: ferrous_2d/text.md

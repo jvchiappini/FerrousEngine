@@ -224,3 +224,29 @@ App::new(MyApp)
 
 `AppConfig::with_present_mode` does the same for a hand-built `AppConfig`. In
 both cases `FERROUS_PRESENT_MODE` still wins at runtime.
+
+## Persistent off-screen UI present (opt-in)
+
+`AppConfig::persistent_ui` (default `false`) adds a second present path for
+`AppMode::Flat2D` apps with `sample_count == 1`. When the frame's
+`GuiBatch::damage_union` covers at most `persistent_ui_break_even` (default
+`0.71`) of the window, the frame is rendered into a single-sample
+`PersistentUiTarget` and presented from there:
+
+- `UiPresenter::copy_full` performs a texel-for-texel
+  `copy_texture_to_texture` when the surface advertises `COPY_DST`. This path is
+  bit-exact and is the one the engine uses by default while the option is on.
+- `UiPresenter::blit` draws a full-screen triangle that samples the target with
+  a nearest sampler. It is the fallback for surfaces without `COPY_DST`; on an
+  sRGB surface it adds a decode/encode round-trip, so prefer the copy path.
+
+Both methods cover the whole destination image every frame on purpose: the
+acquired swapchain image changes between frames, so copying only the damage
+rectangles would leave stale pixels from another frame.
+
+The option is infrastructure for the damage-rect experiment, not a measured
+win: the current implementation still repaints the whole composition into the
+off-screen texture, adding a full-frame copy/blit. A true partial update needs
+the Pure2D main pass to accept `LoadOp::Load` plus a scissored repaint, which
+this prompt does not enable. Resize, format change and over-break-even damage
+fall back to the direct path; `Full3D` always stays direct.

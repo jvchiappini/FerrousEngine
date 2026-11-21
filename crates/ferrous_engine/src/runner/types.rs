@@ -77,6 +77,8 @@ pub(crate) struct Runner<A: FerrousApp + 'static> {
     pub(super) redraw: Scheduler,
     /// Wakes the loop from background workers.
     pub(super) waker: Waker,
+    /// Opt-in persistent off-screen UI present path (prompt 18 P7).
+    pub(super) ui_presenter: Option<ferrous_ui_render::UiPresenter>,
 }
 
 impl<A: FerrousApp + 'static> Runner<A> {
@@ -139,6 +141,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
             init: None,
             redraw: Scheduler::new(redraw_policy),
             waker: Waker::from_proxy(proxy),
+            ui_presenter: None,
         }
     }
 }

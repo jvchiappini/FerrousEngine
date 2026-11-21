@@ -198,7 +198,7 @@ occluder metadata below.
 ### 2. Skip fully covered nodes
 
 The direct-paint path that Motioner uses supplies `node_id: 0` and no per-quad
-bounds, and `DrawSegment` (`gpu_types.rs:154-161`) carries only draw ranges and
+bounds, and `DrawSegment` (`gpu_types.rs:162-171`) carries only draw ranges and
 an optional scissor, with no AABB. To skip a fully covered node you would need,
 at minimum:
 

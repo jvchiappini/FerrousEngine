@@ -11,6 +11,7 @@ pub mod persist;
 pub mod pipelines;
 pub mod text_utils;
 pub mod to_batches;
+pub mod ui_present;
 
 // Re-exports
 pub use gpu_types::{DrawSegment, GuiQuad, SvgCommand, TextQuad};
@@ -18,6 +19,7 @@ pub use gui_batch::GuiBatch;
 pub use gui_renderer::{GuiRenderer, UiFrameCounters};
 pub use persist::PersistentUiTarget;
 pub use to_batches::ToBatches;
+pub use ui_present::UiPresenter;
 
 /// Maximum number of distinct textures that can be referenced in a single draw batch.
 pub const MAX_TEXTURE_SLOTS: u32 = 16;

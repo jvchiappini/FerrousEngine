@@ -254,3 +254,24 @@ Use the report to answer two questions:
 The numbers are requested allocation sizes, not driver residency or
 fragmentation.  They are the right tool for spotting growth and regressions,
 not for predicting process private bytes.
+
+## Persistent off-screen UI present
+
+`AppConfig::persistent_ui` (default `false`) and
+`AppConfig::persistent_ui_break_even` (default `0.71`) enable the P7
+persistent-target experiment for `Flat2D` frames with `sample_count == 1`:
+
+1. `GuiBatch::damage_union` is compared with the window area. Damage above the
+   break-even keeps the direct path.
+2. Under the break-even, composition and GUI render into a
+   `ferrous_ui_render::PersistentUiTarget` instead of the swapchain image.
+3. `UiPresenter` presents the whole target with a bit-exact texture copy when
+   the surface supports `COPY_DST`, or with a full-screen nearest-sampler blit
+   otherwise.
+
+The persistent target is recreated (and fully invalidated) on resize or format
+change, so those frames are always complete. The path is pixel-identical to
+the direct path because it repaints the same composition at the same size and
+format; it does not yet redraw only the damaged rectangle, so it adds a
+full-frame copy. Treat it as opt-in infrastructure to measure, not a default
+win. `Game3D` always uses the direct path.

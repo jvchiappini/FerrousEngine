@@ -548,6 +548,14 @@ impl GraphicsState {
                     wgpu::TextureUsages::COPY_SRC
                 } else {
                     wgpu::TextureUsages::empty()
+                }
+                // The persistent-UI present path can copy the off-screen frame
+                // into the acquired image bit-exactly when the surface allows
+                // it; otherwise it falls back to a full-screen blit.
+                | if caps.usages.contains(wgpu::TextureUsages::COPY_DST) {
+                    wgpu::TextureUsages::COPY_DST
+                } else {
+                    wgpu::TextureUsages::empty()
                 },
             format,
             width: init.width.max(1),
@@ -697,6 +705,14 @@ impl GraphicsState {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | if crate::screenshot::supports_copy_src(&caps) {
                     wgpu::TextureUsages::COPY_SRC
+                } else {
+                    wgpu::TextureUsages::empty()
+                }
+                // The persistent-UI present path can copy the off-screen frame
+                // into the acquired image bit-exactly when the surface allows
+                // it; otherwise it falls back to a full-screen blit.
+                | if caps.usages.contains(wgpu::TextureUsages::COPY_DST) {
+                    wgpu::TextureUsages::COPY_DST
                 } else {
                     wgpu::TextureUsages::empty()
                 },

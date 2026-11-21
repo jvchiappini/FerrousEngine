@@ -151,6 +151,13 @@ pub struct SvgCommand {
 }
 
 /// Draw segment defining ranges for various primitives and an optional scissor.
+///
+/// A segment is also the unit of painter order: the renderer draws all quads,
+/// then all text, then icons and SVG *within one segment* before moving to the
+/// next. [`GuiBatch::extend`](crate::GuiBatch::extend) may therefore coalesce
+/// contiguous same-scissor segments, which is only pixel-identical when the
+/// merged segments do not overlap on screen (Motioner's virtualised rows are
+/// disjoint). A layer barrier (`layer_start`) always stays a separate segment.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DrawSegment {
     pub quad_range: std::ops::Range<u32>,
@@ -158,4 +165,7 @@ pub struct DrawSegment {
     pub icon_range: std::ops::Range<u32>,
     pub svg_range: std::ops::Range<u32>,
     pub scissor: Option<ferrous_ui_core::Rect>,
+    /// `true` when this segment starts a [`GuiBatch::begin_layer`](crate::GuiBatch::begin_layer)
+    /// barrier and must never be merged with the segment before it.
+    pub layer_start: bool,
 }

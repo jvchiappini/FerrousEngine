@@ -424,8 +424,52 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 .texture
                 .create_view(&wgpu::TextureViewDescriptor::default());
 
-            gfx.renderer
-                .render_to_view(&mut encoder, &view, Some(gui_batch));
+            // Prompt 18 P7: opt-in persistent off-screen present.  When the GUI
+            // damage stays under the break-even, render composition + GUI into
+            // a persistent texture and present that texture with a full-image
+            // copy/blit.  The whole frame is still repainted, so this is
+            // pixel-identical; it is the infrastructure a partial update needs.
+            let window_area = f64::from(self.window_size.0) * f64::from(self.window_size.1);
+            let damage_fraction = match gui_batch.damage_union {
+                Some(damage) if window_area > 0.0 => (f64::from(damage.width.max(0.0))
+                    * f64::from(damage.height.max(0.0))
+                    / window_area)
+                    .clamp(0.0, 1.0) as f32,
+                _ => 0.0,
+            };
+            let use_persistent_ui = self.config.persistent_ui
+                && self.config.mode != AppMode::Game3D
+                && self.config.sample_count == 1
+                && damage_fraction <= self.config.persistent_ui_break_even.clamp(0.0, 1.0);
+
+            if use_persistent_ui {
+                let format = gfx.config.format;
+                let device = gfx.renderer.context.device.clone();
+                if self.ui_presenter.as_ref().map(|p| p.format()) != Some(format) {
+                    self.ui_presenter = Some(ferrous_ui_render::UiPresenter::new(&device, format));
+                }
+                let presenter = self.ui_presenter.as_mut().expect("just created");
+                presenter.ensure(&device, self.window_size.0, self.window_size.1);
+                match presenter.view() {
+                    Some(target_view) => {
+                        gfx.renderer
+                            .render_to_view(&mut encoder, target_view, Some(gui_batch));
+                        if gfx.config.usage.contains(wgpu::TextureUsages::COPY_DST) {
+                            presenter.copy_full(&mut encoder, &frame.texture);
+                        } else {
+                            presenter.blit(&mut encoder, &view);
+                        }
+                    }
+                    // A zero-sized frame has no off-screen target; use the
+                    // direct path so nothing is skipped.
+                    None => gfx
+                        .renderer
+                        .render_to_view(&mut encoder, &view, Some(gui_batch)),
+                }
+            } else {
+                gfx.renderer
+                    .render_to_view(&mut encoder, &view, Some(gui_batch));
+            }
 
             // Si el motor está en "Modo Exportación", inyectar la copia al readback buffer.
             if let Some(readback) = &gfx.renderer.readback_manager {

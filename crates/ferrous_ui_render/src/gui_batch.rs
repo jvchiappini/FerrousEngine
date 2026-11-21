@@ -744,7 +744,9 @@ impl GuiBatch {
         self.text_quads.extend(other.text_quads);
         self.icon_quads.extend(other.icon_quads);
         self.svg_commands.extend(other.svg_commands);
-        self.segments.extend(other.segments);
+        for segment in other.segments.drain(..) {
+            self.append_segment(segment);
+        }
 
         if let Some(other_damage) = other.damage_union {
             self.damage_union = match self.damage_union {
@@ -780,7 +782,7 @@ impl GuiBatch {
             segment.icon_range.end += i_offset;
             segment.svg_range.start += s_offset;
             segment.svg_range.end += s_offset;
-            self.segments.push(segment);
+            self.append_segment(segment);
         }
         self.quads.extend_from_slice(&other.quads);
         self.text_quads.extend_from_slice(&other.text_quads);
@@ -825,6 +827,7 @@ impl GuiBatch {
             icon_range: i..i,
             svg_range: s..s,
             scissor: self.current_scissor,
+            layer_start: true,
         });
     }
 
@@ -846,7 +849,42 @@ impl GuiBatch {
                 icon_range: i_start..i_start,
                 svg_range: s_start..s_start,
                 scissor: self.current_scissor,
+                layer_start: false,
             });
+        }
+    }
+
+    /// Appends a copied segment, coalescing it with the active one when that is
+    /// pixel-safe.
+    ///
+    /// Two segments merge when they share the scissor, their four ranges meet
+    /// exactly (`last.end == seg.start` on every range) and the incoming
+    /// segment is not a layer barrier. Merging preserves painter order only
+    /// when the two segments do not overlap on screen, because the renderer
+    /// issues all quads, then all text, then icons/SVG per segment; callers
+    /// that interleave overlapping content must open a layer with
+    /// [`Self::begin_layer`] so the barrier keeps the segments apart.
+    fn append_segment(&mut self, segment: DrawSegment) {
+        let contiguous = match self.segments.last() {
+            Some(last) => {
+                !segment.layer_start
+                    && last.scissor == segment.scissor
+                    && last.quad_range.end == segment.quad_range.start
+                    && last.text_range.end == segment.text_range.start
+                    && last.icon_range.end == segment.icon_range.start
+                    && last.svg_range.end == segment.svg_range.start
+            }
+            None => false,
+        };
+
+        if contiguous {
+            let last = self.segments.last_mut().expect("checked above");
+            last.quad_range.end = segment.quad_range.end;
+            last.text_range.end = segment.text_range.end;
+            last.icon_range.end = segment.icon_range.end;
+            last.svg_range.end = segment.svg_range.end;
+        } else {
+            self.segments.push(segment);
         }
     }
 
@@ -1102,6 +1140,27 @@ impl GuiBatch {
             && self.text_quads.is_empty()
             && self.icon_quads.is_empty()
             && self.svg_commands.is_empty()
+    }
+
+    /// Heap bytes reserved by the batch's buffers (capacity, not live length).
+    ///
+    /// Counts the primitive vectors, the segment/scissor vectors and — with the
+    /// `assets` feature — the texture slot vector. The retained-node store is
+    /// deliberately excluded: it belongs to the live tree, not to a batch that
+    /// is cached and replayed as a panel.
+    pub fn byte_size(&self) -> usize {
+        let mut bytes = self.quads.capacity() * std::mem::size_of::<GuiQuad>()
+            + self.text_quads.capacity() * std::mem::size_of::<TextQuad>()
+            + self.icon_quads.capacity() * std::mem::size_of::<TextQuad>()
+            + self.svg_commands.capacity() * std::mem::size_of::<SvgCommand>()
+            + self.segments.capacity() * std::mem::size_of::<DrawSegment>()
+            + self.scissor_stack.capacity() * std::mem::size_of::<Rect>();
+        #[cfg(feature = "assets")]
+        {
+            bytes += self.textures.capacity()
+                * std::mem::size_of::<std::sync::Arc<ferrous_assets::Texture2d>>();
+        }
+        bytes
     }
 
     /// Byte view of the live quad instances, ready for `write_buffer`.
@@ -1412,7 +1471,9 @@ mod tests {
             "the borrowed source keeps its primitives"
         );
         let last = destination.segments.last().expect("a segment");
-        assert_eq!(last.quad_range, 2..3, "the second append is rebased");
+        // Both appends share the source scissor and are contiguous, so the
+        // coalescing append merges them into the one rebased range `1..3`.
+        assert_eq!(last.quad_range, 1..3, "the second append is rebased and merged");
         assert_eq!(last.scissor, Some(rect(40.0, 40.0, 100.0, 100.0)));
     }
 
@@ -1630,5 +1691,154 @@ mod tests {
             1,
             "the off-clip child must be skipped, not batched"
         );
+    }
+
+    #[test]
+    fn contiguous_same_scissor_rows_merge_into_one_segment() {
+        let mut destination = GuiBatch::new();
+        destination.rect(0.0, 0.0, 100.0, 10.0, [1.0; 4]);
+
+        let mut row = GuiBatch::new();
+        row.rect(0.0, 10.0, 100.0, 10.0, [1.0; 4]);
+
+        destination.extend_from(&row);
+        destination.extend_from(&row);
+
+        assert_eq!(
+            destination.segments.len(),
+            1,
+            "three stacked, contiguous rows share one scissor"
+        );
+        let segment = &destination.segments[0];
+        assert_eq!(segment.quad_range, 0..3, "the ranges coalesce");
+        assert_eq!(segment.scissor, None);
+        assert!(!segment.layer_start);
+        assert_eq!(
+            destination.damage_union,
+            Some(rect(0.0, 0.0, 100.0, 20.0)),
+            "merging segments must not change the damage union"
+        );
+    }
+
+    #[test]
+    fn owned_extend_merges_contiguous_segments_too() {
+        let mut destination = GuiBatch::new();
+        destination.rect(0.0, 0.0, 100.0, 10.0, [1.0; 4]);
+
+        let mut row = GuiBatch::new();
+        row.rect(0.0, 10.0, 100.0, 10.0, [1.0; 4]);
+
+        destination.extend(row);
+
+        assert_eq!(destination.segments.len(), 1);
+        assert_eq!(destination.segments[0].quad_range, 0..2);
+    }
+
+    #[test]
+    fn a_different_scissor_keeps_copied_segments_apart() {
+        let mut destination = GuiBatch::new();
+        destination.rect(0.0, 0.0, 100.0, 10.0, [1.0; 4]);
+
+        let mut row = GuiBatch::new();
+        row.push_clip(rect(10.0, 10.0, 50.0, 50.0));
+        row.rect(20.0, 20.0, 10.0, 10.0, [1.0; 4]);
+
+        destination.extend_from(&row);
+
+        assert_eq!(destination.segments.len(), 2);
+        assert_eq!(
+            destination.segments[1].scissor,
+            Some(rect(10.0, 10.0, 50.0, 50.0))
+        );
+    }
+
+    #[test]
+    fn a_layer_barrier_is_never_merged_by_a_copied_append() {
+        let mut destination = GuiBatch::new();
+        destination.rect(0.0, 0.0, 10.0, 10.0, [1.0; 4]);
+
+        let mut source = GuiBatch::new();
+        source.rect(0.0, 10.0, 10.0, 10.0, [1.0; 4]);
+        source.begin_layer();
+        source.rect(0.0, 20.0, 10.0, 10.0, [1.0; 4]);
+
+        destination.extend_from(&source);
+
+        assert_eq!(
+            destination.segments.len(),
+            2,
+            "the barrier segment stays separate"
+        );
+        assert_eq!(destination.segments[0].quad_range, 0..2);
+        assert!(destination.segments[1].layer_start);
+        assert_eq!(destination.segments[1].quad_range, 2..3);
+    }
+
+    #[test]
+    fn a_merged_append_keeps_texture_slots_remapped() {
+        let texture_a = std::sync::Arc::new(1u32);
+        let texture_b = std::sync::Arc::new(2u32);
+
+        let mut destination_slots = vec![texture_b.clone()];
+        let mut incoming = vec![
+            GuiQuad::solid([0.0, 0.0], [10.0, 10.0], [1.0; 4], [0.0; 4], 0, 0.0, 0),
+            GuiQuad::solid([0.0, 10.0], [10.0, 10.0], [1.0; 4], [0.0; 4], 0, 0.0, 0),
+        ];
+        incoming[0].flags = TEXTURED_BIT;
+        incoming[0].tex_index = 0;
+        incoming[1].flags = TEXTURED_BIT;
+        incoming[1].tex_index = 1;
+
+        let remap = merge_texture_slots(&mut destination_slots, vec![texture_a, texture_b]);
+        remap_texture_indices(&mut incoming, &remap);
+        assert_eq!(remap, vec![1, 0], "A is new, B reuses slot 0");
+        assert_eq!(incoming[0].tex_index, 1);
+        assert_eq!(incoming[1].tex_index, 0);
+
+        // Append the two remapped quads as two contiguous copied segments.
+        let mut batch = GuiBatch::new();
+        batch.quads.push(incoming[0]);
+        batch.append_segment(DrawSegment {
+            quad_range: 0..1,
+            text_range: 0..0,
+            icon_range: 0..0,
+            svg_range: 0..0,
+            scissor: None,
+            layer_start: false,
+        });
+        batch.quads.push(incoming[1]);
+        batch.append_segment(DrawSegment {
+            quad_range: 1..2,
+            text_range: 0..0,
+            icon_range: 0..0,
+            svg_range: 0..0,
+            scissor: None,
+            layer_start: false,
+        });
+
+        assert_eq!(batch.segments.len(), 1);
+        assert_eq!(batch.segments[0].quad_range, 0..2);
+        assert_eq!(batch.quads[0].tex_index, 1);
+        assert_eq!(batch.quads[1].tex_index, 0);
+    }
+
+    #[test]
+    fn byte_size_counts_reserved_capacity() {
+        let mut batch = GuiBatch::new();
+        let empty = batch.byte_size();
+        batch.rect(0.0, 0.0, 10.0, 10.0, [1.0; 4]);
+        batch.push_text(TextQuad {
+            pos: [0.0, 0.0],
+            size: [8.0, 8.0],
+            uv0: [0.0, 0.0],
+            uv1: [1.0, 1.0],
+            color: [1.0; 4],
+            z_order: 0.0,
+            node_id: 0,
+        });
+
+        assert!(batch.byte_size() >= empty);
+        assert!(batch.byte_size() >= batch.quads.len() * std::mem::size_of::<GuiQuad>());
+        assert!(batch.byte_size() >= batch.text_quads.len() * std::mem::size_of::<TextQuad>());
     }
 }

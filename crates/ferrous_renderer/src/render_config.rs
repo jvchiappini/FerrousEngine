@@ -322,8 +322,9 @@ mod tests {
     fn an_explicit_layer_scale_overrides_the_adaptive_factor() {
         use ferrous_2d::render::Effect2d;
 
-        let blur = [Effect2d::Blur { radius: 16.0 }];
+        let blur = [Effect2d::Blur { radius: 36.0 }];
         let adaptive = Render2dConfig::default();
+        // ADAPTIVE_LAYER_SCALE_K = 9: a 36 px leading blur renders at 0.25.
         assert_eq!(adaptive.effective_layer_scale(&blur), 0.25);
 
         let forced_one = adaptive.with_layer_resolution_scale(1.0);

@@ -307,7 +307,27 @@ pub struct AppConfig {
     /// opened. Default: 800 ms from the start of the run. `FERROUS_SHOW_TIMEOUT_MS`
     /// overrides it at runtime.
     pub window_show_timeout: std::time::Duration,
+    /// Opt into the persistent off-screen UI present path.
+    ///
+    /// When enabled, a frame whose GUI damage stays under
+    /// [`persistent_ui_break_even`](Self::persistent_ui_break_even) is rendered
+    /// into a single-sample off-screen texture and then presented with a
+    /// full-image copy/blit, instead of rendering directly into the rotating
+    /// swapchain image.  This is the infrastructure the partial-update
+    /// experiment needs; see `docs/performance.md`.  It is **off by default**
+    /// and only applies to [`AppMode::Flat2D`] with `sample_count == 1`; the
+    /// 3-D path stays direct.  The current implementation repaints the whole
+    /// composition into the off-screen texture, so it is pixel-identical but
+    /// adds a full-frame copy — measure before leaving it on.
+    pub persistent_ui: bool,
+    /// Maximum fraction of the window covered by the frame's GUI damage for
+    /// the persistent present path to engage.  `0.71` is the measured
+    /// break-even from the P5 experiment; values are clamped to `0.0..=1.0`.
+    pub persistent_ui_break_even: f32,
 }
+
+/// Default [`AppConfig::persistent_ui_break_even`].
+pub const DEFAULT_PERSISTENT_UI_BREAK_EVEN: f32 = 0.71;
 
 /// How long the window stays hidden waiting for the first frame by default.
 ///
@@ -475,6 +495,8 @@ impl Default for AppConfig {
             visible: true,
             show_window_when_ready: true,
             window_show_timeout: DEFAULT_SHOW_TIMEOUT,
+            persistent_ui: false,
+            persistent_ui_break_even: DEFAULT_PERSISTENT_UI_BREAK_EVEN,
         }
     }
 }
@@ -498,6 +520,21 @@ impl AppConfig {
     #[must_use]
     pub fn with_present_mode(mut self, mode: PresentMode) -> Self {
         self.present_mode = Some(mode);
+        self
+    }
+
+    /// Enables the persistent off-screen UI present path (off by default).
+    ///
+    /// See [`AppConfig::persistent_ui`].
+    pub fn with_persistent_ui(mut self, enabled: bool) -> Self {
+        self.persistent_ui = enabled;
+        self
+    }
+
+    /// Sets the damage fraction under which the persistent present path
+    /// engages (clamped to `0.0..=1.0`).  See [`AppConfig::persistent_ui`].
+    pub fn with_persistent_ui_break_even(mut self, fraction: f32) -> Self {
+        self.persistent_ui_break_even = fraction.clamp(0.0, 1.0);
         self
     }
 }
@@ -576,6 +613,21 @@ impl<A: FerrousApp + 'static> App<A> {
     /// wins at runtime. See `docs/present.md` for the platform notes.
     pub fn with_present_mode(mut self, mode: PresentMode) -> Self {
         self.config.present_mode = Some(mode);
+        self
+    }
+
+    /// Enables the persistent off-screen UI present path (off by default).
+    ///
+    /// See [`AppConfig::persistent_ui`].
+    pub fn with_persistent_ui(mut self, enabled: bool) -> Self {
+        self.config.persistent_ui = enabled;
+        self
+    }
+
+    /// Sets the damage fraction under which the persistent present path
+    /// engages (clamped to `0.0..=1.0`).  See [`AppConfig::persistent_ui`].
+    pub fn with_persistent_ui_break_even(mut self, fraction: f32) -> Self {
+        self.config.persistent_ui_break_even = fraction.clamp(0.0, 1.0);
         self
     }
 

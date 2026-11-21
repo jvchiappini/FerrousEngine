@@ -60,7 +60,16 @@ Define un rango de instancias a dibujar con el mismo scissor:
 |---|---|
 | `quad_range` | Rango de índices en `GuiBatch::quads` |
 | `text_range` | Rango de índices en `GuiBatch::text_quads` |
+| `icon_range` | Rango de índices en `GuiBatch::icon_quads` |
+| `svg_range` | Rango de índices en `GuiBatch::svg_commands` |
 | `scissor` | `Option<Rect>` — activa `set_scissor_rect` en el render pass |
+| `layer_start` | `true` si el segmento abre una barrera de `begin_layer` y no puede fusionarse con el anterior |
+
+`extend`/`extend_from` fusionan un segmento copiado con el último cuando
+comparte scissor, los cuatro rangos son contiguos y no es una barrera de capa.
+El renderer dibuja por segmento todos los quads, luego texto, luego iconos/SVG,
+así que la fusión solo es idéntica píxel a píxel cuando los segmentos no se
+solapan en pantalla; el contenido solapado debe separarse con `begin_layer`.
 
 ### `GuiBatch`
 
@@ -80,7 +89,9 @@ Colección mutable de primitivas organizada en segmentos por scissor.
 | `ensure_segment()` | Garantiza que existe un `DrawSegment` activo para el scissor actual |
 | `reserve_texture_slot(texture)` | Registra una textura en el batch y devuelve su ranura (máx. 8) |
 | `as_quad_bytes() / as_text_bytes()` | Vistas de bytes listas para `queue.write_buffer` |
+| `byte_size()` | Bytes de heap reservados (capacidad, no longitud) para reportes de memoria |
 | `extend(other)` | Fusiona otro batch en éste |
+| `extend_from(&other)` | Fusiona un batch prestado, remapeando sus texturas |
 
 **Límite de texturas por batch:** `MAX_TEXTURE_SLOTS = 8`. Si se supera, el
 programa entra en `panic!`.

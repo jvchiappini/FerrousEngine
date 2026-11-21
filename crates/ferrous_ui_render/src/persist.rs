@@ -188,7 +188,11 @@ impl PersistentUiTarget {
             format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
+                | wgpu::TextureUsages::COPY_SRC
+                // `COPY_DST` lets a caller seed the persistent texture (and is
+                // required when it is used as a copy destination itself, e.g.
+                // swapping two cached targets during a resize).
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -353,6 +357,18 @@ impl PersistentUiTarget {
     #[must_use]
     pub fn view(&self) -> Option<&wgpu::TextureView> {
         self.view.as_ref()
+    }
+
+    /// The underlying texture, or `None` before the first successful
+    /// [`Self::ensure`].
+    ///
+    /// Exposed so a presenter can bind it for a full-screen blit
+    /// (`TEXTURE_BINDING`) or feed it to [`Self::copy_damage`] as a source. The
+    /// texture carries `RENDER_ATTACHMENT | TEXTURE_BINDING | COPY_SRC |
+    /// COPY_DST`.
+    #[must_use]
+    pub fn texture(&self) -> Option<&wgpu::Texture> {
+        self.texture.as_ref()
     }
 
     /// Current size, or `(0, 0)` while unallocated.
