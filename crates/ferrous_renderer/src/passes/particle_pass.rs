@@ -5,10 +5,8 @@
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::{
-    BindGroup, BindGroupLayout, CommandEncoder, ComputePipeline, Device,
-    Queue, RenderPipeline,
+    BindGroup, BindGroupLayout, CommandEncoder, ComputePipeline, Device, Queue, RenderPipeline,
 };
-
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
@@ -35,22 +33,27 @@ struct EmitterParams {
 }
 
 pub struct ParticleSystem {
-    particles_buffer: wgpu::Buffer,
+    _particles_buffer: wgpu::Buffer,
     emitter_buffer: wgpu::Buffer,
-    
+
     update_pipeline: ComputePipeline,
     render_pipeline: RenderPipeline,
-    
+
     bind_group0: BindGroup,        // Emitter Uniforms
     bind_group1_update: BindGroup, // Particles Storage (RW)
     bind_group1_render: BindGroup, // Particles Storage (RO)
-    
+
     max_particles: u32,
     current_time: f32,
 }
 
 impl ParticleSystem {
-    pub fn new(device: &Device, camera_layout: &BindGroupLayout, max_particles: u32, sample_count: u32) -> Self {
+    pub fn new(
+        device: &Device,
+        camera_layout: &BindGroupLayout,
+        max_particles: u32,
+        sample_count: u32,
+    ) -> Self {
         // 1. Create Buffers
         let particles_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Particles Storage Buffer"),
@@ -112,7 +115,9 @@ impl ParticleSystem {
         });
 
         // 3. Update Pipeline (Compute)
-        let update_shader = device.create_shader_module(wgpu::include_wgsl!("../../../../assets/shaders/particles_update.wgsl"));
+        let update_shader = device.create_shader_module(wgpu::include_wgsl!(
+            "../../../../assets/shaders/particles_update.wgsl"
+        ));
         let update_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Particle Update Layout"),
             bind_group_layouts: &[&bgl0, &update_bgl1],
@@ -128,13 +133,15 @@ impl ParticleSystem {
         });
 
         // 4. Render Pipeline
-        let render_shader = device.create_shader_module(wgpu::include_wgsl!("../../../../assets/shaders/particles_render.wgsl"));
+        let render_shader = device.create_shader_module(wgpu::include_wgsl!(
+            "../../../../assets/shaders/particles_render.wgsl"
+        ));
         let render_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Particle Render Layout"),
             bind_group_layouts: &[camera_layout, &render_bgl1],
             push_constant_ranges: &[],
         });
-        
+
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Particle Render Pipeline"),
             layout: Some(&render_layout),
@@ -203,7 +210,7 @@ impl ParticleSystem {
         });
 
         Self {
-            particles_buffer,
+            _particles_buffer: particles_buffer,
             emitter_buffer,
             update_pipeline,
             render_pipeline,
@@ -240,7 +247,7 @@ impl ParticleSystem {
         cpass.set_pipeline(&self.update_pipeline);
         cpass.set_bind_group(0, &self.bind_group0, &[]);
         cpass.set_bind_group(1, &self.bind_group1_update, &[]);
-        
+
         let x = self.max_particles.div_ceil(64);
         cpass.dispatch_workgroups(x, 1, 1);
     }

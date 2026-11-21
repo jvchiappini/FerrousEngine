@@ -48,10 +48,10 @@ const COLUMN: [f32; 4] = [0.85, 0.85, 0.88, 1.0];
 const ALERT: [f32; 4] = [0.90, 0.30, 0.25, 1.0];
 
 /// A representative architectural floor plan, built only from the public
-/// immediate-mode shape API that Koncreta's CAD viewport uses.
+/// immediate-mode shape API that CAD viewports drive.
 fn draw_plan(h: &mut Pure2dHarness) {
-    // 1. Room slab: Koncreta fills rectangles via a full-thickness outline
-    //    (`fill_thickness = max(w, d)`), which is what this reproduces.
+    // 1. Room slab: CAD viewports fill rectangles with a full-thickness
+    //    outline (`fill_thickness = max(w, d)`), which is what this reproduces.
     h.draw_shape(ShapeInstance::rect_outline(
         Vec2::ZERO,
         Vec2::new(700.0, 400.0),
@@ -145,7 +145,7 @@ fn write_png(path: &str, pixels: &[u8]) -> Result<(), String> {
 }
 
 fn render_capture(format: TextureFormat, path: &str) -> Result<[u8; 4], String> {
-    let mut h = Pure2dHarness::new(W, H, format)?;
+    let mut h = Pure2dHarness::new(W, H, format).map_err(|e| e.to_string())?;
     h.begin_frame();
     draw_plan(&mut h);
     let report = h.render_frame();

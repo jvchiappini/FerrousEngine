@@ -7,6 +7,8 @@
 
 mod events;
 mod frame;
+#[cfg(not(target_arch = "wasm32"))]
+mod show;
 mod types;
 
 pub(crate) use types::Runner;
@@ -14,17 +16,50 @@ pub(crate) use types::Runner;
 use winit::event_loop::{ControlFlow, EventLoop};
 
 use crate::builder::AppConfig;
+use crate::redraw::EngineEvent;
 use crate::traits::FerrousApp;
+use ferrous_core::{frame_trace, startup};
 
 // ── Direct entry point ────────────────────────────────────────────────────────
 
 /// Desktop entry point: blocks the calling thread running the event loop.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn run_internal<A: FerrousApp + 'static>(config: AppConfig, app: A) {
-    let mut runner = Runner::new(app, config);
-    let event_loop = EventLoop::new().unwrap();
+    startup::begin(config.startup_trace);
+    startup::mark("engine: entry");
+    // The loop exists before the runner so background workers can be handed a
+    // `Waker` from `setup` (prompt 18 P1).
+    let event_loop = EventLoop::<EngineEvent>::with_user_event().build().unwrap();
+    let proxy = event_loop.create_proxy();
+    let mut runner = Runner::new(app, config, proxy);
     event_loop.set_control_flow(ControlFlow::Wait);
+    startup::mark("engine: event loop");
     event_loop.run_app(&mut runner).unwrap();
+    startup::mark("engine: event loop exited");
+    // Flush the pipeline cache before the GPU state goes away.
+    runner.save_pipeline_cache();
+    // Prompt 18 P0: one JSON summary of the per-frame stages and GPU passes
+    // before the GPU state goes away.
+    let (gpu_passes, gpu_unsupported) = runner
+        .graphics
+        .as_ref()
+        .map(|gfx| gfx.renderer.gpu_timings_summary())
+        .unwrap_or_default();
+    // Last frame's GPU work counters (prompt 18 P5).
+    let gpu_frame = runner
+        .graphics
+        .as_ref()
+        .map_or(ferrous_core::render_stats::RenderStats::default(), |gfx| {
+            gfx.renderer.render_stats
+        });
+    frame_trace::report(&gpu_passes, &gpu_unsupported, &gpu_frame);
+    if let Some(gfx) = runner.graphics.as_ref() {
+        eprintln!("memory-report {}", gfx.renderer.memory_report_json());
+    }
+    // The window and the whole GPU state live in `runner`; dropping it here is
+    // the teardown the closing report measures.
+    drop(runner);
+    startup::teardown();
 }
 
 /// wasm32 entry point: runs Runner directly in the browser event loop.
@@ -32,8 +67,11 @@ pub(crate) fn run_internal<A: FerrousApp + 'static>(config: AppConfig, app: A) {
 pub(crate) fn run_internal<A: FerrousApp + 'static>(config: AppConfig, app: A) {
     console_error_panic_hook::set_once();
     use winit::platform::web::EventLoopExtWebSys;
-    let runner = Runner::new(app, config);
-    let event_loop = EventLoop::new().unwrap();
+    startup::begin(config.startup_trace);
+    startup::mark("engine: entry");
+    let event_loop = EventLoop::<EngineEvent>::with_user_event().build().unwrap();
+    let proxy = event_loop.create_proxy();
+    let runner = Runner::new(app, config, proxy);
     event_loop.set_control_flow(ControlFlow::Wait);
     event_loop.spawn_app(runner);
 }
@@ -46,7 +84,11 @@ impl FerrousApp for PluginApp {}
 
 /// Entry point for [`crate::plugin::AppBuilder::run`].
 pub(crate) fn run_plugin_app(mut builder: crate::plugin::AppBuilder) {
-    let mut runner = Runner::new(PluginApp, builder.config.clone());
+    startup::begin(builder.config.startup_trace);
+    startup::mark("engine: entry");
+    let event_loop = EventLoop::<EngineEvent>::with_user_event().build().unwrap();
+    let proxy = event_loop.create_proxy();
+    let mut runner = Runner::new(PluginApp, builder.config.clone(), proxy);
 
     for (stage, system) in builder.staged_systems.drain(..) {
         runner.systems.add_boxed(stage, system);
@@ -54,15 +96,33 @@ pub(crate) fn run_plugin_app(mut builder: crate::plugin::AppBuilder) {
 
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let event_loop = EventLoop::new().unwrap();
         event_loop.set_control_flow(ControlFlow::Wait);
+        startup::mark("engine: event loop");
         event_loop.run_app(&mut runner).unwrap();
+        startup::mark("engine: event loop exited");
+        runner.save_pipeline_cache();
+        let (gpu_passes, gpu_unsupported) = runner
+            .graphics
+            .as_ref()
+            .map(|gfx| gfx.renderer.gpu_timings_summary())
+            .unwrap_or_default();
+        let gpu_frame = runner
+            .graphics
+            .as_ref()
+            .map_or(ferrous_core::render_stats::RenderStats::default(), |gfx| {
+                gfx.renderer.render_stats
+            });
+        frame_trace::report(&gpu_passes, &gpu_unsupported, &gpu_frame);
+        if let Some(gfx) = runner.graphics.as_ref() {
+            eprintln!("memory-report {}", gfx.renderer.memory_report_json());
+        }
+        drop(runner);
+        startup::teardown();
     }
     #[cfg(target_arch = "wasm32")]
     {
         console_error_panic_hook::set_once();
         use winit::platform::web::EventLoopExtWebSys;
-        let event_loop = EventLoop::new().unwrap();
         event_loop.set_control_flow(ControlFlow::Wait);
         event_loop.spawn_app(runner);
     }
@@ -84,7 +144,11 @@ pub(crate) fn canvas_physical_size(window: &winit::window::Window, scale: f64) -
         .map(|w| w.device_pixel_ratio())
         .unwrap_or(1.0)
         .max(1e-6);
-    let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
 
     let css = window.canvas().and_then(|canvas| {
         let r = canvas.get_bounding_client_rect();

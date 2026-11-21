@@ -5,13 +5,29 @@
 
 use slotmap::{new_key_type, SlotMap};
 
-use crate::primitives::{Rect, Style};
+use crate::context::{BuildContext, UpdateContext};
+use crate::primitives::{Overflow, Rect, Style};
 use crate::reactive::ReactivitySystem;
 use crate::theme::Theme;
-use crate::context::{BuildContext, UpdateContext};
-use crate::Widget;
 use crate::RenderCommand;
+use crate::Widget;
 use glam::Vec2;
+
+/// Compares rectangles by raw bit patterns, so `0.0` and `-0.0` are distinct
+/// and NaN never compares equal to itself.
+#[inline]
+fn rect_eq_bits(a: Rect, b: Rect) -> bool {
+    a.x.to_bits() == b.x.to_bits()
+        && a.y.to_bits() == b.y.to_bits()
+        && a.width.to_bits() == b.width.to_bits()
+        && a.height.to_bits() == b.height.to_bits()
+}
+
+/// Bit-wise comparison for `Vec2` values (scroll offsets).
+#[inline]
+fn vec2_eq_bits(a: Vec2, b: Vec2) -> bool {
+    a.x.to_bits() == b.x.to_bits() && a.y.to_bits() == b.y.to_bits()
+}
 
 // ── Type Definitions ──────────────────────────────────────────────────────────
 
@@ -96,6 +112,9 @@ pub struct Node<App> {
     /// Opaque ID of the corresponding node in the Taffy tree.
     /// Stored here to avoid a per-frame HashMap lookup in ferrous_layout.
     pub taffy_id: Option<u64>,
+    /// Scroll offset reported by the widget at the end of the previous update.
+    /// Used to detect scrolling and request a layout pass for child positions.
+    pub last_scroll_offset: Vec2,
 }
 
 // ── UiTree Definition ──────────────────────────────────────────────────────────
@@ -114,6 +133,10 @@ pub struct UiTree<App> {
     pub spatial_index: crate::spatial_index::SpatialIndex,
     /// Regions that changed visually in the last frame.
     pub damage_regions: Vec<Rect>,
+    /// True while at least one node needs a Taffy/layout pass.
+    layout_dirty: bool,
+    /// True when the spatial index no longer matches rects, clips or hierarchy.
+    spatial_index_dirty: bool,
 }
 
 // ── UiTree Implementation ──────────────────────────────────────────────────────
@@ -129,7 +152,28 @@ impl<App> UiTree<App> {
             theme: Theme::default(),
             spatial_index: crate::spatial_index::SpatialIndex::new(),
             damage_regions: Vec::new(),
+            layout_dirty: false,
+            spatial_index_dirty: false,
         }
+    }
+
+    /// Returns `true` while the tree contains at least one node whose layout
+    /// must be recomputed.
+    ///
+    /// This is the tree-level early-out used by `ferrous_layout`: when it is
+    /// `false` the whole layout pass can be skipped.
+    pub fn is_layout_dirty(&self) -> bool {
+        self.layout_dirty
+    }
+
+    /// Clears the tree-level layout request after a complete layout pass.
+    pub fn clear_layout_dirty(&mut self) {
+        self.layout_dirty = false;
+    }
+
+    /// Returns `true` when the spatial index must be rebuilt before hit-testing.
+    pub fn spatial_index_dirty(&self) -> bool {
+        self.spatial_index_dirty
     }
 
     pub fn get_root(&self) -> Option<NodeId> {
@@ -149,14 +193,21 @@ impl<App> UiTree<App> {
     /// Executes the recursive build phase from the root.
     pub fn build(&mut self) {
         if let Some(root_id) = self.root {
+            // Rebuilding resets children lists, which changes both layout and
+            // spatial-index contents.
+            self.layout_dirty = true;
+            self.spatial_index_dirty = true;
             self.build_node(root_id);
         }
     }
 
     fn build_node(&mut self, id: NodeId) {
-        // Clear children before rebuild to handle dynamic children correctly
+        // Clear children before rebuild to handle dynamic children correctly.
+        // The node must be re-synced even if the new child list is empty.
         if let Some(node) = self.nodes.get_mut(id) {
             node.children.clear();
+            node.dirty.hierarchy = true;
+            node.dirty.subtree_dirty = true;
         }
 
         // Temporarily extract the widget to avoid double borrowing the tree
@@ -203,27 +254,63 @@ impl<App> UiTree<App> {
         }
     }
 
+    /// Rebuilds the spatial index only when geometry, clips or hierarchy changed.
     pub fn update_spatial_index(&mut self) {
+        if !self.spatial_index_dirty {
+            return;
+        }
+
         let mut index = std::mem::take(&mut self.spatial_index);
         index.update_if_dirty(self);
         self.spatial_index = index;
+        self.spatial_index_dirty = false;
     }
 
     pub fn clear_damage(&mut self) {
         self.damage_regions.clear();
     }
 
-    /// Marks a node as dirty for layout and propagates the flag to parents.
+    /// Marks a node as dirty for layout and propagates the request to its parents.
+    ///
+    /// Only the target node receives `DirtyFlags::layout`; ancestors receive
+    /// `subtree_dirty` only. This keeps their Taffy styles untouched so the
+    /// layout engine does not re-sync clean nodes.
     pub fn mark_layout_dirty(&mut self, id: NodeId) {
+        let mut marked = false;
         if let Some(node) = self.nodes.get_mut(id) {
             node.dirty.subtree_dirty = true;
             if !node.dirty.layout {
                 self.damage_regions.push(node.rect);
                 node.dirty.layout = true;
-                if let Some(parent_id) = node.parent {
-                    self.mark_layout_dirty(parent_id);
-                }
             }
+            marked = true;
+        }
+
+        if marked {
+            self.propagate_layout_request(id);
+        }
+    }
+
+    /// Requests a layout pass for `id`'s subtree without re-syncing its Taffy
+    /// style. Used when only descendant positions change (e.g. scrolling).
+    fn request_layout_pass(&mut self, id: NodeId) {
+        if let Some(node) = self.nodes.get_mut(id) {
+            node.dirty.subtree_dirty = true;
+        }
+        self.propagate_layout_request(id);
+    }
+
+    /// Raises the tree-level layout flag and propagates `subtree_dirty` to the
+    /// node's ancestors.
+    fn propagate_layout_request(&mut self, id: NodeId) {
+        self.layout_dirty = true;
+        self.mark_parent_subtree_dirty(id);
+    }
+
+    /// Marks only the parent chain of `id` as `subtree_dirty`.
+    fn mark_parent_subtree_dirty(&mut self, id: NodeId) {
+        if let Some(parent_id) = self.nodes.get(id).and_then(|n| n.parent) {
+            self.mark_subtree_dirty_up(parent_id);
         }
     }
 
@@ -259,6 +346,7 @@ impl<App> UiTree<App> {
             }
         }
 
+        let mut scroll_changed = false;
         if let Some(node) = self.nodes.get_mut(id) {
             let theme = self.theme;
             let mut ctx = UpdateContext {
@@ -277,6 +365,16 @@ impl<App> UiTree<App> {
                 node.dirty.paint = true;
                 node.dirty.subtree_dirty = true;
             }
+
+            let scroll = node.widget.scroll_offset();
+            if !vec2_eq_bits(scroll, node.last_scroll_offset) {
+                node.last_scroll_offset = scroll;
+                scroll_changed = true;
+            }
+        }
+
+        if scroll_changed {
+            self.request_layout_pass(id);
         }
     }
 
@@ -312,7 +410,12 @@ impl<App> UiTree<App> {
             rect: Rect::default(),
             cached_cmds: Vec::new(),
             taffy_id: None,
+            last_scroll_offset: Vec2::ZERO,
         });
+
+        // A brand-new node always needs layout and is a new spatial-index entry.
+        self.layout_dirty = true;
+        self.spatial_index_dirty = true;
 
         if let Some(s) = id_str {
             self.id_map.insert(s, id);
@@ -322,8 +425,10 @@ impl<App> UiTree<App> {
             if let Some(parent_node) = self.nodes.get_mut(parent_id) {
                 parent_node.children.push(id);
                 parent_node.dirty.hierarchy = true;
-                self.mark_layout_dirty(parent_id);
             }
+            // Propagate `subtree_dirty` without marking the parent's own Taffy
+            // style dirty: only the child list changed.
+            self.mark_parent_subtree_dirty(id);
         } else if self.root.is_none() {
             self.root = Some(id);
         }
@@ -338,16 +443,19 @@ impl<App> UiTree<App> {
             None => return,
         };
 
-        // 1. Mark parent as dirty
+        // 1. Mark parent as dirty (hierarchy change, not its own style)
         if let Some(parent_id) = parent {
             if let Some(parent_node) = self.nodes.get_mut(parent_id) {
                 parent_node.children.retain(|&child| child != id);
                 parent_node.dirty.hierarchy = true;
             }
-            self.mark_layout_dirty(parent_id);
+            self.mark_parent_subtree_dirty(id);
         } else if self.root == Some(id) {
             self.root = None;
         }
+
+        self.layout_dirty = true;
+        self.spatial_index_dirty = true;
 
         // 2. Add node rect to damage regions
         self.damage_regions.push(rect);
@@ -408,6 +516,8 @@ impl<App> UiTree<App> {
         };
 
         if exists {
+            // Overflow changes affect ancestor clip rects used by the index.
+            self.spatial_index_dirty = true;
             self.mark_layout_dirty(id);
         }
     }
@@ -422,17 +532,140 @@ impl<App> UiTree<App> {
         self.nodes.get(id).and_then(|n| n.parent)
     }
 
-    /// Sets the rectangle of a node and marks it as dirty for repainting.
+    /// Sets the rectangle of a node.
+    ///
+    /// If `rect` is bit-identical to the stored rectangle this is a no-op:
+    /// no paint flag is raised and no damage region is pushed. A real change
+    /// marks the node for repainting, invalidates the spatial index and
+    /// damages the union of the old and new rects, so a partial redraw also
+    /// covers the area the node vacated.
     pub fn set_node_rect(&mut self, id: NodeId, rect: Rect) {
-        if let Some(node) = self.nodes.get_mut(id) {
-            node.rect = rect;
-            node.dirty.paint = true;
-            node.dirty.subtree_dirty = true;
+        let previous = match self.nodes.get_mut(id) {
+            Some(node) => {
+                if rect_eq_bits(node.rect, rect) {
+                    return;
+                }
+                let previous = node.rect;
+                node.rect = rect;
+                node.dirty.paint = true;
+                node.dirty.subtree_dirty = true;
+                previous
+            }
+            None => return,
+        };
+
+        self.spatial_index_dirty = true;
+        self.damage_regions.push(previous.union(rect));
+        self.mark_parent_subtree_dirty(id);
+    }
+
+    /// Returns the visible rectangle of `id`, i.e. its own rect intersected
+    /// with the clip rect of every ancestor whose `Overflow` is not `Visible`.
+    ///
+    /// Returns `None` when the node does not exist or the intersection has no
+    /// area. The walk is O(tree depth); callers may cache it per frame.
+    pub fn visible_rect(&self, id: NodeId) -> Option<Rect> {
+        let node = self.nodes.get(id)?;
+        let mut visible = node.rect;
+        let mut parent = node.parent;
+
+        while let Some(parent_id) = parent {
+            let parent_node = self.nodes.get(parent_id)?;
+            if parent_node.style.overflow != Overflow::Visible {
+                visible = visible.intersect(&parent_node.rect);
+                if visible.width <= 0.0 || visible.height <= 0.0 {
+                    return None;
+                }
+            }
+            parent = parent_node.parent;
+        }
+
+        if visible.width <= 0.0 || visible.height <= 0.0 {
+            None
+        } else {
+            Some(visible)
         }
     }
 
     /// Finds a node by its text identifier.
     pub fn get_node_by_id(&self, id_str: &str) -> Option<NodeId> {
         self.id_map.get(id_str).copied()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widgets::PlaceholderWidget;
+
+    fn single_node() -> (UiTree<()>, NodeId) {
+        let mut tree = UiTree::<()>::new();
+        let id = tree.add_node(Box::new(PlaceholderWidget), None);
+        (tree, id)
+    }
+
+    #[test]
+    fn identical_rect_write_is_a_noop() {
+        let (mut tree, id) = single_node();
+        let rect = Rect::new(4.0, 8.0, 16.0, 32.0);
+
+        // Simulate a node whose previous paint pass completed.
+        tree.clear_damage();
+        if let Some(node) = tree.get_node_mut(id) {
+            node.dirty.paint = false;
+        }
+
+        tree.set_node_rect(id, rect);
+        assert_eq!(tree.damage_regions.len(), 1);
+        assert!(tree.get_node(id).is_some_and(|n| n.dirty.paint));
+
+        tree.clear_damage();
+        if let Some(node) = tree.get_node_mut(id) {
+            node.dirty.paint = false;
+        }
+
+        tree.set_node_rect(id, rect);
+
+        assert!(tree.damage_regions.is_empty());
+        assert!(!tree.get_node(id).is_some_and(|n| n.dirty.paint));
+    }
+
+    #[test]
+    fn bit_identical_rect_distinguishes_signed_zero() {
+        let (mut tree, id) = single_node();
+        tree.set_node_rect(id, Rect::new(0.0, 0.0, 10.0, 10.0));
+        tree.clear_damage();
+        if let Some(node) = tree.get_node_mut(id) {
+            node.dirty.paint = false;
+        }
+
+        tree.set_node_rect(id, Rect::new(-0.0, 0.0, 10.0, 10.0));
+
+        assert_eq!(tree.damage_regions.len(), 1);
+    }
+
+    struct ScrollWidget {
+        offset: Vec2,
+    }
+
+    impl Widget<()> for ScrollWidget {
+        fn update(&mut self, ctx: &mut UpdateContext) {
+            self.offset.x += ctx.delta_time;
+        }
+
+        fn scroll_offset(&self) -> Vec2 {
+            self.offset
+        }
+    }
+
+    #[test]
+    fn scroll_offset_change_requests_layout() {
+        let mut tree = UiTree::<()>::new();
+        tree.add_node(Box::new(ScrollWidget { offset: Vec2::ZERO }), None);
+        tree.clear_layout_dirty();
+
+        tree.update(0.016);
+
+        assert!(tree.is_layout_dirty());
     }
 }

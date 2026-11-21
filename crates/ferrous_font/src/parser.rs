@@ -4,27 +4,566 @@ use super::tables::TableRecord;
 use std::collections::HashMap;
 use std::io::{Read, Seek};
 
+/// A rectangle in em units (1.0 = one em).  Y points up and the origin is the
+/// glyph's baseline origin (the pen position).
+///
+/// Used both for the font's global bounding box ([`FontMetrics::bbox`]) and for
+/// individual glyph ink bounds ([`FontParser::get_glyph_bounds`]).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct GlyphBounds {
+    /// Left edge (`xMin`).
+    pub left: f32,
+    /// Bottom edge (`yMin`).
+    pub bottom: f32,
+    /// Right edge (`xMax`).
+    pub right: f32,
+    /// Top edge (`yMax`).
+    pub top: f32,
+}
+
+/// Vertical metrics of a font, normalised to em units.
+///
+/// The values come from the `head` and `hhea` tables:
+///
+/// * `ascender` / `descender` / `line_gap` are `hhea` values divided by
+///   `units_per_em`; `descender` is negative for a normal font.
+/// * `bbox` is the global glyph bounding box from `head`, also in em units.
+///
+/// Multiply by the layout size in pixels to obtain pixel values.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct FontMetrics {
+    /// Font design units per em (`head.unitsPerEm`).
+    pub units_per_em: u16,
+    /// Distance from the baseline to the ascender (`hhea.ascender`), in em.
+    pub ascender: f32,
+    /// Distance from the baseline to the descender (`hhea.descender`), in em.
+    /// Negative for a normal font.
+    pub descender: f32,
+    /// Recommended extra space between lines (`hhea.lineGap`), in em.
+    pub line_gap: f32,
+    /// Global glyph bounding box from `head`, in em.
+    pub bbox: GlyphBounds,
+}
+
+/// Why a font could not be parsed.
+///
+/// The distinction matters to callers: [`Self::Unsupported`] means the file is
+/// a valid font in an outline format this parser cannot read (CFF outlines,
+/// CFF2 variable fonts), while [`Self::Parse`] means the bytes are malformed or
+/// a required table is missing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParseError {
+    /// The bytes are not a readable TrueType/OpenType font.
+    Parse(String),
+    /// The font is valid but uses an outline format this parser does not read.
+    Unsupported(String),
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Parse(message) => write!(f, "{message}"),
+            Self::Unsupported(message) => write!(f, "unsupported font: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for ParseError {}
+
+/// A pair-adjustment value from one GPOS lookup, in em units.
+///
+/// The value is the horizontal advance adjustment applied to the **first**
+/// glyph of the pair (`ValueRecord1.xAdvance`).  Other GPOS adjustments
+/// (placement, vertical, device tables, mark attachment) are out of scope.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GposPair {
+    /// First glyph of the pair, the one whose advance changes.
+    pub left: u16,
+    /// Second glyph of the pair.
+    pub right: u16,
+    /// Advance adjustment in em units (normally negative for tight pairs).
+    pub x_advance: f32,
+}
+
+/// GPOS `PairPos` kerning recovered from a font, in em units.
+///
+/// Supports `PairPos` format 1 (explicit pairs) and format 2 (class pairs),
+/// horizontal `xAdvance` only.  `kern` table pairs are a separate fallback in
+/// [`FontParser`]; a GPOS pair always wins over a `kern` pair.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GposKerning {
+    pairs: HashMap<(u16, u16), f32>,
+    classes: Vec<ClassKerning>,
+}
+
+impl GposKerning {
+    /// Number of explicit format-1 pairs recovered.
+    #[must_use]
+    pub fn pair_count(&self) -> usize {
+        self.pairs.len()
+    }
+
+    /// Estimated bytes held by the GPOS kerning tables (pairs + class tables).
+    ///
+    /// Used by the atlas budget and the memory inventory; it is an estimate,
+    /// not an allocator measurement.
+    #[must_use]
+    pub fn byte_size(&self) -> u64 {
+        let pairs = crate::budget::map_bytes::<(u16, u16), f32>(self.pairs.len());
+        let classes = self.classes.iter().fold(0u64, |total, table| {
+            total
+                + std::mem::size_of::<ClassKerning>() as u64
+                + table.coverage.ranges.len() as u64 * 4
+                + (table.class1.ranges.len() + table.class2.ranges.len()) as u64 * 6
+                + table.values.len() as u64 * std::mem::size_of::<Option<f32>>() as u64
+        });
+        pairs.saturating_add(classes)
+    }
+
+    /// Number of format-2 class subtables recovered.
+    #[must_use]
+    pub fn class_table_count(&self) -> usize {
+        self.classes.len()
+    }
+
+    /// Whether any kerning was recovered from `GPOS`.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.pairs.is_empty() && self.classes.is_empty()
+    }
+
+    /// The GPOS adjustment for a glyph pair in em units, if the pair is
+    /// covered by any lookup.
+    ///
+    /// A covered pair with a zero adjustment returns `Some(0.0)`: it still
+    /// overrides a legacy `kern` value.
+    #[must_use]
+    pub fn pair(&self, left: u16, right: u16) -> Option<f32> {
+        if let Some(value) = self.pairs.get(&(left, right)) {
+            return Some(*value);
+        }
+        for table in &self.classes {
+            if !table.coverage.contains(left) {
+                continue;
+            }
+            let class1 = table.class1.class_of(left) as usize;
+            let class2 = table.class2.class_of(right) as usize;
+            if class1 >= table.class1_count || class2 >= table.class2_count {
+                continue;
+            }
+            let index = class1 * table.class2_count + class2;
+            if let Some(value) = table.values.get(index).copied().flatten() {
+                return Some(value);
+            }
+        }
+        None
+    }
+
+    /// Every explicit pair, as a list.  Used by tests and by callers that want
+    /// to interop with a plain pair table.
+    #[must_use]
+    pub fn explicit_pairs(&self) -> Vec<GposPair> {
+        let mut pairs: Vec<GposPair> = self
+            .pairs
+            .iter()
+            .map(|(&(left, right), &x_advance)| GposPair {
+                left,
+                right,
+                x_advance,
+            })
+            .collect();
+        pairs.sort_by_key(|pair| (pair.left, pair.right));
+        pairs
+    }
+}
+
+/// One `PairPos` format-2 class subtable.
+#[derive(Debug, Clone, PartialEq)]
+struct ClassKerning {
+    coverage: Coverage,
+    class1: ClassDef,
+    class2: ClassDef,
+    class1_count: usize,
+    class2_count: usize,
+    /// `class1_count * class2_count` advance adjustments; `None` when the
+    /// record has no `xAdvance` field.
+    values: Vec<Option<f32>>,
+}
+
+/// A GPOS coverage table, normalised to inclusive glyph ranges.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Coverage {
+    ranges: Vec<(u16, u16)>,
+}
+
+impl Coverage {
+    fn parse(data: &[u8], offset: usize) -> Option<Self> {
+        let format = u16_at(data, offset)?;
+        match format {
+            1 => {
+                let count = u16_at(data, offset + 2)? as usize;
+                let mut ranges = Vec::with_capacity(count);
+                let mut pos = offset + 4;
+                for _ in 0..count {
+                    let glyph = u16_at(data, pos)?;
+                    ranges.push((glyph, glyph));
+                    pos += 2;
+                }
+                Some(Self { ranges })
+            }
+            2 => {
+                let count = u16_at(data, offset + 2)? as usize;
+                let mut ranges = Vec::with_capacity(count);
+                let mut pos = offset + 4;
+                for _ in 0..count {
+                    let start = u16_at(data, pos)?;
+                    let end = u16_at(data, pos + 2)?;
+                    ranges.push((start, end.max(start)));
+                    pos += 6; // start, end, startCoverageIndex
+                }
+                Some(Self { ranges })
+            }
+            _ => None,
+        }
+    }
+
+    fn contains(&self, glyph: u16) -> bool {
+        self.ranges
+            .iter()
+            .any(|&(start, end)| glyph >= start && glyph <= end)
+    }
+
+    /// The `index`-th covered glyph, in coverage order.
+    fn glyph_at(&self, index: usize) -> Option<u16> {
+        let mut remaining = index;
+        for &(start, end) in &self.ranges {
+            let count = usize::from(end - start) + 1;
+            if remaining < count {
+                return Some(start + remaining as u16);
+            }
+            remaining -= count;
+        }
+        None
+    }
+}
+
+/// A GPOS class definition table.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct ClassDef {
+    ranges: Vec<(u16, u16, u16)>,
+}
+
+impl ClassDef {
+    fn parse(data: &[u8], offset: usize) -> Option<Self> {
+        let format = u16_at(data, offset)?;
+        match format {
+            1 => {
+                let start = u16_at(data, offset + 2)?;
+                let count = u16_at(data, offset + 4)? as usize;
+                let mut ranges = Vec::with_capacity(count);
+                let mut pos = offset + 6;
+                for index in 0..count {
+                    let class = u16_at(data, pos)?;
+                    let glyph = start.saturating_add(index as u16);
+                    ranges.push((glyph, glyph, class));
+                    pos += 2;
+                }
+                Some(Self { ranges })
+            }
+            2 => {
+                let count = u16_at(data, offset + 2)? as usize;
+                let mut ranges = Vec::with_capacity(count);
+                let mut pos = offset + 4;
+                for _ in 0..count {
+                    let start = u16_at(data, pos)?;
+                    let end = u16_at(data, pos + 2)?;
+                    let class = u16_at(data, pos + 4)?;
+                    ranges.push((start, end.max(start), class));
+                    pos += 6;
+                }
+                Some(Self { ranges })
+            }
+            _ => None,
+        }
+    }
+
+    /// The class of `glyph`; class 0 is the default when no range matches.
+    fn class_of(&self, glyph: u16) -> u16 {
+        self.ranges
+            .iter()
+            .find(|&&(start, end, _)| glyph >= start && glyph <= end)
+            .map_or(0, |&(_, _, class)| class)
+    }
+}
+
+// ── Binary form of the kerning tables ────────────────────────────────────────
+//
+// The baked-atlas cache stores the layout tables, so the GPOS structures need a
+// stable byte form.  The codec lives next to the (private) types it encodes and
+// writes entries in a deterministic order.
+
+impl GposKerning {
+    /// Appends the kerning tables to `writer`.
+    pub(crate) fn encode(&self, writer: &mut crate::codec::Writer) {
+        let mut pairs: Vec<((u16, u16), f32)> = self
+            .pairs
+            .iter()
+            .map(|(&pair, &value)| (pair, value))
+            .collect();
+        pairs.sort_by_key(|(pair, _)| *pair);
+        writer.u32(pairs.len() as u32);
+        for ((left, right), value) in pairs {
+            writer.u16(left);
+            writer.u16(right);
+            writer.f32(value);
+        }
+        writer.u32(self.classes.len() as u32);
+        for table in &self.classes {
+            table.encode(writer);
+        }
+    }
+
+    /// Reads what [`Self::encode`] wrote, or `None` on a malformed table.
+    pub(crate) fn decode(reader: &mut crate::codec::Reader<'_>) -> Option<Self> {
+        const MAX_PAIRS: u32 = 1 << 20;
+        const MAX_CLASSES: u32 = 1 << 12;
+        let pair_count = reader.count(MAX_PAIRS)?;
+        let mut pairs = HashMap::with_capacity(pair_count);
+        for _ in 0..pair_count {
+            let left = reader.u16()?;
+            let right = reader.u16()?;
+            pairs.insert((left, right), reader.f32()?);
+        }
+        let class_count = reader.count(MAX_CLASSES)?;
+        let mut classes = Vec::with_capacity(class_count);
+        for _ in 0..class_count {
+            classes.push(ClassKerning::decode(reader)?);
+        }
+        Some(Self { pairs, classes })
+    }
+}
+
+impl ClassKerning {
+    fn encode(&self, writer: &mut crate::codec::Writer) {
+        self.coverage.encode(writer);
+        self.class1.encode(writer);
+        self.class2.encode(writer);
+        writer.u32(self.class1_count as u32);
+        writer.u32(self.class2_count as u32);
+        writer.u32(self.values.len() as u32);
+        for value in &self.values {
+            match value {
+                Some(value) => {
+                    writer.u8(1);
+                    writer.f32(*value);
+                }
+                None => writer.u8(0),
+            }
+        }
+    }
+
+    fn decode(reader: &mut crate::codec::Reader<'_>) -> Option<Self> {
+        const MAX_CLASS_COUNT: u32 = 1 << 16;
+        let coverage = Coverage::decode(reader)?;
+        let class1 = ClassDef::decode(reader)?;
+        let class2 = ClassDef::decode(reader)?;
+        let class1_count = reader.count(MAX_CLASS_COUNT)?;
+        let class2_count = reader.count(MAX_CLASS_COUNT)?;
+        let value_count = reader.count(1 << 20)?;
+        if value_count != class1_count.checked_mul(class2_count)? {
+            return None;
+        }
+        let mut values = Vec::with_capacity(value_count);
+        for _ in 0..value_count {
+            values.push(match reader.u8()? {
+                0 => None,
+                1 => Some(reader.f32()?),
+                _ => return None,
+            });
+        }
+        Some(Self {
+            coverage,
+            class1,
+            class2,
+            class1_count,
+            class2_count,
+            values,
+        })
+    }
+}
+
+impl Coverage {
+    fn encode(&self, writer: &mut crate::codec::Writer) {
+        writer.u32(self.ranges.len() as u32);
+        for (start, end) in &self.ranges {
+            writer.u16(*start);
+            writer.u16(*end);
+        }
+    }
+
+    fn decode(reader: &mut crate::codec::Reader<'_>) -> Option<Self> {
+        let count = reader.count(1 << 16)?;
+        let mut ranges = Vec::with_capacity(count);
+        for _ in 0..count {
+            let start = reader.u16()?;
+            let end = reader.u16()?;
+            ranges.push((start, end));
+        }
+        Some(Self { ranges })
+    }
+}
+
+impl ClassDef {
+    fn encode(&self, writer: &mut crate::codec::Writer) {
+        writer.u32(self.ranges.len() as u32);
+        for (start, end, class) in &self.ranges {
+            writer.u16(*start);
+            writer.u16(*end);
+            writer.u16(*class);
+        }
+    }
+
+    fn decode(reader: &mut crate::codec::Reader<'_>) -> Option<Self> {
+        let count = reader.count(1 << 16)?;
+        let mut ranges = Vec::with_capacity(count);
+        for _ in 0..count {
+            let start = reader.u16()?;
+            let end = reader.u16()?;
+            let class = reader.u16()?;
+            ranges.push((start, end, class));
+        }
+        Some(Self { ranges })
+    }
+}
+
+/// TrueType/OpenType font parser.
+///
+/// Exposes glyph outlines (normalised to em units), advances, vertical metrics,
+/// per-glyph ink bounds, `kern` format 0 kerning and GPOS `PairPos` kerning
+/// (formats 1 and 2, horizontal advance only).  Shaping (ligatures, mark
+/// attachment, complex scripts) is out of scope.
 pub struct FontParser {
     data: Vec<u8>,
     tables: HashMap<[u8; 4], TableRecord>,
     index_to_loc_format: i16,
     pub units_per_em: u16,
+    metrics: FontMetrics,
+    /// `kern` format 0 pairs in em units, keyed by glyph indices.
+    kerning: HashMap<(u16, u16), f32>,
+    gpos: GposKerning,
 }
 
 impl FontParser {
-    pub fn new(data: Vec<u8>) -> Result<Self, String> {
+    /// Parse a font from raw bytes.
+    ///
+    /// Reads the table directory, `head`, `loca`, `hhea`, `kern` and `GPOS`.  A
+    /// missing optional table is not an error; missing `head`/`loca` is.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError::Unsupported`] for a valid font whose outlines this
+    /// parser cannot read (CFF/CFF2 outlines, including CFF2 variable fonts),
+    /// and [`ParseError::Parse`] for malformed bytes or a missing required
+    /// table.  Variable TrueType fonts (`fvar` + `glyf`) are accepted and their
+    /// default instance is used; variation axes are not applied.
+    pub fn new(data: Vec<u8>) -> Result<Self, ParseError> {
         let mut parser = FontParser {
             data,
             tables: HashMap::new(),
             index_to_loc_format: 0,
             units_per_em: 0,
+            metrics: FontMetrics::default(),
+            kerning: HashMap::new(),
+            gpos: GposKerning::default(),
         };
         parser
             .read_offset_and_directory()
-            .map_err(|e| e.to_string())?;
-        parser.read_head().map_err(|e| e.to_string())?;
-        parser.read_loca().map_err(|e| e.to_string())?;
+            .map_err(|e| ParseError::Parse(e.to_string()))?;
+        parser.check_outline_support()?;
+        parser
+            .read_head()
+            .map_err(|e| ParseError::Parse(e.to_string()))?;
+        parser
+            .read_loca()
+            .map_err(|e| ParseError::Parse(e.to_string()))?;
+        parser
+            .read_hhea()
+            .map_err(|e| ParseError::Parse(e.to_string()))?;
+        parser.read_kern();
+        parser.read_gpos();
         Ok(parser)
+    }
+
+    /// Rejects valid fonts whose outlines this parser does not understand.
+    fn check_outline_support(&self) -> Result<(), ParseError> {
+        if !self.tables.contains_key(b"glyf") {
+            let reason = if self.tables.contains_key(b"CFF2") {
+                "CFF2 variable-font outlines are not supported; ship a static TrueType face"
+            } else if self.tables.contains_key(b"CFF ") {
+                "CFF (OpenType PostScript) outlines are not supported; use a TrueType (glyf) face"
+            } else {
+                "the font has no TrueType 'glyf' table"
+            };
+            return Err(ParseError::Unsupported(reason.to_owned()));
+        }
+        Ok(())
+    }
+
+    /// Vertical metrics in em units (see [`FontMetrics`]).
+    pub fn metrics(&self) -> FontMetrics {
+        self.metrics
+    }
+
+    /// The font bytes this parser was built from.
+    ///
+    /// The baked-atlas cache hashes them together with the character set to
+    /// name one atlas file.
+    #[must_use]
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// Whether GPOS pair kerning was recovered from the font.
+    pub fn has_gpos_kerning(&self) -> bool {
+        !self.gpos.is_empty()
+    }
+
+    /// The recovered GPOS pair kerning (formats 1 and 2).
+    pub fn gpos_kerning(&self) -> &GposKerning {
+        &self.gpos
+    }
+
+    /// The GPOS advance adjustment for a character pair, in em units.
+    ///
+    /// `None` means the pair is not covered by GPOS; a covered pair returns the
+    /// adjustment, which may be zero.
+    pub fn get_gpos_kerning(&self, left: char, right: char) -> Option<f32> {
+        let l = self.get_glyph_index(left);
+        let r = self.get_glyph_index(right);
+        self.gpos.pair(l, r)
+    }
+
+    /// Whether a `kern` table was found and parsed.
+    pub fn has_kern_table(&self) -> bool {
+        !self.kerning.is_empty()
+    }
+
+    /// All parsed `kern` format 0 pairs, in em units, keyed by glyph indices.
+    pub fn kerning_pairs(&self) -> &HashMap<(u16, u16), f32> {
+        &self.kerning
+    }
+
+    /// Kerning adjustment between two characters in em units (0.0 if absent).
+    ///
+    /// GPOS pair kerning wins over a legacy `kern` pair; a pair covered by
+    /// GPOS with a zero adjustment suppresses the `kern` value.
+    pub fn get_kerning(&self, left: char, right: char) -> f32 {
+        let l = self.get_glyph_index(left);
+        let r = self.get_glyph_index(right);
+        self.gpos
+            .pair(l, r)
+            .or_else(|| self.kerning.get(&(l, r)).copied())
+            .unwrap_or(0.0)
     }
 
     fn read_offset_and_directory(&mut self) -> std::io::Result<()> {
@@ -63,8 +602,22 @@ impl FontParser {
         );
         cur.set_position(18);
         self.units_per_em = read_u16_be(&mut cur)?;
+        cur.set_position(36);
+        let x_min = read_i16_be(&mut cur)? as f32;
+        let y_min = read_i16_be(&mut cur)? as f32;
+        let x_max = read_i16_be(&mut cur)? as f32;
+        let y_max = read_i16_be(&mut cur)? as f32;
         cur.set_position(50);
         self.index_to_loc_format = read_i16_be(&mut cur)?;
+
+        self.metrics.units_per_em = self.units_per_em;
+        let upm = self.units_per_em.max(1) as f32;
+        self.metrics.bbox = GlyphBounds {
+            left: x_min / upm,
+            bottom: y_min / upm,
+            right: x_max / upm,
+            top: y_max / upm,
+        };
         Ok(())
     }
 
@@ -73,6 +626,139 @@ impl FontParser {
             return Err(std::io::Error::other("no loca"));
         }
         Ok(())
+    }
+
+    /// Read `hhea` ascender/descender/lineGap into [`Self::metrics`].
+    ///
+    /// A missing table leaves the fields at zero; it is not an error.
+    fn read_hhea(&mut self) -> std::io::Result<()> {
+        let Some(rec) = self.tables.get(b"hhea") else {
+            return Ok(());
+        };
+        let end = (rec.offset as usize).saturating_add(rec.length as usize);
+        if end > self.data.len() || rec.length < 10 {
+            return Ok(());
+        }
+        let mut cur = std::io::Cursor::new(&self.data[rec.offset as usize..end]);
+        cur.set_position(4);
+        let ascender = read_i16_be(&mut cur)?;
+        let descender = read_i16_be(&mut cur)?;
+        let line_gap = read_i16_be(&mut cur)?;
+        let upm = self.units_per_em.max(1) as f32;
+        self.metrics.ascender = ascender as f32 / upm;
+        self.metrics.descender = descender as f32 / upm;
+        self.metrics.line_gap = line_gap as f32 / upm;
+        Ok(())
+    }
+
+    /// Parse `kern` format 0 horizontal pairs into [`Self::kerning`].
+    ///
+    /// Invalid or unsupported subtables are skipped; never panics.
+    fn read_kern(&mut self) {
+        let Some(rec) = self.tables.get(b"kern") else {
+            return;
+        };
+        let start = rec.offset as usize;
+        let end = start
+            .saturating_add(rec.length as usize)
+            .min(self.data.len());
+        if end <= start + 4 {
+            return;
+        }
+        let data = &self.data[start..end];
+        let version = u16::from_be_bytes([data[0], data[1]]);
+        if version != 0 {
+            // Apple `kern` version 1 is not supported.
+            return;
+        }
+        let num_tables = u16::from_be_bytes([data[2], data[3]]) as usize;
+        let upm = self.units_per_em.max(1) as f32;
+        let mut pos = 4usize;
+        for _ in 0..num_tables {
+            if pos + 6 > data.len() {
+                break;
+            }
+            let length = u16::from_be_bytes([data[pos + 2], data[pos + 3]]) as usize;
+            let coverage = u16::from_be_bytes([data[pos + 4], data[pos + 5]]);
+            let format = coverage >> 8;
+            let horizontal = coverage & 0x1 != 0;
+            // Format 0 subtable: 6-byte header + 8-byte format header + pairs.
+            if format == 0 && horizontal && pos + 14 <= data.len() {
+                let n_pairs = u16::from_be_bytes([data[pos + 6], data[pos + 7]]) as usize;
+                let pairs_start = pos + 14;
+                if pairs_start + n_pairs * 6 <= data.len() {
+                    for i in 0..n_pairs {
+                        let p = pairs_start + i * 6;
+                        let left = u16::from_be_bytes([data[p], data[p + 1]]);
+                        let right = u16::from_be_bytes([data[p + 2], data[p + 3]]);
+                        let value = i16::from_be_bytes([data[p + 4], data[p + 5]]) as f32;
+                        self.kerning.insert((left, right), value / upm);
+                    }
+                }
+            }
+            if length < 6 {
+                break;
+            }
+            pos += length;
+        }
+    }
+
+    /// Parse GPOS `PairPos` subtables (format 1 and 2, horizontal advance).
+    ///
+    /// Every type-2 lookup in the lookup list is read, no matter which script
+    /// or feature references it: a `PairPos` lookup is pair kerning by
+    /// definition, and fonts routinely share one lookup between scripts.
+    /// Malformed or unrecognised subtables are skipped; this never panics.
+    fn read_gpos(&mut self) {
+        let Some(rec) = self.tables.get(b"GPOS") else {
+            return;
+        };
+        let start = rec.offset as usize;
+        let end = start
+            .saturating_add(rec.length as usize)
+            .min(self.data.len());
+        if end <= start + 10 {
+            return;
+        }
+        let data = &self.data[start..end];
+        let upm = self.units_per_em.max(1) as f32;
+        let Some(lookup_list) = u16_at(data, 8).map(usize::from) else {
+            return;
+        };
+        let Some(lookup_count) = u16_at(data, lookup_list).map(usize::from) else {
+            return;
+        };
+        let mut gpos = GposKerning::default();
+        for index in 0..lookup_count {
+            let Some(lookup) = u16_at(data, lookup_list + 2 + index * 2).map(usize::from) else {
+                break;
+            };
+            let lookup = lookup_list + lookup;
+            if u16_at(data, lookup) != Some(2) {
+                continue;
+            }
+            let Some(sub_count) = u16_at(data, lookup + 4).map(usize::from) else {
+                continue;
+            };
+            for sub_index in 0..sub_count {
+                let Some(sub) = u16_at(data, lookup + 6 + sub_index * 2).map(usize::from) else {
+                    break;
+                };
+                let sub = lookup + sub;
+                if let Some(parsed) = parse_pair_pos(data, sub, upm) {
+                    gpos.pairs.extend(parsed.pairs);
+                    gpos.classes.extend(parsed.classes);
+                }
+            }
+        }
+        if !gpos.is_empty() {
+            log::debug!(
+                "GPOS pair kerning: {} explicit pairs, {} class tables",
+                gpos.pair_count(),
+                gpos.class_table_count()
+            );
+        }
+        self.gpos = gpos;
     }
 
     pub fn get_glyph_index(&self, c: char) -> u16 {
@@ -596,8 +1282,17 @@ impl FontParser {
         self.parse_glyph_recursive(idx, 0)
     }
 
+    /// Outline of the glyph at `glyph_index` (0 = the `.notdef` glyph).
+    pub fn get_glyph_outline_by_index(&self, glyph_index: u16) -> Vec<GlyphCommand> {
+        self.parse_glyph_recursive(glyph_index, 0)
+    }
+
     pub fn get_glyph_advance(&self, c: char) -> f32 {
-        let idx = self.get_glyph_index(c);
+        self.get_glyph_advance_by_index(self.get_glyph_index(c))
+    }
+
+    /// Advance width of the glyph at `glyph_index`, in em units.
+    pub fn get_glyph_advance_by_index(&self, idx: u16) -> f32 {
         let hmtx_rec = match self.tables.get(b"hmtx") {
             Some(r) => r,
             None => return 0.0,
@@ -606,9 +1301,15 @@ impl FontParser {
             Some(r) => r,
             None => return 0.0,
         };
+        if hhea_rec.offset as usize + 36 > self.data.len() {
+            return 0.0;
+        }
         let mut cur = std::io::Cursor::new(&self.data);
         cur.set_position(hhea_rec.offset as u64 + 34);
         let num_h = read_u16_be(&mut cur).unwrap_or(0);
+        if num_h == 0 {
+            return 0.0;
+        }
         let adv = if idx < num_h {
             cur.set_position(hmtx_rec.offset as u64 + (idx as u64 * 4));
             read_u16_be(&mut cur).unwrap_or(0)
@@ -616,11 +1317,140 @@ impl FontParser {
             cur.set_position(hmtx_rec.offset as u64 + ((num_h as u64 - 1) * 4));
             read_u16_be(&mut cur).unwrap_or(0)
         };
-        adv as f32 / self.units_per_em as f32
+        adv as f32 / self.units_per_em.max(1) as f32
+    }
+
+    /// Ink bounds of a character from its `glyf` header, in em units.
+    ///
+    /// Returns `None` for an empty glyph (for example a space) or when the
+    /// `glyf`/`loca` tables are unavailable.
+    pub fn get_glyph_bounds(&self, c: char) -> Option<GlyphBounds> {
+        self.get_glyph_bounds_by_index(self.get_glyph_index(c))
+    }
+
+    /// Ink bounds of the glyph at `glyph_index` from its `glyf` header, in em.
+    pub fn get_glyph_bounds_by_index(&self, glyph_index: u16) -> Option<GlyphBounds> {
+        let (abs_off0, abs_off1) = self.glyf_offset(glyph_index)?;
+        if abs_off0 >= abs_off1 || abs_off0 as usize + 10 > self.data.len() {
+            return None;
+        }
+        let glyf = &self.data[abs_off0 as usize..abs_off1 as usize];
+        if glyf.len() < 10 {
+            return None;
+        }
+        let x_min = i16::from_be_bytes([glyf[2], glyf[3]]) as f32;
+        let y_min = i16::from_be_bytes([glyf[4], glyf[5]]) as f32;
+        let x_max = i16::from_be_bytes([glyf[6], glyf[7]]) as f32;
+        let y_max = i16::from_be_bytes([glyf[8], glyf[9]]) as f32;
+        let upm = self.units_per_em.max(1) as f32;
+        Some(GlyphBounds {
+            left: x_min / upm,
+            bottom: y_min / upm,
+            right: x_max / upm,
+            top: y_max / upm,
+        })
     }
 }
 
 // ── Free helpers ──────────────────────────────────────────────────────────────
+
+/// Reads a big-endian `u16` at `offset`, or `None` when it is out of bounds.
+fn u16_at(data: &[u8], offset: usize) -> Option<u16> {
+    let bytes = data.get(offset..offset.checked_add(2)?)?;
+    Some(u16::from_be_bytes([bytes[0], bytes[1]]))
+}
+
+/// Reads a big-endian `i16` at `offset`, or `None` when it is out of bounds.
+fn i16_at(data: &[u8], offset: usize) -> Option<i16> {
+    u16_at(data, offset).map(|value| value as i16)
+}
+
+/// Size in bytes of a GPOS value record with `format` bits set.
+///
+/// Every defined bit (`xPlacement` .. `yAdvanceDevice`) adds one two-byte
+/// field.  Higher bits are reserved and ignored.
+fn value_record_size(format: u16) -> usize {
+    (format & 0x00FF).count_ones() as usize * 2
+}
+
+/// Reads `ValueRecord.xAdvance` (bit `0x0004`) when the record has one.
+fn read_x_advance(data: &[u8], offset: usize, format: u16) -> Option<i16> {
+    let mut pos = offset;
+    if format & 0x0001 != 0 {
+        pos = pos.checked_add(2)?;
+    }
+    if format & 0x0002 != 0 {
+        pos = pos.checked_add(2)?;
+    }
+    if format & 0x0004 == 0 {
+        return None;
+    }
+    i16_at(data, pos)
+}
+
+/// A `PairPos` subtable parsed into explicit pairs and class tables.
+#[derive(Default)]
+struct ParsedPairPos {
+    pairs: HashMap<(u16, u16), f32>,
+    classes: Vec<ClassKerning>,
+}
+
+/// Parses one GPOS `PairPos` subtable (format 1 or 2).
+fn parse_pair_pos(data: &[u8], offset: usize, upm: f32) -> Option<ParsedPairPos> {
+    let format = u16_at(data, offset)?;
+    let coverage_offset = usize::from(u16_at(data, offset + 2)?);
+    let value_format1 = u16_at(data, offset + 4)?;
+    let value_format2 = u16_at(data, offset + 6)?;
+    let coverage = Coverage::parse(data, offset.checked_add(coverage_offset)?)?;
+    let size1 = value_record_size(value_format1);
+    let size2 = value_record_size(value_format2);
+    let mut parsed = ParsedPairPos::default();
+    match format {
+        1 => {
+            let pair_set_count = usize::from(u16_at(data, offset + 8)?);
+            for pair_set_index in 0..pair_set_count {
+                let set_offset = usize::from(u16_at(data, offset + 10 + pair_set_index * 2)?);
+                let set = offset.checked_add(set_offset)?;
+                let Some(left) = coverage.glyph_at(pair_set_index) else {
+                    continue;
+                };
+                let count = usize::from(u16_at(data, set)?);
+                let mut pos = set.checked_add(2)?;
+                for _ in 0..count {
+                    let right = u16_at(data, pos)?;
+                    if let Some(value) = read_x_advance(data, pos + 2, value_format1) {
+                        parsed.pairs.insert((left, right), f32::from(value) / upm);
+                    }
+                    pos = pos.checked_add(2 + size1 + size2)?;
+                }
+            }
+        }
+        2 => {
+            let class1_offset = usize::from(u16_at(data, offset + 8)?);
+            let class2_offset = usize::from(u16_at(data, offset + 10)?);
+            let class1_count = usize::from(u16_at(data, offset + 12)?);
+            let class2_count = usize::from(u16_at(data, offset + 14)?);
+            let class1 = ClassDef::parse(data, offset.checked_add(class1_offset)?)?;
+            let class2 = ClassDef::parse(data, offset.checked_add(class2_offset)?)?;
+            let mut values = Vec::with_capacity(class1_count.saturating_mul(class2_count));
+            let mut pos = offset.checked_add(16)?;
+            for _ in 0..class1_count.saturating_mul(class2_count) {
+                values.push(read_x_advance(data, pos, value_format1).map(|v| f32::from(v) / upm));
+                pos = pos.checked_add(size1 + size2)?;
+            }
+            parsed.classes.push(ClassKerning {
+                coverage,
+                class1,
+                class2,
+                class1_count,
+                class2_count,
+                values,
+            });
+        }
+        _ => return None,
+    }
+    Some(parsed)
+}
 
 /// Read a 16-bit F2Dot14 fixed-point number (2 integer + 14 fractional bits).
 /// Used in TrueType composite glyph transformation matrices.
@@ -689,10 +1519,13 @@ mod tests {
     use super::*;
 
     fn load_roboto() -> Option<FontParser> {
-        // Try GUIMaker assets first, then engine assets
+        // Resolve from the crate manifest so the test works no matter which
+        // directory `cargo test` is invoked from.
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let paths = [
-            "GUIMaker/assets/fonts/Roboto-Regular.ttf",
-            "assets/fonts/Roboto-Regular.ttf",
+            manifest.join("../../assets/fonts/Roboto-Regular.ttf"),
+            std::path::PathBuf::from("assets/fonts/Roboto-Regular.ttf"),
+            std::path::PathBuf::from("GUIMaker/assets/fonts/Roboto-Regular.ttf"),
         ];
         for p in &paths {
             if let Ok(bytes) = std::fs::read(p) {
@@ -700,6 +1533,101 @@ mod tests {
             }
         }
         None
+    }
+
+    #[test]
+    fn roboto_vertical_metrics_match_the_file() {
+        let Some(parser) = load_roboto() else { return };
+        let m = parser.metrics();
+        assert_eq!(m.units_per_em, 2048);
+        // Values read directly from Roboto-Regular.ttf's `hhea` table.
+        assert!((m.ascender - 1900.0 / 2048.0).abs() < 1e-6);
+        assert!((m.descender - (-500.0 / 2048.0)).abs() < 1e-6);
+        assert!((m.line_gap - 0.0).abs() < 1e-6);
+        // Global `head` bounding box.
+        assert!((m.bbox.left - (-980.0 / 2048.0)).abs() < 1e-6);
+        assert!((m.bbox.top - (2163.0 / 2048.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn roboto_kern_pairs_kerning() {
+        let Some(parser) = load_roboto() else { return };
+        if !parser.has_kern_table() {
+            return;
+        }
+        let av = parser.get_kerning('A', 'V');
+        let to = parser.get_kerning('T', 'o');
+        assert!((av - (-87.0 / 2048.0)).abs() < 1e-6, "A/V kern = {av}");
+        assert!((to - (-99.0 / 2048.0)).abs() < 1e-6, "T/o kern = {to}");
+    }
+
+    #[test]
+    fn glyph_bounds_of_o_enclose_its_hole() {
+        let Some(parser) = load_roboto() else { return };
+        let Some(b) = parser.get_glyph_bounds('o') else {
+            panic!("'o' must have ink bounds");
+        };
+        // Values read directly from the `glyf` header of Roboto's 'o'.
+        assert!((b.left - 97.0 / 2048.0).abs() < 1e-6);
+        assert!((b.bottom - (-21.0 / 2048.0)).abs() < 1e-6);
+        assert!((b.right - 1066.0 / 2048.0).abs() < 1e-6);
+        assert!((b.top - 1102.0 / 2048.0).abs() < 1e-6);
+        // 'o' has an outer and an inner (hole) contour.
+        let outlines = parser.get_glyph_outline('o');
+        let contours = outlines
+            .iter()
+            .filter(|c| matches!(c, GlyphCommand::MoveTo(..)))
+            .count();
+        assert!(
+            contours >= 2,
+            "'o' must have a hole (2 contours), got {contours}"
+        );
+        assert!(
+            b.left < 0.25 && b.right > 0.45,
+            "hole must sit inside the ink"
+        );
+    }
+
+    #[test]
+    fn gpos_pair_kerning_is_parsed() {
+        let Some(parser) = load_roboto() else { return };
+        assert!(parser.has_gpos_kerning(), "Roboto has a GPOS table");
+        let av = parser
+            .get_gpos_kerning('A', 'V')
+            .expect("Roboto GPOS must cover A/V");
+        let to = parser
+            .get_gpos_kerning('T', 'o')
+            .expect("Roboto GPOS must cover T/o");
+        assert!(av < 0.0, "A/V must tighten, got {av}");
+        assert!(to < 0.0, "T/o must tighten, got {to}");
+        // The resolved pair is the GPOS value, not the legacy `kern` one.
+        assert!((parser.get_kerning('A', 'V') - av).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cff_outlines_are_a_typed_unsupported_error() {
+        let mut data = vec![0, 1, 0, 0];
+        data.extend(&1u16.to_be_bytes()); // numTables
+        data.extend(&[0; 6]); // searchRange, entrySelector, rangeShift
+        data.extend(b"CFF ");
+        data.extend(&0u32.to_be_bytes()); // checksum
+        data.extend(&28u32.to_be_bytes()); // offset
+        data.extend(&0u32.to_be_bytes()); // length
+        assert!(matches!(
+            FontParser::new(data),
+            Err(ParseError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn a_font_without_glyf_is_typed_as_unsupported() {
+        let mut data = vec![0, 1, 0, 0];
+        data.extend(&0u16.to_be_bytes()); // numTables
+        data.extend(&[0; 6]);
+        assert!(matches!(
+            FontParser::new(data),
+            Err(ParseError::Unsupported(_))
+        ));
     }
 
     #[test]

@@ -130,6 +130,10 @@ impl ComponentColumn {
     /// or `None` if the removed element was the last one.
     ///
     /// The removed element's drop function is called if needed.
+    ///
+    /// # Safety
+    /// `row` must be less than `self.len`; the caller must fix the entity
+    /// table when this returns `true` (a different entity moved into `row`).
     pub unsafe fn swap_remove(&mut self, row: usize) -> bool {
         debug_assert!(row < self.len);
         let size = self.info.size;
@@ -177,12 +181,19 @@ impl ComponentColumn {
     }
 
     /// Raw pointer to element at `row`.
+    ///
+    /// # Safety
+    /// `row` must be less than `self.len`.
     #[inline]
     pub unsafe fn get_raw(&self, row: usize) -> *const u8 {
         self.data.add(row * self.info.size)
     }
 
     /// Mutable raw pointer to element at `row`.
+    ///
+    /// # Safety
+    /// `row` must be less than `self.len`, and the caller must not alias the
+    /// returned pointer with another reference into this column.
     #[inline]
     pub unsafe fn get_raw_mut(&mut self, row: usize) -> *mut u8 {
         self.data.add(row * self.info.size)
@@ -324,6 +335,10 @@ impl Archetype {
     /// a double-free in that case.
     ///
     /// Returns the entity that was swapped in (`None` if it was the last).
+    ///
+    /// # Safety
+    /// `row` must be less than `self.entities.len()`; the component data must
+    /// already have been moved out, or the values are leaked.
     pub unsafe fn swap_remove_no_drop(&mut self, row: usize) -> Option<Entity> {
         debug_assert!(row < self.entities.len());
         let last = self.entities.len() - 1;
@@ -354,6 +369,9 @@ impl Archetype {
     ///
     /// Returns the entity that was swapped into `row` (the previously-last one),
     /// or `None` if the removed entity was the last.
+    ///
+    /// # Safety
+    /// `row` must be less than `self.entities.len()`.
     pub unsafe fn swap_remove(&mut self, row: usize) -> Option<Entity> {
         debug_assert!(row < self.entities.len());
         let last_entity = *self.entities.last().unwrap();
@@ -426,6 +444,12 @@ impl ArchetypeStore {
 
     pub fn len(&self) -> usize {
         self.archetypes.len()
+    }
+
+    /// Whether the store has no archetypes (it always has the empty one, so
+    /// this is `false` for a constructed store).
+    pub fn is_empty(&self) -> bool {
+        self.archetypes.is_empty()
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Archetype> {

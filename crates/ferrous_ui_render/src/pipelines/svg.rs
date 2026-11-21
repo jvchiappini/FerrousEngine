@@ -1,11 +1,20 @@
-use wgpu::RenderPipeline;
 use ferrous_svg::SvgVertex;
+use wgpu::RenderPipeline;
+
+// `svg.wgsl` consumes all three attributes; the last one (`z_order`) ends at
+// byte 28, which is exactly the struct size: no trailing padding.
+const _: () = {
+    assert!(std::mem::size_of::<SvgVertex>() == 28);
+    assert!(std::mem::offset_of!(SvgVertex, color) == 8);
+    assert!(std::mem::offset_of!(SvgVertex, z_order) == 24);
+};
 
 pub fn create_svg_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
     pipeline_layout: &wgpu::PipelineLayout,
     sample_count: u32,
+    depth_format: Option<wgpu::TextureFormat>,
     cache: Option<&wgpu::PipelineCache>,
 ) -> RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -21,29 +30,27 @@ pub fn create_svg_pipeline(
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: Some("vs_main"),
-            buffers: &[
-                wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<SvgVertex>() as wgpu::BufferAddress,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x2,
-                            offset: 0,
-                            shader_location: 0,
-                        },
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x4,
-                            offset: 8,
-                            shader_location: 1,
-                        },
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32,
-                            offset: 24,
-                            shader_location: 2,
-                        },
-                    ],
-                },
-            ],
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<SvgVertex>() as wgpu::BufferAddress,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x2,
+                        offset: 0,
+                        shader_location: 0,
+                    },
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x4,
+                        offset: 8,
+                        shader_location: 1,
+                    },
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32,
+                        offset: 24,
+                        shader_location: 2,
+                    },
+                ],
+            }],
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
@@ -57,14 +64,17 @@ pub fn create_svg_pipeline(
             compilation_options: Default::default(),
         }),
         primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: wgpu::TextureFormat::Depth32Float,
+        depth_stencil: depth_format.map(|format| wgpu::DepthStencilState {
+            format,
             depth_write_enabled: false,
             depth_compare: wgpu::CompareFunction::LessEqual,
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),
-        multisample: wgpu::MultisampleState { count: sample_count, ..Default::default() },
+        multisample: wgpu::MultisampleState {
+            count: sample_count,
+            ..Default::default()
+        },
         multiview: None,
         cache,
     })

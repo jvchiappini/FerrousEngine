@@ -3,17 +3,107 @@
 //! Handles WGPU pipelines, buffers, and textures for rendering UI batches.
 //! Modularized for Phase 4: Early-Z, Depth Buffer, and Prepare/Render split.
 
-use std::sync::Arc;
-use wgpu::util::DeviceExt;
 use crate::gpu_types::{GuiQuad, TextQuad};
 use crate::gui_batch::GuiBatch;
-use crate::MAX_TEXTURE_SLOTS;
 use crate::pipelines::{
+    id::create_id_pipeline,
     layout::Layouts,
+    overdraw::{create_overdraw_pipeline, create_overdraw_text_pipeline},
     quad::create_quad_pipeline,
     text::create_text_pipeline,
-    id::create_id_pipeline,
 };
+use crate::MAX_TEXTURE_SLOTS;
+use ferrous_core::memory::{self, Subsystem};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
+use wgpu::util::DeviceExt;
+
+/// Forwards the `ferrous_font` / `ferrous_assets` cache inventory to
+/// [`ferrous_core::memory`].
+///
+/// `ferrous_font` has no dependency on `ferrous_core`; the first
+/// [`GuiRenderer`] installs this process-global sink, so every later atlas,
+/// glyph table or decoded-image registration appears in `memory_report`.
+#[cfg(feature = "text")]
+fn install_memory_inventory() {
+    ferrous_assets::inventory::install(register_cache_memory, unregister_cache_memory);
+}
+
+#[cfg(feature = "text")]
+fn register_cache_memory(
+    label: &str,
+    bytes: u64,
+    side: ferrous_assets::inventory::MemorySide,
+    subsystem: ferrous_assets::inventory::Subsystem,
+) {
+    let subsystem = match subsystem {
+        ferrous_assets::inventory::Subsystem::Fonts => Subsystem::Fonts,
+        ferrous_assets::inventory::Subsystem::Assets => Subsystem::Assets,
+    };
+    match side {
+        ferrous_assets::inventory::MemorySide::Cpu => memory::register_cpu(label, bytes, subsystem),
+        ferrous_assets::inventory::MemorySide::Gpu => memory::register_gpu(label, bytes, subsystem),
+    }
+}
+
+#[cfg(feature = "text")]
+fn unregister_cache_memory(
+    label: &str,
+    side: ferrous_assets::inventory::MemorySide,
+    subsystem: ferrous_assets::inventory::Subsystem,
+) {
+    let subsystem = match subsystem {
+        ferrous_assets::inventory::Subsystem::Fonts => Subsystem::Fonts,
+        ferrous_assets::inventory::Subsystem::Assets => Subsystem::Assets,
+    };
+    match side {
+        ferrous_assets::inventory::MemorySide::Cpu => memory::unregister_cpu(label, subsystem),
+        ferrous_assets::inventory::MemorySide::Gpu => memory::unregister_gpu(label, subsystem),
+    }
+}
+
+/// Per-frame GPU work counters for the GUI pass (prompt 18 P5).
+///
+/// Every field counts *calls actually issued*, not primitive ranges or
+/// identity switches.  Since the render loop caches bind state per pass, a
+/// field only grows when a slot genuinely changes; before the cache existed
+/// `pipeline_binds` always equalled `draw_calls`.  The numbers are what the
+/// phase report compares before and after batching work.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct UiFrameCounters {
+    /// Render passes opened by the GUI renderer this frame (0 or 1).
+    pub passes: u32,
+    /// Draw segments visited (one per scissor change).
+    pub segments: u32,
+    /// `set_scissor_rect` calls.
+    pub scissor_changes: u32,
+    /// `draw_indexed` calls.
+    pub draw_calls: u32,
+    /// `set_pipeline` calls actually issued (not the number of draws).
+    pub pipeline_binds: u32,
+    /// `set_bind_group` calls actually issued.
+    pub bind_group_binds: u32,
+    /// `set_vertex_buffer` + `set_index_buffer` calls actually issued.
+    pub buffer_binds: u32,
+}
+
+/// Identity of the last object bound to each render-pass slot (prompt 18 P5).
+///
+/// The GUI pass used to rebind pipeline, bind groups and the shared quad
+/// vertex/index buffers for every primitive range of every segment.  This
+/// cache lets the loop skip a `set_*` call when the slot already holds the
+/// same object.  It is local to one pass: the caller creates it with
+/// `PassBindState::default()` after `begin_render_pass`, so stale state from a
+/// previous pass can never leak in.
+#[derive(Debug, Default, Clone, Copy)]
+struct PassBindState {
+    pipeline: Option<u64>,
+    bind0: Option<u64>,
+    bind1: Option<u64>,
+    vertex0: Option<u64>,
+    vertex1: Option<u64>,
+    index: Option<u64>,
+}
 
 /// Main UI rendering engine on the GPU.
 pub struct GuiRenderer {
@@ -24,6 +114,13 @@ pub struct GuiRenderer {
     pub text_pipeline: wgpu::RenderPipeline,
     pub svg_pipeline: wgpu::RenderPipeline,
     pub id_pipeline: wgpu::RenderPipeline,
+    /// Diagnostic pipelines that add a fixed heat colour per fragment instead
+    /// of the normal shading (prompt 18 P5).  Never selected unless
+    /// [`Self::set_overdraw`] enables the view.
+    pub overdraw_quad_pipeline: wgpu::RenderPipeline,
+    pub overdraw_text_pipeline: wgpu::RenderPipeline,
+    /// Runtime toggle for the overdraw debug view.
+    overdraw_enabled: bool,
 
     pub vertex_buffer: wgpu::Buffer,
     pub index_buffer: wgpu::Buffer,
@@ -54,15 +151,25 @@ pub struct GuiRenderer {
     pub icon_max_instances: u32,
     pub svg_max_vertices: u32,
     pub svg_max_indices: u32,
+    /// Reused vertex/index scratch for SVG uploads (no per-frame `Vec`).
+    svg_scratch_vertices: Vec<ferrous_svg::SvgVertex>,
+    svg_scratch_indices: Vec<u32>,
     pub resolution: [f32; 2],
 
-    // Depth Buffer for Early-Z
-    pub depth_texture: wgpu::Texture,
-    pub depth_view: wgpu::TextureView,
+    // Depth Buffer for Early-Z.  `None` when the consumer disabled it
+    // (`Render2dConfig::ui_depth == false`): the normal UI pipelines never
+    // write depth, so the attachment is inert and its full-size texture is
+    // pure VRAM (5.76 MB at 1600x900).
+    pub depth_texture: Option<wgpu::Texture>,
+    pub depth_view: Option<wgpu::TextureView>,
+    /// Whether the GUI pass allocates/uses a depth attachment.
+    ui_depth: bool,
 
-    // GPU ID Hit-Testing
-    pub id_texture: wgpu::Texture,
-    pub id_view: wgpu::TextureView,
+    // GPU ID Hit-Testing.  The full-size id texture is allocated lazily on the
+    // first hit test (see [`Self::ensure_id_target`]); most UI sessions never
+    // pick, so paying for it at start-up was wasted VRAM.
+    pub id_texture: Option<wgpu::Texture>,
+    pub id_view: Option<wgpu::TextureView>,
     pub id_staging_buffer: wgpu::Buffer,
 
     pub format: wgpu::TextureFormat,
@@ -73,6 +180,16 @@ pub struct GuiRenderer {
     /// recompiling (audit M18).  `None` on backends without
     /// `wgpu::Features::PIPELINE_CACHE`.
     pipeline_cache: Option<Arc<wgpu::PipelineCache>>,
+
+    // Per-frame instrumentation (atomics: `render_with_timestamps` takes
+    // `&self`).
+    counters_passes: AtomicU32,
+    counters_segments: AtomicU32,
+    counters_scissor_changes: AtomicU32,
+    counters_draw_calls: AtomicU32,
+    counters_pipeline_binds: AtomicU32,
+    counters_bind_group_binds: AtomicU32,
+    counters_buffer_binds: AtomicU32,
 }
 
 impl GuiRenderer {
@@ -85,6 +202,8 @@ impl GuiRenderer {
         sample_count: u32,
         pipeline_cache: Option<Arc<wgpu::PipelineCache>>,
     ) -> Self {
+        #[cfg(feature = "text")]
+        install_memory_inventory();
         let layouts = Layouts::new(&device);
 
         // Standard buffers
@@ -143,7 +262,11 @@ impl GuiRenderer {
         // Dummy image bind group
         let dummy_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("GUI Dummy Texture"),
-            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -158,16 +281,24 @@ impl GuiRenderer {
             min_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
-        let dummy_views: Vec<&wgpu::TextureView> = std::iter::repeat_n(&dummy_view, MAX_TEXTURE_SLOTS as usize).collect();
-        let dummy_samplers: Vec<&wgpu::Sampler> = std::iter::repeat_n(&dummy_sampler, MAX_TEXTURE_SLOTS as usize).collect();
+        let dummy_views: Vec<&wgpu::TextureView> =
+            std::iter::repeat_n(&dummy_view, MAX_TEXTURE_SLOTS as usize).collect();
+        let dummy_samplers: Vec<&wgpu::Sampler> =
+            std::iter::repeat_n(&dummy_sampler, MAX_TEXTURE_SLOTS as usize).collect();
 
         #[cfg(not(target_arch = "wasm32"))]
         let image_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("GUI Image Bind Group (dummy)"),
             layout: &layouts.image_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureViewArray(&dummy_views) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::SamplerArray(&dummy_samplers) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureViewArray(&dummy_views),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::SamplerArray(&dummy_samplers),
+                },
             ],
         });
 
@@ -193,16 +324,68 @@ impl GuiRenderer {
 
         // Pipelines
         let cache = pipeline_cache.as_deref();
-        let opaque_pipeline = create_quad_pipeline(&device, format, &layouts.quad_pipeline_layout, sample_count, true, cache);
-        let transparent_pipeline = create_quad_pipeline(&device, format, &layouts.quad_pipeline_layout, sample_count, false, cache);
-        let text_pipeline = create_text_pipeline(&device, format, &layouts.text_pipeline_layout, sample_count, false, cache);
-        let svg_pipeline = crate::pipelines::svg::create_svg_pipeline(&device, format, &layouts.quad_pipeline_layout, sample_count, cache);
+        let depth_format = Some(wgpu::TextureFormat::Depth32Float);
+        let opaque_pipeline = create_quad_pipeline(
+            &device,
+            format,
+            &layouts.quad_pipeline_layout,
+            sample_count,
+            true,
+            depth_format,
+            cache,
+        );
+        let transparent_pipeline = create_quad_pipeline(
+            &device,
+            format,
+            &layouts.quad_pipeline_layout,
+            sample_count,
+            false,
+            depth_format,
+            cache,
+        );
+        let text_pipeline = create_text_pipeline(
+            &device,
+            format,
+            &layouts.text_pipeline_layout,
+            sample_count,
+            false,
+            depth_format,
+            cache,
+        );
+        let svg_pipeline = crate::pipelines::svg::create_svg_pipeline(
+            &device,
+            format,
+            &layouts.quad_pipeline_layout,
+            sample_count,
+            depth_format,
+            cache,
+        );
         let id_pipeline = create_id_pipeline(&device, &layouts.quad_pipeline_layout, cache);
+        let overdraw_quad_pipeline = create_overdraw_pipeline(
+            &device,
+            format,
+            &layouts.quad_pipeline_layout,
+            sample_count,
+            depth_format,
+            cache,
+        );
+        let overdraw_text_pipeline = create_overdraw_text_pipeline(
+            &device,
+            format,
+            &layouts.text_pipeline_layout,
+            sample_count,
+            depth_format,
+            cache,
+        );
 
         // Depth Buffer for Early-Z
         let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("GUI Depth Texture"),
-            size: wgpu::Extent3d { width: width.max(1), height: height.max(1), depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count,
             dimension: wgpu::TextureDimension::D2,
@@ -211,19 +394,13 @@ impl GuiRenderer {
             view_formats: &[],
         });
         let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth_texture = Some(depth_texture);
+        let depth_view = Some(depth_view);
 
-        // ID Buffer
-        let id_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("GUI ID Texture"),
-            size: wgpu::Extent3d { width: width.max(1), height: height.max(1), depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R32Uint,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let id_view = id_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // ID Buffer: only the 4-byte staging target is created eagerly.  The
+        // full-size `R32Uint` texture is allocated by `ensure_id_target` on the
+        // first pick/readback (it is used only by the separate id pass, so the
+        // visual pass and every golden are unaffected).
         let id_staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("GUI ID Staging Buffer"),
             size: 4,
@@ -245,6 +422,34 @@ impl GuiRenderer {
             mapped_at_creation: false,
         });
 
+        memory::register_gpu("gui:quad vertices", vertex_buffer.size(), Subsystem::Gui);
+        memory::register_gpu("gui:quad indices", index_buffer.size(), Subsystem::Gui);
+        memory::register_gpu(
+            "gui:instance instances",
+            instance_buffer.size(),
+            Subsystem::Gui,
+        );
+        memory::register_gpu(
+            "gui:text instances",
+            text_instance_buffer.size(),
+            Subsystem::Gui,
+        );
+        memory::register_gpu(
+            "gui:icon instances",
+            icon_instance_buffer.size(),
+            Subsystem::Gui,
+        );
+        memory::register_gpu("gui:uniform", uniform_buffer.size(), Subsystem::Gui);
+        memory::register_gpu("gui:dummy texture", 4, Subsystem::Gui);
+        memory::register_gpu(
+            "gui:depth texture",
+            Self::depth_texture_bytes(width, height, sample_count),
+            Subsystem::Gui,
+        );
+        memory::register_gpu("gui:id staging", id_staging_buffer.size(), Subsystem::Gui);
+        memory::register_gpu("gui:svg vertices", svg_vertex_buffer.size(), Subsystem::Gui);
+        memory::register_gpu("gui:svg indices", svg_index_buffer.size(), Subsystem::Gui);
+
         Self {
             device,
             layouts,
@@ -253,6 +458,9 @@ impl GuiRenderer {
             text_pipeline,
             svg_pipeline,
             id_pipeline,
+            overdraw_quad_pipeline,
+            overdraw_text_pipeline,
+            overdraw_enabled: false,
             vertex_buffer,
             index_buffer,
             instance_buffer,
@@ -273,20 +481,167 @@ impl GuiRenderer {
             icon_max_instances: max_instances,
             svg_max_vertices: 65536,
             svg_max_indices: 65536,
+            svg_scratch_vertices: Vec::new(),
+            svg_scratch_indices: Vec::new(),
             resolution,
             depth_texture,
             depth_view,
-            id_texture,
-            id_view,
+            ui_depth: true,
+            id_texture: None,
+            id_view: None,
             id_staging_buffer,
             format,
             sample_count,
             pipeline_cache,
+            counters_passes: AtomicU32::new(0),
+            counters_segments: AtomicU32::new(0),
+            counters_scissor_changes: AtomicU32::new(0),
+            counters_draw_calls: AtomicU32::new(0),
+            counters_pipeline_binds: AtomicU32::new(0),
+            counters_bind_group_binds: AtomicU32::new(0),
+            counters_buffer_binds: AtomicU32::new(0),
         }
+    }
+
+    /// Enables or disables the overdraw debug view (prompt 18 P5).
+    ///
+    /// When enabled, the quad and text/icon ranges are drawn with additive
+    /// diagnostic pipelines that accumulate `OVERDRAW_HEAT` per fragment, so a
+    /// bright pixel means many overlapping fragments.  Default off; it changes
+    /// the picture on purpose and is never used by goldens.
+    pub fn set_overdraw(&mut self, enabled: bool) {
+        self.overdraw_enabled = enabled;
+    }
+
+    /// Enables or disables the GUI depth attachment (prompt 18 P5).
+    ///
+    /// The normal UI pipelines never write depth, so in a 2D mode the
+    /// full-size `Depth32Float` target is inert: disabling it frees 5.76 MB at
+    /// 1600x900 with identical pixels. Re-enabling recreates it at the current
+    /// resolution.
+    pub fn set_ui_depth(&mut self, enabled: bool) {
+        if self.ui_depth == enabled {
+            return;
+        }
+        self.ui_depth = enabled;
+        let width = self.resolution[0].max(1.0) as u32;
+        let height = self.resolution[1].max(1.0) as u32;
+        if enabled {
+            let (texture, view) =
+                Self::create_depth_target(&self.device, width, height, self.sample_count);
+            self.depth_texture = Some(texture);
+            self.depth_view = Some(view);
+            memory::register_gpu(
+                "gui:depth texture",
+                Self::depth_texture_bytes(width, height, self.sample_count),
+                Subsystem::Gui,
+            );
+        } else {
+            self.depth_texture = None;
+            self.depth_view = None;
+            memory::unregister_gpu("gui:depth texture", Subsystem::Gui);
+        }
+        // The pipelines declare the depth attachment format, so they must be
+        // rebuilt for the new pass layout.
+        self.rebuild_pipelines(self.format, self.sample_count);
+    }
+
+    /// Snapshot of the GUI pass counters accumulated by the last
+    /// [`Self::render_with_timestamps`] call.
+    pub fn frame_counters(&self) -> UiFrameCounters {
+        UiFrameCounters {
+            passes: self.counters_passes.load(Ordering::Relaxed),
+            segments: self.counters_segments.load(Ordering::Relaxed),
+            scissor_changes: self.counters_scissor_changes.load(Ordering::Relaxed),
+            draw_calls: self.counters_draw_calls.load(Ordering::Relaxed),
+            pipeline_binds: self.counters_pipeline_binds.load(Ordering::Relaxed),
+            bind_group_binds: self.counters_bind_group_binds.load(Ordering::Relaxed),
+            buffer_binds: self.counters_buffer_binds.load(Ordering::Relaxed),
+        }
+    }
+
+    fn reset_frame_counters(&self) {
+        self.counters_passes.store(0, Ordering::Relaxed);
+        self.counters_segments.store(0, Ordering::Relaxed);
+        self.counters_scissor_changes.store(0, Ordering::Relaxed);
+        self.counters_draw_calls.store(0, Ordering::Relaxed);
+        self.counters_pipeline_binds.store(0, Ordering::Relaxed);
+        self.counters_bind_group_binds.store(0, Ordering::Relaxed);
+        self.counters_buffer_binds.store(0, Ordering::Relaxed);
     }
 
     pub fn resize(&mut self, queue: &wgpu::Queue, width: u32, height: u32) {
         self.update_output_config(queue, width, height, self.format, self.sample_count);
+    }
+
+    /// Rebuilds every GUI pipeline for `format`/`sample_count`.
+    ///
+    /// The depth attachment is part of the pipeline state: a pipeline built
+    /// with `Depth32Float` cannot be used in a pass without a depth attachment
+    /// (and vice versa), so toggling [`Self::set_ui_depth`] rebuilds them.
+    fn rebuild_pipelines(&mut self, format: wgpu::TextureFormat, sample_count: u32) {
+        log::debug!(
+            "[GuiRenderer] Rebuilding pipelines for format={:?}, sample_count={}",
+            format,
+            sample_count
+        );
+        let cache = self.pipeline_cache.as_deref();
+        let depth_format = if self.ui_depth {
+            Some(wgpu::TextureFormat::Depth32Float)
+        } else {
+            None
+        };
+        self.opaque_pipeline = create_quad_pipeline(
+            &self.device,
+            format,
+            &self.layouts.quad_pipeline_layout,
+            sample_count,
+            true,
+            depth_format,
+            cache,
+        );
+        self.transparent_pipeline = create_quad_pipeline(
+            &self.device,
+            format,
+            &self.layouts.quad_pipeline_layout,
+            sample_count,
+            false,
+            depth_format,
+            cache,
+        );
+        self.text_pipeline = create_text_pipeline(
+            &self.device,
+            format,
+            &self.layouts.text_pipeline_layout,
+            sample_count,
+            false,
+            depth_format,
+            cache,
+        );
+        self.svg_pipeline = crate::pipelines::svg::create_svg_pipeline(
+            &self.device,
+            format,
+            &self.layouts.quad_pipeline_layout,
+            sample_count,
+            depth_format,
+            cache,
+        );
+        self.overdraw_quad_pipeline = create_overdraw_pipeline(
+            &self.device,
+            format,
+            &self.layouts.quad_pipeline_layout,
+            sample_count,
+            depth_format,
+            cache,
+        );
+        self.overdraw_text_pipeline = create_overdraw_text_pipeline(
+            &self.device,
+            format,
+            &self.layouts.text_pipeline_layout,
+            sample_count,
+            depth_format,
+            cache,
+        );
     }
 
     pub fn update_output_config(
@@ -300,30 +655,92 @@ impl GuiRenderer {
         let width = width.max(1);
         let height = height.max(1);
         self.resolution = [width as f32, height as f32];
-        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&self.resolution));
+        queue.write_buffer(
+            &self.uniform_buffer,
+            0,
+            bytemuck::cast_slice(&self.resolution),
+        );
 
         let state_changed = format != self.format || sample_count != self.sample_count;
-        
+
         if state_changed {
             self.format = format;
             self.sample_count = sample_count;
-            
+
             // Rebuild pipelines for new sample_count/format.  The shared
             // pipeline cache lets the driver reuse previously compiled shaders
             // across backends/formats instead of recompiling from scratch
             // (audit M18).
-            println!("[GuiRenderer] Rebuilding pipelines for format={:?}, sample_count={}", format, sample_count);
-            let cache = self.pipeline_cache.as_deref();
-            self.opaque_pipeline = create_quad_pipeline(&self.device, format, &self.layouts.quad_pipeline_layout, sample_count, true, cache);
-            self.transparent_pipeline = create_quad_pipeline(&self.device, format, &self.layouts.quad_pipeline_layout, sample_count, false, cache);
-            self.text_pipeline = create_text_pipeline(&self.device, format, &self.layouts.text_pipeline_layout, sample_count, false, cache);
-            self.svg_pipeline = crate::pipelines::svg::create_svg_pipeline(&self.device, format, &self.layouts.quad_pipeline_layout, sample_count, cache);
+            log::debug!(
+                "[GuiRenderer] Rebuilding pipelines for format={:?}, sample_count={}",
+                format,
+                sample_count
+            );
+            self.rebuild_pipelines(format, sample_count);
         }
 
-        // Resize Depth
-        self.depth_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("GUI Depth Texture Resized"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        // Resize Depth.  There is exactly one depth target: replacing the view
+        // and then the texture drops the previous pair, so a resize can never
+        // keep two full-size depth buffers alive.  A disabled (`ui_depth ==
+        // false`) pass allocates nothing.
+        if self.ui_depth {
+            let (depth_texture, depth_view) =
+                Self::create_depth_target(&self.device, width, height, sample_count);
+            self.depth_view = Some(depth_view);
+            self.depth_texture = Some(depth_texture);
+            memory::register_gpu(
+                "gui:depth texture",
+                Self::depth_texture_bytes(width, height, sample_count),
+                Subsystem::Gui,
+            );
+        } else {
+            self.depth_view = None;
+            self.depth_texture = None;
+            memory::unregister_gpu("gui:depth texture", Subsystem::Gui);
+        }
+
+        // Resize ID only when the target exists: it is lazy and must not be
+        // allocated by a resize.  Dropping both handles before allocating the
+        // replacement keeps the peak at one id texture, not two.
+        if self.id_texture.is_some() {
+            self.id_view = None;
+            self.id_texture = None;
+            let (id_texture, id_view) = Self::create_id_target(&self.device, width, height);
+            memory::register_gpu(
+                "gui:id texture",
+                Self::id_texture_bytes(width, height),
+                Subsystem::Gui,
+            );
+            self.id_texture = Some(id_texture);
+            self.id_view = Some(id_view);
+        }
+    }
+
+    /// Bytes of the full-size GUI depth texture for `width × height` at
+    /// `sample_count` samples (`Depth32Float` = 4 bytes per texel).
+    fn depth_texture_bytes(width: u32, height: u32, sample_count: u32) -> u64 {
+        u64::from(width.max(1)) * u64::from(height.max(1)) * 4 * u64::from(sample_count)
+    }
+
+    /// Bytes of the full-size `R32Uint` id texture (`4` bytes per texel).
+    fn id_texture_bytes(width: u32, height: u32) -> u64 {
+        u64::from(width.max(1)) * u64::from(height.max(1)) * 4
+    }
+
+    /// Creates the single full-size depth target.
+    fn create_depth_target(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+        sample_count: u32,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("GUI Depth Texture"),
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count,
             dimension: wgpu::TextureDimension::D2,
@@ -331,12 +748,23 @@ impl GuiRenderer {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
-        self.depth_view = self.depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        (texture, view)
+    }
 
-        // Resize ID
-        self.id_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("GUI ID Texture Resized"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+    /// Creates the single full-size id target used by GPU hit testing.
+    fn create_id_target(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("GUI ID Texture"),
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -344,7 +772,41 @@ impl GuiRenderer {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        self.id_view = self.id_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        (texture, view)
+    }
+
+    /// Allocates the full-size id texture on first use, or after a resize.
+    ///
+    /// The id pass is separate from the visual pass, so a target that is never
+    /// requested does not exist and no rendered pixel changes.  Callers that
+    /// hit-test through [`Self::read_pixel_id`] or [`Self::hit_test_gpu`] do
+    /// not need to call this: those methods ensure it themselves.
+    pub fn ensure_id_target(&mut self) {
+        let width = self.resolution[0].max(1.0) as u32;
+        let height = self.resolution[1].max(1.0) as u32;
+        if let (Some(texture), Some(_)) = (&self.id_texture, &self.id_view) {
+            if texture.width() == width && texture.height() == height {
+                return;
+            }
+        }
+        // Drop the old target before allocating the replacement.
+        self.id_view = None;
+        self.id_texture = None;
+        let (id_texture, id_view) = Self::create_id_target(&self.device, width, height);
+        memory::register_gpu(
+            "gui:id texture",
+            Self::id_texture_bytes(width, height),
+            Subsystem::Gui,
+        );
+        self.id_texture = Some(id_texture);
+        self.id_view = Some(id_view);
+    }
+
+    /// Whether the lazy id target is currently allocated.
+    #[must_use]
+    pub fn has_id_target(&self) -> bool {
+        self.id_texture.is_some() && self.id_view.is_some()
     }
 
     /// Enable/disable the UI image bind-group cache (audit H8).
@@ -404,6 +866,11 @@ impl GuiRenderer {
                     usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
+                memory::register_gpu(
+                    "gui:instance instances",
+                    self.instance_buffer.size(),
+                    Subsystem::Gui,
+                );
                 self.max_instances = new_max;
             }
             queue.write_buffer(&self.instance_buffer, 0, bytes);
@@ -420,6 +887,11 @@ impl GuiRenderer {
                     usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
+                memory::register_gpu(
+                    "gui:text instances",
+                    self.text_instance_buffer.size(),
+                    Subsystem::Gui,
+                );
                 self.text_max_instances = new_max;
             }
             queue.write_buffer(&self.text_instance_buffer, 0, bytes);
@@ -436,6 +908,11 @@ impl GuiRenderer {
                     usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
+                memory::register_gpu(
+                    "gui:icon instances",
+                    self.icon_instance_buffer.size(),
+                    Subsystem::Gui,
+                );
                 self.icon_max_instances = new_max;
             }
             queue.write_buffer(&self.icon_instance_buffer, 0, bytes);
@@ -468,8 +945,14 @@ impl GuiRenderer {
                     label: Some("GUI Image Bind Group Update"),
                     layout: &self.layouts.image_layout,
                     entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureViewArray(&views) },
-                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::SamplerArray(&samplers) },
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureViewArray(&views),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::SamplerArray(&samplers),
+                        },
                     ],
                 });
             }
@@ -477,8 +960,16 @@ impl GuiRenderer {
             {
                 let mut entries = Vec::new();
                 for i in 0..8 {
-                    let v = if i < views.len() { views[i] } else { views.last().unwrap() };
-                    let s = if i < samplers.len() { samplers[i] } else { samplers.last().unwrap() };
+                    let v = if i < views.len() {
+                        views[i]
+                    } else {
+                        views.last().unwrap()
+                    };
+                    let s = if i < samplers.len() {
+                        samplers[i]
+                    } else {
+                        samplers.last().unwrap()
+                    };
                     entries.push(wgpu::BindGroupEntry {
                         binding: (i * 2) as u32,
                         resource: wgpu::BindingResource::TextureView(v),
@@ -499,8 +990,8 @@ impl GuiRenderer {
         }
 
         if !batch.svg_commands.is_empty() {
-            let mut all_vertices = Vec::new();
-            let mut all_indices = Vec::new();
+            self.svg_scratch_vertices.clear();
+            self.svg_scratch_indices.clear();
             let mut current_v_offset = 0;
 
             for cmd in &batch.svg_commands {
@@ -510,37 +1001,157 @@ impl GuiRenderer {
                     v_shifted.position[1] += cmd.pos[1];
                     v_shifted.color = cmd.color;
                     v_shifted.z_order = cmd.z;
-                    all_vertices.push(v_shifted);
+                    self.svg_scratch_vertices.push(v_shifted);
                 }
                 for i in &cmd.mesh.indices {
-                    all_indices.push(i + current_v_offset);
+                    self.svg_scratch_indices.push(i + current_v_offset);
                 }
                 current_v_offset += cmd.mesh.vertices.len() as u32;
             }
 
-            if all_vertices.len() as u32 > self.svg_max_vertices {
-                let new_max = (all_vertices.len() as u32).next_power_of_two().max(1024);
+            if self.svg_scratch_vertices.len() as u32 > self.svg_max_vertices {
+                let new_max = (self.svg_scratch_vertices.len() as u32)
+                    .next_power_of_two()
+                    .max(1024);
                 self.svg_vertex_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("GUI SVG Vertex Buffer (resized)"),
                     size: (new_max as usize * std::mem::size_of::<ferrous_svg::SvgVertex>()) as u64,
                     usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
+                memory::register_gpu(
+                    "gui:svg vertices",
+                    self.svg_vertex_buffer.size(),
+                    Subsystem::Gui,
+                );
                 self.svg_max_vertices = new_max;
             }
-            if all_indices.len() as u32 > self.svg_max_indices {
-                let new_max = (all_indices.len() as u32).next_power_of_two().max(1024);
+            if self.svg_scratch_indices.len() as u32 > self.svg_max_indices {
+                let new_max = (self.svg_scratch_indices.len() as u32)
+                    .next_power_of_two()
+                    .max(1024);
                 self.svg_index_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("GUI SVG Index Buffer (resized)"),
                     size: (new_max as u64 * 4),
                     usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
+                memory::register_gpu(
+                    "gui:svg indices",
+                    self.svg_index_buffer.size(),
+                    Subsystem::Gui,
+                );
                 self.svg_max_indices = new_max;
             }
 
-            queue.write_buffer(&self.svg_vertex_buffer, 0, bytemuck::cast_slice(&all_vertices));
-            queue.write_buffer(&self.svg_index_buffer, 0, bytemuck::cast_slice(&all_indices));
+            queue.write_buffer(
+                &self.svg_vertex_buffer,
+                0,
+                bytemuck::cast_slice(&self.svg_scratch_vertices),
+            );
+            queue.write_buffer(
+                &self.svg_index_buffer,
+                0,
+                bytemuck::cast_slice(&self.svg_scratch_indices),
+            );
+        }
+    }
+
+    #[inline]
+    fn bind_pipeline_cached(
+        &self,
+        rpass: &mut wgpu::RenderPass<'_>,
+        state: &mut PassBindState,
+        pipeline: &wgpu::RenderPipeline,
+    ) {
+        let id = pipeline as *const wgpu::RenderPipeline as u64;
+        if state.pipeline != Some(id) {
+            rpass.set_pipeline(pipeline);
+            state.pipeline = Some(id);
+            self.counters_pipeline_binds.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[inline]
+    fn bind_group_cached(
+        &self,
+        rpass: &mut wgpu::RenderPass<'_>,
+        slot: u32,
+        bound: &mut Option<u64>,
+        bind_group: &wgpu::BindGroup,
+    ) {
+        let id = bind_group as *const wgpu::BindGroup as u64;
+        if *bound != Some(id) {
+            rpass.set_bind_group(slot, bind_group, &[]);
+            *bound = Some(id);
+            self.counters_bind_group_binds
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[inline]
+    fn bind_group0_cached(
+        &self,
+        rpass: &mut wgpu::RenderPass<'_>,
+        state: &mut PassBindState,
+        bind_group: &wgpu::BindGroup,
+    ) {
+        self.bind_group_cached(rpass, 0, &mut state.bind0, bind_group);
+    }
+
+    #[inline]
+    fn bind_group1_cached(
+        &self,
+        rpass: &mut wgpu::RenderPass<'_>,
+        state: &mut PassBindState,
+        bind_group: &wgpu::BindGroup,
+    ) {
+        self.bind_group_cached(rpass, 1, &mut state.bind1, bind_group);
+    }
+
+    #[inline]
+    fn bind_vertex0_cached(
+        &self,
+        rpass: &mut wgpu::RenderPass<'_>,
+        state: &mut PassBindState,
+        buffer: &wgpu::Buffer,
+    ) {
+        let id = buffer as *const wgpu::Buffer as u64;
+        if state.vertex0 != Some(id) {
+            rpass.set_vertex_buffer(0, buffer.slice(..));
+            state.vertex0 = Some(id);
+            self.counters_buffer_binds.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[inline]
+    fn bind_vertex1_cached(
+        &self,
+        rpass: &mut wgpu::RenderPass<'_>,
+        state: &mut PassBindState,
+        buffer: &wgpu::Buffer,
+    ) {
+        let id = buffer as *const wgpu::Buffer as u64;
+        if state.vertex1 != Some(id) {
+            rpass.set_vertex_buffer(1, buffer.slice(..));
+            state.vertex1 = Some(id);
+            self.counters_buffer_binds.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[inline]
+    fn bind_index_cached(
+        &self,
+        rpass: &mut wgpu::RenderPass<'_>,
+        state: &mut PassBindState,
+        buffer: &wgpu::Buffer,
+        format: wgpu::IndexFormat,
+    ) {
+        let id = buffer as *const wgpu::Buffer as u64;
+        if state.index != Some(id) {
+            rpass.set_index_buffer(buffer.slice(..), format);
+            state.index = Some(id);
+            self.counters_buffer_binds.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -553,27 +1164,50 @@ impl GuiRenderer {
         batch: &GuiBatch,
         load_op: wgpu::LoadOp<wgpu::Color>,
     ) {
+        self.render_with_timestamps(encoder, target_view, resolve_target, batch, load_op, None);
+    }
+
+    /// [`Self::render`] with an optional per-pass GPU timestamp pair.
+    ///
+    /// The caller keeps the `ferrous_renderer::gpu_timing::PassTiming` alive
+    /// until the pass ends; this method only borrows its descriptor fragment.
+    pub fn render_with_timestamps(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        target_view: &wgpu::TextureView,
+        resolve_target: Option<&wgpu::TextureView>,
+        batch: &GuiBatch,
+        load_op: wgpu::LoadOp<wgpu::Color>,
+        timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
+    ) {
+        self.reset_frame_counters();
         if batch.segments.is_empty() && matches!(load_op, wgpu::LoadOp::Load) {
             return;
         }
 
+        self.counters_passes.store(1, Ordering::Relaxed);
         let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("GUI Render Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target_view,
                 resolve_target,
-                ops: wgpu::Operations { load: load_op, store: wgpu::StoreOp::Store },
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &self.depth_view,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
+                ops: wgpu::Operations {
+                    load: load_op,
                     store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: None,
+                },
+            })],
+            depth_stencil_attachment: self.depth_view.as_ref().map(|view| {
+                wgpu::RenderPassDepthStencilAttachment {
+                    view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }
             }),
             occlusion_query_set: None,
-            timestamp_writes: None,
+            timestamp_writes,
         });
 
         let (base_sx, base_sy, base_sw, base_sh) = if let Some(damage) = batch.damage_union {
@@ -586,29 +1220,29 @@ impl GuiRenderer {
             (0, 0, self.resolution[0] as u32, self.resolution[1] as u32)
         };
 
-        if (base_sw == 0 || base_sh == 0)
-            && matches!(load_op, wgpu::LoadOp::Load) { return; }
-        
-        static mut FRAME_COUNT: u32 = 0;
-        unsafe {
-            FRAME_COUNT += 1;
-            if FRAME_COUNT.is_multiple_of(120) {
-                println!("[GuiRenderer] Render: segments={}, quads={}, text={}, icons={}, svg={}", 
-                    batch.segments.len(), batch.quads.len(), batch.text_quads.len(), batch.icon_quads.len(), batch.svg_commands.len());
-                println!("[GuiRenderer] Base Scissor: x={}, y={}, w={}, h={}", base_sx, base_sy, base_sw, base_sh);
-                if let Some(s) = batch.segments.first() {
-                    println!("[GuiRenderer] First Segment: q_range={:?}, scissor={:?}", s.quad_range, s.scissor);
-                }
-            }
+        if (base_sw == 0 || base_sh == 0) && matches!(load_op, wgpu::LoadOp::Load) {
+            return;
         }
 
+        // State cache for this pass.  `set_scissor_rect` (the only legitimate
+        // per-segment state) does not invalidate any of these slots, so the
+        // invariant bind group 0 / quad vertex buffer / Uint16 index buffer are
+        // issued once and reused.  A segment that first draws SVG changes the
+        // vertex slot 0 and the index buffer, so a later quad/text/icon range
+        // re-establishes them through the cache instead of assuming they are
+        // still bound.
+        let mut state = PassBindState::default();
+
         for segment in &batch.segments {
+            self.counters_segments.fetch_add(1, Ordering::Relaxed);
             // Apply scissor if present, intersected with base_scissor
             let (sx, sy, sw, sh) = if let Some(s) = segment.scissor {
-                let sx = (s.x.max(base_sx as f32) as u32).min(((base_sx + base_sw)));
-                let sy = (s.y.max(base_sy as f32) as u32).min(((base_sy + base_sh)));
-                let sw = ( (s.x + s.width).min((base_sx + base_sw) as f32) as u32 ).saturating_sub(sx);
-                let sh = ( (s.y + s.height).min((base_sy + base_sh) as f32) as u32 ).saturating_sub(sy);
+                let sx = (s.x.max(base_sx as f32) as u32).min(base_sx + base_sw);
+                let sy = (s.y.max(base_sy as f32) as u32).min(base_sy + base_sh);
+                let sw =
+                    ((s.x + s.width).min((base_sx + base_sw) as f32) as u32).saturating_sub(sx);
+                let sh =
+                    ((s.y + s.height).min((base_sy + base_sh) as f32) as u32).saturating_sub(sy);
                 (sx, sy, sw, sh)
             } else {
                 (base_sx, base_sy, base_sw, base_sh)
@@ -616,6 +1250,8 @@ impl GuiRenderer {
 
             if sw > 0 && sh > 0 {
                 rpass.set_scissor_rect(sx, sy, sw, sh);
+                self.counters_scissor_changes
+                    .fetch_add(1, Ordering::Relaxed);
             } else {
                 continue;
             }
@@ -623,49 +1259,90 @@ impl GuiRenderer {
             // Draw Quads (Using transparent pipeline to support blended edges/shadows safely)
             // TODO: En Fase 5 implementaremos el split Opaque/Transparent por segmento
             if !segment.quad_range.is_empty() {
-                rpass.set_pipeline(&self.transparent_pipeline);
-                rpass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                rpass.set_bind_group(1, &self.image_bind_group, &[]);
-                rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                rpass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-                rpass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                let quad_pipeline = if self.overdraw_enabled {
+                    &self.overdraw_quad_pipeline
+                } else {
+                    &self.transparent_pipeline
+                };
+                self.bind_pipeline_cached(&mut rpass, &mut state, quad_pipeline);
+                self.bind_group0_cached(&mut rpass, &mut state, &self.uniform_bind_group);
+                self.bind_group1_cached(&mut rpass, &mut state, &self.image_bind_group);
+                self.bind_vertex0_cached(&mut rpass, &mut state, &self.vertex_buffer);
+                self.bind_vertex1_cached(&mut rpass, &mut state, &self.instance_buffer);
+                self.bind_index_cached(
+                    &mut rpass,
+                    &mut state,
+                    &self.index_buffer,
+                    wgpu::IndexFormat::Uint16,
+                );
                 rpass.draw_indexed(0..6, 0, segment.quad_range.clone());
+                self.counters_draw_calls.fetch_add(1, Ordering::Relaxed);
             }
 
             // Draw Text
             if !segment.text_range.is_empty() {
                 if let Some(font_bg) = &self.font_bind_group {
-                    rpass.set_pipeline(&self.text_pipeline);
-                    rpass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                    rpass.set_bind_group(1, font_bg, &[]);
-                    rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                    rpass.set_vertex_buffer(1, self.text_instance_buffer.slice(..));
-                    rpass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                    // Shares the quad vertex buffer, Uint16 index buffer and
+                    // (with icons) the text pipeline; only the instance buffer
+                    // and the atlas bind group differ.
+                    let text_pipeline = if self.overdraw_enabled {
+                        &self.overdraw_text_pipeline
+                    } else {
+                        &self.text_pipeline
+                    };
+                    self.bind_pipeline_cached(&mut rpass, &mut state, text_pipeline);
+                    self.bind_group0_cached(&mut rpass, &mut state, &self.uniform_bind_group);
+                    self.bind_group1_cached(&mut rpass, &mut state, font_bg);
+                    self.bind_vertex0_cached(&mut rpass, &mut state, &self.vertex_buffer);
+                    self.bind_vertex1_cached(&mut rpass, &mut state, &self.text_instance_buffer);
+                    self.bind_index_cached(
+                        &mut rpass,
+                        &mut state,
+                        &self.index_buffer,
+                        wgpu::IndexFormat::Uint16,
+                    );
                     rpass.draw_indexed(0..6, 0, segment.text_range.clone());
+                    self.counters_draw_calls.fetch_add(1, Ordering::Relaxed);
                 }
             }
 
             // Draw Icons (Same pipeline as text, different bind group)
             if !segment.icon_range.is_empty() {
                 if let Some(icon_bg) = &self.icon_bind_group {
-                    rpass.set_pipeline(&self.text_pipeline);
-                    rpass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                    rpass.set_bind_group(1, icon_bg, &[]);
-                    rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                    rpass.set_vertex_buffer(1, self.icon_instance_buffer.slice(..));
-                    rpass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                    let icon_pipeline = if self.overdraw_enabled {
+                        &self.overdraw_text_pipeline
+                    } else {
+                        &self.text_pipeline
+                    };
+                    self.bind_pipeline_cached(&mut rpass, &mut state, icon_pipeline);
+                    self.bind_group0_cached(&mut rpass, &mut state, &self.uniform_bind_group);
+                    self.bind_group1_cached(&mut rpass, &mut state, icon_bg);
+                    self.bind_vertex0_cached(&mut rpass, &mut state, &self.vertex_buffer);
+                    self.bind_vertex1_cached(&mut rpass, &mut state, &self.icon_instance_buffer);
+                    self.bind_index_cached(
+                        &mut rpass,
+                        &mut state,
+                        &self.index_buffer,
+                        wgpu::IndexFormat::Uint16,
+                    );
                     rpass.draw_indexed(0..6, 0, segment.icon_range.clone());
+                    self.counters_draw_calls.fetch_add(1, Ordering::Relaxed);
                 }
             }
 
             // Draw SVG
             if !segment.svg_range.is_empty() {
-                rpass.set_pipeline(&self.svg_pipeline);
-                rpass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                rpass.set_vertex_buffer(0, self.svg_vertex_buffer.slice(..));
-                rpass.set_index_buffer(self.svg_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                
-                // We need to calculate the index range. 
+                self.bind_pipeline_cached(&mut rpass, &mut state, &self.svg_pipeline);
+                self.bind_group0_cached(&mut rpass, &mut state, &self.uniform_bind_group);
+                self.bind_vertex0_cached(&mut rpass, &mut state, &self.svg_vertex_buffer);
+                self.bind_index_cached(
+                    &mut rpass,
+                    &mut state,
+                    &self.svg_index_buffer,
+                    wgpu::IndexFormat::Uint32,
+                );
+
+                // We need to calculate the index range.
                 // This is a bit tricky if we don't store index offsets per command.
                 // For now, let's assume one big mesh or calculate on the fly.
                 let mut start_idx = 0;
@@ -676,9 +1353,10 @@ impl GuiRenderer {
                 for i in segment.svg_range.clone() {
                     end_idx += batch.svg_commands[i as usize].mesh.indices.len() as u32;
                 }
-                
+
                 if start_idx < end_idx {
                     rpass.draw_indexed(start_idx..end_idx, 0, 0..1);
+                    self.counters_draw_calls.fetch_add(1, Ordering::Relaxed);
                 }
             }
         }
@@ -689,8 +1367,14 @@ impl GuiRenderer {
             label: Some("GUI Font Bind Group"),
             layout: &self.layouts.font_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
             ],
         }));
     }
@@ -700,26 +1384,51 @@ impl GuiRenderer {
             label: Some("GUI Icon Bind Group"),
             layout: &self.layouts.font_layout, // Re-use font layout (1 tex + 1 sampler)
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
             ],
         }));
     }
 
+    /// Encodes the id pass and copies the id of pixel `(x, y)` into the staging
+    /// buffer, allocating the id target on first use.
+    ///
+    /// The returned receiver fires once the staging buffer is mapped.  Call
+    /// [`Self::fetch_pixel_id`] after the command buffer has been submitted.
     pub fn read_pixel_id(
-        &self,
+        &mut self,
         encoder: &mut wgpu::CommandEncoder,
         x: u32,
         y: u32,
         batch: &GuiBatch,
     ) -> crossbeam_channel::Receiver<u32> {
+        self.ensure_id_target();
+        // `ensure_id_target` always leaves both handles set; the `else`
+        // branches keep the runtime path panic-free if a future implementation
+        // changes that.
+        let Some(id_view) = self.id_view.as_ref() else {
+            return crossbeam_channel::bounded(1).1;
+        };
+        let Some(id_texture) = self.id_texture.as_ref() else {
+            return crossbeam_channel::bounded(1).1;
+        };
+
         if !batch.quads.is_empty() {
             let mut id_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("GUI ID Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.id_view,
+                    view: id_view,
                     resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
                 })],
                 depth_stencil_attachment: None,
                 occlusion_query_set: None,
@@ -731,38 +1440,55 @@ impl GuiRenderer {
             id_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             id_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
             id_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            
+
             for segment in &batch.segments {
                 if !segment.quad_range.is_empty() {
                     id_pass.draw_indexed(0..6, 0, segment.quad_range.clone());
                 }
             }
         }
-        
+
         encoder.copy_texture_to_buffer(
             wgpu::ImageCopyTexture {
-                texture: &self.id_texture,
+                texture: id_texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d { x, y, z: 0 },
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::ImageCopyBuffer {
                 buffer: &self.id_staging_buffer,
-                layout: wgpu::ImageDataLayout { offset: 0, bytes_per_row: None, rows_per_image: None },
+                layout: wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: None,
+                    rows_per_image: None,
+                },
             },
-            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
         );
 
         let (sender, receiver) = crossbeam_channel::bounded(1);
         let slice = self.id_staging_buffer.slice(..);
         slice.map_async(wgpu::MapMode::Read, move |v| {
-            if v.is_ok() { let _ = sender.send(1); }
+            if v.is_ok() {
+                let _ = sender.send(1);
+            }
         });
 
         receiver
     }
 
+    /// Reads the id staged by the last [`Self::read_pixel_id`] call.
+    ///
+    /// Returns `0` when the id target was never allocated, so a stray call
+    /// cannot touch an unmapped buffer.
     pub fn fetch_pixel_id(&self) -> u32 {
+        if self.id_texture.is_none() {
+            return 0;
+        }
         let view = self.id_staging_buffer.slice(..).get_mapped_range();
         let id_val = u32::from_le_bytes([view[0], view[1], view[2], view[3]]);
         drop(view);
@@ -773,7 +1499,7 @@ impl GuiRenderer {
     /// Orchestrates a GPU-based hit test for a single pixel.
     /// This is normally called during Event Dispatch if AABB check returns custom widgets.
     pub fn hit_test_gpu(
-        &self,
+        &mut self,
         _queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         x: u32,

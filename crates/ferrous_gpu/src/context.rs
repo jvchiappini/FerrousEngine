@@ -57,9 +57,42 @@ impl EngineContext {
         instance: wgpu::Instance,
         compatible_surface: Option<&wgpu::Surface<'_>>,
     ) -> anyhow::Result<Self> {
+        let adapter = Self::request_adapter(&instance, compatible_surface).await?;
+        Self::from_adapter(instance, adapter).await
+    }
+
+    /// Selecciona el adaptador para `instance`, prefiriendo alto rendimiento y
+    /// cayendo a un adaptador software cuando no hay hardware disponible.
+    ///
+    /// Es el primer paso de [`Self::new_with_instance`]; separarlo permite
+    /// medir y trazar la selección de adaptador y la creación de dispositivo
+    /// como fases distintas. `compatible_surface` fuerza un adaptador que pueda
+    /// presentar en esa superficie.
+    pub async fn request_adapter(
+        instance: &wgpu::Instance,
+        compatible_surface: Option<&wgpu::Surface<'_>>,
+    ) -> anyhow::Result<wgpu::Adapter> {
+        Self::request_adapter_with(
+            instance,
+            compatible_surface,
+            wgpu::PowerPreference::HighPerformance,
+        )
+        .await
+    }
+
+    /// [`Self::request_adapter`] with an explicit power preference.
+    ///
+    /// `HighPerformance` picks the discrete GPU on a hybrid laptop,
+    /// `LowPower` the integrated one, `None` lets wgpu decide.  The engine
+    /// passes the application's preference (and `WGPU_POWER_PREF` when set).
+    pub async fn request_adapter_with(
+        instance: &wgpu::Instance,
+        compatible_surface: Option<&wgpu::Surface<'_>>,
+        power_preference: wgpu::PowerPreference,
+    ) -> anyhow::Result<wgpu::Adapter> {
         let adapter = match instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
+                power_preference,
                 compatible_surface,
                 force_fallback_adapter: false,
             })
@@ -78,7 +111,52 @@ impl EngineContext {
                     .context(ContextError::AdapterUnavailable)?
             }
         };
+        Ok(adapter)
+    }
 
+    /// Construye dispositivo, cola y caché de pipelines sobre `adapter`.
+    ///
+    /// Es el segundo paso de [`Self::new_with_instance`]; `instance` se guarda
+    /// en el contexto devuelto.
+    pub async fn from_adapter(
+        instance: wgpu::Instance,
+        adapter: wgpu::Adapter,
+    ) -> anyhow::Result<Self> {
+        Self::from_adapter_with(instance, adapter, None, default_memory_hints()).await
+    }
+
+    /// [`Self::from_adapter`] that seeds the pipeline cache with `cache_data`.
+    ///
+    /// The bytes must come from [`wgpu::PipelineCache::get_data`] of a previous
+    /// run on the same adapter/driver.  wgpu tolerates stale or corrupt data
+    /// (`fallback: true`), so a bad cache only costs a recompile.
+    ///
+    /// This keeps wgpu's default [`wgpu::MemoryHints::Performance`]; use
+    /// [`Self::from_adapter_with`] to select [`wgpu::MemoryHints::MemoryUsage`]
+    /// for small-resource applications.
+    pub async fn from_adapter_with_cache(
+        instance: wgpu::Instance,
+        adapter: wgpu::Adapter,
+        cache_data: Option<Vec<u8>>,
+    ) -> anyhow::Result<Self> {
+        Self::from_adapter_with(instance, adapter, cache_data, default_memory_hints()).await
+    }
+
+    /// [`Self::from_adapter_with_cache`] with explicit [`wgpu::MemoryHints`].
+    ///
+    /// `memory_hints` is forwarded to `wgpu::DeviceDescriptor`.  The engine
+    /// passes [`wgpu::MemoryHints::MemoryUsage`] for 2-D/editor apps (many small
+    /// resources, where wgpu-hal's 128 MB free-list chunks are wasted) and
+    /// [`wgpu::MemoryHints::Performance`] for 3-D games (large buffers benefit
+    /// from the bigger sub-allocations).  Callers that do not care keep the
+    /// historical [`wgpu::MemoryHints::Performance`] behaviour through
+    /// [`Self::from_adapter`] and [`Self::from_adapter_with_cache`].
+    pub async fn from_adapter_with(
+        instance: wgpu::Instance,
+        adapter: wgpu::Adapter,
+        cache_data: Option<Vec<u8>>,
+        memory_hints: wgpu::MemoryHints,
+    ) -> anyhow::Result<Self> {
         let info = adapter.get_info();
         #[cfg(target_arch = "wasm32")]
         web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
@@ -86,16 +164,21 @@ impl EngineContext {
             info.name, info.device_type, info.backend
         )));
         #[cfg(not(target_arch = "wasm32"))]
-        println!(
+        log::info!(
             "[WGPU] Selected Adapter: {} ({:?}) - Backend: {:?}",
-            info.name, info.device_type, info.backend
+            info.name,
+            info.device_type,
+            info.backend
         );
         let backend = info.backend;
 
         // WebGL2 tiene límites mucho más bajos que un backend nativo;
         // usar Limits::default() en GL hace que request_device falle o
         // active rutas de validación lentas. Usamos los límites correctos.
-        let mut limits = if backend == wgpu::Backend::Gl {
+        // El GL de escritorio (OpenGL 4.3+) sí soporta storage buffers; solo
+        // WebGL2 carece de ellos (prompt 17 S3: los límites de webgl2 hacían
+        // fallar la creación del bind group de instancias).
+        let mut limits = if backend == wgpu::Backend::Gl && cfg!(target_arch = "wasm32") {
             wgpu::Limits::downlevel_webgl2_defaults()
         } else {
             wgpu::Limits::default()
@@ -104,13 +187,16 @@ impl EngineContext {
         // Solicitar límites de búfer más grandes del adaptador para soportar escenas
         // grandes de voxels, pero con un tope para WebAssembly (32-bit).
         let phys_limits = adapter.limits();
-        
+
         #[cfg(target_arch = "wasm32")]
         {
             // WebAssembly tiene un espacio de direccionamiento de 4GB total.
             // No podemos pedir buffers de gigabytes para evitar "Memory Access Out of Bounds".
-            limits.max_storage_buffer_binding_size = phys_limits.max_storage_buffer_binding_size.min(256 * 1024 * 1024); // 256MB
-            limits.max_buffer_size = phys_limits.max_buffer_size.min(512 * 1024 * 1024); // 512MB
+            limits.max_storage_buffer_binding_size = phys_limits
+                .max_storage_buffer_binding_size
+                .min(256 * 1024 * 1024); // 256MB
+            limits.max_buffer_size = phys_limits.max_buffer_size.min(512 * 1024 * 1024);
+            // 512MB
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -130,7 +216,10 @@ impl EngineContext {
             | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
             // Pipeline cache is Vulkan-only in wgpu 23; requesting it when the
             // adapter exposes it is what lets `create_pipeline_cache` succeed.
-            | wgpu::Features::PIPELINE_CACHE;
+            | wgpu::Features::PIPELINE_CACHE
+            // Prompt 18 P0: per-pass GPU timings.  Requested only when the
+            // adapter exposes it; `GpuTimings` degrades to "unsupported".
+            | wgpu::Features::TIMESTAMP_QUERY;
         #[cfg(target_arch = "wasm32")]
         let desired_features = wgpu::Features::empty();
 
@@ -142,7 +231,7 @@ impl EngineContext {
                     label: Some("Engine Device"),
                     required_features,
                     required_limits: limits,
-                    ..Default::default()
+                    memory_hints,
                 },
                 None,
             )
@@ -151,16 +240,15 @@ impl EngineContext {
 
         // Only create the cache when the device actually negotiated the
         // feature; otherwise `create_pipeline_cache` is a validation error.
-        // SAFETY: `data: None` upholds `create_pipeline_cache`'s only unsafe
-        // precondition (initial data must come from `PipelineCache::get_data`).
-        let pipeline_cache = if device
-            .features()
-            .contains(wgpu::Features::PIPELINE_CACHE)
-        {
+        // SAFETY: `cache_data` must come from `PipelineCache::get_data` on the
+        // same adapter (the engine keys its cache file by vendor/device/driver
+        // and version). `fallback: true` makes wgpu ignore stale or corrupt
+        // data instead of failing.
+        let pipeline_cache = if device.features().contains(wgpu::Features::PIPELINE_CACHE) {
             Some(Arc::new(unsafe {
                 device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
                     label: Some("Engine Pipeline Cache"),
-                    data: None,
+                    data: cache_data.as_deref(),
                     fallback: true,
                 })
             }))
@@ -177,4 +265,9 @@ impl EngineContext {
             pipeline_cache,
         })
     }
+}
+
+/// wgpu's default allocation policy, kept for callers that do not opt in.
+fn default_memory_hints() -> wgpu::MemoryHints {
+    wgpu::MemoryHints::default()
 }

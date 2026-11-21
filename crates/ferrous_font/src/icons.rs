@@ -1,6 +1,7 @@
+use super::baked::AtlasOccupancy;
 use super::msdf_gen::generate_msdf;
 use super::path::GlyphCommand;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 /// A simple SVG path parser for MSDF generation.
 /// Supports M, L, Q, Z commands.
@@ -12,21 +13,45 @@ pub fn parse_svg_path(path_data: &str) -> Vec<GlyphCommand> {
     while let Some(token) = tokens.next() {
         match token {
             "M" => {
-                let x = tokens.next().and_then(|t| t.parse::<f32>().ok()).unwrap_or(0.0);
-                let y = tokens.next().and_then(|t| t.parse::<f32>().ok()).unwrap_or(0.0);
+                let x = tokens
+                    .next()
+                    .and_then(|t| t.parse::<f32>().ok())
+                    .unwrap_or(0.0);
+                let y = tokens
+                    .next()
+                    .and_then(|t| t.parse::<f32>().ok())
+                    .unwrap_or(0.0);
                 commands.push(GlyphCommand::MoveTo(x, y));
                 start_point = (x, y);
             }
             "L" => {
-                let x = tokens.next().and_then(|t| t.parse::<f32>().ok()).unwrap_or(0.0);
-                let y = tokens.next().and_then(|t| t.parse::<f32>().ok()).unwrap_or(0.0);
+                let x = tokens
+                    .next()
+                    .and_then(|t| t.parse::<f32>().ok())
+                    .unwrap_or(0.0);
+                let y = tokens
+                    .next()
+                    .and_then(|t| t.parse::<f32>().ok())
+                    .unwrap_or(0.0);
                 commands.push(GlyphCommand::LineTo(x, y));
             }
             "Q" => {
-                let cx = tokens.next().and_then(|t| t.parse::<f32>().ok()).unwrap_or(0.0);
-                let cy = tokens.next().and_then(|t| t.parse::<f32>().ok()).unwrap_or(0.0);
-                let tx = tokens.next().and_then(|t| t.parse::<f32>().ok()).unwrap_or(0.0);
-                let ty = tokens.next().and_then(|t| t.parse::<f32>().ok()).unwrap_or(0.0);
+                let cx = tokens
+                    .next()
+                    .and_then(|t| t.parse::<f32>().ok())
+                    .unwrap_or(0.0);
+                let cy = tokens
+                    .next()
+                    .and_then(|t| t.parse::<f32>().ok())
+                    .unwrap_or(0.0);
+                let tx = tokens
+                    .next()
+                    .and_then(|t| t.parse::<f32>().ok())
+                    .unwrap_or(0.0);
+                let ty = tokens
+                    .next()
+                    .and_then(|t| t.parse::<f32>().ok())
+                    .unwrap_or(0.0);
                 commands.push(GlyphCommand::QuadTo {
                     ctrl_x: cx,
                     ctrl_y: cy,
@@ -63,6 +88,8 @@ pub struct IconAtlas {
     pub view: wgpu::TextureView,
     pub sampler: wgpu::Sampler,
     pub icons: HashMap<String, IconMetrics>,
+    /// Occupancy measured when the atlas was built; see [`Self::occupancy`].
+    occupancy: AtlasOccupancy,
 }
 
 impl IconAtlas {
@@ -77,7 +104,7 @@ impl IconAtlas {
         let tex_size = atlas_dim * glyph_size;
 
         let mut pixels = vec![255u8; (tex_size * tex_size * 4) as usize];
-        let mut icons_map = HashMap::new();
+        let mut icons_map = HashMap::default();
 
         for (i, (name, path_data)) in icon_paths.iter().enumerate() {
             let commands = parse_svg_path(path_data);
@@ -107,9 +134,16 @@ impl IconAtlas {
             );
         }
 
+        let occupancy = AtlasOccupancy::measure(count, glyph_size, atlas_dim, &pixels);
+        log::debug!("Icon atlas occupancy: {occupancy}");
+
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("IconAtlas"),
-            size: wgpu::Extent3d { width: tex_size, height: tex_size, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: tex_size,
+                height: tex_size,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -119,10 +153,23 @@ impl IconAtlas {
         });
 
         queue.write_texture(
-            wgpu::ImageCopyTexture { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::ImageCopyTexture {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
             &pixels,
-            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(tex_size * 4), rows_per_image: None },
-            wgpu::Extent3d { width: tex_size, height: tex_size, depth_or_array_layers: 1 },
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(tex_size * 4),
+                rows_per_image: None,
+            },
+            wgpu::Extent3d {
+                width: tex_size,
+                height: tex_size,
+                depth_or_array_layers: 1,
+            },
         );
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -138,6 +185,17 @@ impl IconAtlas {
             view,
             sampler,
             icons: icons_map,
+            occupancy,
         }
+    }
+
+    /// Measures how much of this fixed-cell icon atlas is used.
+    ///
+    /// The numbers are captured when the atlas is built (there is no retained
+    /// CPU pixel buffer afterwards), so this is free to call and safe on the
+    /// frame path.  See [`AtlasOccupancy`] for the meaning of the fields.
+    #[must_use]
+    pub fn occupancy(&self) -> AtlasOccupancy {
+        self.occupancy
     }
 }

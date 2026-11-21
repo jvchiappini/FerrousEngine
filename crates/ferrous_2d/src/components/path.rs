@@ -52,16 +52,14 @@ impl Default for PathBuilder {
 impl PathBuilder {
     /// Create an empty builder with the default pre-allocated capacity.
     pub fn new() -> Self {
-        let mut commands = Vec::new();
-        commands.reserve(PATH_BUILDER_CAPACITY);
+        let commands = Vec::with_capacity(PATH_BUILDER_CAPACITY);
         Self { commands }
     }
 
     /// Create an empty builder reserving room for `capacity` commands
     /// (clamped to the internal `MAX_PATH_COMMANDS` limit).
     pub fn with_capacity(capacity: usize) -> Self {
-        let mut commands = Vec::new();
-        commands.reserve(capacity.min(MAX_PATH_COMMANDS));
+        let commands = Vec::with_capacity(capacity.min(MAX_PATH_COMMANDS));
         Self { commands }
     }
 
@@ -84,13 +82,13 @@ impl PathBuilder {
         }
         self
     }
-    
+
     /// Currently a no-op retained for builder-chain compatibility.
     ///
     /// `build` always produces an open path; to close it, set `Path2d::is_closed`
     /// or call [`Path2d::closed`] on the built value.
     pub fn close(self) -> Self {
-        // Un helper para poder invocarlo si se necesita cerrar explicitamente 
+        // Un helper para poder invocarlo si se necesita cerrar explicitamente
         self
     }
 
@@ -116,17 +114,17 @@ impl PathBuilder {
 pub struct Path2d {
     /// Ordered list of subpath instructions.
     pub commands: Vec<PathCommand>,
-    
+
     /// Stroke width in world units.
     pub stroke_width: f32,
     /// Stroke colour (RGBA).
     pub stroke_color: [f32; 4],
-    
+
     /// Whether the path interior should be filled.
     pub is_filled: bool,
     /// Fill colour (RGBA); used when `is_filled` is `true`.
     pub fill_color: [f32; 4],
-    
+
     /// Join style for corners shared between segments. Read by
     /// `prepare_paths_system`: `Round`/`Bevel` use a true round-join disc
     /// (`stroke_width/2`), `Miter` grows the disc with the miter ratio on
@@ -142,14 +140,14 @@ pub struct Path2d {
 
 impl Path2d {
     /// Set the stroke colour and width, returning `self` for chaining.
-    pub fn with_stroke(mut self, color: [f32;4], width: f32) -> Self {
+    pub fn with_stroke(mut self, color: [f32; 4], width: f32) -> Self {
         self.stroke_color = color;
         self.stroke_width = width;
         self
     }
 
     /// Enable filling with the given colour, returning `self` for chaining.
-    pub fn with_fill(mut self, color: [f32;4]) -> Self {
+    pub fn with_fill(mut self, color: [f32; 4]) -> Self {
         self.is_filled = true;
         self.fill_color = color;
         self
@@ -166,7 +164,7 @@ impl Path2d {
         self.cap_style = style;
         self
     }
-    
+
     /// Mark the path as closed, returning `self` for chaining.
     pub fn closed(mut self) -> Self {
         self.is_closed = true;

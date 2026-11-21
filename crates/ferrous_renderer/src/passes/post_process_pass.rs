@@ -78,7 +78,12 @@ impl PostProcessPass {
     }
 
     /// Build (or rebuild) the render pipeline for the given swapchain format.
-    fn build_pipeline(&mut self, device: &Device, surface_format: wgpu::TextureFormat, camera_layout: &wgpu::BindGroupLayout) {
+    fn build_pipeline(
+        &mut self,
+        device: &Device,
+        surface_format: wgpu::TextureFormat,
+        camera_layout: &wgpu::BindGroupLayout,
+    ) {
         let bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("PostProcess BGL"),
             entries: &[
@@ -517,13 +522,15 @@ impl PostProcessPass {
     /// Like [`render`] but takes an explicit `(primary_view, primary_sampler)` pair
     /// instead of an [`HdrTexture`].  Used when the antialiasing pass has
     /// produced a separate output texture that replaces the raw HDR input.
+    #[allow(clippy::too_many_arguments)]
+    // Explicit primary view/sampler pair keeps the AA hand-off allocation-free.
     pub fn render_with_view(
         &self,
         device: &Device,
         encoder: &mut CommandEncoder,
         primary_view: &TextureView,
         primary_sampler: &wgpu::Sampler,
-        hdr: &HdrTexture,             // still needed for the bloom fallback
+        hdr: &HdrTexture, // still needed for the bloom fallback
         output_view: &TextureView,
         camera_bind_group: &wgpu::BindGroup,
     ) {
@@ -615,7 +622,7 @@ impl RenderPass for PostProcessPass {
             self.build_pipeline(device, format, &layout);
         } else {
             log::warn!("PostProcessPass::on_attach called without camera_layout; pipeline might be invalid");
-            // use a temporary layout to avoid crashing if possible, but 
+            // use a temporary layout to avoid crashing if possible, but
             // realistically we should have set it.
         }
         // bloom pipelines do not depend on the swapchain format but they

@@ -1,10 +1,17 @@
+use crate::toaster::Toaster;
 use ferrous_events::EventManager;
 use ferrous_layout::LayoutEngine;
+use ferrous_ui_core::render_collector::{NodeVisit, RenderCollector};
 use ferrous_ui_core::{NodeId, Rect, UiEvent, UiTree, Widget};
-use ferrous_ui_core::render_collector::RenderCollector;
-use ferrous_ui_render::{GuiBatch, ToBatches};
-use crate::toaster::Toaster;
+use ferrous_ui_render::GuiBatch;
+use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Process-wide identity for each [`UiSystem`].
+///
+/// A recycled [`GuiBatch`] may outlive the tree it was filled from; the epoch
+/// lets the batch drop retained node ranges instead of matching a new tree's
+/// reused slot-map handles.
+static NEXT_RENDER_EPOCH: AtomicU64 = AtomicU64::new(1);
 
 /// `UiSystem` is the master orchestrator of the UI system.
 ///
@@ -22,8 +29,9 @@ pub struct UiSystem<App> {
     pub(crate) parent_stack: Vec<NodeId>,
     /// Global toaster manager.
     pub toaster: Toaster<App>,
+    /// Unique identity used by the retained batch store in [`GuiBatch`].
+    render_epoch: u64,
 }
-
 
 impl<App: 'static> UiSystem<App> {
     /// Creates a new UI system with default settings.
@@ -34,9 +42,9 @@ impl<App: 'static> UiSystem<App> {
             event_manager: EventManager::new(),
             parent_stack: Vec::new(),
             toaster: Toaster::new(),
+            render_epoch: NEXT_RENDER_EPOCH.fetch_add(1, Ordering::Relaxed),
         }
     }
-
 
     /// Pushes an implicit parent. Used by `PanelBuilder::spawn_with`.
     pub fn push_parent(&mut self, id: NodeId) {
@@ -66,8 +74,7 @@ impl<App: 'static> UiSystem<App> {
 
     /// Entry point for the update cycle.
     /// Processes reactivity and recalculates element layout.
-    pub fn update(&mut self, dt: f32, viewport_width: f32, viewport_height: f32) 
-    {
+    pub fn update(&mut self, dt: f32, viewport_width: f32, viewport_height: f32) {
         // 0. Update toaster system
         Toaster::update_system(self, dt);
 
@@ -78,7 +85,7 @@ impl<App: 'static> UiSystem<App> {
         // Taffy is efficient and only recalculates changed nodes (Dirty Nodes).
         self.layout_engine
             .compute_layout(&mut self.tree, viewport_width, viewport_height);
-            
+
         // 3. Update UI AABB index to accelerate hit-testing collisions to O(1).
         self.tree.update_spatial_index();
     }
@@ -94,46 +101,65 @@ impl<App: 'static> UiSystem<App> {
     /// Performs automatic culling based on the provided viewport.
     #[cfg(feature = "text")]
     pub fn render(&mut self, viewport: Rect, font: Option<&ferrous_assets::Font>) -> GuiBatch {
-        let mut captured = Vec::new();
-        RenderCollector::collect(&mut self.tree, &mut captured, viewport);
-
         let mut batch = GuiBatch::new();
-        for cap in captured {
-            cap.cmd.to_batches(&mut batch, font, cap.z, cap.node_id);
-        }
-        
-        // Calculate and attach the damage union for the current frame.
-        batch.damage_union = self.damage_union();
+        self.render_into(&mut batch, viewport, font);
         batch
+    }
+
+    /// Appends this frame's commands to a reused batch.
+    ///
+    /// The runner passes the batch it reclaimed from the renderer, so a steady
+    /// frame reuses every Vec's capacity. Commands are emitted by reference:
+    /// no captured-command list and no child-list clones. On top of that, the
+    /// batch retains each node's previous batch ranges, so a clean node is
+    /// replayed with `extend_from_slice` instead of `to_batches`; a hover that
+    /// dirties one node only converts that node.
+    #[cfg(feature = "text")]
+    pub fn render_into(
+        &mut self,
+        batch: &mut GuiBatch,
+        viewport: Rect,
+        font: Option<&ferrous_assets::Font>,
+    ) {
+        batch.begin_retained_frame(self.render_epoch);
+        RenderCollector::collect_with(&mut self.tree, viewport, |visit| match visit {
+            NodeVisit::Body(node) => batch.push_node(node, font),
+            NodeVisit::PopClip { .. } => batch.pop_clip(),
+        });
+        batch.end_retained_frame();
+        batch.damage_union = self.damage_union();
     }
 
     /// Render version when text support is disabled.
     #[cfg(not(feature = "text"))]
     pub fn render(&mut self, viewport: Rect) -> GuiBatch {
-        let mut captured = Vec::new();
-        RenderCollector::collect(&mut self.tree, &mut captured, viewport);
-
         let mut batch = GuiBatch::new();
-        for cap in captured {
-            cap.cmd.to_batches(&mut batch, cap.z, cap.node_id);
-        }
-        batch.damage_union = self.damage_union();
+        self.render_into(&mut batch, viewport);
         batch
+    }
+
+    /// Appends this frame's commands to a reused batch (no-text build).
+    #[cfg(not(feature = "text"))]
+    pub fn render_into(&mut self, batch: &mut GuiBatch, viewport: Rect) {
+        batch.begin_retained_frame(self.render_epoch);
+        RenderCollector::collect_with(&mut self.tree, viewport, |visit| match visit {
+            NodeVisit::Body(node) => batch.push_node(node),
+            NodeVisit::PopClip { .. } => batch.pop_clip(),
+        });
+        batch.end_retained_frame();
+        batch.damage_union = self.damage_union();
     }
 
     /// Returns the union of all damaged regions in this frame.
     pub fn damage_union(&self) -> Option<Rect> {
-        let regions: Vec<_> = self.tree.damage_regions.iter()
-            .filter(|r| r.width > 0.0 && r.height > 0.0)
-            .collect();
-            
-        if regions.is_empty() {
-            return None;
-        }
-        
-        let mut union = *regions[0];
-        for rect in &regions[1..] {
-            union = union.union(**rect);
+        let mut regions = self
+            .tree
+            .damage_regions
+            .iter()
+            .filter(|rect| rect.width > 0.0 && rect.height > 0.0);
+        let mut union = *regions.next()?;
+        for rect in regions {
+            union = union.union(*rect);
         }
         Some(union)
     }
@@ -162,14 +188,10 @@ impl<App: 'static> UiSystem<App> {
         crate::builder::IconBuilder::new(name)
     }
 
-
-
     /// Shows a toast notification.
     pub fn show_toast(&mut self, message: impl Into<String>, duration: f32) {
         Toaster::show_system(self, message, duration);
     }
-
-
 
     /// Starts building a panel (container with background).
     pub fn panel(&mut self) -> crate::builder::PanelBuilder<App> {
@@ -185,9 +207,67 @@ impl<App: 'static> UiSystem<App> {
     }
 }
 
-
 impl<App: 'static> Default for UiSystem<App> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(all(test, feature = "text"))]
+mod retained_tests {
+    use super::*;
+    use ferrous_ui_core::{DrawContext, RenderCommand};
+
+    struct Solid;
+
+    impl Widget<()> for Solid {
+        fn draw(&self, ctx: &mut DrawContext, cmds: &mut Vec<RenderCommand>) {
+            cmds.push(RenderCommand::Quad {
+                rect: ctx.rect,
+                color: [1.0; 4],
+                radii: [0.0; 4],
+                flags: 0,
+            });
+        }
+    }
+
+    #[test]
+    fn a_single_node_repaint_reports_only_its_rect_as_damage() {
+        let mut ui = UiSystem::<()>::new();
+        let root = ui.add(Solid);
+        let child = ui.tree.add_node(Box::new(Solid), Some(root));
+        let root_rect = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 200.0,
+        };
+        let child_rect = Rect {
+            x: 10.0,
+            y: 10.0,
+            width: 40.0,
+            height: 40.0,
+        };
+        ui.tree.set_node_rect(root, root_rect);
+        ui.tree.set_node_rect(child, child_rect);
+        let viewport = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 600.0,
+        };
+
+        let mut batch = GuiBatch::new();
+        ui.render_into(&mut batch, viewport, None);
+        ui.clear_damage();
+        ui.tree.mark_paint_dirty(child);
+        batch.clear();
+        ui.render_into(&mut batch, viewport, None);
+
+        assert_eq!(
+            batch.damage_union,
+            Some(child_rect),
+            "a one-node repaint must damage only that node's rect"
+        );
     }
 }

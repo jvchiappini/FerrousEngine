@@ -10,7 +10,6 @@
 /// the kernel per pixel cheaply while re-using the same 16 vectors.
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
-use rand::Rng;
 use wgpu::util::DeviceExt;
 
 // ── GPU-facing structs ────────────────────────────────────────────────────────
@@ -220,23 +219,23 @@ impl SsaoResources {
 
     /// Generate 64 hemisphere samples biased toward the origin.
     fn generate_kernel() -> SsaoKernelUniform {
-        let mut rng = rand::thread_rng();
+        let mut rng = Rng32::new(0x5eed_1234);
         let mut samples = [KernelSample {
             direction: [0.0; 4],
         }; 64];
 
         for (i, sample) in samples.iter_mut().enumerate() {
             // Clamp z to [0.1, 1.0] so no samples graze the tangent plane
-            let x = rng.gen_range(-1.0_f32..1.0_f32);
-            let y = rng.gen_range(-1.0_f32..1.0_f32);
-            let z = rng.gen_range(0.1_f32..1.0_f32);
+            let x = rng.range(-1.0, 1.0);
+            let y = rng.range(-1.0, 1.0);
+            let z = rng.range(0.1, 1.0);
             let dir = Vec3::new(x, y, z).normalize();
 
             // Accelerating distribution: cluster near origin for contact shadows
             let scale_t = i as f32 / 64.0;
             let scale = lerp(0.1, 1.0, scale_t * scale_t);
             // Minimum length of 0.1 so we never emit a zero-length sample
-            let length = lerp(0.1, scale, rng.gen_range(0.0_f32..1.0_f32));
+            let length = lerp(0.1, scale, rng.range(0.0, 1.0));
             let s = dir * length;
 
             sample.direction = [s.x, s.y, s.z, 0.0];
@@ -247,14 +246,14 @@ impl SsaoResources {
 
     /// Generate a 4x4 noise texture with random XY rotation vectors packed as RGBA8Unorm.
     fn generate_noise() -> Vec<u8> {
-        let mut rng = rand::thread_rng();
+        let mut rng = Rng32::new(0x0bad_f00d);
         let mut data = Vec::with_capacity(4 * 4 * 4); // 16 pixels x 4 bytes
 
         for _ in 0..16 {
             // Rejection sample to avoid degenerate near-zero vectors
             let v = loop {
-                let x = rng.gen_range(-1.0_f32..1.0_f32);
-                let y = rng.gen_range(-1.0_f32..1.0_f32);
+                let x = rng.range(-1.0, 1.0);
+                let y = rng.range(-1.0, 1.0);
                 let candidate = Vec3::new(x, y, 0.0);
                 if candidate.length() > 0.01 {
                     break candidate.normalize();
@@ -273,6 +272,39 @@ impl SsaoResources {
         }
 
         data
+    }
+}
+
+/// Deterministic xorshift32 generator for the SSAO kernel and noise vectors.
+///
+/// SSAO only needs per-run entropy for a fixed-size CPU table; it does not need
+/// cryptography.  Using a local generator instead of `rand`/`getrandom` keeps
+/// the table identical on every platform and lets the crate compile for
+/// `wasm32-unknown-unknown` without the `js` entropy backend.
+struct Rng32(u32);
+
+impl Rng32 {
+    fn new(seed: u32) -> Self {
+        Self(seed.max(1))
+    }
+
+    fn next_u32(&mut self) -> u32 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.0 = x;
+        x
+    }
+
+    /// Uniform `[0, 1)` with the 24-bit mantissa precision `rand` used.
+    fn next_f32(&mut self) -> f32 {
+        ((self.next_u32() >> 8) as f32) * (1.0 / 16_777_216.0)
+    }
+
+    /// Uniform `[min, max)`.
+    fn range(&mut self, min: f32, max: f32) -> f32 {
+        min + (max - min) * self.next_f32()
     }
 }
 

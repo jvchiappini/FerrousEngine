@@ -11,20 +11,18 @@ use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
-use wgpu::{
-    BindGroupLayout, CommandEncoder, Device, ComputePipeline,
-};
+use wgpu::{BindGroupLayout, CommandEncoder, ComputePipeline, Device};
 
-use crate::passes::ssao_pass::SsaoTexture;
 use crate::passes::prepass::NormalDepthTexture;
+use crate::passes::ssao_pass::SsaoTexture;
 
 // ── Blur params (matches ssao_blur.wgsl) ──────────────────────────────────────
 
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct BlurParams {
-    texel_size:   [f32; 2],
-    direction:    u32,       // 0 = horizontal, 1 = vertical
+    texel_size: [f32; 2],
+    direction: u32, // 0 = horizontal, 1 = vertical
     depth_thresh: f32,
 }
 
@@ -48,7 +46,7 @@ impl SsaoBlurPass {
     pub const DEFAULT_DEPTH_THRESH: f32 = 0.2;
 
     pub fn new(device: &Device, width: u32, height: u32) -> Self {
-        let blurred      = SsaoTexture::new(device, width, height);
+        let blurred = SsaoTexture::new(device, width, height);
         let intermediate = SsaoTexture::new(device, width, height);
 
         let (params_layout, textures_layout, pipeline) = Self::build_pipeline(device);
@@ -74,13 +72,13 @@ impl SsaoBlurPass {
         raw_ssao: &SsaoTexture,
         normal_depth: &NormalDepthTexture,
     ) {
-        let w = raw_ssao.width  as f32;
+        let w = raw_ssao.width as f32;
         let h = raw_ssao.height as f32;
 
         // ── Pass 1: horizontal blur → intermediate ────────────────────────────
         let params_h = BlurParams {
-            texel_size:   [1.0 / w, 1.0 / h],
-            direction:    0,
+            texel_size: [1.0 / w, 1.0 / h],
+            direction: 0,
             depth_thresh: self.depth_thresh,
         };
         self.run_single_pass(
@@ -95,8 +93,8 @@ impl SsaoBlurPass {
 
         // ── Pass 2: vertical blur → blurred ───────────────────────────────────
         let params_v = BlurParams {
-            texel_size:   [1.0 / w, 1.0 / h],
-            direction:    1,
+            texel_size: [1.0 / w, 1.0 / h],
+            direction: 1,
             depth_thresh: self.depth_thresh,
         };
         self.run_single_pass(
@@ -118,6 +116,8 @@ impl SsaoBlurPass {
 
     // ── Private ───────────────────────────────────────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
+    // One blur direction per call keeps the pass data explicit.
     fn run_single_pass(
         &self,
         device: &Device,
@@ -177,7 +177,7 @@ impl SsaoBlurPass {
         cpass.set_pipeline(&self.pipeline);
         cpass.set_bind_group(0, &bg0, &[]);
         cpass.set_bind_group(1, &bg1, &[]);
-        
+
         let w = dst_texture.width();
         let h = dst_texture.height();
         let x = w.div_ceil(8);
@@ -246,9 +246,9 @@ impl SsaoBlurPass {
             ],
         });
 
-        let shader = device.create_shader_module(
-            wgpu::include_wgsl!("../../../../assets/shaders/ssao_blur_compute.wgsl")
-        );
+        let shader = device.create_shader_module(wgpu::include_wgsl!(
+            "../../../../assets/shaders/ssao_blur_compute.wgsl"
+        ));
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Blur Pipeline Layout"),

@@ -9,10 +9,26 @@
 //! in display-referred sRGB must be converted to linear before being passed
 //! here (apply the sRGB EOTF: a display mid-grey of `0.5` becomes `~0.214`
 //! linear). This is the single colour semantic shared by shapes and sprites.
+//!
+//! # Alpha contract
+//!
+//! Instance colours are **straight** (non-premultiplied) linear RGBA.  The
+//! fragment shaders premultiply on output (`vec4(rgb * a, a)`) and every
+//! Pure2D pipeline blends with a premultiplied state, so callers never pass
+//! premultiplied colours.  Over an opaque destination this is mathematically
+//! identical to straight-alpha blending; on a transparent target it is the
+//! correct compositing result (see [`crate::render::BlendMode2d`]).
 
 use bytemuck::{Pod, Zeroable};
 
+use crate::handle::Handle;
+
 /// Matches the `InstanceInput` struct in `sprite.wgsl`.
+///
+/// `color` is a **straight** linear RGBA tint (not premultiplied); the sprite
+/// shader premultiplies after sampling and tinting.  `properties.w` is the
+/// per-texture premultiplied-data flag, filled in by the renderer from the
+/// texture registry (0 = straight alpha data, 1 = premultiplied data).
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct SpriteInstance {
@@ -28,9 +44,9 @@ pub struct SpriteInstance {
     /// sRGB-decoded by wgpu because sprite textures are `Rgba8UnormSrgb`).
     pub color: [f32; 4],
     /// Source region in UV space `[x, y, width, height]` (for atlas/spritesheet).
-    pub uv_rect: [f32; 4],        // x, y, width, height (for atlas)
+    pub uv_rect: [f32; 4], // x, y, width, height (for atlas)
     /// `[flip_x, flip_y, is_lit, reserved]`.
-    pub properties: [f32; 4],     // x=flip_x, y=flip_y, z=is_lit, w=reserved
+    pub properties: [f32; 4], // x=flip_x, y=flip_y, z=is_lit, w=reserved
 }
 
 impl SpriteInstance {
@@ -40,15 +56,250 @@ impl SpriteInstance {
             array_stride: std::mem::size_of::<SpriteInstance>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &[
-                wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 16, shader_location: 1, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 32, shader_location: 2, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 48, shader_location: 3, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 64, shader_location: 4, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 80, shader_location: 5, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 96, shader_location: 6, format: wgpu::VertexFormat::Float32x4 },
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 16,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 32,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 48,
+                    shader_location: 3,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 64,
+                    shader_location: 4,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 80,
+                    shader_location: 5,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 96,
+                    shader_location: 6,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
             ],
         }
+    }
+}
+
+/// Stable, generation-tracked handle to a font registered with
+/// [`crate::render::Renderer2d`]'s owner (the engine `Renderer`), used by
+/// [`TextInstance`] draw calls.
+///
+/// The index identifies the font slot and the generation makes handles issued
+/// before a [`crate::handle::SlotRegistry::remove`] stale, so a recycled font
+/// can never be addressed by an old handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FontId2d {
+    index: u32,
+    generation: u32,
+}
+
+impl FontId2d {
+    /// Returns the font slot index.
+    pub const fn index(&self) -> u32 {
+        self.index
+    }
+
+    /// Returns the generation of the font slot when the handle was issued.
+    pub const fn generation(&self) -> u32 {
+        self.generation
+    }
+
+    /// Returns the underlying generational `Handle`.
+    pub const fn handle(&self) -> Handle {
+        Handle::from_parts(self.index, self.generation)
+    }
+}
+
+impl From<Handle> for FontId2d {
+    fn from(handle: Handle) -> Self {
+        Self {
+            index: handle.index(),
+            generation: handle.generation(),
+        }
+    }
+}
+
+impl From<FontId2d> for Handle {
+    fn from(font: FontId2d) -> Self {
+        font.handle()
+    }
+}
+
+/// GPU instance for one MSDF glyph quad (Pure2D text path).
+///
+/// `color` is a **straight** linear RGBA colour (not premultiplied); the text
+/// shader premultiplies when it writes the fragment.
+///
+/// Wire layout (116 bytes, 4-byte aligned, no padding): `transform_c0..c3`
+/// at 0/16/32/48, `color` at 64, `uv_rect` at 80, `params` at 96 and
+/// `gradient` at 112. `params.y`, `params.z` and `params.w` are not read by
+/// `text_2d.wgsl`; shrinking the slot to a scalar would change the shader
+/// interface, so it is kept as a `vec4`.
+///
+/// The model matrix maps the canonical local quad `[0, 1]²` (Y up) to the
+/// glyph's pixel rectangle, exactly like [`SpriteInstance`] maps its own quad,
+/// so rotation, non-uniform scale and parent transforms compose the same way.
+/// `transform_c3[2]` carries the depth used by the unified painter-order
+/// command stream (shared by every glyph of one `draw_text` call).
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct TextInstance {
+    /// First column of the model matrix (x basis; its length is the quad width).
+    pub transform_c0: [f32; 4],
+    /// Second column of the model matrix (y basis; its length is the quad height).
+    pub transform_c1: [f32; 4],
+    /// Third column of the model matrix.
+    pub transform_c2: [f32; 4],
+    /// Fourth column (translation; `.z` carries depth).
+    pub transform_c3: [f32; 4],
+    /// Linear RGBA colour (see the module colour-space contract).
+    pub color: [f32; 4],
+    /// Atlas UV rectangle `[u0, v0, u1, v1]`.
+    pub uv_rect: [f32; 4],
+    /// `[px_range, 0, 0, 0]` where `px_range` is `FontAtlas::px_range`.
+    pub params: [f32; 4],
+    /// Gradient table reference (base + 1), or `0` for the flat [`Self::color`].
+    ///
+    /// The reference is produced by [`GradientTable2d`](crate::render::GradientTable2d);
+    /// see [`Self::with_gradient`].
+    pub gradient: u32,
+}
+
+impl TextInstance {
+    /// Vertex-buffer layout describing this instance type to wgpu.
+    pub const fn descriptor() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<TextInstance>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 16,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 32,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 48,
+                    shader_location: 3,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 64,
+                    shader_location: 4,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 80,
+                    shader_location: 5,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 96,
+                    shader_location: 6,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 112,
+                    shader_location: 7,
+                    format: wgpu::VertexFormat::Uint32,
+                },
+            ],
+        }
+    }
+
+    /// Build an instance from a model matrix, an atlas UV rect and a colour.
+    ///
+    /// `px_range` must be the atlas' [`crate::render::TextInstance::params`]
+    /// range (see `ferrous_font::FontAtlas::px_range`).
+    pub fn new(model: glam::Mat4, uv_rect: [f32; 4], color: [f32; 4], px_range: f32) -> Self {
+        Self {
+            transform_c0: model.x_axis.into(),
+            transform_c1: model.y_axis.into(),
+            transform_c2: model.z_axis.into(),
+            transform_c3: model.w_axis.into(),
+            color,
+            uv_rect,
+            params: [
+                if px_range.is_finite() && px_range > 0.0 {
+                    px_range
+                } else {
+                    6.0
+                },
+                0.0,
+                0.0,
+                0.0,
+            ],
+            gradient: 0,
+        }
+    }
+
+    /// Use a gradient ramp instead of the flat colour.
+    ///
+    /// `base` is the slot returned by
+    /// [`GradientTable2d::push`](crate::render::GradientTable2d::push).  `0` is
+    /// reserved for "flat colour", so the stored reference is `base + 1`.  The
+    /// gradient is evaluated in world space, exactly like
+    /// [`ShapeInstance::with_gradient`].
+    #[must_use]
+    pub const fn with_gradient(mut self, base: u32) -> Self {
+        self.gradient = base + 1;
+        self
+    }
+
+    /// The gradient base of this instance, or `None` for a flat colour.
+    #[must_use]
+    pub const fn gradient_base(&self) -> Option<u32> {
+        match self.gradient {
+            0 => None,
+            reference => Some(reference - 1),
+        }
+    }
+
+    /// Depth used by the unified painter-order command stream.
+    #[inline]
+    pub fn depth(&self) -> f32 {
+        self.transform_c3[2]
+    }
+
+    /// World-space AABB `(min, max)` of the canonical `[0, 1]²` quad.
+    ///
+    /// Conservative (the MSDF AA band extends slightly past the quad); callers
+    /// expand the cull rect by a pixel margin before testing.
+    #[inline]
+    pub fn world_aabb(&self) -> (glam::Vec2, glam::Vec2) {
+        let c0 = glam::Vec2::new(self.transform_c0[0], self.transform_c0[1]);
+        let c1 = glam::Vec2::new(self.transform_c1[0], self.transform_c1[1]);
+        let c3 = glam::Vec2::new(self.transform_c3[0], self.transform_c3[1]);
+        let p0 = c3;
+        let p1 = c3 + c0;
+        let p2 = c3 + c1;
+        let p3 = c3 + c0 + c1;
+        (p0.min(p1).min(p2).min(p3), p0.max(p1).max(p2).max(p3))
     }
 }
 
@@ -87,6 +338,9 @@ pub const TRIANGLE_EDGE_CA: u8 = 1 << 2;
 pub const TRIANGLE_EDGES_ALL: u8 = TRIANGLE_EDGE_AB | TRIANGLE_EDGE_BC | TRIANGLE_EDGE_CA;
 
 /// Instance data for non-textured 2D shapes (technical drawing).
+///
+/// `color` is **straight** linear RGBA (not premultiplied) for every shape
+/// kind; the shape shader premultiplies its output.
 ///
 /// The four transform columns encode a full model matrix. The shader supports
 /// the rounded-rectangle SDF family (rectangle, circle, stroked segment) and,
@@ -136,6 +390,11 @@ pub struct ShapeInstance {
     pub ext0: [f32; 4],
     /// Segment distance at the start point `a` along the polyline (dash phase).
     pub ext1: f32,
+    /// Gradient table base + 1, or 0 for a solid colour (see `GradientTable2d`).
+    ///
+    /// The table lives in the camera uniform (`gradients`), so one instance
+    /// references a header vec4 and the stops that follow it.
+    pub gradient: u32,
 }
 
 impl ShapeInstance {
@@ -145,17 +404,41 @@ impl ShapeInstance {
             array_stride: std::mem::size_of::<ShapeInstance>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &[
-                wgpu::VertexAttribute { offset: 0,  shader_location: 0, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 16, shader_location: 1, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 32, shader_location: 2, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 48, shader_location: 3, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 64, shader_location: 4, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 80, shader_location: 5, format: wgpu::VertexFormat::Float32x4 },
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 16,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 32,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 48,
+                    shader_location: 3,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 64,
+                    shader_location: 4,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 80,
+                    shader_location: 5,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
             ],
         }
     }
 
-    // ── Constructores ergonómicos ──────────────────────────────────────────
+    // ── Ergonomic constructors ─────────────────────────────────────────────
 
     fn from_model(model: glam::Mat4, color: [f32; 4], params: [f32; 4]) -> Self {
         Self {
@@ -167,32 +450,34 @@ impl ShapeInstance {
             params,
             ext0: [0.0; 4],
             ext1: 0.0,
+            gradient: 0,
         }
     }
 
-    /// Círculo relleno centrado en `center` con `radius` en unidades de mundo (pixels en Pure2D).
-    /// `z` controla la profundidad para Z-sorting: 0.0 = fondo, valores mayores = más al frente.
+    /// Filled circle centred on `center` with `radius` in world units (pixels
+    /// in Pure2D). `z` controls depth for Z-sorting: 0.0 = background, higher
+    /// values = further front.
     pub fn circle(center: glam::Vec2, radius: f32, color: [f32; 4]) -> Self {
         Self::circle_z(center, 0.0, radius, color)
     }
 
-    /// Igual que `circle()` pero con control de profundidad Z explícito.
+    /// Same as `circle()` but with an explicit Z depth.
     pub fn circle_z(center: glam::Vec2, z: f32, radius: f32, color: [f32; 4]) -> Self {
         let model = glam::Mat4::from_scale_rotation_translation(
             glam::Vec3::new(radius * 2.0, radius * 2.0, 1.0),
             glam::Quat::IDENTITY,
             glam::Vec3::new(center.x, center.y, z),
         );
-        // params: border=0, corner_radius=radius (círculo perfecto), min_px=0, filled=1
+        // params: border=0, corner_radius=radius (perfect circle), min_px=0, filled=1
         Self::from_model(model, color, [0.0, radius, 0.0, 1.0])
     }
 
-    /// Rectángulo relleno centrado en `center` con dimensiones `size` (ancho, alto).
+    /// Filled rectangle centred on `center` with `size` (width, height).
     pub fn rect(center: glam::Vec2, size: glam::Vec2, color: [f32; 4]) -> Self {
         Self::rect_z(center, 0.0, size, color)
     }
 
-    /// Igual que `rect()` pero con control de profundidad Z explícito.
+    /// Same as `rect()` but with an explicit Z depth.
     pub fn rect_z(center: glam::Vec2, z: f32, size: glam::Vec2, color: [f32; 4]) -> Self {
         let model = glam::Mat4::from_scale_rotation_translation(
             glam::Vec3::new(size.x, size.y, 1.0),
@@ -203,8 +488,13 @@ impl ShapeInstance {
         Self::from_model(model, color, [0.0, 0.0, 0.0, 1.0])
     }
 
-    /// Rectángulo con esquinas redondeadas relleno.
-    pub fn rounded_rect(center: glam::Vec2, size: glam::Vec2, corner_radius: f32, color: [f32; 4]) -> Self {
+    /// Filled rectangle with rounded corners.
+    pub fn rounded_rect(
+        center: glam::Vec2,
+        size: glam::Vec2,
+        corner_radius: f32,
+        color: [f32; 4],
+    ) -> Self {
         let model = glam::Mat4::from_scale_rotation_translation(
             glam::Vec3::new(size.x, size.y, 1.0),
             glam::Quat::IDENTITY,
@@ -213,8 +503,13 @@ impl ShapeInstance {
         Self::from_model(model, color, [0.0, corner_radius, 0.0, 1.0])
     }
 
-    /// Solo el borde (outline) de un rectángulo, sin relleno.
-    pub fn rect_outline(center: glam::Vec2, size: glam::Vec2, thickness: f32, color: [f32; 4]) -> Self {
+    /// Rectangle outline only, with no fill.
+    pub fn rect_outline(
+        center: glam::Vec2,
+        size: glam::Vec2,
+        thickness: f32,
+        color: [f32; 4],
+    ) -> Self {
         let model = glam::Mat4::from_scale_rotation_translation(
             glam::Vec3::new(size.x, size.y, 1.0),
             glam::Quat::IDENTITY,
@@ -224,48 +519,53 @@ impl ShapeInstance {
         Self::from_model(model, color, [thickness, 0.0, 0.0, 0.0])
     }
 
-    /// Línea entre dos puntos 2D con grosor `width` y caps redondeados (por defecto).
+    /// Line between two 2D points with thickness `width` and round caps (the
+    /// default).
     pub fn line(from: glam::Vec2, to: glam::Vec2, width: f32, color: [f32; 4]) -> Self {
         Self::line_with_cap(from, to, width, color, 1) // 1 = Round
     }
 
-    /// Línea entre dos puntos 2D con estilo de punta configurable.
+    /// Line between two 2D points with a configurable cap style.
     ///
     /// `cap_style`:
-    /// - `0` = Flat (extremos rectos exactamente en los endpoints)
-    /// - `1` = Round (extremos redondeados, radio = width/2)
-    /// - `2` = Square (extremos rectos que sobresalen width/2 más allá de los endpoints)
+    /// - `0` = Flat (straight ends exactly at the endpoints)
+    /// - `1` = Round (rounded ends, radius = width/2)
+    /// - `2` = Square (straight ends that extend width/2 past the endpoints)
     ///
     /// Prefer the typed [`ShapeInstance::line_with_cap_style`] in new code: an
     /// out-of-range `u8` here is not rejected and silently falls back to `Round`.
-    pub fn line_with_cap(from: glam::Vec2, to: glam::Vec2, width: f32, color: [f32; 4], cap_style: u8) -> Self {
+    pub fn line_with_cap(
+        from: glam::Vec2,
+        to: glam::Vec2,
+        width: f32,
+        color: [f32; 4],
+        cap_style: u8,
+    ) -> Self {
         Self::line_with_cap_aa(from, to, width, color, cap_style, true, true)
     }
 
-    /// Línea con control de AA **por extremo**, para teselar muros conectados
-    /// sin costura.
+    /// Line with **per-end** AA control, for tessellating connected walls
+    /// without a seam.
     ///
-    /// Es idéntica a [`ShapeInstance::line_with_cap`] salvo que `aa_start` /
-    /// `aa_end` desactivan el anti-aliasing del cap `from` / `to`
-    /// respectivamente:
+    /// Identical to [`ShapeInstance::line_with_cap`] except that `aa_start` /
+    /// `aa_end` disable anti-aliasing on the `from` / `to` cap respectively:
     ///
-    /// - `true` (default): el cap recibe AA normal (extremo libre).
-    /// - `false`: el cap es **duro** — el shader recorta exactamente en el
-    ///   plano del extremo, sin fade, y satura la cobertura hacia adentro. Dos
-    ///   segmentos contiguos que comparten un extremo, ambos con ese extremo en
-    ///   `false`, teselan borde con borde sin dejar hueco ni doble-blend.
+    /// - `true` (default): the cap gets normal AA (free end).
+    /// - `false`: the cap is **hard** — the shader clips exactly on the end
+    ///   plane, with no fade, and saturates coverage inwards. Two contiguous
+    ///   segments that share an end, both with that end set to `false`, tile
+    ///   edge to edge with neither a gap nor double blending.
     ///
-    /// `cap_style` usa el mismo `u8` que [`ShapeInstance::line_with_cap`]
+    /// `cap_style` uses the same `u8` as [`ShapeInstance::line_with_cap`]
     /// (`0` = Flat, `1` = Round, `2` = Square).
     ///
-    /// # Cómo marcar muros conectados (p.ej. Koncreta)
+    /// # Marking connected walls
     ///
-    /// Al construir una cadena/miter/T de segmentos, marcá `aa_start`/`aa_end`
-    /// en `false` para los extremos que se unen con otro segmento y en `true`
-    /// para los extremos libres (esquinas exteriores). La codificación de los
-    /// flags vive en `transform_c2.xy` (slot no usado por el shader 2D); el
-    /// resto de constructores lo dejan en `0`. Las funciones puramente
-    /// geométricas no cambian.
+    /// When building a chain/miter/T of segments, set `aa_start`/`aa_end` to
+    /// `false` for the ends that join another segment and to `true` for free
+    /// ends (outer corners). The flags live in `transform_c2.xy` (a slot the
+    /// 2D shader does not use); every other constructor leaves it at `0`. The
+    /// purely geometric functions are unchanged.
     pub fn line_with_cap_aa(
         from: glam::Vec2,
         to: glam::Vec2,
@@ -287,7 +587,7 @@ impl ShapeInstance {
             0 => (length, 0.0),                 // Flat
             1 => (length + width, width * 0.5), // Round
             2 => (length + width, 0.0),         // Square
-            _ => (length + width, width * 0.5), // Default a Round
+            _ => (length + width, width * 0.5), // Default to Round
         };
 
         let mut model = glam::Mat4::from_scale_rotation_translation(
@@ -309,10 +609,9 @@ impl ShapeInstance {
 
     /// Line with a fixed **minimum** width in logical pixels (`min_px`).
     ///
-    /// `width_world` is still the real width in world units (metres in
-    /// Koncreta); the shader renders `max(width_world, min_px · device px)`
-    /// without touching opacity. This is the constructor used by the CAD /
-    /// wall pipelines (hybrid lineweight mode).
+    /// `width_world` is still the real width in world units; the shader renders
+    /// `max(width_world, min_px · device px)` without touching opacity. This is
+    /// the constructor used by CAD and wall pipelines (hybrid lineweight mode).
     pub fn line_px(
         from: glam::Vec2,
         to: glam::Vec2,
@@ -324,11 +623,30 @@ impl ShapeInstance {
         Self::line_with_cap(from, to, width_world, color, cap_style).with_min_px(min_px)
     }
 
+    /// Fills this instance with a gradient from the per-frame table.
+    ///
+    /// `base` is the vec4 index of the gradient header written by
+    /// [`crate::render::types::Uniform2d::gradients`] (see
+    /// `Renderer2d::set_gradient_table`). `0` keeps the solid colour.
+    pub fn with_gradient(mut self, base: u32) -> Self {
+        self.gradient = base.saturating_add(1);
+        self
+    }
+
+    /// The gradient table base of this instance, if it has one.
+    pub fn gradient_base(&self) -> Option<u32> {
+        (self.gradient != 0).then(|| self.gradient - 1)
+    }
+
     /// Sets the minimum stroke width in logical pixels (`0.0` disables the
     /// floor). Only affects instances created by a `line*` constructor, since
     /// the shader gates the widening on `SHAPE_GPU_LINE`.
     pub fn with_min_px(mut self, min_px: f32) -> Self {
-        self.params[2] = if min_px.is_finite() { min_px.max(0.0) } else { 0.0 };
+        self.params[2] = if min_px.is_finite() {
+            min_px.max(0.0)
+        } else {
+            0.0
+        };
         self
     }
 
@@ -377,11 +695,16 @@ impl ShapeInstance {
             params: [
                 width_world.max(0.0),
                 cap_style as f32,
-                if min_px.is_finite() { min_px.max(0.0) } else { 0.0 },
+                if min_px.is_finite() {
+                    min_px.max(0.0)
+                } else {
+                    0.0
+                },
                 1.0,
             ],
             ext0: [n_start.x, n_start.y, n_end.x, n_end.y],
             ext1: s0,
+            gradient: 0,
         }
     }
 
@@ -439,29 +762,33 @@ impl ShapeInstance {
             params: [
                 radius.max(0.0),
                 width_world.max(0.0),
-                if min_px.is_finite() { min_px.max(0.0) } else { 0.0 },
+                if min_px.is_finite() {
+                    min_px.max(0.0)
+                } else {
+                    0.0
+                },
                 1.0,
             ],
             ext0: [start, sweep, cap_style as f32, 0.0],
             ext1: s0,
+            gradient: 0,
         }
     }
 
     /// Turns a circle/rect instance into a real hollow ring of `thickness`.
     pub fn with_ring(mut self, thickness: f32, min_px: f32) -> Self {
         self.params[0] = thickness.max(0.0);
-        self.params[2] = if min_px.is_finite() { min_px.max(0.0) } else { 0.0 };
+        self.params[2] = if min_px.is_finite() {
+            min_px.max(0.0)
+        } else {
+            0.0
+        };
         self.transform_c2[3] = 3.0;
         self
     }
 
     /// Real circular outline (ring), not a filled disc.
-    pub fn circle_ring(
-        center: glam::Vec2,
-        radius: f32,
-        thickness: f32,
-        color: [f32; 4],
-    ) -> Self {
+    pub fn circle_ring(center: glam::Vec2, radius: f32, thickness: f32, color: [f32; 4]) -> Self {
         Self::circle(center, radius, color).with_ring(thickness, 1.0)
     }
 
@@ -475,13 +802,13 @@ impl ShapeInstance {
         Self::rect(center, size, color).with_ring(thickness, 1.0)
     }
 
-    /// Tipada de [`ShapeInstance::line_with_cap`] que acepta el enum
-    /// [`CapStyle`](crate::components::CapStyle) en vez del `u8` mágico.
+    /// Typed version of [`ShapeInstance::line_with_cap`] that takes the
+    /// [`CapStyle`](crate::components::CapStyle) enum instead of the magic
+    /// `u8`.
     ///
-    /// Es la forma recomendada de construir una línea con una punta concreta:
-    /// el compilador rechaza valores inválidos y la intención queda explícita.
-    /// Internamente delega en `line_with_cap` para que la geometría generada
-    /// sea idéntica.
+    /// This is the recommended way to build a line with a specific cap: the
+    /// compiler rejects invalid values and the intent is explicit. Internally
+    /// it delegates to `line_with_cap`, so the generated geometry is identical.
     ///
     /// ```rust
     /// use ferrous_2d::components::CapStyle;
@@ -506,18 +833,18 @@ impl ShapeInstance {
         Self::line_with_cap_style_aa(from, to, width, color, cap_style, true, true)
     }
 
-    /// Tipada de [`ShapeInstance::line_with_cap_aa`]: igual que
-    /// [`ShapeInstance::line_with_cap_style`] pero con `aa_start` / `aa_end`
-    /// para desactivar el AA de caps conectados (ver esa función para el
-    /// detalle y para cómo marcar cadenas de muros).
+    /// Typed version of [`ShapeInstance::line_with_cap_aa`]: like
+    /// [`ShapeInstance::line_with_cap_style`] but with `aa_start` / `aa_end`
+    /// to disable AA on connected caps (see that function for details and for
+    /// how to mark wall chains).
     ///
     /// ```rust
     /// use ferrous_2d::components::CapStyle;
     /// use ferrous_2d::render::ShapeInstance;
     /// use glam::Vec2;
     ///
-    /// // Cadena horizontal: el extremo derecho se une a otro muro (duro),
-    /// // el izquierdo queda libre (AA).
+    /// // Horizontal chain: the right end joins another wall (hard),
+    /// // the left end stays free (AA).
     /// let wall = ShapeInstance::line_with_cap_style_aa(
     ///     Vec2::ZERO,
     ///     Vec2::new(10.0, 0.0),
@@ -545,8 +872,13 @@ impl ShapeInstance {
         Self::line_with_cap_aa(from, to, width, color, raw, aa_start, aa_end)
     }
 
-    /// Rectángulo rotado, centrado en `center`, con ángulo en radianes.
-    pub fn rect_rotated(center: glam::Vec2, size: glam::Vec2, angle_radians: f32, color: [f32; 4]) -> Self {
+    /// Rotated rectangle centred on `center`, with the angle in radians.
+    pub fn rect_rotated(
+        center: glam::Vec2,
+        size: glam::Vec2,
+        angle_radians: f32,
+        color: [f32; 4],
+    ) -> Self {
         let model = glam::Mat4::from_scale_rotation_translation(
             glam::Vec3::new(size.x, size.y, 1.0),
             glam::Quat::from_rotation_z(angle_radians),
@@ -555,15 +887,14 @@ impl ShapeInstance {
         Self::from_model(model, color, [0.0, 0.0, 0.0, 1.0])
     }
 
-    /// Triángulo **relleno y anti-aliaseado** con vértices `a`, `b`, `c` en
-    /// unidades de mundo (píxeles en Pure2D, origen en el centro de pantalla,
-    /// Y hacia arriba).
+    /// **Filled, anti-aliased** triangle with vertices `a`, `b`, `c` in world
+    /// units (pixels in Pure2D, origin at the screen centre, Y up).
     ///
     /// # Encoding
     ///
-    /// Todo triángulo es la imagen afín del triángulo canónico de esquina
-    /// `(0,0)`, `(1,0)`, `(0,1)`, así que cabe en las cuatro columnas `Mat4`
-    /// existentes:
+    /// Every triangle is the affine image of the canonical corner triangle
+    /// `(0,0)`, `(1,0)`, `(0,1)`, so it fits in the existing four `Mat4`
+    /// columns:
     ///
     /// ```text
     /// c0 = b - a
@@ -572,51 +903,50 @@ impl ShapeInstance {
     /// c3 = a
     /// ```
     ///
-    /// El vertex shader de triángulos usa las esquinas del quad en `uv ∈
-    /// {0,1}²` (a diferencia del path rect, que las centra en `[-0.5, 0.5]²`),
-    /// de modo que `(0,0) → a`, `(1,0) → b`, `(0,1) → c`. El fragment shader
-    /// evalúa un SDF de triángulo en espacio de mundo, por lo que el relleno
-    /// es **two-sided**: el resultado es el mismo sin importar el winding.
+    /// The triangle vertex shader uses the quad corners at `uv ∈ {0,1}²`
+    /// (unlike the rect path, which centres them at `[-0.5, 0.5]²`), so
+    /// `(0,0) → a`, `(1,0) → b`, `(0,1) → c`. The fragment shader evaluates a
+    /// triangle SDF in world space, so the fill is **two-sided**: the result
+    /// is the same regardless of winding.
     ///
-    /// `params` emitido: `[edge_aa_mask=0b111, 0, min_px=0,
-    /// SHAPE_KIND_TRIANGLE]`. Equivalente a
-    /// [`ShapeInstance::polygon_triangle`] con [`TRIANGLE_EDGES_ALL`]. Usar
-    /// triángulos en abanico (fan) desde el centroide es la forma directa de
-    /// rellenar un polígono convexo con un vértice por lado, en vez de
-    /// aproximarlo con muchas instancias de rect.
+    /// Emitted `params`: `[edge_aa_mask=0b111, 0, min_px=0,
+    /// SHAPE_KIND_TRIANGLE]`. Equivalent to
+    /// [`ShapeInstance::polygon_triangle`] with [`TRIANGLE_EDGES_ALL`]. Fanning
+    /// triangles out from the centroid is the direct way to fill a convex
+    /// polygon with one vertex per side instead of approximating it with many
+    /// rect instances.
     pub fn triangle(a: glam::Vec2, b: glam::Vec2, c: glam::Vec2, color: [f32; 4]) -> Self {
         Self::polygon_triangle(a, b, c, color, TRIANGLE_EDGES_ALL)
     }
 
-    /// Triángulo **relleno** con anti-aliasing **selectivo por arista**, pensado
-    /// para triangulaciones que deben verse como un relleno continuo.
+    /// **Filled** triangle with **per-edge** anti-aliasing, for triangulations
+    /// that must read as one continuous fill.
     ///
-    /// `edge_aa_mask` bits (ver [`TRIANGLE_EDGE_AB`], [`TRIANGLE_EDGE_BC`],
+    /// `edge_aa_mask` bits (see [`TRIANGLE_EDGE_AB`], [`TRIANGLE_EDGE_BC`],
     /// [`TRIANGLE_EDGE_CA`]):
-    /// - bit 0 = arista `a → b`
-    /// - bit 1 = arista `b → c`
-    /// - bit 2 = arista `c → a`
+    /// - bit 0 = edge `a → b`
+    /// - bit 1 = edge `b → c`
+    /// - bit 2 = edge `c → a`
     ///
-    /// Bit en 1 = esa arista recibe AA (silueta exterior). Bit en 0 = arista
-    /// dura: el fragment shader recorta exactamente en la línea de la arista
-    /// sin atenuar cobertura. Para un borde **interno** compartido por dos
-    /// triángulos, ambos lo marcan en 0, de modo que cada uno rellena hasta la
-    /// línea a cobertura plena; los dos triángulos teselan sin dejar la costura
-    /// clara que produce el AA duplicado.
+    /// Set a bit to 1 to anti-alias that edge (outer silhouette). Clear it (0)
+    /// for a hard edge: the fragment shader clips exactly on the edge line
+    /// without attenuating coverage. For an **internal** edge shared by two
+    /// triangles, both clear it, so each fills up to the line at full coverage
+    /// and the two triangles tile without the light seam that duplicated AA
+    /// would produce.
     ///
-    /// El AA de los bordes marcados usa la distancia firmada al segmento
-    /// (con clamp a los vértices), de modo que dos bordes marcados concurrentes
-    /// redondean la esquina y el resultado sigue siendo winding-agnostic
-    /// (two-sided). `edge_aa_mask = 0` produce un triángulo de bordes duros
-    /// (sin AA); `edge_aa_mask = 0b111` es idéntico a
+    /// Marked edges use the signed distance to the segment (clamped at the
+    /// vertices), so two concurrent marked edges round the corner and the
+    /// result stays winding-agnostic (two-sided). `edge_aa_mask = 0` produces a
+    /// hard-edged triangle (no AA); `edge_aa_mask = 0b111` is identical to
     /// [`ShapeInstance::triangle`].
     ///
-    /// # Cómo marcar una triangulación (p.ej. Koncreta)
+    /// # Marking a triangulation
     ///
-    /// Una arista es **externa** si pertenece a un único triángulo de la
-    /// triangulación; es **interna** si dos triángulos la comparten. Marcá en 1
-    /// solo las aristas externas y en 0 las internas. El borde exterior queda
-    /// suavizado y las diagonales internas duras.
+    /// An edge is **external** when it belongs to a single triangle of the
+    /// triangulation; it is **internal** when two triangles share it. Set 1 on
+    /// external edges only and 0 on internal ones. The outer border stays
+    /// smooth and the internal diagonals stay hard.
     pub fn polygon_triangle(
         a: glam::Vec2,
         b: glam::Vec2,
@@ -667,7 +997,11 @@ impl ShapeInstance {
             return (c3 - pad, c3 + pad);
         }
         // Triangles map [0,1]² (origin = vertex a); the rest map [-0.5,0.5]².
-        let origin = if self.is_triangle() { c3 } else { c3 - (c0 + c1) * 0.5 };
+        let origin = if self.is_triangle() {
+            c3
+        } else {
+            c3 - (c0 + c1) * 0.5
+        };
         let ext = c0.abs() + c1.abs();
         let min = origin + c0.min(glam::Vec2::ZERO) + c1.min(glam::Vec2::ZERO);
         (min, min + ext)
@@ -723,6 +1057,8 @@ pub struct ShapeGpu {
     pub ext0: [f32; 4],
     /// Joined segment: accumulated polyline length at the start (dash phase).
     pub ext1: f32,
+    /// Gradient table base + 1; 0 = solid colour (see `GradientTable2d`).
+    pub gradient: u32,
 }
 
 /// `ShapeGpu::flags` bit: triangle kind.
@@ -762,14 +1098,51 @@ impl ShapeGpu {
             array_stride: std::mem::size_of::<ShapeGpu>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &[
-                wgpu::VertexAttribute { offset: 0,  shader_location: 0, format: wgpu::VertexFormat::Float32x2 },
-                wgpu::VertexAttribute { offset: 8,  shader_location: 1, format: wgpu::VertexFormat::Float32x2 },
-                wgpu::VertexAttribute { offset: 16, shader_location: 2, format: wgpu::VertexFormat::Float32x2 },
-                wgpu::VertexAttribute { offset: 24, shader_location: 3, format: wgpu::VertexFormat::Float32x2 },
-                wgpu::VertexAttribute { offset: 32, shader_location: 4, format: wgpu::VertexFormat::Float16x4 },
-                wgpu::VertexAttribute { offset: 40, shader_location: 5, format: wgpu::VertexFormat::Uint32 },
-                wgpu::VertexAttribute { offset: 44, shader_location: 6, format: wgpu::VertexFormat::Float32x4 },
-                wgpu::VertexAttribute { offset: 60, shader_location: 7, format: wgpu::VertexFormat::Float32 },
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: 8,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: 16,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: 24,
+                    shader_location: 3,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: 32,
+                    shader_location: 4,
+                    format: wgpu::VertexFormat::Float16x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 40,
+                    shader_location: 5,
+                    format: wgpu::VertexFormat::Uint32,
+                },
+                wgpu::VertexAttribute {
+                    offset: 44,
+                    shader_location: 6,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 60,
+                    shader_location: 7,
+                    format: wgpu::VertexFormat::Float32,
+                },
+                wgpu::VertexAttribute {
+                    offset: 64,
+                    shader_location: 8,
+                    format: wgpu::VertexFormat::Uint32,
+                },
             ],
         }
     }
@@ -837,6 +1210,7 @@ impl ShapeGpu {
             flags,
             ext0: s.ext0,
             ext1: s.ext1,
+            gradient: s.gradient,
         }
     }
 }
@@ -847,6 +1221,31 @@ impl From<&ShapeInstance> for ShapeGpu {
         Self::pack(s)
     }
 }
+
+// These four types are uploaded verbatim (or packed and then uploaded) and the
+// pipelines derive their strides from `size_of`; any field or alignment drift
+// would corrupt every 2-D draw. Fail at compile time instead.
+const _: () = {
+    assert!(std::mem::size_of::<SpriteInstance>() == 112);
+    assert!(std::mem::offset_of!(SpriteInstance, properties) == 96);
+
+    assert!(std::mem::size_of::<TextInstance>() == 116);
+    assert!(std::mem::offset_of!(TextInstance, params) == 96);
+    assert!(std::mem::offset_of!(TextInstance, gradient) == 112);
+
+    assert!(std::mem::size_of::<ShapeInstance>() == 120);
+    assert!(std::mem::offset_of!(ShapeInstance, ext1) == 112);
+
+    assert!(std::mem::size_of::<ShapeGpu>() == 68);
+    assert!(std::mem::offset_of!(ShapeGpu, flags) == 40);
+    assert!(std::mem::offset_of!(ShapeGpu, ext0) == 44);
+    assert!(std::mem::offset_of!(ShapeGpu, gradient) == 64);
+
+    assert!(std::mem::align_of::<SpriteInstance>() == 4);
+    assert!(std::mem::align_of::<TextInstance>() == 4);
+    assert!(std::mem::align_of::<ShapeInstance>() == 4);
+    assert!(std::mem::align_of::<ShapeGpu>() == 4);
+};
 
 /// IEEE 754 binary32 → binary16, round-to-nearest-even (no external crate).
 #[inline]
@@ -872,13 +1271,21 @@ pub fn f32_to_f16(v: f32) -> u16 {
         let half = m >> shift;
         let rem = m & ((1u32 << shift) - 1);
         let halfway = 1u32 << (shift - 1);
-        let r = if rem > halfway || (rem == halfway && (half & 1) == 1) { half + 1 } else { half };
+        let r = if rem > halfway || (rem == halfway && (half & 1) == 1) {
+            half + 1
+        } else {
+            half
+        };
         return sign | r as u16;
     }
     let half = ((e as u32) << 10) | (mant >> 13);
     let rem = mant & 0x1fff;
     // A carry out of the mantissa correctly bumps the exponent (up to inf).
-    let r = if rem > 0x1000 || (rem == 0x1000 && (half & 1) == 1) { half + 1 } else { half };
+    let r = if rem > 0x1000 || (rem == 0x1000 && (half & 1) == 1) {
+        half + 1
+    } else {
+        half
+    };
     sign | r as u16
 }
 
@@ -887,8 +1294,23 @@ mod gpu_pack_tests {
     use super::*;
 
     #[test]
-    fn shape_gpu_is_64_bytes() {
-        assert_eq!(std::mem::size_of::<ShapeGpu>(), 64);
+    fn shape_gpu_is_68_bytes() {
+        assert_eq!(std::mem::size_of::<ShapeGpu>(), 68);
+    }
+
+    /// `CameraUniform` in the 2D shaders must match this layout exactly:
+    /// mat4 (64) + resolution (8) + padding (8) + viewport_origin (8) + _pad
+    /// (8) + 32 `vec4` dash slots (512) = 608 bytes, 16-byte aligned.
+    #[test]
+    fn uniform2d_matches_the_wgsl_camera_layout() {
+        assert_eq!(
+            std::mem::size_of::<Uniform2d>(),
+            608 + GRADIENT_TABLE_VEC4 * 16
+        );
+        assert_eq!(std::mem::align_of::<Uniform2d>(), 4);
+        let origin = std::mem::offset_of!(Uniform2d, viewport_origin);
+        assert_eq!(origin, 80);
+        assert_eq!(std::mem::offset_of!(Uniform2d, dash), 96);
     }
 
     #[test]
@@ -905,7 +1327,11 @@ mod gpu_pack_tests {
     #[test]
     fn pack_keeps_flags() {
         let t = ShapeInstance::polygon_triangle(
-            glam::Vec2::ZERO, glam::Vec2::X, glam::Vec2::Y, [1.0; 4], TRIANGLE_EDGE_AB,
+            glam::Vec2::ZERO,
+            glam::Vec2::X,
+            glam::Vec2::Y,
+            [1.0; 4],
+            TRIANGLE_EDGE_AB,
         );
         let g = ShapeGpu::pack(&t);
         assert_ne!(g.flags & SHAPE_GPU_TRIANGLE, 0);
@@ -916,7 +1342,13 @@ mod gpu_pack_tests {
         assert_eq!(g.flags & SHAPE_GPU_LINE, 0);
 
         let l = ShapeInstance::line_with_cap_aa(
-            glam::Vec2::ZERO, glam::Vec2::new(5.0, 0.0), 1.0, [1.0; 4], 0, false, true,
+            glam::Vec2::ZERO,
+            glam::Vec2::new(5.0, 0.0),
+            1.0,
+            [1.0; 4],
+            0,
+            false,
+            true,
         );
         let g = ShapeGpu::pack(&l);
         assert_eq!(g.flags & SHAPE_GPU_TRIANGLE, 0);
@@ -930,7 +1362,12 @@ mod gpu_pack_tests {
     #[test]
     fn pack_line_min_px_and_line_flag() {
         let l = ShapeInstance::line_px(
-            glam::Vec2::ZERO, glam::Vec2::new(10.0, 0.0), 0.015, 1.0, [1.0; 4], 0,
+            glam::Vec2::ZERO,
+            glam::Vec2::new(10.0, 0.0),
+            0.015,
+            1.0,
+            [1.0; 4],
+            0,
         );
         let g = ShapeGpu::pack(&l);
         assert_ne!(g.flags & SHAPE_GPU_LINE, 0);
@@ -975,7 +1412,9 @@ mod gpu_pack_tests {
         assert_eq!(g.ext1, 2.5);
         let (min, max) = j.world_aabb();
         assert!(min.x <= 0.0 && max.x >= 10.0);
-        assert!(min.y <= -0.05 && max.y >= 0.05);
+        // `0.02 * 2.5` rounds to just under `0.05` in f32, so compare with a
+        // tolerance rather than against the decimal literal.
+        assert!(min.y <= -0.05 + 1e-6 && max.y >= 0.05 - 1e-6);
     }
 
     #[test]
@@ -1000,9 +1439,7 @@ mod gpu_pack_tests {
         assert_eq!(g.ext0[1], std::f32::consts::TAU);
         assert_eq!((g.flags >> SHAPE_GPU_DASH_SHIFT) & 15, 2);
 
-        let r = ShapeInstance::circle_ring(
-            glam::Vec2::ZERO, 5.0, 0.02, [1.0; 4],
-        );
+        let r = ShapeInstance::circle_ring(glam::Vec2::ZERO, 5.0, 0.02, [1.0; 4]);
         let g = ShapeGpu::pack(&r);
         assert_ne!(g.flags & SHAPE_GPU_RING, 0);
         assert_eq!(g.flags & SHAPE_GPU_ARC, 0);
@@ -1013,7 +1450,12 @@ mod gpu_pack_tests {
 
     #[test]
     fn world_aabb_matches_corners() {
-        let r = ShapeInstance::rect_rotated(glam::Vec2::new(3.0, 4.0), glam::Vec2::new(2.0, 1.0), 0.7, [1.0; 4]);
+        let r = ShapeInstance::rect_rotated(
+            glam::Vec2::new(3.0, 4.0),
+            glam::Vec2::new(2.0, 1.0),
+            0.7,
+            [1.0; 4],
+        );
         let (min, max) = r.world_aabb();
         let c0 = glam::Vec2::new(r.transform_c0[0], r.transform_c0[1]);
         let c1 = glam::Vec2::new(r.transform_c1[0], r.transform_c1[1]);
@@ -1023,6 +1465,29 @@ mod gpu_pack_tests {
             assert!(p.x >= min.x - 1e-5 && p.y >= min.y - 1e-5);
             assert!(p.x <= max.x + 1e-5 && p.y <= max.y + 1e-5);
         }
+    }
+
+    #[test]
+    fn instance_wire_layouts_match_their_descriptors() {
+        assert_eq!(std::mem::size_of::<SpriteInstance>(), 112);
+        assert_eq!(SpriteInstance::descriptor().array_stride, 112);
+        assert_eq!(SpriteInstance::descriptor().attributes.len(), 7);
+        assert_eq!(SpriteInstance::descriptor().attributes[6].offset, 96);
+
+        assert_eq!(std::mem::size_of::<TextInstance>(), 116);
+        assert_eq!(TextInstance::descriptor().array_stride, 116);
+        assert_eq!(TextInstance::descriptor().attributes.len(), 8);
+        assert_eq!(TextInstance::descriptor().attributes[7].offset, 112);
+
+        assert_eq!(std::mem::size_of::<ShapeGpu>(), 68);
+        assert_eq!(ShapeGpu::descriptor().array_stride, 68);
+        assert_eq!(ShapeGpu::descriptor().attributes.len(), 9);
+        assert_eq!(ShapeGpu::descriptor().attributes[8].offset, 64);
+
+        // `ShapeInstance` is the authoring type; the renderer uploads
+        // `ShapeGpu::pack` of it. Its size is pinned so the packer's input
+        // contract cannot drift unnoticed.
+        assert_eq!(std::mem::size_of::<ShapeInstance>(), 120);
     }
 }
 
@@ -1101,9 +1566,488 @@ pub struct Uniform2d {
     pub resolution: [f32; 2],
     /// `[device_px_per_logical_px, legacy_2d_flag]`.
     pub padding: [f32; 2], // 16-byte alignment
+    /// Physical-pixel origin `[x, y]` of the viewport inside the framebuffer.
+    ///
+    /// The single main camera uses `[0, 0]`; multi-view uses the sub-rect
+    /// origin so the fragment shader can map clip coordinates (which are in
+    /// full framebuffer space) onto the view's own resolution.
+    pub viewport_origin: [f32; 2],
+    /// Keeps `dash` (a `vec4` array) 16-byte aligned after the origin above.
+    pub _pad: [f32; 2],
     /// Dash table: 16 patterns × 8 lengths, stored as 32 `vec4` so the WGSL
     /// uniform array is 16-byte aligned. Slot `0` is unused (continuous).
     /// Pattern `i` uses `dash[i*2]` (lengths 0..3) and `dash[i*2+1]` (4..7).
     pub dash: [[f32; 4]; 32],
+    /// Gradient table: headers and stops, `GRADIENT_TABLE_VEC4` vec4.
+    ///
+    /// A gradient occupies a header (kind, stop count, first stop, 0), one
+    /// geometry vec4 and two vec4 per stop (linear rgba, (offset,0,0,0)).
+    pub gradients: [[f32; 4]; GRADIENT_TABLE_VEC4],
 }
 
+/// Number of vec4 slots in the per-view gradient table.
+///
+/// A 2-stop gradient uses 6 slots, so this holds 85 minimal ramps or a mix of
+/// larger ones. A gradient that does not fit keeps the instance's solid colour.
+/// See [GradientTable2d](crate::render::GradientTable2d).
+pub const GRADIENT_TABLE_VEC4: usize = 512;
+
+/// Maximum nesting depth of Pure2D offscreen layers.
+///
+/// Pushing a layer when this many are already open returns
+/// [`LayerError::TooDeep`] and changes nothing.
+pub const MAX_LAYER_DEPTH_2D: u32 = 8;
+
+/// How a finished offscreen layer composites onto its backdrop.
+///
+/// The first four modes are the fixed-function [`BlendMode2d`](crate::render::pipeline::BlendMode2d)
+/// states and are exactly equivalent to a per-draw blend.  The last three are **backdrop
+/// aware**: their result depends on the destination colour, so the composite
+/// pass reads a snapshot of the destination (see
+/// `Renderer::push_layer_2d`).  They are the modes that cannot be expressed by
+/// `wgpu` blend factors alone.
+///
+/// All formulas work in premultiplied linear light.  With straight source `s`
+/// and backdrop `b` colours, coverage `As`/`Ad`, the composited colour is
+///
+/// ```text
+/// Co = Cs*(1-Ad) + As*Ad*B(b, s) + Cd*(1-As)
+/// Ao = As + Ad*(1-As)
+/// ```
+///
+/// where `B` is the per-mode blend:
+///
+/// | mode | `B(b, s)` |
+/// |---|---|
+/// | overlay | `s < 0.5 ? 2*b*s : 1 - 2*(1-b)*(1-s)` |
+/// | darken | `min(b, s)` |
+/// | lighten | `max(b, s)` |
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub enum CompositeMode2d {
+    /// Source-over.
+    #[default]
+    Normal,
+    /// Additive colour, source-over coverage.
+    Add,
+    /// Multiplicative over the backdrop.
+    Multiply,
+    /// Screen.
+    Screen,
+    /// Multiply in the dark half, screen in the light half (conditioned on the
+    /// source, per the engine's blend contract).
+    Overlay,
+    /// Per-channel minimum.
+    Darken,
+    /// Per-channel maximum.
+    Lighten,
+}
+
+impl CompositeMode2d {
+    /// Every mode, in a stable order.
+    pub const ALL: [Self; 7] = [
+        Self::Normal,
+        Self::Add,
+        Self::Multiply,
+        Self::Screen,
+        Self::Overlay,
+        Self::Darken,
+        Self::Lighten,
+    ];
+
+    /// `true` for the modes that need a destination snapshot.
+    #[must_use]
+    pub const fn needs_backdrop(self) -> bool {
+        matches!(self, Self::Overlay | Self::Darken | Self::Lighten)
+    }
+
+    /// The matching fixed-function mode, or `None` for a backdrop-aware mode.
+    #[must_use]
+    pub const fn fixed(self) -> Option<crate::render::pipeline::BlendMode2d> {
+        use crate::render::pipeline::BlendMode2d;
+        match self {
+            Self::Normal => Some(BlendMode2d::Normal),
+            Self::Add => Some(BlendMode2d::Add),
+            Self::Multiply => Some(BlendMode2d::Multiply),
+            Self::Screen => Some(BlendMode2d::Screen),
+            Self::Overlay | Self::Darken | Self::Lighten => None,
+        }
+    }
+
+    /// Stable identifier used by the composite shader.
+    #[must_use]
+    pub const fn shader_id(self) -> u32 {
+        match self {
+            Self::Normal => 0,
+            Self::Add => 1,
+            Self::Multiply => 2,
+            Self::Screen => 3,
+            Self::Overlay => 4,
+            Self::Darken => 5,
+            Self::Lighten => 6,
+        }
+    }
+
+    /// Stable, human-readable name used in logs and errors.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Add => "add",
+            Self::Multiply => "multiply",
+            Self::Screen => "screen",
+            Self::Overlay => "overlay",
+            Self::Darken => "darken",
+            Self::Lighten => "lighten",
+        }
+    }
+}
+
+impl From<crate::render::pipeline::BlendMode2d> for CompositeMode2d {
+    fn from(mode: crate::render::pipeline::BlendMode2d) -> Self {
+        use crate::render::pipeline::BlendMode2d;
+        match mode {
+            BlendMode2d::Normal => Self::Normal,
+            BlendMode2d::Add => Self::Add,
+            BlendMode2d::Multiply => Self::Multiply,
+            BlendMode2d::Screen => Self::Screen,
+        }
+    }
+}
+
+/// Description of one offscreen compositing layer (see
+/// `Renderer::push_layer_2d`).
+///
+/// Draws between [`Layer2d`]'s push and pop are z-sorted among themselves and
+/// rendered into a transparent offscreen texture; the whole layer is then
+/// composited into its parent as one command at `depth`, with `blend` and
+/// group `opacity` (`colour× opacity`, all four premultiplied channels).
+///
+/// Group opacity differs from per-child opacity: two overlapping opaque
+/// children inside a 50 % layer show no internal overlap, because they are
+/// composited inside the layer at full opacity and the layer as a whole is
+/// faded once.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Layer2d {
+    /// Group opacity applied once to the finished layer, in `0.0..=1.0`.
+    pub opacity: f32,
+    /// Blend mode used to composite the finished layer into its parent.
+    pub blend: CompositeMode2d,
+    /// Depth of the whole layer in the parent's painter order.
+    pub depth: f32,
+    /// Optional axis-aligned bound the layer content covers.
+    ///
+    /// Stored as `[x, y, width, height]` in target pixels, with the same
+    /// top-left origin as the target.  It is a hint for scissoring the layer's
+    /// offscreen passes (effects, masks and the plan) to the region the layer
+    /// can touch.  `None` means the **full target**, which is the current
+    /// behaviour; the renderer must treat `None` as "do not scissor".
+    ///
+    /// The rect is not validated or clamped at push time and does not affect
+    /// compositing: a caller that sets it must include the effect margin
+    /// (for a Gaussian blur at least the kernel radius, i.e.
+    /// `ceil(1.5 * radius)` pixels) and any shadow offset.
+    pub bounds: Option<[f32; 4]>,
+}
+
+impl Layer2d {
+    /// Builds a layer description.
+    ///
+    /// `opacity` is clamped to `0.0..=1.0` at push time; non-finite values are
+    /// rejected with [`LayerError::InvalidOpacity`].  The layer covers the full
+    /// target (`bounds == None`) unless [`Self::with_bounds`] is used.
+    pub fn new(opacity: f32, blend: impl Into<CompositeMode2d>, depth: f32) -> Self {
+        let blend = blend.into();
+        Self {
+            opacity,
+            blend,
+            depth,
+            bounds: None,
+        }
+    }
+
+    /// Sets the target-pixel rect the layer content covers.
+    ///
+    /// `bounds` is `[x, y, width, height]` in target pixels (top-left origin).
+    /// Use it to let the renderer scissor the layer's offscreen passes to the
+    /// region the layer can touch; [`None`] keeps the full target.  The rect is
+    /// a hint and is not clamped by this builder.
+    #[must_use]
+    pub const fn with_bounds(mut self, bounds: [f32; 4]) -> Self {
+        self.bounds = Some(bounds);
+        self
+    }
+}
+
+impl Default for Layer2d {
+    fn default() -> Self {
+        Self {
+            opacity: 1.0,
+            blend: CompositeMode2d::Normal,
+            depth: 0.0,
+            bounds: None,
+        }
+    }
+}
+
+/// How a mask source's offscreen image becomes a coverage value.
+///
+/// Masks multiply a finished layer's premultiplied colour and alpha by a
+/// per-pixel coverage in `0.0..=1.0` (see `Renderer::push_layer_2d_masked`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub enum MaskMode2d {
+    /// Coverage is the mask's alpha channel.
+    #[default]
+    Alpha,
+    /// Coverage is the linear-light luminance of the mask's premultiplied
+    /// colour, using the Rec. 709 weights `(0.2126, 0.7152, 0.0722)`.
+    ///
+    /// A transparent mask pixel reads as black, so its coverage is zero.
+    Luma,
+}
+
+impl MaskMode2d {
+    /// Every mode, in a stable order.
+    pub const ALL: [Self; 2] = [Self::Alpha, Self::Luma];
+
+    /// Stable identifier used by the mask shader.
+    #[must_use]
+    pub const fn shader_id(self) -> u32 {
+        match self {
+            Self::Alpha => 0,
+            Self::Luma => 1,
+        }
+    }
+
+    /// Stable, human-readable name used in docs and logs.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Alpha => "alpha",
+            Self::Luma => "luma",
+        }
+    }
+}
+
+/// Description of the mask applied to one offscreen layer.
+///
+/// The mask source is drawn between `Renderer::begin_mask_2d` and
+/// `Renderer::end_mask_2d`, into its own offscreen texture with its own effect
+/// chain.  The finished content layer is then multiplied by
+/// `mask mode (inverted when requested)` before it composites with the usual
+/// opacity and blend mode:
+///
+/// ```text
+/// coverage = mode == alpha ? mask.a : luminance(mask.rgb)
+/// coverage = invert ? 1 - coverage : coverage
+/// out      = content * coverage
+/// ```
+///
+/// Everything is premultiplied linear light, so scaling all four channels is
+/// the correct alpha and colour multiply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Mask2d {
+    /// How the source's pixels become coverage.
+    pub mode: MaskMode2d,
+    /// `true` swaps coverage for `1 - coverage`.
+    pub invert: bool,
+}
+
+impl Mask2d {
+    /// Builds a non-inverted mask.
+    #[must_use]
+    pub const fn new(mode: MaskMode2d) -> Self {
+        Self {
+            mode,
+            invert: false,
+        }
+    }
+
+    /// Returns the same mask with `invert` swapped.
+    #[must_use]
+    pub const fn inverted(mut self) -> Self {
+        self.invert = !self.invert;
+        self
+    }
+}
+
+/// Per-mask-pixel uniform consumed by `mask_2d.wgsl`.
+///
+/// `mode` is [`MaskMode2d::shader_id`]; `invert` is a 0/1 flag.  The two
+/// padding floats keep the uniform at 16 bytes.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, Pod, Zeroable)]
+pub struct MaskUniform2d {
+    /// [`MaskMode2d::shader_id`].
+    pub mode: f32,
+    /// `1.0` when the coverage is inverted, `0.0` otherwise.
+    pub invert: f32,
+    /// Padding to a 16-byte std140 stride.
+    pub _pad: [f32; 2],
+}
+
+impl MaskUniform2d {
+    /// Builds the uniform for `mask`.
+    #[must_use]
+    pub fn new(mask: Mask2d) -> Self {
+        Self {
+            #[allow(clippy::cast_precision_loss)]
+            mode: mask.mode.shader_id() as f32,
+            invert: if mask.invert { 1.0 } else { 0.0 },
+            _pad: [0.0; 2],
+        }
+    }
+
+    /// The bytes to upload.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        bytemuck::bytes_of(self)
+    }
+}
+
+/// Typed errors for the Pure2D offscreen-layer API.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LayerError {
+    /// A push exceeded [`MAX_LAYER_DEPTH_2D`] open layers.
+    TooDeep {
+        /// Maximum supported nesting depth.
+        max: u32,
+        /// Depth requested by the rejected push.
+        requested: u32,
+    },
+    /// A frame ended (or a resize/render finished) with layers still open.
+    ///
+    /// The renderer closes them automatically and logs a warning; this error
+    /// reports how many were closed.
+    Unbalanced {
+        /// Number of layers that were still open when the frame ended.
+        open: u32,
+    },
+    /// [`crate::render::types::Layer2d::opacity`] was NaN or infinite.
+    InvalidOpacity {
+        /// The rejected value.
+        opacity: f32,
+    },
+    /// A pop was requested with no layer open.
+    Underflow,
+    /// An effect parameter was not finite or was negative.
+    InvalidEffect {
+        /// Index of the effect in the chain.
+        index: u32,
+        /// Human-readable reason.
+        reason: &'static str,
+    },
+    /// A layer was pushed with more effects than
+    /// [`MAX_EFFECTS_PER_LAYER`](crate::render::MAX_EFFECTS_PER_LAYER).
+    TooManyEffects {
+        /// Maximum number of effects per layer.
+        max: usize,
+    },
+    /// `begin_mask_2d` was called when the innermost layer is not a masked
+    /// layer waiting for its source, or when it already has one.
+    MaskSourceNotAllowed,
+    /// `end_mask_2d` was called with no mask source open.
+    MaskSourceMismatch,
+    /// `pop_layer_2d` was called while a mask source was still open; close it
+    /// with `end_mask_2d` first.
+    MaskSourceNotClosed,
+    /// A masked layer was popped before its mask source was drawn.
+    ///
+    /// The layer still composites, unmasked, so its content is not lost.
+    MaskWithoutSource,
+}
+
+impl std::fmt::Display for LayerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooDeep { max, requested } => write!(
+                f,
+                "layer nesting depth {requested} exceeds the maximum of {max}"
+            ),
+            Self::Unbalanced { open } => write!(
+                f,
+                "{open} offscreen layer(s) were still open at the end of the frame; they were closed automatically"
+            ),
+            Self::InvalidOpacity { opacity } => {
+                write!(f, "layer opacity must be finite, got {opacity}")
+            }
+            Self::Underflow => write!(f, "pop_layer_2d called with no open layer"),
+            Self::InvalidEffect { index, reason } => {
+                write!(f, "layer effect {index} is invalid: {reason}")
+            }
+            Self::TooManyEffects { max } => {
+                write!(f, "a layer supports at most {max} effects")
+            }
+            Self::MaskSourceNotAllowed => write!(
+                f,
+                "begin_mask_2d needs an open masked layer that is still waiting for its source"
+            ),
+            Self::MaskSourceMismatch => write!(f, "end_mask_2d called with no mask source open"),
+            Self::MaskSourceNotClosed => {
+                write!(f, "a mask source is still open; call end_mask_2d before pop_layer_2d")
+            }
+            Self::MaskWithoutSource => {
+                write!(f, "the masked layer was closed before its mask source was drawn")
+            }
+        }
+    }
+}
+
+impl std::error::Error for LayerError {}
+
+/// One instance of the full-target composite quad used to draw a finished
+/// offscreen layer into its parent (see `composite_2d.wgsl`).
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, Pod, Zeroable)]
+pub struct CompositeInstance {
+    /// Group opacity multiplied into the premultiplied layer colour.
+    pub opacity: f32,
+    /// [CompositeMode2d::shader_id] of a backdrop-aware mode; ignored by the
+    /// fixed-function composite pipelines.
+    pub mode: u32,
+}
+
+impl CompositeInstance {
+    /// Vertex-buffer layout describing this instance type to wgpu.
+    pub const fn descriptor() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<CompositeInstance>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32,
+                },
+                wgpu::VertexAttribute {
+                    offset: 4,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Uint32,
+                },
+            ],
+        }
+    }
+}
+
+#[cfg(test)]
+mod layer_bounds_tests {
+    use super::*;
+
+    #[test]
+    fn default_layer_covers_the_full_target() {
+        assert_eq!(Layer2d::default().bounds, None);
+        assert_eq!(Layer2d::new(1.0, CompositeMode2d::Normal, 0.0).bounds, None);
+    }
+
+    #[test]
+    fn with_bounds_round_trips_the_rect() {
+        let rect = [10.0, 20.0, 300.0, 150.0];
+        let layer = Layer2d::new(0.5, CompositeMode2d::Add, 3.0).with_bounds(rect);
+        assert_eq!(layer.bounds, Some(rect));
+        assert_eq!(layer.opacity, 0.5);
+        assert_eq!(layer.blend, CompositeMode2d::Add);
+        assert_eq!(layer.depth, 3.0);
+
+        let copy = layer;
+        assert_eq!(copy.bounds, Some(rect));
+    }
+}

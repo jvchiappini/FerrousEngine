@@ -1,5 +1,13 @@
-use wgpu::RenderPipeline;
 use crate::gpu_types::TextQuad;
+use wgpu::RenderPipeline;
+
+// The text and icon pipelines expose all seven instance attributes;
+// `node_id` (location 7, bytes 52..56) is declared by `text.wgsl` but not read
+// by its body, so the stride must still cover it.
+const _: () = {
+    assert!(std::mem::size_of::<TextQuad>() == 56);
+    assert!(std::mem::offset_of!(TextQuad, node_id) == 52);
+};
 
 pub fn create_text_pipeline(
     device: &wgpu::Device,
@@ -7,13 +15,18 @@ pub fn create_text_pipeline(
     pipeline_layout: &wgpu::PipelineLayout,
     sample_count: u32,
     depth_write_enabled: bool,
+    depth_format: Option<wgpu::TextureFormat>,
     cache: Option<&wgpu::PipelineCache>,
 ) -> RenderPipeline {
+    // The MSDF decode helpers are shared with the Pure2D text shader.  They are
+    // prepended as one WGSL module; the GUI module keeps only its bindings and
+    // entry points.
+    const SHARED_MSDF: &str = include_str!("../../../../assets/shaders/msdf_common.wgsl");
+    const GUI_TEXT: &str = include_str!("../../../../assets/shaders/text.wgsl");
+    let source = format!("{SHARED_MSDF}\n{GUI_TEXT}");
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("GUI Text Shader"),
-        source: wgpu::ShaderSource::Wgsl(
-            include_str!("../../../../assets/shaders/text.wgsl").into(),
-        ),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
     });
 
     let instance_size = std::mem::size_of::<TextQuad>() as u64;
@@ -38,13 +51,41 @@ pub fn create_text_pipeline(
                     array_stride: instance_size,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 0, shader_location: 1 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 8, shader_location: 2 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 16, shader_location: 3 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 24, shader_location: 4 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 32, shader_location: 5 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32, offset: 48, shader_location: 6 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Uint32, offset: 52, shader_location: 7 },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 0,
+                            shader_location: 1,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 8,
+                            shader_location: 2,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 16,
+                            shader_location: 3,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 24,
+                            shader_location: 4,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 32,
+                            shader_location: 5,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32,
+                            offset: 48,
+                            shader_location: 6,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Uint32,
+                            offset: 52,
+                            shader_location: 7,
+                        },
                     ],
                 },
             ],
@@ -61,14 +102,17 @@ pub fn create_text_pipeline(
             compilation_options: Default::default(),
         }),
         primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: wgpu::TextureFormat::Depth32Float,
+        depth_stencil: depth_format.map(|format| wgpu::DepthStencilState {
+            format,
             depth_write_enabled,
             depth_compare: wgpu::CompareFunction::LessEqual,
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),
-        multisample: wgpu::MultisampleState { count: sample_count, ..Default::default() },
+        multisample: wgpu::MultisampleState {
+            count: sample_count,
+            ..Default::default()
+        },
         multiview: None,
         cache,
     })

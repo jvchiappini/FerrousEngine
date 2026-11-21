@@ -1,153 +1,360 @@
 //! Atlas packing and GPU texture management for glyph MSDFs.
+//!
+//! The CPU half of an atlas — pixels and layout tables — is
+//! [`crate::BakedAtlas`]; this module adds the GPU texture the renderer samples.
+//! [`FontAtlas::new`] keeps the one-call behaviour of building and uploading.
 
-use super::msdf_gen::generate_msdf;
+use super::budget::map_bytes;
+use super::inventory;
+use super::layout::{
+    layout_block, layout_line, measure_block, measure_line, GlyphLayout, LayoutCache, LayoutFont,
+    LineMetrics, TextAlign, TextMetrics, TextStyle,
+};
+use super::parser::{FontMetrics, GposKerning};
+use super::BakedAtlas;
 use anyhow::Result;
-use std::collections::HashMap;
-// rayon is used to parallelize glyph MSDF generation and metrics computation
-#[cfg(not(target_arch = "wasm32"))]
-use rayon::prelude::*;
+use rustc_hash::FxHashMap as HashMap;
+use std::sync::Mutex;
 
-#[derive(Debug, Clone)]
+/// Default MSDF cell size in texels.  One atlas cell stores one glyph.
+pub const DEFAULT_GLYPH_SIZE: u32 = 64;
+
+/// UV rectangle and placement data for one glyph in the MSDF atlas.
+///
+/// The atlas bitmap covers a fixed em-space cell (`plane_bounds`, see
+/// [`FontAtlas::cell_bounds`]), so every glyph quad maps the **whole** cell to
+/// the atlas UV rectangle; the MSDF shader clips the actual ink.
+#[derive(Debug, Clone, PartialEq)]
 pub struct GlyphMetrics {
+    /// Atlas UV rectangle `[u0, v0, u1, v1]`.
     pub uv: [f32; 4],
+    /// Cell size in atlas texels `[width, height]`.
     pub size: [f32; 2],
+    /// Horizontal advance in em units.
     pub advance: f32,
+    /// Quad rectangle in em units relative to the pen position on the baseline:
+    /// `[left, bottom, right, top]`, Y up.  This is the explicit em → cell
+    /// mapping; it is the same for every glyph of an atlas.
+    pub plane_bounds: [f32; 4],
+    /// Ink rectangle in em units relative to the pen position on the baseline:
+    /// `[left, bottom, right, top]`, Y up.  All zero for a glyph with no ink
+    /// (for example a space).
+    pub ink_bounds: [f32; 4],
 }
 
+/// A baked MSDF font atlas plus the data needed to lay text out on the CPU.
 pub struct FontAtlas {
+    /// GPU texture holding the MSDF cells.
     pub texture: wgpu::Texture,
+    /// View of [`Self::texture`].
     pub view: wgpu::TextureView,
+    /// Linear-filtering sampler for [`Self::view`].
     pub sampler: wgpu::Sampler,
+    /// Per-character glyph metrics.
     pub metrics: HashMap<char, GlyphMetrics>,
+    /// Cell size in texels.
     pub glyph_size: u32,
+    /// Distance range used by `generate_msdf`, in atlas texels.  Shaders must
+    /// use this value instead of hard-coding it.
+    pub px_range: f32,
+    /// Em-space rectangle covered by one atlas cell: `[left, bottom, right,
+    /// top]`.  It is copied into every [`GlyphMetrics::plane_bounds`].
+    pub cell_bounds: [f32; 4],
+    /// Vertical metrics in em units.
+    pub font_metrics: FontMetrics,
+    /// Character → glyph index, used for kerning lookups during layout.
+    pub glyph_indices: HashMap<char, u16>,
+    /// `kern` format 0 pairs in em units keyed by glyph indices.
+    pub kerning: HashMap<(u16, u16), f32>,
+    /// GPOS `PairPos` kerning; wins over [`Self::kerning`] for a covered pair.
+    pub gpos: GposKerning,
+    /// The `.notdef` glyph cell, when the font has a non-empty glyph 0.
+    pub notdef: Option<GlyphMetrics>,
+    /// Key of the font bytes and character set this atlas was baked from.
+    ///
+    /// Two registrations with the same key produce the same atlas, which is
+    /// what lets the renderer share one atlas between them.
+    pub key: super::FontKey,
+    /// LRU byte-budgeted cache of block layouts.
+    pub(crate) layout_cache: Mutex<LayoutCache>,
+    /// ASCII fast-path table, built on first use from the maps above.
+    pub(crate) ascii_tables: std::sync::OnceLock<Box<super::layout::AsciiTables>>,
+    /// Stable prefix for every inventory label this atlas owns.
+    pub(crate) inventory_prefix: String,
 }
 
 impl FontAtlas {
+    /// Build an MSDF atlas for `chars` and upload it to the GPU.
+    ///
+    /// This is [`BakedAtlas::build`] followed by [`BakedAtlas::upload`]; use
+    /// those directly to cache or share the CPU half.  Chapters are packed in
+    /// the given order; each cell is [`DEFAULT_GLYPH_SIZE`] texels.  Glyph 0
+    /// (`.notdef`) is appended as an extra cell when it has an outline, so
+    /// missing characters can be drawn as a visible replacement.
     pub fn new<I: IntoIterator<Item = char>>(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         parser: &super::parser::FontParser,
         chars: I,
     ) -> Result<Self> {
-        let glyph_size = 64;
         let char_list: Vec<char> = chars.into_iter().collect();
-        let count = char_list.len() as u32;
-        if count == 0 {
-            return Err(anyhow::anyhow!("no characters"));
+        Ok(BakedAtlas::build(parser, &char_list)?.upload(device, queue))
+    }
+
+    /// A pure-data view of this atlas for [`layout_line`].
+    ///
+    /// The ASCII fast-path table is built on first use from this atlas's own
+    /// maps, so it cannot outlive the atlas or disagree with it.
+    pub fn layout_font(&self) -> LayoutFont<'_> {
+        LayoutFont {
+            metrics: &self.metrics,
+            notdef: self.notdef.as_ref(),
+            glyph_indices: &self.glyph_indices,
+            kerning: &self.kerning,
+            gpos: &self.gpos,
+            font: self.font_metrics,
+            ascii: Some(self.ascii_tables.get_or_init(|| {
+                Box::new(super::layout::AsciiTables::build(
+                    &self.metrics,
+                    &self.glyph_indices,
+                ))
+            })),
+        }
+    }
+
+    /// Lay out a single line using this atlas (see [`layout_line`]).
+    pub fn layout_line(
+        &self,
+        text: &str,
+        size_px: f32,
+        align: TextAlign,
+        out: &mut Vec<super::layout::GlyphQuad>,
+    ) -> LineMetrics {
+        layout_line(self.layout_font(), text, size_px, align, out)
+    }
+
+    /// Measure a single line using this atlas without allocating any quads
+    /// (see [`measure_line`]).
+    pub fn measure_line(&self, text: &str, size_px: f32, align: TextAlign) -> LineMetrics {
+        measure_line(self.layout_font(), text, size_px, align)
+    }
+
+    /// Lay out a whole block (one or more `\n`-separated lines) into `out`
+    /// (see [`layout_block`]).
+    pub fn layout_block(
+        &self,
+        text: &str,
+        style: TextStyle,
+        out: &mut Vec<GlyphLayout>,
+    ) -> TextMetrics {
+        // A hit copies the exact records the uncached path produced; the
+        // output is bit-identical, only the per-character work is skipped.
+        let cached_metrics = {
+            let mut cache = self
+                .layout_cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            cache.get(text, style).map(|entry| {
+                out.clear();
+                out.extend_from_slice(&entry.glyphs);
+                entry.metrics.clone()
+            })
+        };
+        if let Some(metrics) = cached_metrics {
+            return metrics;
         }
 
-        let atlas_dim = ((count as f32).sqrt().ceil() as u32).max(1);
-        let tex_size = atlas_dim * glyph_size;
-        println!(
-            "Building atlas {}x{} for {} glyphs",
-            tex_size, tex_size, count
-        );
-
-        // prepare pixel buffer and metrics map; the heavy work of computing
-        // each glyph's MSDF can be done in parallel since there are no
-        // dependencies between characters. we first compute a vector of
-        // intermediate results and then fold them into the final atlas.
-        let mut pixels = vec![255u8; (tex_size * tex_size * 4) as usize];
-        let mut metrics = HashMap::new();
-
-        // enumerate so we know each glyph's position in the grid
-        #[cfg(not(target_arch = "wasm32"))]
-        let glyph_results: Vec<(usize, char, Vec<u8>, f32)> = char_list
-            .par_iter()
-            .enumerate()
-            .map(|(i, &c)| {
-                let outline = parser.get_glyph_outline(c);
-                let advance = parser.get_glyph_advance(c);
-                let bmp = generate_msdf(&outline, glyph_size);
-                (i, c, bmp, advance)
-            })
-            .collect();
-        #[cfg(target_arch = "wasm32")]
-        let glyph_results: Vec<(usize, char, Vec<u8>, f32)> = char_list
-            .iter()
-            .enumerate()
-            .map(|(i, &c)| {
-                let outline = parser.get_glyph_outline(c);
-                let advance = parser.get_glyph_advance(c);
-                let bmp = generate_msdf(&outline, glyph_size);
-                (i, c, bmp, advance)
-            })
-            .collect();
-
-        for (i, c, bmp, advance) in glyph_results {
-            let x = (i as u32 % atlas_dim) * glyph_size;
-            let y = (i as u32 / atlas_dim) * glyph_size;
-
-            for row in 0..glyph_size {
-                let dst = (((y + row) * tex_size + x) * 4) as usize;
-                let src = (row * glyph_size * 4) as usize;
-                pixels[dst..dst + (glyph_size * 4) as usize]
-                    .copy_from_slice(&bmp[src..src + (glyph_size * 4) as usize]);
-            }
-
-            metrics.insert(
-                c,
-                GlyphMetrics {
-                    uv: [
-                        x as f32 / tex_size as f32,
-                        y as f32 / tex_size as f32,
-                        (x + glyph_size) as f32 / tex_size as f32,
-                        (y + glyph_size) as f32 / tex_size as f32,
-                    ],
-                    size: [glyph_size as f32, glyph_size as f32],
-                    advance,
-                },
+        let metrics = layout_block(self.layout_font(), text, style, out);
+        let bytes = {
+            let mut cache = self
+                .layout_cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            cache.insert(text, style, out, &metrics)
+        };
+        if bytes > 0 {
+            inventory::register_cpu(
+                &format!("{} layout cache", self.inventory_prefix),
+                bytes,
+                inventory::Subsystem::Fonts,
             );
         }
+        metrics
+    }
 
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("FontAtlas"),
-            size: wgpu::Extent3d {
-                width: tex_size,
-                height: tex_size,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            wgpu::ImageCopyTexture {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &pixels,
-            wgpu::ImageDataLayout {
-                offset: 0,
-                bytes_per_row: Some((tex_size * 4).try_into().unwrap()),
-                rows_per_image: None,
-            },
-            wgpu::Extent3d {
-                width: tex_size,
-                height: tex_size,
-                depth_or_array_layers: 1,
-            },
+    /// Characters that have no glyph in this atlas (whitespace excluded).
+    ///
+    /// This is the `missing_glyphs` count [`layout_block`] reports, computed
+    /// without laying out, allocating or touching the layout cache.  A caller
+    /// that only wants the warning badge (Motioner's text placeholder) must
+    /// not pay for a full measure per frame.
+    #[must_use]
+    pub fn count_missing(&self, text: &str) -> u32 {
+        let mut missing = 0u32;
+        for ch in text.chars() {
+            if !ch.is_whitespace() && !self.metrics.contains_key(&ch) {
+                missing = missing.saturating_add(1);
+            }
+        }
+        missing
+    }
+
+    /// Lays out a block for drawing, without copying its metrics.
+    ///
+    /// [`Self::layout_block`] returns [`TextMetrics`] by value, which clones the
+    /// per-line list on every cache hit — one heap allocation per text call,
+    /// i.e. one per glyph run on a frame that draws thousands of labels.  A
+    /// draw only needs the glyph records, so this variant fills `out` and skips
+    /// the metrics copy on a hit.  The records are exactly the ones
+    /// [`Self::layout_block`] would return.
+    pub fn layout_block_glyphs(&self, text: &str, style: TextStyle, out: &mut Vec<GlyphLayout>) {
+        let hit = {
+            let mut cache = self
+                .layout_cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            cache.get(text, style).map(|entry| {
+                out.clear();
+                out.extend_from_slice(&entry.glyphs);
+            })
+        };
+        if hit.is_some() {
+            return;
+        }
+
+        let metrics = layout_block(self.layout_font(), text, style, out);
+        let bytes = {
+            let mut cache = self
+                .layout_cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            cache.insert(text, style, out, &metrics)
+        };
+        if bytes > 0 {
+            inventory::register_cpu(
+                &format!("{} layout cache", self.inventory_prefix),
+                bytes,
+                inventory::Subsystem::Fonts,
+            );
+        }
+    }
+
+    /// Bytes of the GPU texture this atlas owns (`Rgba8`, one mip level).
+    #[must_use]
+    pub fn gpu_bytes(&self) -> u64 {
+        let width = u64::from(self.texture.width());
+        let height = u64::from(self.texture.height());
+        width * height * 4
+    }
+
+    /// Bytes of the CPU glyph tables this atlas keeps.
+    #[must_use]
+    pub fn table_bytes(&self) -> u64 {
+        self.metrics_bytes()
+            + map_bytes::<char, u16>(self.glyph_indices.len())
+            + map_bytes::<(u16, u16), f32>(self.kerning.len())
+            + self.gpos.byte_size()
+            + self
+                .notdef
+                .as_ref()
+                .map_or(0, |_| std::mem::size_of::<GlyphMetrics>() as u64)
+    }
+
+    /// Bytes of the per-character metric map.
+    #[must_use]
+    pub fn metrics_bytes(&self) -> u64 {
+        map_bytes::<char, GlyphMetrics>(self.metrics.len())
+    }
+
+    /// Bytes currently charged to the layout cache.
+    #[must_use]
+    pub fn layout_cache_bytes(&self) -> u64 {
+        self.layout_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .bytes()
+    }
+
+    /// CPU + GPU bytes this atlas owns, for a memory report.
+    #[must_use]
+    pub fn cpu_bytes(&self) -> u64 {
+        self.table_bytes() + self.layout_cache_bytes() + self.ascii_table_bytes()
+    }
+
+    /// Bytes of the ASCII fast-path table, `0` until the first ASCII layout.
+    #[must_use]
+    pub fn ascii_table_bytes(&self) -> u64 {
+        self.ascii_tables
+            .get()
+            .map_or(0, |tables| tables.byte_size())
+    }
+
+    /// Every inventory entry this atlas owns, with stable labels.
+    ///
+    /// A caller that has the `ferrous_core` inventory available can forward
+    /// these with `register_cpu` / `register_gpu`; the engine's `GuiRenderer`
+    /// installs the bridge so this happens automatically.
+    #[must_use]
+    pub fn inventory_entries(&self) -> Vec<(String, u64)> {
+        vec![
+            (
+                format!("{} texture", self.inventory_prefix),
+                self.gpu_bytes(),
+            ),
+            (
+                format!("{} glyph metrics", self.inventory_prefix),
+                self.metrics_bytes(),
+            ),
+            (
+                format!("{} glyph indices", self.inventory_prefix),
+                map_bytes::<char, u16>(self.glyph_indices.len()),
+            ),
+            (
+                format!("{} kern pairs", self.inventory_prefix),
+                map_bytes::<(u16, u16), f32>(self.kerning.len()),
+            ),
+            (
+                format!("{} gpos kerning", self.inventory_prefix),
+                self.gpos.byte_size(),
+            ),
+            (
+                format!("{} layout cache", self.inventory_prefix),
+                self.layout_cache_bytes(),
+            ),
+            (
+                format!("{} ascii tables", self.inventory_prefix),
+                self.ascii_table_bytes(),
+            ),
+        ]
+    }
+
+    /// Measure a whole block without allocating glyph records (see
+    /// [`measure_block`]).
+    pub fn measure_block(&self, text: &str, style: TextStyle) -> TextMetrics {
+        measure_block(self.layout_font(), text, style)
+    }
+}
+
+impl Drop for FontAtlas {
+    fn drop(&mut self) {
+        let prefix = &self.inventory_prefix;
+        inventory::unregister_gpu(&format!("{prefix} texture"), inventory::Subsystem::Fonts);
+        inventory::unregister_cpu(
+            &format!("{prefix} glyph metrics"),
+            inventory::Subsystem::Fonts,
         );
-
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("FontAtlas Sampler"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-
-        Ok(FontAtlas {
-            texture,
-            view,
-            sampler,
-            metrics,
-            glyph_size,
-        })
+        inventory::unregister_cpu(
+            &format!("{prefix} glyph indices"),
+            inventory::Subsystem::Fonts,
+        );
+        inventory::unregister_cpu(&format!("{prefix} kern pairs"), inventory::Subsystem::Fonts);
+        inventory::unregister_cpu(
+            &format!("{prefix} gpos kerning"),
+            inventory::Subsystem::Fonts,
+        );
+        inventory::unregister_cpu(
+            &format!("{prefix} layout cache"),
+            inventory::Subsystem::Fonts,
+        );
     }
 }

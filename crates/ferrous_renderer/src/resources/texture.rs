@@ -1,5 +1,5 @@
-/// Helpers for creating `wgpu::Texture` objects with common descriptor
-/// patterns, reducing boilerplate inside the render-target and asset modules.
+//! Helpers for creating `wgpu::Texture` objects with common descriptor
+//! patterns, reducing boilerplate inside the render-target and asset modules.
 
 /// Descriptor for a 2-D render-attachment texture.
 pub struct RenderTextureDesc<'a> {

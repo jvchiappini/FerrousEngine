@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+ferrous_core = { path = "../ferrous_core" }
 wgpu = { workspace = true }
 bytemuck = { version = "1.14", features = ["derive"] }
 glam = "0.29"
@@ -11,6 +12,7 @@ ferrous_assets = { path = "../ferrous_assets", optional = true, features = ["gpu
 ferrous_ui_core = { path = "../ferrous_ui_core" }
 ferrous_svg = { path = "../ferrous_svg" }
 crossbeam-channel = "0.5.13"
+log = { workspace = true }
 
 [features]
 default = ["text"]

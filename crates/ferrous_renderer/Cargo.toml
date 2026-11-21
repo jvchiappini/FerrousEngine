@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 ferrous_2d = { path = "../ferrous_2d" }
+ferrous_font = { path = "../ferrous_font" }
 wgpu = { workspace = true }
 anyhow = "1.0"
 thiserror = "1.0"
@@ -19,7 +20,6 @@ glam = { workspace = true }
 image = { version = "0.25", optional = true, default-features = false, features = ["png", "jpeg"] }
 ferrous_assets = { path = "../ferrous_assets", optional = true }
 log = "0.4"
-rand = "0.8"
 fontmesh = "0.4.1"
 ttf-parser = "0.25.1"
 lyon_tessellation = "1.0"
@@ -28,6 +28,9 @@ lyon_tessellation = "1.0"
 pollster = "0.3"
 
 [dev-dependencies]
+ferrous_layout = { path = "../ferrous_layout" }
+ferrous_svg = { path = "../ferrous_svg" }
+ferrous_ui_core = { path = "../ferrous_ui_core" }
 # `divan` is the benchmark framework for the headless Pure2D harness.  It was
 # chosen over `criterion` because it is lighter, has no group/main boilerplate,
 # and its `AllocProfiler` reports allocations + bytes per iteration on stable
@@ -40,6 +43,10 @@ png = "0.17"
 
 [[bench]]
 name = "pure2d_headless"
+harness = false
+
+[[bench]]
+name = "subsystems"
 harness = false
 
 [features]

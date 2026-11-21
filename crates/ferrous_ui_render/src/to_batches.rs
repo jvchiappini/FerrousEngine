@@ -6,13 +6,19 @@
 
 use crate::gpu_types::{GuiQuad, SvgCommand};
 use crate::gui_batch::GuiBatch;
-use crate::{GRADIENT_BIT, GRADIENT_V_BIT, GRADIENT_RADIAL_BIT, BORDER_BIT, TEXTURED_BIT};
+use crate::{BORDER_BIT, GRADIENT_BIT, GRADIENT_RADIAL_BIT, GRADIENT_V_BIT};
 use ferrous_ui_core::background::Background;
 
 /// Extension to convert abstract render commands into GPU-optimized batches.
 pub trait ToBatches {
     #[cfg(feature = "text")]
-    fn to_batches(&self, batch: &mut GuiBatch, font: Option<&ferrous_assets::Font>, z: f32, node_id: u32);
+    fn to_batches(
+        &self,
+        batch: &mut GuiBatch,
+        font: Option<&ferrous_assets::Font>,
+        z: f32,
+        node_id: u32,
+    );
     #[cfg(not(feature = "text"))]
     fn to_batches(&self, quad_batch: &mut GuiBatch, z: f32, node_id: u32);
 }
@@ -42,7 +48,11 @@ fn background_to_quads(
                 [rect.width, rect.height],
                 *color,
                 radii,
-                if color[3] >= 1.0 { crate::OPAQUE_BIT } else { 0 },
+                if color[3] >= 1.0 {
+                    crate::OPAQUE_BIT
+                } else {
+                    0
+                },
                 z,
                 node_id,
             ));
@@ -70,7 +80,11 @@ fn background_to_quads(
                     color_a,
                     color_b,
                     radii,
-                    if color_a[3] >= 1.0 && color_b[3] >= 1.0 { grad_flags | crate::OPAQUE_BIT } else { grad_flags },
+                    if color_a[3] >= 1.0 && color_b[3] >= 1.0 {
+                        grad_flags | crate::OPAQUE_BIT
+                    } else {
+                        grad_flags
+                    },
                     z,
                     node_id,
                 ));
@@ -87,7 +101,11 @@ fn background_to_quads(
                         [rect.x + i as f32 * strip_w, rect.y],
                         [strip_w + 0.5, rect.height],
                         color,
-                        if i == 0 || i == n - 1 { radii } else { [0.0; 4] },
+                        if i == 0 || i == n - 1 {
+                            radii
+                        } else {
+                            [0.0; 4]
+                        },
                         0,
                         z,
                         0, // Strips don't need individual IDs usually, or we could pass node_id
@@ -206,10 +224,21 @@ fn background_to_quads(
 
 impl ToBatches for ferrous_ui_core::RenderCommand {
     #[cfg(feature = "text")]
-    fn to_batches(&self, batch: &mut GuiBatch, font: Option<&ferrous_assets::Font>, z: f32, node_id: u32) {
+    fn to_batches(
+        &self,
+        batch: &mut GuiBatch,
+        font: Option<&ferrous_assets::Font>,
+        z: f32,
+        node_id: u32,
+    ) {
         use ferrous_ui_core::RenderCommand;
         match self {
-            RenderCommand::Quad { rect, color, radii, flags } => {
+            RenderCommand::Quad {
+                rect,
+                color,
+                radii,
+                flags,
+            } => {
                 batch.push_quad(GuiQuad {
                     pos: [rect.x, rect.y],
                     size: [rect.width, rect.height],
@@ -219,7 +248,11 @@ impl ToBatches for ferrous_ui_core::RenderCommand {
                     color_b: [0.0; 4],
                     radii: *radii,
                     tex_index: 0,
-                    flags: if color[3] >= 1.0 { *flags | crate::OPAQUE_BIT } else { *flags },
+                    flags: if color[3] >= 1.0 {
+                        *flags | crate::OPAQUE_BIT
+                    } else {
+                        *flags
+                    },
                     z_order: z,
                     node_id,
                 });
@@ -227,7 +260,13 @@ impl ToBatches for ferrous_ui_core::RenderCommand {
             }
 
             #[cfg(feature = "assets")]
-            RenderCommand::Image { rect, texture, uv0, uv1, color } => {
+            RenderCommand::Image {
+                rect,
+                texture,
+                uv0,
+                uv1,
+                color,
+            } => {
                 let idx = batch.reserve_texture_slot(texture.clone());
                 batch.push_quad(GuiQuad {
                     pos: [rect.x, rect.y],
@@ -238,14 +277,20 @@ impl ToBatches for ferrous_ui_core::RenderCommand {
                     color_b: [0.0; 4],
                     radii: [0.0; 4],
                     tex_index: idx,
-                    flags: TEXTURED_BIT,
+                    flags: crate::TEXTURED_BIT,
                     z_order: z,
                     node_id,
                 });
                 batch.update_last_segment();
             }
 
-            RenderCommand::Text { rect, text, color, font_size, align } => {
+            RenderCommand::Text {
+                rect,
+                text,
+                color,
+                font_size,
+                align,
+            } => {
                 if let Some(font) = font {
                     let text_w = GuiBatch::measure_text(font, text, *font_size);
                     let text_h = *font_size;
@@ -290,12 +335,22 @@ impl ToBatches for ferrous_ui_core::RenderCommand {
             }
 
             // ─── GRADIENT: 1 quad GPU (linear/radial 2-stop) o strips CPU (N-stop) ───
-            RenderCommand::GradientQuad { rect, background, radii, .. } => {
+            RenderCommand::GradientQuad {
+                rect,
+                background,
+                radii,
+                ..
+            } => {
                 background_to_quads(batch, background, *rect, *radii, z, node_id);
             }
 
             // ─── BORDER: 1 quad con BORDER_BIT ───────────────────────────────────────
-            RenderCommand::Border { rect, color, radii, width } => {
+            RenderCommand::Border {
+                rect,
+                color,
+                radii,
+                width,
+            } => {
                 batch.push_quad(GuiQuad {
                     pos: [rect.x, rect.y],
                     size: [rect.width, rect.height],
@@ -313,7 +368,13 @@ impl ToBatches for ferrous_ui_core::RenderCommand {
             }
 
             // ─── SHADOW: quad pre-expandido con SHADOW_BIT ───────────────────────────
-            RenderCommand::Shadow { rect, blur_radius, spread, color, offset } => {
+            RenderCommand::Shadow {
+                rect,
+                blur_radius,
+                spread,
+                color,
+                offset,
+            } => {
                 let expand = spread + blur_radius;
                 batch.push_quad(GuiQuad {
                     pos: [rect.x - expand + offset[0], rect.y - expand + offset[1]],
@@ -340,7 +401,12 @@ impl ToBatches for ferrous_ui_core::RenderCommand {
     fn to_batches(&self, quad_batch: &mut GuiBatch, z: f32, node_id: u32) {
         use ferrous_ui_core::RenderCommand;
         match self {
-            RenderCommand::Quad { rect, color, radii, flags } => {
+            RenderCommand::Quad {
+                rect,
+                color,
+                radii,
+                flags,
+            } => {
                 quad_batch.push_quad(GuiQuad {
                     pos: [rect.x, rect.y],
                     size: [rect.width, rect.height],
@@ -356,7 +422,13 @@ impl ToBatches for ferrous_ui_core::RenderCommand {
                 });
             }
             #[cfg(feature = "assets")]
-            RenderCommand::Image { rect, texture, uv0, uv1, color } => {
+            RenderCommand::Image {
+                rect,
+                texture,
+                uv0,
+                uv1,
+                color,
+            } => {
                 let idx = quad_batch.reserve_texture_slot(texture.clone());
                 quad_batch.push_quad(GuiQuad {
                     pos: [rect.x, rect.y],
@@ -367,7 +439,7 @@ impl ToBatches for ferrous_ui_core::RenderCommand {
                     color_b: [0.0; 4],
                     radii: [0.0; 4],
                     tex_index: idx,
-                    flags: TEXTURED_BIT,
+                    flags: crate::TEXTURED_BIT,
                     z_order: z,
                     node_id,
                 });
@@ -375,8 +447,12 @@ impl ToBatches for ferrous_ui_core::RenderCommand {
             #[cfg(not(feature = "assets"))]
             RenderCommand::Image { .. } => {}
             RenderCommand::Text { .. } => {}
-            RenderCommand::PushClip { rect } => { quad_batch.push_clip(*rect); }
-            RenderCommand::PopClip => { quad_batch.pop_clip(); }
+            RenderCommand::PushClip { rect } => {
+                quad_batch.push_clip(*rect);
+            }
+            RenderCommand::PopClip => {
+                quad_batch.pop_clip();
+            }
             RenderCommand::Svg { rect, color, mesh } => {
                 quad_batch.push_svg(SvgCommand {
                     mesh: mesh.clone(),
@@ -385,10 +461,20 @@ impl ToBatches for ferrous_ui_core::RenderCommand {
                     z,
                 });
             }
-            RenderCommand::GradientQuad { rect, background, radii, .. } => {
+            RenderCommand::GradientQuad {
+                rect,
+                background,
+                radii,
+                ..
+            } => {
                 background_to_quads(quad_batch, background, *rect, *radii, z, node_id);
             }
-            RenderCommand::Border { rect, color, radii, width } => {
+            RenderCommand::Border {
+                rect,
+                color,
+                radii,
+                width,
+            } => {
                 quad_batch.push_quad(GuiQuad {
                     pos: [rect.x, rect.y],
                     size: [rect.width, rect.height],
@@ -403,7 +489,13 @@ impl ToBatches for ferrous_ui_core::RenderCommand {
                     node_id,
                 });
             }
-            RenderCommand::Shadow { rect, blur_radius, spread, color, offset } => {
+            RenderCommand::Shadow {
+                rect,
+                blur_radius,
+                spread,
+                color,
+                offset,
+            } => {
                 let expand = spread + blur_radius;
                 quad_batch.push_quad(GuiQuad {
                     pos: [rect.x - expand + offset[0], rect.y - expand + offset[1]],

@@ -2,7 +2,119 @@ use ferrous_core::Color;
 use ferrous_core::RenderQuality;
 use ferrous_renderer::RenderStyle;
 
+use crate::redraw::RedrawPolicy;
 use crate::traits::FerrousApp;
+
+/// Environment variable that selects the surface present mode at runtime.
+///
+/// Accepted values are `fifo`, `fifo_relaxed`, `mailbox` and `auto_no_vsync`
+/// (surrounding whitespace and case are ignored).  An explicit value wins over
+/// [`AppConfig::present_mode`], which in turn wins over the
+/// [`AppConfig::vsync`] alias; see [`PresentMode`] and `docs/present.md`.
+pub const PRESENT_MODE_ENV: &str = "FERROUS_PRESENT_MODE";
+
+/// How the swapchain presents a finished frame.
+///
+/// Three sources choose the mode, in decreasing precedence:
+///
+/// 1. `FERROUS_PRESENT_MODE` (see [`PRESENT_MODE_ENV`]).
+/// 2. [`AppConfig::present_mode`], set with [`AppConfig::with_present_mode`]
+///    or [`App::with_present_mode`].
+/// 3. The historical [`AppConfig::vsync`] alias: `true` maps to
+///    [`PresentMode::Fifo`] and `false` to [`PresentMode::AutoNoVsync`] when no
+///    explicit mode is set.
+///
+/// The surface capability list has the final say: a mode the adapter does not
+/// expose falls back to [`PresentMode::Fifo`] with a logged warning. `Fifo` is
+/// the only mode wgpu guarantees across backends. See `docs/present.md`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum PresentMode {
+    /// Lock presentation to the display's vertical blank: no tearing and one
+    /// queued frame. The default and the safest choice.
+    #[default]
+    Fifo,
+    /// Tear-free at the refresh rate, but a late frame presents immediately
+    /// instead of waiting for the next vblank
+    /// (`VK_PRESENT_MODE_FIFO_RELAXED_KHR`).
+    FifoRelaxed,
+    /// Tear-free and uncapped: a new frame replaces the pending one instead of
+    /// queueing. Some drivers still cap it to the display refresh rate.
+    Mailbox,
+    /// Uncapped and immediate; may tear. wgpu maps it to the first no-vsync
+    /// mode the backend exposes (`Immediate`, then `Mailbox`, then `Fifo`).
+    AutoNoVsync,
+}
+
+impl PresentMode {
+    /// The canonical lower-case name (`fifo`, `fifo_relaxed`, `mailbox`,
+    /// `auto_no_vsync`), as accepted by [`Self::parse`] and
+    /// [`PRESENT_MODE_ENV`].
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Fifo => "fifo",
+            Self::FifoRelaxed => "fifo_relaxed",
+            Self::Mailbox => "mailbox",
+            Self::AutoNoVsync => "auto_no_vsync",
+        }
+    }
+
+    /// Parses a present-mode name.
+    ///
+    /// Matching is case-insensitive and ignores surrounding whitespace;
+    /// `fiforelaxed` and `autonovsync` are accepted as spellings without the
+    /// underscore. An unknown value returns `None`.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "fifo" => Some(Self::Fifo),
+            "fifo_relaxed" | "fiforelaxed" => Some(Self::FifoRelaxed),
+            "mailbox" => Some(Self::Mailbox),
+            "auto_no_vsync" | "autonovsync" => Some(Self::AutoNoVsync),
+            _ => None,
+        }
+    }
+
+    /// Reads [`PRESENT_MODE_ENV`].
+    ///
+    /// Returns `None` when the variable is unset or cannot be parsed. An
+    /// unknown value is logged with the accepted names so a typo does not
+    /// silently change pacing instead of selecting a different mode.
+    #[must_use]
+    pub fn from_env() -> Option<Self> {
+        let raw = std::env::var_os(PRESENT_MODE_ENV)?;
+        let value = raw.to_string_lossy();
+        match Self::parse(&value) {
+            Some(mode) => Some(mode),
+            None => {
+                log::warn!(
+                    "{}={value:?} is not a present mode; expected one of \
+                     fifo, fifo_relaxed, mailbox, auto_no_vsync (leaving the configured mode)",
+                    PRESENT_MODE_ENV
+                );
+                None
+            }
+        }
+    }
+}
+
+/// Resolves the present mode from its three sources, in precedence order.
+///
+/// Kept separate from [`AppConfig::effective_present_mode`] so the decision is
+/// a pure function the tests can drive without touching the process
+/// environment.
+#[must_use]
+pub fn resolve_present_mode(
+    env: Option<PresentMode>,
+    configured: Option<PresentMode>,
+    vsync: bool,
+) -> PresentMode {
+    env.or(configured).unwrap_or(if vsync {
+        PresentMode::Fifo
+    } else {
+        PresentMode::AutoNoVsync
+    })
+}
 
 /// Selects which engine subsystems the runner initialises and which frame
 /// callbacks it invokes.
@@ -40,7 +152,20 @@ pub struct AppConfig {
     /// Enable vertical sync — locks GPU present to monitor refresh rate,
     /// eliminating tearing and capping GPU usage to the refresh rate.
     /// Default: `true`.
+    ///
+    /// This is the historical alias for the present mode: `true` selects
+    /// [`PresentMode::Fifo`] and `false` selects [`PresentMode::AutoNoVsync`]
+    /// only when neither [`present_mode`](Self::present_mode) nor
+    /// `FERROUS_PRESENT_MODE` is set. See [`PresentMode`] and
+    /// `docs/present.md`.
     pub vsync: bool,
+    /// Explicit swapchain present mode.
+    ///
+    /// `None` (the default) keeps the [`vsync`](Self::vsync) alias in charge.
+    /// `Some(mode)` overrides `vsync`; `FERROUS_PRESENT_MODE` overrides both.
+    /// The surface capability list decides what actually runs: an unsupported
+    /// mode falls back to [`PresentMode::Fifo`] with a logged warning.
+    pub present_mode: Option<PresentMode>,
     /// Whether the user can resize the window. Defaults to `true`.
     pub resizable: bool,
     /// Whether the window should show OS-native decorations (title bar, minimize /
@@ -67,7 +192,20 @@ pub struct AppConfig {
     /// `Some(n)` = keep drawing at `n` fps, so time-driven UI (caret blink,
     /// messages from other windows, async loads) still shows up — at a
     /// fraction of the full-rate cost.
+    ///
+    /// These two fields are the older, timer-based throttle for
+    /// [`RedrawPolicy::Continuous`] apps. [`RedrawPolicy::OnDemand`] replaces
+    /// them: the loop sleeps until an input, a `request_redraw`/`redraw_at`
+    /// wake or a worker event, and the fields are ignored.
     pub idle_fps: Option<u32>,
+    /// When the runner draws frames (see [`RedrawPolicy`]).
+    ///
+    /// Default: [`RedrawPolicy::Continuous`], which keeps the historical
+    /// `target_fps` loop for games and demos. Editors and tools that only
+    /// change in response to input should opt into
+    /// [`RedrawPolicy::OnDemand`]: an idle app then presents zero frames and
+    /// submits no GPU work.
+    pub redraw_policy: RedrawPolicy,
     /// MSAA sample count: `1` = no anti-aliasing, `4` = 4x MSAA.
     ///
     /// Higher values improve edge quality but multiply GPU raster work.
@@ -97,6 +235,231 @@ pub struct AppConfig {
     /// Resolution scale applied to the physical size of the window/canvas.
     /// Defaults to 1.0. Set to 2.0 or higher for supersampling (improves clarity on Web).
     pub resolution_scale: f64,
+    /// Record a startup trace and print it at the first presented frame.
+    ///
+    /// Default: `false`. The `FERROUS_TRACE_STARTUP=1` environment variable
+    /// enables the same trace without a code change; see
+    /// [`ferrous_core::startup`].
+    pub startup_trace: bool,
+    /// On-disk cache for baked font atlases.
+    ///
+    /// `None` (the default) bakes every font on every launch.  Applications opt
+    /// in with [`ferrous_font::FontCacheConfig::for_app`] so the second launch
+    /// reads the MSDF atlas from disk instead of regenerating it.
+    pub font_cache: Option<ferrous_font::FontCacheConfig>,
+    /// Backends to try at startup, in order.
+    ///
+    /// Each entry gets its own `wgpu::Instance`; the engine moves to the next
+    /// one only when the current one yields no adapter (or an adapter that
+    /// cannot present on the window).  Default: Vulkan, then DX12, then GL on
+    /// Windows; Metal on macOS; Vulkan, then GL elsewhere.  `WGPU_BACKEND`, when
+    /// set, replaces the list with exactly those backends.
+    pub backends: Vec<wgpu::Backends>,
+    /// Which GPU to prefer.  Default: [`wgpu::PowerPreference::HighPerformance`].
+    ///
+    /// `LowPower` selects the integrated GPU on a hybrid laptop; `WGPU_POWER_PREF`
+    /// (`low`, `high`, `none`) overrides this at runtime.
+    pub power_preference: wgpu::PowerPreference,
+    /// Persist the wgpu pipeline cache between runs.
+    ///
+    /// `None` (the default) recompiles every pipeline on every launch.  Only
+    /// backends that expose [`wgpu::Features::PIPELINE_CACHE`] (Vulkan in wgpu
+    /// 23) use it; DX12, Metal and GL ignore it.
+    pub pipeline_cache: Option<PipelineCacheConfig>,
+    /// wgpu's device allocation policy ([`wgpu::MemoryHints`]).
+    ///
+    /// `None` (the default) picks [`wgpu::MemoryHints::MemoryUsage`] for
+    /// [`AppMode::Flat2D`] apps and [`wgpu::MemoryHints::Performance`] for
+    /// [`AppMode::Game3D`]: a UI/editor app allocates many small resources,
+    /// where the 128 MB free-list chunks of the performance policy are waste,
+    /// while a 3-D game keeps the throughput-oriented defaults.  An explicit
+    /// value always wins.  See `docs/memory.md`.
+    pub memory_hints: Option<wgpu::MemoryHints>,
+    /// Whether a pointer move requests a frame by itself (default `true`).
+    ///
+    /// Set it to `false` in an editor whose pointer moves often change
+    /// nothing: the app then handles [`FerrousApp::on_window_event`] and asks
+    /// for a frame only when the hover target, cursor or another visible
+    /// state changed. Other input (keys, buttons, wheel, resize) still
+    /// requests a frame.
+    pub redraw_on_pointer_move: bool,
+    /// Whether the OS window is ever shown.
+    ///
+    /// Default `true`. `false` creates the window hidden and never maps it:
+    /// frames still render and present to the hidden surface, but the window
+    /// never receives input, focus or compositor work. Benchmarks and CI use
+    /// it to measure an app's idle cost without a person or another window
+    /// interfering.
+    pub visible: bool,
+    /// Show the window only when the first frame is ready (prompt 17 S3b).
+    ///
+    /// Default `true`: the window is created hidden, the GPU state and the
+    /// first frame are prepared while it is hidden, and it is shown right after
+    /// that frame is presented, so the first thing the user sees is the
+    /// application, not a white or black rectangle. `false` restores the S3
+    /// behaviour (show it with the background colour immediately).
+    pub show_window_when_ready: bool,
+    /// Safety timeout for [`show_window_when_ready`](Self::show_window_when_ready).
+    ///
+    /// If the first frame has not been presented after this long (a cold or
+    /// software driver, a slow shader compile), the window is shown with
+    /// [`background_color`](Self::background_color) so the user knows the app
+    /// opened. Default: 800 ms from the start of the run. `FERROUS_SHOW_TIMEOUT_MS`
+    /// overrides it at runtime.
+    pub window_show_timeout: std::time::Duration,
+    /// Opt into the persistent off-screen UI present path.
+    ///
+    /// When enabled, a frame whose GUI damage stays under
+    /// [`persistent_ui_break_even`](Self::persistent_ui_break_even) is rendered
+    /// into a single-sample off-screen texture and then presented with a
+    /// full-image copy/blit, instead of rendering directly into the rotating
+    /// swapchain image.  This is the infrastructure the partial-update
+    /// experiment needs; see `docs/performance.md`.  It is **off by default**
+    /// and only applies to [`AppMode::Flat2D`] with `sample_count == 1`; the
+    /// 3-D path stays direct.  The current implementation repaints the whole
+    /// composition into the off-screen texture, so it is pixel-identical but
+    /// adds a full-frame copy — measure before leaving it on.
+    pub persistent_ui: bool,
+    /// Maximum fraction of the window covered by the frame's GUI damage for
+    /// the persistent present path to engage.  `0.71` is the measured
+    /// break-even from the P5 experiment; values are clamped to `0.0..=1.0`.
+    pub persistent_ui_break_even: f32,
+}
+
+/// Default [`AppConfig::persistent_ui_break_even`].
+pub const DEFAULT_PERSISTENT_UI_BREAK_EVEN: f32 = 0.71;
+
+/// How long the window stays hidden waiting for the first frame by default.
+///
+/// See [`AppConfig::window_show_timeout`].
+pub const DEFAULT_SHOW_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(800);
+
+/// Which backends a launch tries, in order.
+///
+/// The list is per platform; an application can replace it with
+/// [`App::with_backends`].  The engine creates one instance per entry and only
+/// advances when the previous entry has no usable adapter, so the common case
+/// (Vulkan on Windows) never pays for enumerating DX12 and GL.
+#[must_use]
+pub fn default_backends() -> Vec<wgpu::Backends> {
+    #[cfg(target_os = "windows")]
+    {
+        vec![
+            wgpu::Backends::VULKAN,
+            wgpu::Backends::DX12,
+            wgpu::Backends::GL,
+        ]
+    }
+    #[cfg(target_os = "macos")]
+    {
+        vec![wgpu::Backends::METAL]
+    }
+    #[cfg(all(
+        not(target_os = "windows"),
+        not(target_os = "macos"),
+        not(target_arch = "wasm32")
+    ))]
+    {
+        vec![wgpu::Backends::VULKAN, wgpu::Backends::GL]
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        vec![wgpu::Backends::BROWSER_WEBGPU]
+    }
+}
+
+/// Where the persisted wgpu pipeline cache lives.
+///
+/// The file is keyed by backend, vendor, device, driver and driver version, so
+/// a driver update or a GPU change starts from an empty cache.  A corrupt or
+/// stale file is ignored (wgpu compiles the pipelines again).
+#[derive(Clone, Debug)]
+pub struct PipelineCacheConfig {
+    /// Whether the cache is used at all.
+    pub enabled: bool,
+    /// Directory holding the cache files; `None` means the per-OS default for
+    /// [`Self::app_name`].
+    pub directory: Option<std::path::PathBuf>,
+    /// Application name used by the default directory.
+    pub app_name: String,
+}
+
+impl PipelineCacheConfig {
+    /// A cache for `app_name` under the per-OS default directory
+    /// (`%LOCALAPPDATA%\<app>\cache\pipelines` on Windows).
+    #[must_use]
+    pub fn for_app(app_name: impl Into<String>) -> Self {
+        Self {
+            enabled: true,
+            directory: None,
+            app_name: app_name.into(),
+        }
+    }
+
+    /// Uses `directory` instead of the per-OS default.
+    #[must_use]
+    pub fn with_directory(mut self, directory: impl Into<std::path::PathBuf>) -> Self {
+        self.directory = Some(directory.into());
+        self
+    }
+
+    /// A disabled cache.
+    #[must_use]
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            directory: None,
+            app_name: String::new(),
+        }
+    }
+
+    /// The directory this config resolves to, when the platform has one.
+    #[must_use]
+    pub fn resolve_directory(&self) -> Option<std::path::PathBuf> {
+        if !self.enabled {
+            return None;
+        }
+        if let Some(directory) = &self.directory {
+            return Some(directory.clone());
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            None
+        }
+        #[cfg(target_os = "windows")]
+        {
+            std::env::var_os("LOCALAPPDATA").map(|base| {
+                std::path::PathBuf::from(base)
+                    .join(&self.app_name)
+                    .join("cache")
+                    .join("pipelines")
+            })
+        }
+        #[cfg(target_os = "macos")]
+        {
+            std::env::var_os("HOME").map(|home| {
+                std::path::PathBuf::from(home)
+                    .join("Library")
+                    .join("Caches")
+                    .join(&self.app_name)
+                    .join("pipelines")
+            })
+        }
+        #[cfg(all(
+            not(target_os = "windows"),
+            not(target_os = "macos"),
+            not(target_arch = "wasm32")
+        ))]
+        {
+            std::env::var_os("XDG_CACHE_HOME")
+                .map(std::path::PathBuf::from)
+                .or_else(|| {
+                    std::env::var_os("HOME")
+                        .map(|home| std::path::PathBuf::from(home).join(".cache"))
+                })
+                .map(|base| base.join(&self.app_name).join("pipelines"))
+        }
+    }
 }
 
 impl Default for AppConfig {
@@ -108,19 +471,71 @@ impl Default for AppConfig {
             font_path: None,
             font_bytes: None,
             vsync: true,
+            present_mode: None,
             resizable: true,
             decorations: true,
             background_color: Color::rgb(0.1, 0.1, 0.1),
             target_fps: Some(60),
             idle_timeout: None,
             idle_fps: None,
+            redraw_policy: RedrawPolicy::Continuous,
             sample_count: 1,
             hdri_path: None,
             render_style: RenderStyle::Pbr,
             render_quality: RenderQuality::High,
             mode: AppMode::Game3D,
             resolution_scale: 1.0,
+            startup_trace: false,
+            font_cache: None,
+            backends: default_backends(),
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            pipeline_cache: None,
+            memory_hints: None,
+            redraw_on_pointer_move: true,
+            visible: true,
+            show_window_when_ready: true,
+            window_show_timeout: DEFAULT_SHOW_TIMEOUT,
+            persistent_ui: false,
+            persistent_ui_break_even: DEFAULT_PERSISTENT_UI_BREAK_EVEN,
         }
+    }
+}
+
+impl AppConfig {
+    /// The present mode this configuration resolves to.
+    ///
+    /// Precedence: `FERROUS_PRESENT_MODE` > [`Self::present_mode`] >
+    /// [`Self::vsync`] (`true` = [`PresentMode::Fifo`], `false` =
+    /// [`PresentMode::AutoNoVsync`]). An unknown environment value is logged
+    /// and ignored, leaving the next source in charge.
+    #[must_use]
+    pub fn effective_present_mode(&self) -> PresentMode {
+        resolve_present_mode(PresentMode::from_env(), self.present_mode, self.vsync)
+    }
+
+    /// Selects an explicit present mode, overriding [`Self::vsync`].
+    ///
+    /// See [`Self::effective_present_mode`] for the full precedence order and
+    /// `docs/present.md` for the trade-offs of each mode.
+    #[must_use]
+    pub fn with_present_mode(mut self, mode: PresentMode) -> Self {
+        self.present_mode = Some(mode);
+        self
+    }
+
+    /// Enables the persistent off-screen UI present path (off by default).
+    ///
+    /// See [`AppConfig::persistent_ui`].
+    pub fn with_persistent_ui(mut self, enabled: bool) -> Self {
+        self.persistent_ui = enabled;
+        self
+    }
+
+    /// Sets the damage fraction under which the persistent present path
+    /// engages (clamped to `0.0..=1.0`).  See [`AppConfig::persistent_ui`].
+    pub fn with_persistent_ui_break_even(mut self, fraction: f32) -> Self {
+        self.persistent_ui_break_even = fraction.clamp(0.0, 1.0);
+        self
     }
 }
 
@@ -182,8 +597,37 @@ impl<A: FerrousApp + 'static> App<A> {
     }
 
     /// Enable or disable vertical sync (default: enabled).
+    ///
+    /// Kept as the historical alias for [`PresentMode::Fifo`] /
+    /// [`PresentMode::AutoNoVsync`]. An explicit
+    /// [`with_present_mode`](Self::with_present_mode) overrides it, and
+    /// `FERROUS_PRESENT_MODE` overrides both.
     pub fn with_vsync(mut self, vsync: bool) -> Self {
         self.config.vsync = vsync;
+        self
+    }
+
+    /// Selects an explicit swapchain present mode (default: [`PresentMode::Fifo`]).
+    ///
+    /// Overrides [`with_vsync`](Self::with_vsync); `FERROUS_PRESENT_MODE` still
+    /// wins at runtime. See `docs/present.md` for the platform notes.
+    pub fn with_present_mode(mut self, mode: PresentMode) -> Self {
+        self.config.present_mode = Some(mode);
+        self
+    }
+
+    /// Enables the persistent off-screen UI present path (off by default).
+    ///
+    /// See [`AppConfig::persistent_ui`].
+    pub fn with_persistent_ui(mut self, enabled: bool) -> Self {
+        self.config.persistent_ui = enabled;
+        self
+    }
+
+    /// Sets the damage fraction under which the persistent present path
+    /// engages (clamped to `0.0..=1.0`).  See [`AppConfig::persistent_ui`].
+    pub fn with_persistent_ui_break_even(mut self, fraction: f32) -> Self {
+        self.config.persistent_ui_break_even = fraction.clamp(0.0, 1.0);
         self
     }
 
@@ -296,6 +740,26 @@ impl<A: FerrousApp + 'static> App<A> {
         self
     }
 
+    /// Chooses the frame scheduling policy (see [`RedrawPolicy`]).
+    ///
+    /// [`RedrawPolicy::OnDemand`] draws a frame only when input arrives, the
+    /// app calls `ctx.request_redraw()` / `ctx.redraw_at(instant)`, a worker
+    /// wakes the loop through the `Waker` obtained in `setup`, or the window
+    /// changes. An idle app presents no frames.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// App::new(MyEditor)
+    ///     .with_mode(AppMode::Flat2D)
+    ///     .with_redraw_policy(RedrawPolicy::OnDemand)
+    ///     .run();
+    /// ```
+    pub fn with_redraw_policy(mut self, policy: RedrawPolicy) -> Self {
+        self.config.redraw_policy = policy;
+        self
+    }
+
     /// Set MSAA sample count (`1` = off, `4` = 4x).
     ///
     /// 4x MSAA significantly increases GPU raster cost; only enable it when
@@ -331,8 +795,205 @@ impl<A: FerrousApp + 'static> App<A> {
         self
     }
 
+    /// Turn the startup trace on or off (default: off).
+    ///
+    /// When on, the engine records marks for the window, GPU initialisation,
+    /// font upload, app setup and the first presented frame, and prints a
+    /// table to stderr at the first present. Applications can add their own
+    /// marks with [`ferrous_core::startup::mark`].
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// App::new(MyApp).with_startup_trace(true).run();
+    /// ```
+    pub fn with_startup_trace(mut self, enable: bool) -> Self {
+        self.config.startup_trace = enable;
+        self
+    }
+
+    /// Cache baked font atlases on disk (default: off).
+    ///
+    /// The cache is keyed by the font bytes and the character set, so a launch
+    /// after the first one uploads the stored MSDF atlas instead of baking it.
+    /// A corrupt or outdated file is rebuilt; see [`ferrous_font::AtlasCache`].
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// App::new(MyApp)
+    ///     .with_font_cache(ferrous_font::FontCacheConfig::for_app("MyApp"))
+    ///     .run();
+    /// ```
+    pub fn with_font_cache(mut self, cache: ferrous_font::FontCacheConfig) -> Self {
+        self.config.font_cache = Some(cache);
+        self
+    }
+
+    /// Replaces the ordered backend list (see [`AppConfig::backends`]).
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// App::new(MyApp)
+    ///     .with_backends([wgpu::Backends::VULKAN, wgpu::Backends::DX12])
+    ///     .run();
+    /// ```
+    pub fn with_backends(mut self, backends: impl IntoIterator<Item = wgpu::Backends>) -> Self {
+        self.config.backends = backends.into_iter().collect();
+        self
+    }
+
+    /// Prefers the discrete GPU ([`wgpu::PowerPreference::HighPerformance`],
+    /// the default) or the integrated one ([`wgpu::PowerPreference::LowPower`]).
+    ///
+    /// `WGPU_POWER_PREF` (`high`, `low`, `none`) overrides this at runtime.
+    pub fn with_power_preference(mut self, preference: wgpu::PowerPreference) -> Self {
+        self.config.power_preference = preference;
+        self
+    }
+
+    /// Persists the wgpu pipeline cache between runs
+    /// ([`PipelineCacheConfig::for_app`]).
+    ///
+    /// Only backends that expose `PIPELINE_CACHE` (Vulkan in wgpu 23) benefit;
+    /// the others ignore it.
+    pub fn with_pipeline_cache(mut self, cache: PipelineCacheConfig) -> Self {
+        self.config.pipeline_cache = Some(cache);
+        self
+    }
+
+    /// Overrides wgpu's device allocation policy
+    /// ([`AppConfig::memory_hints`]).
+    ///
+    /// The default (`None`) is mode-dependent: [`wgpu::MemoryHints::MemoryUsage`]
+    /// for 2-D/editor apps and [`wgpu::MemoryHints::Performance`] for 3-D games.
+    /// Pass a value explicitly only when the mode's default is wrong for the
+    /// app.  See `docs/memory.md`.
+    pub fn with_memory_hints(mut self, hints: wgpu::MemoryHints) -> Self {
+        self.config.memory_hints = Some(hints);
+        self
+    }
+
+    /// Stops a pointer move from requesting a frame by itself
+    /// ([`AppConfig::redraw_on_pointer_move`]).
+    pub fn with_redraw_on_pointer_move(mut self, redraw: bool) -> Self {
+        self.config.redraw_on_pointer_move = redraw;
+        self
+    }
+
+    /// Never maps the OS window (see [`AppConfig::visible`]).
+    ///
+    /// The app still initialises the GPU, renders and presents to the hidden
+    /// surface, so its frame code runs exactly as in a normal session.
+    pub fn with_visible(mut self, visible: bool) -> Self {
+        self.config.visible = visible;
+        self
+    }
+
+    /// Shows the window only when the first frame is ready
+    /// ([`AppConfig::show_window_when_ready`], default on).
+    pub fn with_show_window_when_ready(mut self, show: bool) -> Self {
+        self.config.show_window_when_ready = show;
+        self
+    }
+
+    /// Sets the safety timeout for showing the window
+    /// ([`AppConfig::window_show_timeout`], default 800 ms).
+    pub fn with_window_show_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.config.window_show_timeout = timeout;
+        self
+    }
+
     /// Start the event loop. This call blocks until the window is closed.
     pub fn run(self) {
         crate::runner::run_internal(self.config, self.app_state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn present_mode_defaults_to_fifo_and_the_config_leaves_it_unset() {
+        assert_eq!(PresentMode::default(), PresentMode::Fifo);
+        assert_eq!(AppConfig::default().present_mode, None);
+        assert!(AppConfig::default().vsync);
+    }
+
+    #[test]
+    fn present_mode_names_parse_case_insensitively() {
+        for (name, mode) in [
+            ("fifo", PresentMode::Fifo),
+            ("  FIFO_RELAXED ", PresentMode::FifoRelaxed),
+            ("fiforelaxed", PresentMode::FifoRelaxed),
+            ("Mailbox", PresentMode::Mailbox),
+            ("auto_no_vsync", PresentMode::AutoNoVsync),
+            ("AUTONOVSYNC", PresentMode::AutoNoVsync),
+        ] {
+            assert_eq!(PresentMode::parse(name), Some(mode), "{name}");
+        }
+        assert_eq!(PresentMode::parse("bogus"), None);
+        assert_eq!(PresentMode::parse(""), None);
+    }
+
+    #[test]
+    fn every_present_mode_round_trips_through_its_name() {
+        for mode in [
+            PresentMode::Fifo,
+            PresentMode::FifoRelaxed,
+            PresentMode::Mailbox,
+            PresentMode::AutoNoVsync,
+        ] {
+            assert_eq!(PresentMode::parse(mode.name()), Some(mode));
+        }
+    }
+
+    #[test]
+    fn present_mode_precedence_is_env_then_config_then_vsync() {
+        assert_eq!(
+            resolve_present_mode(
+                Some(PresentMode::Mailbox),
+                Some(PresentMode::FifoRelaxed),
+                true
+            ),
+            PresentMode::Mailbox
+        );
+        assert_eq!(
+            resolve_present_mode(None, Some(PresentMode::FifoRelaxed), false),
+            PresentMode::FifoRelaxed
+        );
+        assert_eq!(resolve_present_mode(None, None, true), PresentMode::Fifo);
+        assert_eq!(
+            resolve_present_mode(None, None, false),
+            PresentMode::AutoNoVsync
+        );
+    }
+
+    #[test]
+    fn with_present_mode_overrides_the_vsync_alias() {
+        let config = AppConfig {
+            vsync: false,
+            ..AppConfig::default()
+        };
+        let config = config.with_present_mode(PresentMode::Mailbox);
+        assert_eq!(config.present_mode, Some(PresentMode::Mailbox));
+        assert!(!config.vsync);
+        // The environment is deliberately not touched here: the resolver is
+        // the pure part `effective_present_mode` uses.
+        assert_eq!(
+            resolve_present_mode(None, config.present_mode, config.vsync),
+            PresentMode::Mailbox
+        );
+    }
+
+    #[test]
+    fn app_builder_forwards_the_present_mode() {
+        struct TestApp;
+        impl FerrousApp for TestApp {}
+
+        let app = App::new(TestApp).with_present_mode(PresentMode::Mailbox);
+        assert_eq!(app.config.present_mode, Some(PresentMode::Mailbox));
     }
 }

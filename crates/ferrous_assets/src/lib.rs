@@ -46,19 +46,22 @@ pub mod image_importer;
 pub mod server;
 
 // ── re-exports: legacy API (unchanged) ──────────────────────────────────────
+/// Character set helpers (Spanish, French, full Unicode, etc.) — text feature only.
+#[cfg(feature = "text")]
+pub use ferrous_font::charset;
+/// Memory-inventory bridge shared by the font and asset caches (text only).
+#[cfg(feature = "text")]
+pub use ferrous_font::inventory;
 // Re-export `Font` from the new crate when text support is enabled so
 // existing import paths continue to work.
 #[cfg(feature = "text")]
 pub use ferrous_font::Font;
-/// Character set helpers (Spanish, French, full Unicode, etc.) — text feature only.
-#[cfg(feature = "text")]
-pub use ferrous_font::charset;
 pub use gltf_loader::{load_gltf, AssetMesh, AssetModel, RawMaterial};
-#[cfg(feature = "gpu")]
-pub use texture::Texture2d;
 /// Content-keyed SVG raster cache (`svg` + `gpu`); see [`texture::SvgCache`].
 #[cfg(all(feature = "gpu", feature = "svg"))]
 pub use texture::SvgCache;
+#[cfg(feature = "gpu")]
+pub use texture::Texture2d;
 
 // ── re-exports: Phase 5 API ──────────────────────────────────────────────────
 // types moved to `ferrous_asset_types`

@@ -13,6 +13,7 @@ half = { version = "2.3", optional = true }
 ferrous_font = { path = "../ferrous_font", optional = true }
 resvg = { version = "0.33", optional = true }
 ferrous_asset_types = { path = "../ferrous_asset_types" }
+log = { workspace = true }
 
 [features]
 default = []

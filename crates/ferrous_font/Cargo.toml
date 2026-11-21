@@ -5,8 +5,10 @@ edition = "2021"
 description = "MSDF font rasterizer and GPU atlas for FerrousEngine"
 
 [dependencies]
+rustc-hash.workspace = true
 wgpu = { workspace = true }
 anyhow = "1.0"
+log = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon = "1.7"

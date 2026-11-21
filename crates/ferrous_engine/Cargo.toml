@@ -9,6 +9,9 @@ gpu-driven = ["ferrous_renderer/gpu-driven"]
 bindless = ["ferrous_renderer/bindless"]
 text = ["ferrous_ui_render/text"]
 assets = ["ferrous_ui_render/assets"]
+# Per-frame allocation counts in the frame trace (prompt 18 P0).  The binary
+# must install `ferrous_core::alloc_stats::CountingAllocator`.
+alloc-stats = ["ferrous_core/alloc-stats"]
 
 [dependencies]
 ferrous_renderer = { path = "../ferrous_renderer", features = ["assets"] }
@@ -33,8 +36,18 @@ thiserror = "1"
 
 # ── desktop-only ────────────────────────────────────────────────────────────
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# Blocking async executor — used to drive GraphicsState::new on desktop.
+# Blocking async executor - used to drive GraphicsState::new on desktop.
 pollster = "0.3"
+
+# Windows-only window styling: the class background brush (prompt 17 S3).
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
 
 # ── wasm32 ────────────────────────────────────────────────────────────────
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -48,3 +61,12 @@ web-time = "1.1"
 js-sys = "0.3"
 # Pretty panic messages in the browser console.
 console_error_panic_hook = "0.1"
+
+[dev-dependencies]
+# The zero-allocation tests exercise the UI and 2-D crates directly.
+ferrous_core = { path = "../ferrous_core" }
+ferrous_gui = { path = "../ferrous_gui" }
+ferrous_ui_core = { path = "../ferrous_ui_core" }
+ferrous_ui_render = { path = "../ferrous_ui_render" }
+ferrous_2d = { path = "../ferrous_2d" }
+ferrous_renderer = { path = "../ferrous_renderer", features = ["assets"] }

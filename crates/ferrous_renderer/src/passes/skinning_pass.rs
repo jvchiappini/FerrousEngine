@@ -2,20 +2,20 @@
 //!
 //! Transforms mesh vertices according to bone transforms using compute shaders.
 
-use wgpu::{
-    BindGroup, BindGroupLayout, CommandEncoder, ComputePipeline, Device,
-};
+use wgpu::{BindGroup, BindGroupLayout, CommandEncoder, ComputePipeline, Device};
 
 pub struct SkinningPass {
     pipeline: ComputePipeline,
-    group_layout0: BindGroupLayout, // Vertices + Influences
-    group_layout1: BindGroupLayout, // Palette
-    group_layout2: BindGroupLayout, // Output
+    _group_layout0: BindGroupLayout, // Vertices + Influences
+    _group_layout1: BindGroupLayout, // Palette
+    _group_layout2: BindGroupLayout, // Output
 }
 
 impl SkinningPass {
     pub fn new(device: &Device) -> Self {
-        let shader = device.create_shader_module(wgpu::include_wgsl!("../../../../assets/shaders/skinning.wgsl"));
+        let shader = device.create_shader_module(wgpu::include_wgsl!(
+            "../../../../assets/shaders/skinning.wgsl"
+        ));
 
         let group_layout0 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Skinning Inputs BGL"),
@@ -88,9 +88,9 @@ impl SkinningPass {
 
         Self {
             pipeline,
-            group_layout0,
-            group_layout1,
-            group_layout2,
+            _group_layout0: group_layout0,
+            _group_layout1: group_layout1,
+            _group_layout2: group_layout2,
         }
     }
 
@@ -110,7 +110,7 @@ impl SkinningPass {
         cpass.set_bind_group(0, bg0, &[]);
         cpass.set_bind_group(1, bg1, &[]);
         cpass.set_bind_group(2, bg2, &[]);
-        
+
         let x = vertex_count.div_ceil(64);
         cpass.dispatch_workgroups(x, 1, 1);
     }

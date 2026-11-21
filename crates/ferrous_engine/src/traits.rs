@@ -1,6 +1,70 @@
+use std::path::PathBuf;
+
 use crate::context::AppContext;
+use crate::screenshot::Screenshot;
 use ferrous_assets::Font;
 use ferrous_gui::GuiBatch;
+
+/// What happened to a dragged file over the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FileDropKind {
+    /// A file entered the window.
+    Entered,
+    /// A file left without being dropped.
+    Left,
+    /// A file was dropped on the window.
+    Dropped,
+}
+
+impl FileDropKind {
+    /// The stable lower-case name.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Entered => "entered",
+            Self::Left => "left",
+            Self::Dropped => "dropped",
+        }
+    }
+}
+
+/// One file-drag event delivered to [`FerrousApp::on_file_drop`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileDropEvent {
+    /// What happened.
+    pub kind: FileDropKind,
+    /// The file's path as the platform reported it.
+    pub path: PathBuf,
+}
+
+impl FileDropEvent {
+    /// A file entered the window.
+    #[must_use]
+    pub fn entered(path: impl Into<PathBuf>) -> Self {
+        Self {
+            kind: FileDropKind::Entered,
+            path: path.into(),
+        }
+    }
+
+    /// A file left the window without being dropped.
+    #[must_use]
+    pub fn left(path: impl Into<PathBuf>) -> Self {
+        Self {
+            kind: FileDropKind::Left,
+            path: path.into(),
+        }
+    }
+
+    /// A file was dropped on the window.
+    #[must_use]
+    pub fn dropped(path: impl Into<PathBuf>) -> Self {
+        Self {
+            kind: FileDropKind::Dropped,
+            path: path.into(),
+        }
+    }
+}
 
 /// Aggregates all mutable drawing resources passed to [`FerrousApp::draw_ui`].
 pub struct DrawContext<'a, 'b> {
@@ -136,7 +200,11 @@ pub trait FerrousApp {
     /// Register persistent GUI widgets (called once, during `resumed`).
     ///
     /// Use `ui.add(widget)` / `ui.button(...)` here.
-    fn configure_ui(&mut self, ui: &mut ferrous_gui::UiSystem<Self>) where Self: Sized {}
+    fn configure_ui(&mut self, ui: &mut ferrous_gui::UiSystem<Self>)
+    where
+        Self: Sized,
+    {
+    }
 
     /// Emit 2-D draw commands for this frame.
     ///
@@ -165,10 +233,41 @@ pub trait FerrousApp {
     /// already updates the swap-chain and camera aspect before calling this.
     fn on_resize(&mut self, new_size: (u32, u32), ctx: &mut AppContext<'_>) {}
 
+    /// Receives the frame requested with
+    /// [`AppContext::request_screenshot`], after it has been presented.
+    ///
+    /// The pixels are tight RGBA8 with a top-left origin, ready to be written
+    /// as a PNG.  The callback runs at most once per request and is not called
+    /// when the surface cannot be copied (the runner logs a warning instead).
+    fn on_screenshot(&mut self, screenshot: Screenshot) {
+        let _ = screenshot;
+    }
+
     /// Called for every raw winit `WindowEvent` (after it has been processed
     /// by the GUI system).
     ///
     /// Use this for drag-and-drop, IME, or any event not covered by the
     /// helpers on `AppContext`.
     fn on_window_event(&mut self, event: &winit::event::WindowEvent, ctx: &mut AppContext<'_>) {}
+
+    /// Called once per frame for every file dropped, hovered or left on the
+    /// window since the previous frame.
+    ///
+    /// The runner queues operating-system drag events and calls this method
+    /// while building the frame's [`AppContext`], so an application never
+    /// blocks the event loop and never needs the platform-specific event
+    /// type. Order is the order the events arrived in.
+    fn on_file_drop(&mut self, event: FileDropEvent, ctx: &mut AppContext<'_>) {
+        let _ = (event, ctx);
+    }
+
+    /// Called once when the window is closing, after it has been hidden and
+    /// before the event loop exits.
+    ///
+    /// Use this to flush pending saves, remove a session lock or persist
+    /// application state. The window is already invisible, so the work does
+    /// not delay the close from the user's point of view; expensive GPU
+    /// resources are dropped afterwards, when the runner is torn down
+    /// (prompt 17 S5).
+    fn on_exit(&mut self) {}
 }

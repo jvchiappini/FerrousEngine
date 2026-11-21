@@ -41,8 +41,21 @@ nav:
     - AppContext Reference: ferrous_engine/app-context.md
     - RenderContext Reference: ferrous_engine/render-context.md
     - Configuration (ferrous.toml): ferrous_engine/config.md
+    - Startup trace: ferrous_engine/startup.md
+    - GPU memory: ferrous_engine/memory.md
+    - Performance & GPU timing: ferrous_engine/performance.md
+    - Redraw policy: ferrous_engine/redraw.md
+    - Present modes & persistent UI: ferrous_engine/present.md
   - ferrous_2d — 2D Rendering:
     - Overview: ferrous_2d/README.md
+    - Text: ferrous_2d/text.md
+    - Images: ferrous_2d/images.md
+    - Gradients: ferrous_2d/gradients.md
+    - Blending and Layers: ferrous_2d/blend.md
+    - Layer Effects: ferrous_2d/effects.md
+    - Layer Masks: ferrous_2d/masks.md
+    - Temporal Accumulation: ferrous_2d/accumulation.md
+    - Textured Meshes: ferrous_renderer/textured-meshes.md
   - ferrous_ui_core — UI Core:
     - Overview: ferrous_ui_core/README.md
     - Core API (Ui / Canvas / Widget): ferrous_ui_core/CORE.md
@@ -91,6 +104,7 @@ nav:
     - Materials & Textures: ferrous_renderer/materials.md
     - Render Pass: ferrous_renderer/render_pass.md
     - Render Target: ferrous_renderer/render_target.md
+    - Headless readback: ferrous_renderer/readback.md
     - Gizmos: ferrous_renderer/gizmo.md
     - Extending:
       - Custom Pass: ferrous_renderer/extending/custom_pass.md
@@ -107,6 +121,8 @@ nav:
     - ferrous_events: ferrous_events/README.md
     - ferrous_events — Events: ferrous_events/EVENTS.md
     - ferrous_font: ferrous_font/README.md
+    - ferrous_font - Baked atlases and the cache: ferrous_font/atlas-cache.md
+    - ferrous_font - Memory budgets: ferrous_font/memory-budgets.md
     - ferrous_gpu: ferrous_gpu/README.md
     - ferrous_reflection: ferrous_reflection/README.md
     - ferrous_render_graph: ferrous_render_graph/README.md
@@ -115,6 +131,7 @@ nav:
     - ferrous_ui_macros: ferrous_ui_macros/README.md
     - ferrous_ui_render: ferrous_ui_render/README.md
     - ferrous_ui_render — Internals: ferrous_ui_render/RENDER.md
+    - ferrous_ui_render - Partial redraw: ferrous_ui_render/PARTIAL.md
     - ferrous_voxels: ferrous_voxels/README.md
     - ferrous_web: ferrous_web/README.md
 

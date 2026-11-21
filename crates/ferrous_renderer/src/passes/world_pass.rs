@@ -19,8 +19,8 @@ use wgpu::{
     RenderPassDepthStencilAttachment, RenderPassDescriptor, StoreOp, TextureView,
 };
 
-use crate::graph::{FramePacket, RenderPass, InstancedDrawCommand};
-use crate::pipeline::{InstancingPipeline, PbrPipeline, PipelineLayouts, ShadowPipeline};
+use crate::graph::{FramePacket, InstancedDrawCommand, RenderPass};
+use crate::pipeline::{InstancingPipeline, PipelineLayouts, ShadowPipeline};
 use crate::render_target::HdrTexture;
 use crate::resources::{DirectionalLightUniform, Environment, PointLightUniform, ShadowResources};
 use ferrous_core::scene::MaterialHandle;
@@ -32,14 +32,6 @@ pub enum SkyMode {
 }
 
 pub struct WorldPass {
-    /// PBR pipeline used for opaque geometry.
-    pbr_pipeline: PbrPipeline,
-    /// Double-sided variant of the PBR pipeline (culling disabled).
-    pbr_pipeline_double: PbrPipeline,
-    /// Opaque blending pipeline (depth writes disabled).
-    pbr_pipeline_blend: PbrPipeline,
-    /// Double-sided blend pipeline.
-    pbr_pipeline_blend_double: PbrPipeline,
     /// Pipeline for instanced draws (group 1 = storage buffer).
     instancing_pipeline: InstancingPipeline,
     /// Instancing pipeline variant with culling disabled.
@@ -48,8 +40,6 @@ pub struct WorldPass {
     instancing_pipeline_blend: InstancingPipeline,
     /// Double-sided blended instancing pipeline.
     instancing_pipeline_blend_double: InstancingPipeline,
-    /// Pipeline used to render the depth-only shadow map.
-    shadow_pipeline: ShadowPipeline,
     /// Shadow pipeline variant which supports instanced vertex data.
     shadow_pipeline_instanced: ShadowPipeline,
     /// Shadow map texture + sampler.  Stored here so the world pass can write
@@ -103,15 +93,14 @@ pub struct WorldPass {
 }
 
 impl WorldPass {
+    /// Builds the pass and its GPU resources: instancing pipelines, shadow
+    /// pipeline and map, HDR target, environment (or the supplied HDRI) and
+    /// the skybox pipeline.
+    ///
+    /// `Renderer` calls this only when the first 3-D use happens, so a 2-D
+    /// application never pays for it (prompt 17 S4).
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        pbr_pipeline: PbrPipeline,
-        pbr_pipeline_double: PbrPipeline,
-        pbr_pipeline_blend: PbrPipeline,
-        pbr_pipeline_blend_double: PbrPipeline,
-        instancing_pipeline: InstancingPipeline,
-        instancing_pipeline_double: InstancingPipeline,
-        instancing_pipeline_blend: InstancingPipeline,
-        instancing_pipeline_blend_double: InstancingPipeline,
         camera_bind_group: Arc<wgpu::BindGroup>,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -121,6 +110,44 @@ impl WorldPass {
         sample_count: u32,
         hdri_path: Option<&std::path::Path>,
     ) -> Self {
+        let hdr_format = HdrTexture::FORMAT;
+        // Instancing pipeline variants (cull on/off, opaque/blended).
+        let instancing_pipeline = InstancingPipeline::new(
+            device,
+            hdr_format,
+            sample_count,
+            layouts.clone(),
+            Some(wgpu::Face::Back),
+            None,
+            true,
+        );
+        let instancing_pipeline_double = InstancingPipeline::new(
+            device,
+            hdr_format,
+            sample_count,
+            layouts.clone(),
+            None,
+            None,
+            true,
+        );
+        let instancing_pipeline_blend = InstancingPipeline::new(
+            device,
+            hdr_format,
+            sample_count,
+            layouts.clone(),
+            Some(wgpu::Face::Back),
+            Some(wgpu::BlendState::ALPHA_BLENDING),
+            false,
+        );
+        let instancing_pipeline_blend_double = InstancingPipeline::new(
+            device,
+            hdr_format,
+            sample_count,
+            layouts.clone(),
+            None,
+            Some(wgpu::BlendState::ALPHA_BLENDING),
+            false,
+        );
         // environment bundle includes directional light and IBL textures. if
         // caller supplied an HDRI path we perform the expensive compute
         // precomputation once; otherwise fall back to the dummy grey maps.
@@ -143,7 +170,6 @@ impl WorldPass {
         // create two shadow pipelines: one for regular objects and one for
         // instanced geometry.  They differ only in the first bind-group
         // layout (model vs instance).
-        let shadow_pipeline = crate::pipeline::ShadowPipeline::new(device, layouts.clone(), false);
         let shadow_pipeline_instanced =
             crate::pipeline::ShadowPipeline::new(device, layouts.clone(), true);
         let shadow_resources = crate::resources::ShadowResources::new(device);
@@ -173,10 +199,6 @@ impl WorldPass {
             }));
 
         Self {
-            pbr_pipeline,
-            pbr_pipeline_double,
-            pbr_pipeline_blend,
-            pbr_pipeline_blend_double,
             instancing_pipeline,
             instancing_pipeline_double,
             instancing_pipeline_blend,
@@ -196,7 +218,6 @@ impl WorldPass {
             lights_layout: Arc::clone(&layouts.lights),
             sky_mode,
             hdr_texture,
-            shadow_pipeline,
             shadow_pipeline_instanced,
             shadow_resources,
             shadow_light_bind_group,
@@ -314,7 +335,9 @@ impl WorldPass {
         // if the bind group changed, propagate to the active sky pass
         match &mut self.sky_mode {
             SkyMode::Cubemap(sky) => sky.set_env_bind_group(self.environment.bind_group.clone()),
-            SkyMode::Procedural(sky) => sky.set_light_bind_group(self.environment.bind_group.clone()),
+            SkyMode::Procedural(sky) => {
+                sky.set_light_bind_group(self.environment.bind_group.clone())
+            }
             _ => {}
         }
     }
@@ -332,7 +355,9 @@ impl WorldPass {
             .update_ssao(device, &self.lights_layout, ssao_view, ssao_sampler);
         match &mut self.sky_mode {
             SkyMode::Cubemap(sky) => sky.set_env_bind_group(self.environment.bind_group.clone()),
-            SkyMode::Procedural(sky) => sky.set_light_bind_group(self.environment.bind_group.clone()),
+            SkyMode::Procedural(sky) => {
+                sky.set_light_bind_group(self.environment.bind_group.clone())
+            }
             _ => {}
         }
     }
@@ -355,7 +380,7 @@ impl RenderPass for WorldPass {
         _queue: &Queue,
         encoder: &mut CommandEncoder,
         _color_view: &TextureView,
-        resolve_target: Option<&TextureView>,
+        _resolve_target: Option<&TextureView>,
         depth_view: Option<&TextureView>,
         packet: &FramePacket,
     ) {
@@ -372,26 +397,10 @@ impl RenderPass for WorldPass {
         match &mut self.sky_mode {
             SkyMode::Solid(_) => {}
             SkyMode::Cubemap(sky) => {
-                sky.execute(
-                    _device,
-                    _queue,
-                    encoder,
-                    view,
-                    rt,
-                    depth_view,
-                    packet,
-                );
+                sky.execute(_device, _queue, encoder, view, rt, depth_view, packet);
             }
             SkyMode::Procedural(sky) => {
-                sky.execute(
-                    _device,
-                    _queue,
-                    encoder,
-                    view,
-                    rt,
-                    depth_view,
-                    packet,
-                );
+                sky.execute(_device, _queue, encoder, view, rt, depth_view, packet);
             }
         }
         // ── Shadow map pass ─────────────────────────────────────────────

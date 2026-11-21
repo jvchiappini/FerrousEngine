@@ -1,0 +1,690 @@
+//! Per-frame stage timing (`FERROUS_TRACE_FRAMES=1`).
+//!
+//! The startup trace answers "what took so long before the first frame"; this
+//! module answers "where does every frame go".  The runner opens a frame,
+//! brackets the stages it controls, and closes it:
+//!
+//! ```no_run
+//! use ferrous_core::frame_trace::{self, Stage};
+//!
+//! let _frame = frame_trace::begin_frame();
+//! {
+//!     let _stage = frame_trace::stage(Stage::AppUpdate);
+//!     // app.update(...)
+//! }
+//! ```
+//!
+//! The trace is **off by default**. While it is off [`begin_frame`],
+//! [`stage`] and [`record_event`] are one relaxed atomic load (and one branch)
+//! each; guards allocate nothing and do not lock.  With
+//! `FERROUS_TRACE_FRAMES=1` every frame is sampled and one JSON line is written
+//! to stderr when the process reports (the runner reports at teardown):
+//!
+//! ```text
+//! frame-trace {"event":"frame-trace","frames":600,"stages":{...},...}
+//! ```
+//!
+//! Each stage reports the median, p90 and p99 in milliseconds, and so does the
+//! whole frame (`frame_ms`, from [`begin_frame`] to its close: event handling
+//! through present).  When the `alloc-stats` feature is on, the same JSON
+//! carries allocations and touched bytes per frame (median/p90).
+//!
+//! The report also carries `input_to_present_ms` (median, p50, p90, p99,
+//! samples) and `ui_damage` (median, p90, p99).  [`record_input`] stores the
+//! newest input/device event instant and [`record_present`] consumes it after
+//! `present()`; a frame that answered no input contributes no sample.
+//! [`record_ui_damage`] stores the damaged window fraction for the frame.
+//!
+//! # Stages
+//!
+//! [`Stage`] is a fixed list, not a string map: the hot path indexes an array.
+//! `EventHandling` is fed by [`record_event`] from the winit callbacks; the
+//! other stages are opened by the runner and the renderer with [`stage`].
+
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, OnceLock};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
+
+use serde_json::{json, Map, Value};
+
+/// Environment variable that enables the per-frame trace.
+pub const ENABLE_ENV: &str = "FERROUS_TRACE_FRAMES";
+
+/// The stages measured for every frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(usize)]
+pub enum Stage {
+    /// Winit event callbacks (input, resize, close).
+    EventHandling = 0,
+    /// `FerrousApp::update`.
+    AppUpdate,
+    /// `UiTree` layout/update.
+    UiLayout,
+    /// Application draw commands (`draw_ui` / `draw_3d`).
+    CommandCollection,
+    /// Renderer frame builder and batch coalescing.
+    BatchBuild,
+    /// Buffer uploads and bind-group preparation.
+    PrepareUpload,
+    /// Render-pass encoding (draw calls).
+    Encode,
+    /// `queue.submit`.
+    Submit,
+    /// Swapchain acquire + `present`.
+    PresentWait,
+}
+
+impl Stage {
+    /// Every stage, in report order.
+    pub const ALL: [Stage; 9] = [
+        Stage::EventHandling,
+        Stage::AppUpdate,
+        Stage::UiLayout,
+        Stage::CommandCollection,
+        Stage::BatchBuild,
+        Stage::PrepareUpload,
+        Stage::Encode,
+        Stage::Submit,
+        Stage::PresentWait,
+    ];
+
+    /// Stable report name.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Stage::EventHandling => "event handling",
+            Stage::AppUpdate => "app update",
+            Stage::UiLayout => "ui layout",
+            Stage::CommandCollection => "render-command collection",
+            Stage::BatchBuild => "batch build",
+            Stage::PrepareUpload => "prepare/upload",
+            Stage::Encode => "encode",
+            Stage::Submit => "submit",
+            Stage::PresentWait => "present/wait",
+        }
+    }
+}
+
+const STAGE_COUNT: usize = 9;
+const MAX_FRAMES: usize = 100_000;
+
+static ENABLED: AtomicBool = AtomicBool::new(false);
+static INITIALISED: OnceLock<()> = OnceLock::new();
+static EVENT_NS: AtomicU64 = AtomicU64::new(0);
+static REPORTED: AtomicBool = AtomicBool::new(false);
+/// Frames whose swapchain image reached `present()`.
+static PRESENTED: AtomicU64 = AtomicU64::new(0);
+/// Main render submits (`queue.submit` for the frame encoder).
+static SUBMITS: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone, Copy)]
+struct FrameSample {
+    stages: [f32; STAGE_COUNT],
+    /// Wall time of the whole frame, from `begin_frame` to its close.
+    total_ms: f32,
+    /// Input instant -> present delta, present only when an input was pending.
+    input_to_present_ms: Option<f32>,
+    /// Damaged window fraction in `0.0..=1.0`, present only when reported.
+    ui_damage: Option<f32>,
+    /// Allocations made by the frame thread.
+    allocations: u64,
+    /// Bytes touched by the frame thread.
+    allocated_bytes: u64,
+    /// Allocations made by other threads while the frame was open.
+    worker_allocations: u64,
+    /// Bytes touched by other threads while the frame was open.
+    worker_bytes: u64,
+}
+
+impl Default for FrameSample {
+    fn default() -> Self {
+        Self {
+            stages: [0.0; STAGE_COUNT],
+            total_ms: 0.0,
+            input_to_present_ms: None,
+            ui_damage: None,
+            allocations: 0,
+            allocated_bytes: 0,
+            worker_allocations: 0,
+            worker_bytes: 0,
+        }
+    }
+}
+
+#[derive(Default)]
+struct State {
+    frames: Vec<FrameSample>,
+    current: FrameSample,
+    started: bool,
+    /// When the open frame began; `total_ms` is its wall time.
+    frame_started: Option<Instant>,
+    /// The newest input instant waiting for the next present.
+    pending_input: Option<Instant>,
+    #[cfg(feature = "alloc-stats")]
+    alloc_before: Option<crate::alloc_stats::Snapshot>,
+    #[cfg(feature = "alloc-stats")]
+    thread_alloc_before: Option<crate::alloc_stats::Snapshot>,
+}
+
+fn state() -> &'static Mutex<State> {
+    static STATE: OnceLock<Mutex<State>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(State::default()))
+}
+
+fn lock_state() -> MutexGuard<'static, State> {
+    // A panic while tracing must not poison every later report.
+    state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var_os(name).is_some_and(|value| {
+        let text = value.to_string_lossy();
+        matches!(
+            text.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+/// Whether the per-frame trace is enabled.
+#[must_use]
+pub fn enabled() -> bool {
+    INITIALISED.get_or_init(|| {
+        ENABLED.store(env_flag(ENABLE_ENV), Ordering::Relaxed);
+    });
+    ENABLED.load(Ordering::Relaxed)
+}
+
+/// Opens a frame.  Dropping the guard closes and records it.
+#[must_use]
+pub fn begin_frame() -> FrameGuard {
+    if enabled() {
+        let mut state = lock_state();
+        if state.started {
+            finish_locked(&mut state);
+        }
+        state.current = FrameSample::default();
+        state.current.stages[Stage::EventHandling as usize] =
+            EVENT_NS.swap(0, Ordering::Relaxed) as f32 / 1_000_000.0;
+        state.started = true;
+        state.frame_started = Some(Instant::now());
+        #[cfg(feature = "alloc-stats")]
+        {
+            state.alloc_before = Some(crate::alloc_stats::snapshot());
+            state.thread_alloc_before = Some(crate::alloc_stats::thread_snapshot());
+        }
+    }
+    FrameGuard
+}
+
+/// Closes the current frame.  The runner uses [`begin_frame`]'s guard; this is
+/// public for drivers that cannot keep the guard alive across an event-loop
+/// boundary.
+pub fn end_frame() {
+    if !enabled() {
+        return;
+    }
+    let mut state = lock_state();
+    if state.started {
+        finish_locked(&mut state);
+    }
+}
+
+fn finish_locked(state: &mut State) {
+    if !state.started {
+        return;
+    }
+    #[allow(unused_mut)]
+    let mut sample = std::mem::take(&mut state.current);
+    if let Some(started) = state.frame_started.take() {
+        sample.total_ms = started.elapsed().as_secs_f32() * 1000.0;
+    }
+    #[cfg(feature = "alloc-stats")]
+    if let (Some(before), Some(thread_before)) =
+        (state.alloc_before.take(), state.thread_alloc_before.take())
+    {
+        let global = crate::alloc_stats::between(before, crate::alloc_stats::snapshot());
+        let thread =
+            crate::alloc_stats::between(thread_before, crate::alloc_stats::thread_snapshot());
+        sample.allocations = thread.allocating_calls();
+        sample.allocated_bytes = thread.touched_bytes();
+        // Everything the process allocated that the frame thread did not.
+        sample.worker_allocations = global.allocating_calls().saturating_sub(sample.allocations);
+        sample.worker_bytes = global
+            .touched_bytes()
+            .saturating_sub(sample.allocated_bytes);
+    }
+    if state.frames.len() < MAX_FRAMES {
+        state.frames.push(sample);
+    }
+    state.started = false;
+}
+
+/// An open frame; [`Drop`] closes it on every return path.
+#[derive(Debug)]
+pub struct FrameGuard;
+
+impl Drop for FrameGuard {
+    fn drop(&mut self) {
+        end_frame();
+    }
+}
+
+/// Brackets one stage.  Dropping the guard adds the elapsed time.
+#[must_use]
+pub fn stage(stage: Stage) -> StageGuard {
+    StageGuard {
+        stage,
+        start: enabled().then(Instant::now),
+    }
+}
+
+/// An open stage.
+#[derive(Debug)]
+pub struct StageGuard {
+    stage: Stage,
+    start: Option<Instant>,
+}
+
+impl Drop for StageGuard {
+    fn drop(&mut self) {
+        if let Some(start) = self.start {
+            let millis = start.elapsed().as_secs_f64() * 1000.0;
+            let mut state = lock_state();
+            state.current.stages[self.stage as usize] += millis as f32;
+        }
+    }
+}
+
+/// Brackets a winit callback; the elapsed time goes to the next frame's
+/// `EventHandling` stage.  Use it first thing in `window_event`.
+#[must_use]
+pub fn event_guard() -> EventGuard {
+    EventGuard {
+        start: Instant::now(),
+        enabled: enabled(),
+    }
+}
+
+/// An open event callback.
+#[derive(Debug)]
+pub struct EventGuard {
+    start: Instant,
+    enabled: bool,
+}
+
+impl Drop for EventGuard {
+    fn drop(&mut self) {
+        if self.enabled {
+            record_event(self.start);
+        }
+    }
+}
+
+/// Records the time an event callback took, for the next frame's
+/// `EventHandling` stage.  Allocation-free and lock-free.
+pub fn record_event(start: Instant) {
+    if !enabled() {
+        return;
+    }
+    let nanos = start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+    EVENT_NS.fetch_add(nanos, Ordering::Relaxed);
+}
+
+/// Records the input instant the next presented frame answers.
+///
+/// One pending value is kept; a newer input before the present replaces it, and
+/// [`record_present`] consumes it.  The disabled path costs one branch.
+pub fn record_input(at: Instant) {
+    if !enabled() {
+        return;
+    }
+    lock_state().pending_input = Some(at);
+}
+
+/// Records the damaged fraction of the window for this frame, in `0.0..=1.0`.
+///
+/// Values outside the range are clamped; non-finite values are recorded as
+/// `0.0`.  The disabled path costs one branch.
+pub fn record_ui_damage(fraction: f32) {
+    if !enabled() {
+        return;
+    }
+    let fraction = if fraction.is_finite() {
+        fraction.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    lock_state().current.ui_damage = Some(fraction);
+}
+
+/// Counts a presented frame.
+///
+/// The runner calls this after `SurfaceTexture::present`; an idle on-demand
+/// app must leave this counter unchanged.  When an input instant is pending,
+/// this also records `now - input` as the frame's `input_to_present_ms` and
+/// clears the pending value.
+pub fn record_present() {
+    if !enabled() {
+        return;
+    }
+    PRESENTED.fetch_add(1, Ordering::Relaxed);
+    let now = Instant::now();
+    let mut state = lock_state();
+    if let Some(at) = state.pending_input.take() {
+        let millis = now.saturating_duration_since(at).as_secs_f32() * 1000.0;
+        state.current.input_to_present_ms = Some(millis);
+    }
+}
+
+/// Counts a main GPU submit.
+///
+/// The runner calls this around `queue.submit` for the frame encoder; an idle
+/// on-demand app must leave this counter unchanged.
+pub fn record_submit() {
+    if enabled() {
+        SUBMITS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// A nearest-rank percentile (`p` in `0.0..=1.0`).
+#[must_use]
+pub fn percentile(values: &[f32], p: f64) -> f32 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let rank = ((p.clamp(0.0, 1.0) * sorted.len() as f64).ceil() as usize).max(1);
+    sorted[rank.min(sorted.len()) - 1]
+}
+
+fn stats(values: &[f32]) -> Value {
+    json!({
+        "median_ms": f64::from(percentile(values, 0.5)),
+        "p90_ms": f64::from(percentile(values, 0.9)),
+        "p99_ms": f64::from(percentile(values, 0.99)),
+        "samples": values.len(),
+    })
+}
+
+/// Writes the frame summary once, as one `frame-trace {...}` line on stderr.
+///
+/// `gpu_passes` is the `(pass, milliseconds)` list from the renderer; pass an
+/// empty slice when timestamps are unavailable. `gpu_unsupported` names the
+/// passes that could not be timed.
+/// `gpu_frame` is the last frame's GPU work counters (draw calls, state binds,
+/// passes). It is reported once so the harness can attribute CPU/GPU cost to
+/// the draws the frame actually issued.
+pub fn report(
+    gpu_passes: &[(String, f64)],
+    gpu_unsupported: &[String],
+    gpu_frame: &crate::render_stats::RenderStats,
+) {
+    if !enabled() || REPORTED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let state = lock_state();
+    let frames = state.frames.len();
+
+    let mut stages = Map::new();
+    for stage in Stage::ALL {
+        let values: Vec<f32> = state
+            .frames
+            .iter()
+            .map(|frame| frame.stages[stage as usize])
+            .collect();
+        stages.insert(stage.name().to_owned(), stats(&values));
+    }
+
+    let frame_totals: Vec<f32> = state.frames.iter().map(|frame| frame.total_ms).collect();
+    let input_to_present: Vec<f32> = state
+        .frames
+        .iter()
+        .filter_map(|frame| frame.input_to_present_ms)
+        .collect();
+    let ui_damage: Vec<f32> = state
+        .frames
+        .iter()
+        .filter_map(|frame| frame.ui_damage)
+        .collect();
+
+    let allocations: Vec<f32> = state
+        .frames
+        .iter()
+        .map(|frame| frame.allocations as f32)
+        .collect();
+    let bytes: Vec<f32> = state
+        .frames
+        .iter()
+        .map(|frame| frame.allocated_bytes as f32)
+        .collect();
+    let worker_allocations: Vec<f32> = state
+        .frames
+        .iter()
+        .map(|frame| frame.worker_allocations as f32)
+        .collect();
+    let worker_bytes: Vec<f32> = state
+        .frames
+        .iter()
+        .map(|frame| frame.worker_bytes as f32)
+        .collect();
+
+    let mut gpu = Map::new();
+    for (pass, millis) in gpu_passes {
+        gpu.insert(pass.clone(), json!({ "median_ms": millis }));
+    }
+
+    let payload = json!({
+        "event": "frame-trace",
+        "version": 1,
+        "frames": frames,
+        "presented": PRESENTED.load(Ordering::Relaxed),
+        "gpu_submits": SUBMITS.load(Ordering::Relaxed),
+        "alloc_stats": cfg!(feature = "alloc-stats"),
+        "stages": stages,
+        "frame_ms": stats(&frame_totals),
+        "input_to_present_ms": {
+            "median": f64::from(percentile(&input_to_present, 0.5)),
+            "p50": f64::from(percentile(&input_to_present, 0.5)),
+            "p90": f64::from(percentile(&input_to_present, 0.9)),
+            "p99": f64::from(percentile(&input_to_present, 0.99)),
+            "samples": input_to_present.len(),
+        },
+        "ui_damage": {
+            "median": f64::from(percentile(&ui_damage, 0.5)),
+            "p90": f64::from(percentile(&ui_damage, 0.9)),
+            "p99": f64::from(percentile(&ui_damage, 0.99)),
+        },
+        "allocations_per_frame": {
+            "median": f64::from(percentile(&allocations, 0.5)),
+            "p90": f64::from(percentile(&allocations, 0.9)),
+        },
+        "bytes_per_frame": {
+            "median": f64::from(percentile(&bytes, 0.5)),
+            "p90": f64::from(percentile(&bytes, 0.9)),
+        },
+        "worker_allocations_per_frame": {
+            "median": f64::from(percentile(&worker_allocations, 0.5)),
+            "p90": f64::from(percentile(&worker_allocations, 0.9)),
+        },
+        "worker_bytes_per_frame": {
+            "median": f64::from(percentile(&worker_bytes, 0.5)),
+            "p90": f64::from(percentile(&worker_bytes, 0.9)),
+        },
+        "gpu_passes": gpu,
+        "gpu_unsupported": gpu_unsupported,
+        "gpu_frame": {
+            "draw_calls": gpu_frame.draw_calls,
+            "gpu_passes": gpu_frame.gpu_passes,
+            "pipeline_binds": gpu_frame.pipeline_binds,
+            "bind_group_binds": gpu_frame.bind_group_binds,
+            "buffer_binds": gpu_frame.buffer_binds,
+            "scissor_changes": gpu_frame.scissor_changes,
+            "ui_segments": gpu_frame.ui_segments,
+        },
+    });
+    eprintln!("frame-trace {}", payload);
+}
+
+#[cfg(test)]
+fn force_enabled(value: bool) {
+    INITIALISED.get_or_init(|| {});
+    ENABLED.store(value, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn clear_for_test() {
+    let mut state = lock_state();
+    state.frames.clear();
+    state.current = FrameSample::default();
+    state.started = false;
+    state.frame_started = None;
+    state.pending_input = None;
+    EVENT_NS.store(0, Ordering::Relaxed);
+    REPORTED.store(false, Ordering::Relaxed);
+    PRESENTED.store(0, Ordering::Relaxed);
+    SUBMITS.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, MutexGuard};
+    use std::time::Duration;
+
+    /// The trace state is process-global, so these tests must not interleave.
+    fn lock() -> MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[test]
+    fn nearest_rank_percentiles_are_stable() {
+        let values = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
+        assert_eq!(percentile(&values, 0.5), 5.0);
+        assert_eq!(percentile(&values, 0.9), 9.0);
+        assert_eq!(percentile(&values, 0.99), 10.0);
+        assert_eq!(percentile(&[], 0.5), 0.0);
+    }
+
+    #[test]
+    fn stages_and_frames_are_recorded() {
+        let _guard = lock();
+        force_enabled(true);
+        clear_for_test();
+        {
+            let _frame = begin_frame();
+            {
+                let _stage = stage(Stage::AppUpdate);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        let state = lock_state();
+        assert_eq!(state.frames.len(), 1);
+        assert!(state.frames[0].stages[Stage::AppUpdate as usize] >= 0.5);
+        drop(state);
+        force_enabled(false);
+    }
+
+    #[test]
+    fn a_frame_records_its_wall_time() {
+        let _guard = lock();
+        force_enabled(true);
+        clear_for_test();
+        {
+            let _frame = begin_frame();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let state = lock_state();
+        assert_eq!(state.frames.len(), 1);
+        assert!(state.frames[0].total_ms >= 0.5);
+        drop(state);
+        force_enabled(false);
+    }
+
+    #[test]
+    fn a_synthetic_input_records_one_input_to_present_sample() {
+        let _guard = lock();
+        force_enabled(true);
+        clear_for_test();
+
+        let input = Instant::now();
+        {
+            let _frame = begin_frame();
+            record_input(input);
+            std::thread::sleep(Duration::from_millis(2));
+            record_present();
+        }
+
+        let state = lock_state();
+        assert_eq!(state.frames.len(), 1);
+        let sample = state.frames[0]
+            .input_to_present_ms
+            .expect("a present after an input must produce a sample");
+        assert!(
+            (1.0..250.0).contains(&sample),
+            "input-to-present {sample} ms is outside the plausible range"
+        );
+        assert!(
+            state.pending_input.is_none(),
+            "the input must be consumed by the present"
+        );
+        drop(state);
+        force_enabled(false);
+    }
+
+    #[test]
+    fn a_timer_only_frame_records_no_input_to_present_sample() {
+        let _guard = lock();
+        force_enabled(true);
+        clear_for_test();
+
+        {
+            let _frame = begin_frame();
+            std::thread::sleep(Duration::from_millis(1));
+            record_present();
+        }
+        assert!(
+            lock_state().frames[0].input_to_present_ms.is_none(),
+            "a frame that answered no input must not report a delta"
+        );
+
+        force_enabled(false);
+    }
+
+    #[test]
+    fn a_newer_input_replaces_the_pending_one_and_ui_damage_clamps() {
+        let _guard = lock();
+        force_enabled(true);
+        clear_for_test();
+
+        let _frame = begin_frame();
+        record_input(Instant::now());
+        record_input(Instant::now());
+        record_ui_damage(2.0);
+        assert_eq!(lock_state().current.ui_damage, Some(1.0));
+        record_ui_damage(f32::NAN);
+        assert_eq!(lock_state().current.ui_damage, Some(0.0));
+        drop(_frame);
+
+        force_enabled(false);
+    }
+
+    #[test]
+    fn a_disabled_trace_records_nothing() {
+        let _guard = lock();
+        force_enabled(false);
+        clear_for_test();
+        {
+            let _frame = begin_frame();
+            let _stage = stage(Stage::AppUpdate);
+        }
+        assert!(lock_state().frames.is_empty());
+    }
+}

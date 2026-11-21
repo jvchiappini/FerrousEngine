@@ -23,22 +23,25 @@ use ferrous_assets::font_importer::FontData;
 
 use crate::builder::AppConfig;
 use crate::graphics::GraphicsState;
-use crate::traits::FerrousApp;
+use crate::redraw::{Scheduler, Waker};
+use crate::traits::{FerrousApp, FileDropEvent};
 
 // ─── Runner ─────────────────────────────────────────────────────────────────
 
 pub(crate) struct Runner<A: FerrousApp + 'static> {
     pub(super) app: A,
     pub(super) config: AppConfig,
-    pub(super) window: Option<Arc<Window>>,
+    /// The GPU state. Declared before `window` so it is dropped first: it holds
+    /// a surface created from that window.
     pub(super) graphics: Option<GraphicsState>,
+    pub(super) window: Option<Arc<Window>>,
     pub(super) ui: ferrous_gui::UiSystem<A>,
     pub(super) input: InputState,
     pub(super) window_size: (u32, u32),
     pub(super) viewport: Viewport,
     pub(super) clock: TimeClock,
     pub(super) world: World,
-    pub(super) font: Option<Font>,
+    pub(super) font: Option<std::sync::Arc<Font>>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) font_asset_handle: Option<AssetHandle<FontData>>,
     #[cfg(target_arch = "wasm32")]
@@ -57,16 +60,44 @@ pub(crate) struct Runner<A: FerrousApp + 'static> {
     pub(super) shift_held: bool,
     /// Tracks the last deterministic time absolute value passed to render frames
     pub(super) last_deterministic_t: Option<f64>,
+    /// File-drag events waiting for the next frame's `AppContext`.
+    pub(super) pending_file_drops: Vec<FileDropEvent>,
+    /// Whether the close path (hide + exit) has already run.
+    pub(super) closing: bool,
+    /// GPU and UI-font probes started before the window existed (prompt 17 S3).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) startup_work: Option<crate::graphics::StartupWork>,
+    /// Window show policy for the first frame (prompt 17 S3b).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) startup: Option<super::show::StartupGate>,
+    /// The GPU/first-frame initialisation running off the event loop.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) init: Option<super::show::InitJob>,
+    /// Continuous vs on-demand frame scheduling (prompt 18 P1).
+    pub(super) redraw: Scheduler,
+    /// Wakes the loop from background workers.
+    pub(super) waker: Waker,
+    /// Opt-in persistent off-screen UI present path (prompt 18 P7).
+    pub(super) ui_presenter: Option<ferrous_ui_render::UiPresenter>,
 }
 
 impl<A: FerrousApp + 'static> Runner<A> {
-    pub(super) fn new(app: A, config: AppConfig) -> Self {
+    pub(super) fn new(
+        app: A,
+        config: AppConfig,
+        proxy: winit::event_loop::EventLoopProxy<crate::redraw::EngineEvent>,
+    ) -> Self {
         let mut systems = StagedScheduler::new();
         systems.add(Stage::PreUpdate, TimeSystem);
         systems.add(Stage::Update, VelocitySystem);
         systems.add(Stage::Update, AnimationSystem);
         systems.add(Stage::Update, BehaviorSystem);
         systems.add(Stage::PostUpdate, TransformSystem);
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let startup_work = Some(crate::graphics::StartupWork::start(&config));
+
+        let redraw_policy = config.redraw_policy;
 
         Self {
             app,
@@ -100,6 +131,17 @@ impl<A: FerrousApp + 'static> Runner<A> {
             ctrl_held: false,
             shift_held: false,
             last_deterministic_t: None,
+            pending_file_drops: Vec::new(),
+            closing: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            startup_work,
+            #[cfg(not(target_arch = "wasm32"))]
+            startup: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            init: None,
+            redraw: Scheduler::new(redraw_policy),
+            waker: Waker::from_proxy(proxy),
+            ui_presenter: None,
         }
     }
 }

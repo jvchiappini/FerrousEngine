@@ -3,8 +3,9 @@
 use std::time::Duration;
 
 use ferrous_assets::AssetState;
+use ferrous_core::frame_trace::{self, Stage};
 use ferrous_core::glam::Vec3;
-use ferrous_gui::GuiBatch;
+use ferrous_core::startup;
 use ferrous_ui_core::Rect;
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 
@@ -22,7 +23,16 @@ use super::types::Runner;
 
 impl<A: FerrousApp + 'static> Runner<A> {
     /// Executes one full update + render cycle relying on external absolute time or clock elapsed time if interactive.
-    pub fn render_frame(&mut self, event_loop: Option<&ActiveEventLoop>, t: f64) -> Option<Vec<u8>> {
+    pub fn render_frame(
+        &mut self,
+        event_loop: Option<&ActiveEventLoop>,
+        t: f64,
+    ) -> Option<Vec<u8>> {
+        // Prompt 17 S3b: install the GPU state as soon as the worker has it (and
+        // show the window if the timeout expired).
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = self.poll_startup(event_loop);
+
         // wasm32: drain async GPU init result before anything else.
         #[cfg(target_arch = "wasm32")]
         {
@@ -33,10 +43,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
                         self.gfx_pending = None;
                         if let (Some(gfx), Some(window)) = (&mut self.graphics, &self.window) {
                             #[cfg(target_arch = "wasm32")]
-                            let (w, h) = super::canvas_physical_size(
-                                window,
-                                self.config.resolution_scale,
-                            );
+                            let (w, h) =
+                                super::canvas_physical_size(window, self.config.resolution_scale);
                             #[cfg(not(target_arch = "wasm32"))]
                             let (w, h) = {
                                 let size = window.inner_size();
@@ -52,6 +60,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
                             gfx.resize(self.window_size.0, self.window_size.1);
                             gfx.renderer.set_viewport(self.viewport);
                             let time = self.clock.peek();
+                            let waker = self.waker.clone();
                             let mut ctx = AppContext {
                                 input: &self.input,
                                 time,
@@ -66,6 +75,10 @@ impl<A: FerrousApp + 'static> Runner<A> {
                                 exit_requested: false,
                                 requested_resolution_scale: None,
                                 keep_awake_requested: false,
+                                screenshot_requested: false,
+                                redraw_requested: false,
+                                redraw_at: None,
+                                waker: &waker,
                                 _gpu_backend: gfx.renderer.context.backend,
                                 render: RenderContext::new(&mut gfx.renderer),
                                 asset_server: &mut self.asset_server,
@@ -77,7 +90,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
                         if let Some(font_slot) = self.font_pending.take() {
                             if let Ok(mut borrow) = font_slot.try_borrow_mut() {
                                 if let Some(font) = borrow.take() {
-                                    self.font = Some(font);
+                                    self.font = Some(std::sync::Arc::new(font));
                                 }
                             }
                         }
@@ -102,6 +115,15 @@ impl<A: FerrousApp + 'static> Runner<A> {
         // application that also clears at the start of its own frame is
         // unaffected; it can remove its manual call.
         gfx.renderer.clear_2d();
+
+        // Prompt 18 P0: per-frame stage trace.  The guard closes the frame on
+        // every return path below; it is a no-op unless FERROUS_TRACE_FRAMES
+        // is enabled.
+        let _frame = frame_trace::begin_frame();
+        // Prompt 18 P1: this frame answers any queued input/redraw request.
+        self.redraw.begin_frame();
+        let mut redraw_request: bool;
+        let mut redraw_at: Option<Instant>;
 
         // Wall-clock timing for the whole frame (update + draw + present).
         // Recorded on every return path below; `RenderContext::frame_ms()` and
@@ -164,9 +186,15 @@ impl<A: FerrousApp + 'static> Runner<A> {
                         &gfx.renderer.context.queue,
                         ferrous_font::latin_western(),
                     );
+                    startup::mark("engine: fonts ready");
                     gfx.renderer
                         .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
-                    self.font = Some(font);
+                    ferrous_core::memory::register_gpu(
+                        "font:ui atlas texture",
+                        font.atlas.gpu_bytes(),
+                        ferrous_core::memory::Subsystem::Fonts,
+                    );
+                    self.font = Some(std::sync::Arc::new(font));
                     self.font_asset_handle = None;
                 }
             }
@@ -181,7 +209,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
             0.016
         };
         self.last_deterministic_t = Some(t);
-        
+
         let mut time_snapshot = self.clock.at_tick();
         time_snapshot.delta = dt;
         time_snapshot.elapsed = t;
@@ -192,10 +220,17 @@ impl<A: FerrousApp + 'static> Runner<A> {
             .run_all(&mut self.world.ecs, &mut self.resources);
         let time = time_snapshot;
 
-
         // ── 1. UPDATE ───────────────────────────────────────────────────────
+        // A screenshot asked for during `update` (or `setup`) must be copied
+        // on the frame that is about to be presented: the draw pass builds a
+        // fresh `AppContext`, so carry the flag across the two passes.
+        let update_screenshot;
+        // Whether this frame showed the window and can deliver queued input.
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut first_frame_shown = false;
         {
             let backend = gfx.renderer.context.backend;
+            let waker = self.waker.clone();
             let mut ctx = AppContext {
                 input: &self.input,
                 time,
@@ -211,11 +246,25 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 exit_requested: false,
                 requested_resolution_scale: None,
                 keep_awake_requested: false,
+                screenshot_requested: false,
+                redraw_requested: false,
+                redraw_at: None,
+                waker: &waker,
                 _gpu_backend: backend,
                 asset_server: &mut self.asset_server,
             };
 
+            let update_stage = frame_trace::stage(Stage::AppUpdate);
             self.app.update(&mut ctx);
+            drop(update_stage);
+
+            let drops = std::mem::take(&mut self.pending_file_drops);
+            for event in drops {
+                self.app.on_file_drop(event, &mut ctx);
+            }
+            update_screenshot = ctx.screenshot_requested;
+            redraw_request = ctx.redraw_requested;
+            redraw_at = ctx.redraw_at;
 
             if ctx.keep_awake_requested {
                 self.last_action_time = Instant::now();
@@ -224,15 +273,14 @@ impl<A: FerrousApp + 'static> Runner<A> {
             // Live render-scale change: resize the surface next frame.
             if let Some(requested) = ctx.requested_resolution_scale.take() {
                 self.config.resolution_scale = requested;
+                self.redraw.request();
             }
 
             if ctx.exit_requested {
                 drop(ctx);
                 gfx.renderer
                     .record_frame_time(frame_start.elapsed().as_secs_f32() * 1000.0);
-                if let Some(el) = event_loop {
-                    el.exit();
-                }
+                self.begin_close(event_loop);
                 return None;
             }
 
@@ -240,6 +288,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 self.viewport = ctx.viewport;
                 gfx.renderer.set_viewport(self.viewport);
             }
+            let _layout = frame_trace::stage(Stage::UiLayout);
             self.ui.update(
                 time.delta,
                 self.window_size.0 as f32,
@@ -251,8 +300,10 @@ impl<A: FerrousApp + 'static> Runner<A> {
         // OR if the renderer has been explicitly switched to Full3D (hybrid mode).
         let dt = time.delta;
         let renderer_mode = gfx.renderer.mode;
-        
-        if self.config.mode == AppMode::Game3D || renderer_mode == ferrous_renderer::RendererMode::Full3D {
+
+        if self.config.mode == AppMode::Game3D
+            || renderer_mode == ferrous_renderer::RendererMode::Full3D
+        {
             self.app.on_sync_world(&self.world);
             gfx.renderer.sync_world(&self.world);
 
@@ -275,6 +326,12 @@ impl<A: FerrousApp + 'static> Runner<A> {
             let camera_eye = gfx.renderer.camera().eye;
             let camera_target = gfx.renderer.camera().target;
             let backend = gfx.renderer.context.backend;
+            // Reuse the batch the renderer reclaimed last frame. Clearing it
+            // keeps every primitive Vec's capacity, so the chrome's steady
+            // state does not allocate (measured by Motioner's alloc counter).
+            let mut gui_batch = gfx.renderer.take_recycled_ui_batch().unwrap_or_default();
+            gui_batch.clear();
+            let waker = self.waker.clone();
             let mut ctx = AppContext {
                 input: &self.input,
                 time,
@@ -290,27 +347,36 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 exit_requested: false,
                 requested_resolution_scale: None,
                 keep_awake_requested: false,
+                screenshot_requested: false,
+                redraw_requested: false,
+                redraw_at: None,
+                waker: &waker,
                 _gpu_backend: backend,
                 asset_server: &mut self.asset_server,
             };
 
-            if self.viewport.width > 0
-                && self.config.mode == AppMode::Game3D {
+            {
+                let _collect = frame_trace::stage(Stage::CommandCollection);
+                if self.viewport.width > 0 && self.config.mode == AppMode::Game3D {
                     self.app.draw_3d(&mut ctx);
                 }
 
-            for gizmo in ctx.gizmos.drain(..) {
-                ctx.render.inner.queue_gizmo(gizmo);
-            }
+                for gizmo in ctx.gizmos.drain(..) {
+                    ctx.render.inner.queue_gizmo(gizmo);
+                }
 
-            let mut gui_batch = GuiBatch::new();
-            if let Some(font) = self.font.as_ref() {
-                let mut dc = DrawContext {
-                    gui: &mut gui_batch,
-                    font,
-                    ctx: &mut ctx,
-                };
-                self.app.draw_ui(&mut dc);
+                if let Some(font) = self.font.as_deref() {
+                    let mut dc = DrawContext {
+                        gui: &mut gui_batch,
+                        font,
+                        ctx: &mut ctx,
+                    };
+                    self.app.draw_ui(&mut dc);
+                }
+            }
+            redraw_request |= ctx.redraw_requested;
+            if let Some(when) = ctx.redraw_at {
+                redraw_at = Some(redraw_at.map_or(when, |current| current.min(when)));
             }
 
             let viewport_rect = Rect {
@@ -320,35 +386,181 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 height: self.window_size.1 as f32,
             };
 
-            let ui_render_batch = self.ui.render(viewport_rect, self.font.as_ref());
-            gui_batch.extend(ui_render_batch);
+            let _batch = frame_trace::stage(Stage::BatchBuild);
+            self.ui
+                .render_into(&mut gui_batch, viewport_rect, self.font.as_deref());
+            drop(_batch);
+
+            // A screenshot asked for during `update` or `draw_ui` is copied on
+            // the frame that is about to be presented, so it shows exactly
+            // what the user sees.  Blocking readback is desktop-only.
+            #[cfg(target_arch = "wasm32")]
+            let want_screenshot = false;
+            #[cfg(not(target_arch = "wasm32"))]
+            let want_screenshot = screenshot_wanted(
+                update_screenshot,
+                ctx.screenshot_requested,
+                gfx.config.usage.contains(wgpu::TextureUsages::COPY_SRC),
+            );
 
             // ── 3. RENDER FINAL ─────────────────────────────────────────────
-            let frame = match gfx.surface.get_current_texture() {
-                Ok(f) => f,
-                Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
-                    gfx.resize(self.window_size.0, self.window_size.1);
-                    gfx.renderer
-                        .record_frame_time(frame_start.elapsed().as_secs_f32() * 1000.0);
-                    return None;
+            let frame = {
+                let _wait = frame_trace::stage(Stage::PresentWait);
+                match gfx.surface.get_current_texture() {
+                    Ok(f) => f,
+                    Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) => {
+                        gfx.resize(self.window_size.0, self.window_size.1);
+                        gfx.renderer
+                            .record_frame_time(frame_start.elapsed().as_secs_f32() * 1000.0);
+                        // The new swapchain has not presented yet; in on-demand
+                        // mode nobody else would ask for that frame.
+                        self.redraw.request();
+                        return None;
+                    }
+                    Err(e) => panic!("Surface error: {e:?}"),
                 }
-                Err(e) => panic!("Surface error: {e:?}"),
             };
             let view = frame
                 .texture
                 .create_view(&wgpu::TextureViewDescriptor::default());
 
-            gfx.renderer
-                .render_to_view(&mut encoder, &view, Some(gui_batch));
+            // Prompt 18 P7: opt-in persistent off-screen present.  When the GUI
+            // damage stays under the break-even, render composition + GUI into
+            // a persistent texture and present that texture with a full-image
+            // copy/blit.  The whole frame is still repainted, so this is
+            // pixel-identical; it is the infrastructure a partial update needs.
+            let window_area = f64::from(self.window_size.0) * f64::from(self.window_size.1);
+            let damage_fraction = match gui_batch.damage_union {
+                Some(damage) if window_area > 0.0 => (f64::from(damage.width.max(0.0))
+                    * f64::from(damage.height.max(0.0))
+                    / window_area)
+                    .clamp(0.0, 1.0) as f32,
+                _ => 0.0,
+            };
+            let use_persistent_ui = self.config.persistent_ui
+                && self.config.mode != AppMode::Game3D
+                && self.config.sample_count == 1
+                && damage_fraction <= self.config.persistent_ui_break_even.clamp(0.0, 1.0);
+
+            if use_persistent_ui {
+                let format = gfx.config.format;
+                let device = gfx.renderer.context.device.clone();
+                if self.ui_presenter.as_ref().map(|p| p.format()) != Some(format) {
+                    self.ui_presenter = Some(ferrous_ui_render::UiPresenter::new(&device, format));
+                }
+                let presenter = self.ui_presenter.as_mut().expect("just created");
+                presenter.ensure(&device, self.window_size.0, self.window_size.1);
+                match presenter.view() {
+                    Some(target_view) => {
+                        gfx.renderer
+                            .render_to_view(&mut encoder, target_view, Some(gui_batch));
+                        if gfx.config.usage.contains(wgpu::TextureUsages::COPY_DST) {
+                            presenter.copy_full(&mut encoder, &frame.texture);
+                        } else {
+                            presenter.blit(&mut encoder, &view);
+                        }
+                    }
+                    // A zero-sized frame has no off-screen target; use the
+                    // direct path so nothing is skipped.
+                    None => gfx
+                        .renderer
+                        .render_to_view(&mut encoder, &view, Some(gui_batch)),
+                }
+            } else {
+                gfx.renderer
+                    .render_to_view(&mut encoder, &view, Some(gui_batch));
+            }
 
             // Si el motor está en "Modo Exportación", inyectar la copia al readback buffer.
             if let Some(readback) = &gfx.renderer.readback_manager {
                 readback.copy_to_buffer(&mut encoder, &frame.texture);
             }
 
+            let capture = want_screenshot.then(|| {
+                let (width, height) = self.window_size;
+                let buffer =
+                    crate::screenshot::capture_buffer(&gfx.renderer.context.device, width, height);
+                let padded = crate::screenshot::padded_bytes_per_row(width);
+                encoder.copy_texture_to_buffer(
+                    wgpu::ImageCopyTexture {
+                        texture: &frame.texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::ImageCopyBuffer {
+                        buffer: &buffer,
+                        layout: wgpu::ImageDataLayout {
+                            offset: 0,
+                            bytes_per_row: Some(padded),
+                            rows_per_image: Some(height.max(1)),
+                        },
+                    },
+                    wgpu::Extent3d {
+                        width: width.max(1),
+                        height: height.max(1),
+                        depth_or_array_layers: 1,
+                    },
+                );
+                buffer
+            });
+            let _submit = frame_trace::stage(Stage::Submit);
+            frame_trace::record_submit();
             gfx.renderer.context.queue.submit(Some(encoder.finish()));
-            
+            drop(_submit);
+            // Prompt 18 P0: start the non-blocking GPU timestamp readback.
+            gfx.renderer.after_submit();
+
+            let _present = frame_trace::stage(Stage::PresentWait);
             frame.present();
+            frame_trace::record_present();
+            drop(_present);
+            // Prompt 17 S3b: the first frame is on the swapchain. Show the
+            // window now, so its first visible content is this frame.
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                if let Some(gate) = self.startup.as_mut() {
+                    if !gate.accepts_input() {
+                        // Prompt 17 S6: the frame is presented at
+                        // `frame.present()`; the mark is taken before
+                        // `ShowWindow` so the trace proves the window was not
+                        // visible before its first frame. The report is emitted
+                        // below, after the visibility mark.
+                        startup::mark("engine: first frame presented");
+                        if self.config.visible && !gate.is_shown() {
+                            crate::window_style::show_ready(window);
+                            startup::mark("engine: window visible");
+                            first_frame_shown = true;
+                        }
+                        gate.mark_first_frame();
+                    }
+                }
+            }
+            // wasm has no startup gate: the old mark + report path still
+            // applies there. On desktop this only prints the report (the marks
+            // were taken above, on the first frame only).
+            #[cfg(target_arch = "wasm32")]
+            startup::first_frame_presented();
+            startup::report_first_frame();
+            // Prompt 17 S3: the startup pipelines exist after the first frame;
+            // persist the wgpu cache now (and again at exit).
+            #[cfg(not(target_arch = "wasm32"))]
+            gfx.save_pipeline_cache(false);
+            if let Some(buffer) = capture {
+                let (width, height) = self.window_size;
+                let bgra = crate::screenshot::is_bgra(gfx.config.format);
+                if let Some(shot) = crate::screenshot::read_capture(
+                    &gfx.renderer.context.device,
+                    &buffer,
+                    width,
+                    height,
+                    bgra,
+                ) {
+                    self.app.on_screenshot(shot);
+                } else {
+                    log::warn!("screenshot: the presented frame could not be read back");
+                }
+            }
 
             // wasm32: keep a throttled copy of the REAL canvas. `present()`
             // has already copied the rendered frame to the canvas, and the
@@ -382,8 +594,30 @@ impl<A: FerrousApp + 'static> Runner<A> {
             // returns the mapped bytes directly.
             gfx.renderer
                 .record_frame_time(frame_start.elapsed().as_secs_f32() * 1000.0);
-               
+
             // Important: Clear damage regions after rendering
+            //
+            // Only a UI tree that actually damaged something reports here.  An
+            // app that paints its own chrome (an immediate-mode painter) may
+            // have already called `record_ui_damage` for this frame; writing a
+            // zero from the unused tree would overwrite that value.
+            if frame_trace::enabled() && !self.ui.tree.damage_regions.is_empty() {
+                let (width, height) = self.window_size;
+                let damaged = self
+                    .ui
+                    .tree
+                    .damage_regions
+                    .iter()
+                    .map(|rect| f64::from(rect.width.max(0.0)) * f64::from(rect.height.max(0.0)))
+                    .sum::<f64>();
+                let window = f64::from(width) * f64::from(height);
+                let fraction = if window > 0.0 {
+                    (damaged / window) as f32
+                } else {
+                    0.0
+                };
+                frame_trace::record_ui_damage(fraction);
+            }
             self.ui.clear_damage();
 
             // Sincronizar y obtener los bytes si era una pasada de exportación.
@@ -392,7 +626,10 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 #[cfg(not(target_arch = "wasm32"))]
                 {
                     use pollster::FutureExt;
-                    return readback.poll_and_map(&gfx.renderer.context.device).block_on().ok();
+                    return readback
+                        .poll_and_map(&gfx.renderer.context.device)
+                        .block_on()
+                        .ok();
                 }
                 #[cfg(target_arch = "wasm32")]
                 {
@@ -402,35 +639,156 @@ impl<A: FerrousApp + 'static> Runner<A> {
             }
         }
 
+        // Prompt 18 P1: whatever the app asked for during this frame.
+        if redraw_request {
+            self.redraw.request();
+        }
+        if let Some(when) = redraw_at {
+            self.redraw.request_at(when);
+        }
+
         self.input.end_frame();
+
+        // Prompt 17 S3b: the first frame is visible; deliver the input that
+        // arrived while the window was hidden, in order.
+        #[cfg(not(target_arch = "wasm32"))]
+        if first_frame_shown {
+            let queued = self
+                .startup
+                .as_mut()
+                .map(super::show::StartupGate::take_queue)
+                .unwrap_or_default();
+            if let Some(event_loop) = event_loop {
+                for (id, event) in queued {
+                    <Self as winit::application::ApplicationHandler<
+                        crate::redraw::EngineEvent,
+                    >>::window_event(self, event_loop, id, event);
+                }
+            }
+        }
         None
+    }
+
+    /// Writes the pipeline cache at exit.
+    ///
+    /// The first frame already saved it; this forced write also captures
+    /// pipelines created later (a mode switch, a new text face).
+    pub(super) fn save_pipeline_cache(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(gfx) = self.graphics.as_mut() {
+            gfx.save_pipeline_cache(true);
+        }
+    }
+
+    /// Hides the window, then exits the event loop.
+    ///
+    /// Hiding first is what makes closing feel instant: the OS removes the
+    /// window while the GPU teardown (device and swapchain drop) is still
+    /// running. The OS close button and `AppContext::request_exit` both go
+    /// through here, so the closing report can measure the hide separately
+    /// from the teardown. Later calls do nothing.
+    pub(super) fn begin_close(&mut self, event_loop: Option<&ActiveEventLoop>) {
+        if self.closing {
+            return;
+        }
+        self.closing = true;
+        startup::mark("engine: close requested");
+        if let Some(window) = &self.window {
+            window.set_visible(false);
+        }
+        startup::mark("engine: window hidden");
+        // Prompt 17 S5: flush app state after the window is gone, before the
+        // (expensive) GPU teardown. The window is already invisible, so this
+        // never delays what the user sees.
+        self.app.on_exit();
+        startup::mark("engine: app exit saved");
+        if let Some(event_loop) = event_loop {
+            event_loop.exit();
+        }
     }
 
     /// Called by winit between frames to manage redraw scheduling.
     pub(super) fn about_to_wait_impl(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(not(target_arch = "wasm32"))]
+        let installed = self.poll_startup(Some(event_loop));
+        #[cfg(target_arch = "wasm32")]
+        let installed = false;
+
         let Some(window) = &self.window else { return };
         let now = Instant::now();
 
-        let is_idle = match self.config.idle_timeout {
-            Some(timeout) => now.duration_since(self.last_action_time).as_secs_f32() > timeout,
-            None => false,
-        };
+        // Prompt 17 S3b: while the first frame is being prepared the loop only
+        // has to wake for the show timeout (or for the GPU worker). A hidden
+        // window never gets `RedrawRequested`, so the first frame is rendered
+        // here as soon as the state is installed.
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.graphics.is_none() {
+            let poll = now + std::time::Duration::from_millis(5);
+            let wake = match &self.startup {
+                Some(gate) if !gate.is_shown() => gate.deadline().min(poll),
+                _ => poll,
+            };
+            event_loop.set_control_flow(ControlFlow::WaitUntil(wake));
+            return;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if installed {
+            let t = self.clock.peek().elapsed;
+            let _ = self.render_frame(Some(event_loop), t);
+            return;
+        }
 
-        if is_idle {
-            match self.config.idle_fps {
-                // Throttled idle: keep drawing at a low rate.
-                Some(fps) if fps > 0 => {
-                    let next = self.last_frame + std::time::Duration::from_secs_f64(1.0 / fps as f64);
-                    if now >= next {
-                        window.request_redraw();
-                    } else {
-                        event_loop.set_control_flow(ControlFlow::WaitUntil(next));
-                    }
+        // A never-shown window gets no `RedrawRequested`, so the scheduler
+        // renders its frames here (benchmarks/CI). It still presents to the
+        // hidden surface, so the frame code is identical.
+        if !self.config.visible {
+            let now = Instant::now();
+            let continuous_deadline =
+                if self.redraw.policy() == crate::redraw::RedrawPolicy::Continuous {
+                    self.next_frame_deadline
+                } else {
+                    None
+                };
+            match self.redraw.next(now, continuous_deadline) {
+                crate::redraw::NextFrame::Draw => {
+                    let t = self.clock.peek().elapsed;
+                    let _ = self.render_frame(Some(event_loop), t);
                 }
-                // Full idle: sleep until the next input event.
-                _ => event_loop.set_control_flow(ControlFlow::Wait),
+                crate::redraw::NextFrame::WaitUntil(wake) => {
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(wake));
+                }
+                crate::redraw::NextFrame::Wait => {
+                    event_loop.set_control_flow(ControlFlow::Wait);
+                }
             }
             return;
+        }
+
+        // Continuous apps keep the historical timer-based idle throttle.
+        // On-demand apps never tick on a clock: the scheduler below waits for
+        // input, an app request, a wake deadline or a worker event.
+        if self.redraw.policy() == crate::redraw::RedrawPolicy::Continuous {
+            let is_idle = match self.config.idle_timeout {
+                Some(timeout) => now.duration_since(self.last_action_time).as_secs_f32() > timeout,
+                None => false,
+            };
+            if is_idle {
+                match self.config.idle_fps {
+                    // Throttled idle: keep drawing at a low rate.
+                    Some(fps) if fps > 0 => {
+                        let next =
+                            self.last_frame + std::time::Duration::from_secs_f64(1.0 / fps as f64);
+                        if now >= next {
+                            window.request_redraw();
+                        } else {
+                            event_loop.set_control_flow(ControlFlow::WaitUntil(next));
+                        }
+                    }
+                    // Full idle: sleep until the next input event.
+                    _ => event_loop.set_control_flow(ControlFlow::Wait),
+                }
+                return;
+            }
         }
 
         #[cfg(target_arch = "wasm32")]
@@ -442,15 +800,51 @@ impl<A: FerrousApp + 'static> Runner<A> {
 
         #[cfg(not(target_arch = "wasm32"))]
         {
-            if let Some(deadline) = self.next_frame_deadline {
-                if now >= deadline {
-                    window.request_redraw();
+            let continuous_deadline =
+                if self.redraw.policy() == crate::redraw::RedrawPolicy::Continuous {
+                    self.next_frame_deadline
                 } else {
-                    event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+                    None
+                };
+            match self.redraw.next(now, continuous_deadline) {
+                crate::redraw::NextFrame::Draw => window.request_redraw(),
+                crate::redraw::NextFrame::WaitUntil(wake) => {
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(wake));
                 }
-            } else {
-                window.request_redraw();
+                crate::redraw::NextFrame::Wait => {
+                    event_loop.set_control_flow(ControlFlow::Wait);
+                }
             }
         }
+    }
+}
+
+/// Whether this frame must be copied for `FerrousApp::on_screenshot`.
+///
+/// A request made in `update` or in `draw_ui` both count; the copy also needs
+/// `COPY_SRC` on the window surface.
+#[cfg(not(target_arch = "wasm32"))]
+fn screenshot_wanted(update_requested: bool, draw_requested: bool, copy_src: bool) -> bool {
+    (update_requested || draw_requested) && copy_src
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::screenshot_wanted;
+
+    #[test]
+    fn a_screenshot_requested_in_update_is_copied() {
+        assert!(screenshot_wanted(true, false, true));
+    }
+
+    #[test]
+    fn a_screenshot_requested_in_draw_ui_is_copied() {
+        assert!(screenshot_wanted(false, true, true));
+    }
+
+    #[test]
+    fn no_request_or_no_copy_src_copies_nothing() {
+        assert!(!screenshot_wanted(false, false, true));
+        assert!(!screenshot_wanted(true, true, false));
     }
 }

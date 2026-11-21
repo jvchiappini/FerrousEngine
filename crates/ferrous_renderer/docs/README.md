@@ -141,3 +141,58 @@ You can replace or extend this list with `Renderer::add_pass` /
 - `render_target.md` — off-screen rendering and MSAA details.
 - `gizmo.md` — GizmoDraw, GizmoPipeline, vertex generation, and GizmoStyle reference.
 - `extending/` — practical guides for common extension scenarios.
+
+## Headless Pure2D readback
+
+`ferrous_renderer::headless::Pure2dHarness` drives the Pure2D path without a
+window and returns frames through a typed, overlapping readback ring.
+
+### Ring state machine
+
+`N` staging buffers (default 3, minimum 2) move through:
+
+```
+Free -> Copying { submission } -> Ready -> Free
+                              \-> Failed -> Free   (map error)
+```
+
+- `render_frame` submits and returns; it never blocks on the GPU.
+  `render_frame_blocking` keeps the old "GPU done" timing.
+- `submit_readback` records the copy, submits it and calls `map_async`
+  immediately, so the copy of frame N overlaps frame N+1. It returns the
+  harness-assigned frame index (starting at 0) or `ReadbackError::Busy` when
+  every slot is in flight (take one frame first; nothing changes on Busy).
+- `take_readback` polls only for the oldest submission
+  (`Maintain::WaitForSubmissionIndex`), copies the padded rows out, unmaps and
+  frees the slot. A map failure is reported exactly once as
+  `ReadbackError::MapFailed { message, frame_index }`, the slot is freed, and
+  the next call returns the next frame.
+
+### Exporter loop
+
+```rust,no_run
+use ferrous_renderer::headless::{Pure2dHarness, DEFAULT_FORMAT};
+
+let mut h = Pure2dHarness::new(1920, 1080, DEFAULT_FORMAT).unwrap();
+let mut frame = Vec::new();
+let mut expected = 0u64;
+for i in 0..300u64 {
+    h.begin_frame();
+    // ... draw the scene for frame i ...
+    h.render_frame();
+    if let Some(index) = h.readback_frame(&mut frame).unwrap() {
+        assert_eq!(index, expected);
+        expected += 1;
+        // encode/write `frame` (tightly packed RGBA8, row 0 = top)
+    }
+}
+h.flush_readbacks(|index, bytes| {
+    assert_eq!(index, expected);
+    expected += 1;
+    let _ = bytes;
+})
+.unwrap();
+```
+
+Steady state allocates no staging buffers: the ring is created once and
+reused. `readback_slots_allocated` is a monotonic high-water mark.

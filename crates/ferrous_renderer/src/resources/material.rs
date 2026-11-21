@@ -158,8 +158,8 @@ pub struct MaterialUniformPbr {
     pub extra_params: [f32; 4],       // x=normal_scale, y=clearcoat, z=clearcoat_rough, w=reserved
     pub flags: u32,                   // bitmask describing which textures are bound
     pub alpha_cutoff: f32,
-    pub _pad: [u32; 2],               // offset 72..80
-    pub _pad1: [u32; 4],              // offset 80..96
+    pub _pad: [u32; 2],  // offset 72..80
+    pub _pad1: [u32; 4], // offset 80..96
 }
 
 /// bitflags for the `flags` field in [`MaterialUniformPbr`].  these must
@@ -251,18 +251,30 @@ impl Material {
             flags |= FLAG_UNLIT;
         }
 
-        let mut uniform = MaterialUniformPbr::default();
-        uniform.base_color = desc.base_color;
-        uniform.emissive = [
-            desc.emissive[0],
-            desc.emissive[1],
-            desc.emissive[2],
-            desc.emissive_strength,
-        ];
-        uniform.metallic_roughness = [desc.metallic, desc.roughness, desc.ao_strength, desc.opacity];
-        uniform.extra_params = [desc.normal_scale, desc.clearcoat, desc.clearcoat_roughness, 0.0];
-        uniform.flags = flags;
-        uniform.alpha_cutoff = alpha_cutoff;
+        let uniform = MaterialUniformPbr {
+            base_color: desc.base_color,
+            emissive: [
+                desc.emissive[0],
+                desc.emissive[1],
+                desc.emissive[2],
+                desc.emissive_strength,
+            ],
+            metallic_roughness: [
+                desc.metallic,
+                desc.roughness,
+                desc.ao_strength,
+                desc.opacity,
+            ],
+            extra_params: [
+                desc.normal_scale,
+                desc.clearcoat,
+                desc.clearcoat_roughness,
+                0.0,
+            ],
+            flags,
+            alpha_cutoff,
+            ..Default::default()
+        };
 
         let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("MaterialUniform"),

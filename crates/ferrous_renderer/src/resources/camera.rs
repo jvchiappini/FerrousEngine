@@ -38,6 +38,12 @@ pub const OPENGL_TO_WGPU_MATRIX: Mat4 = Mat4::from_cols(
     glam::Vec4::new(0.0, 0.0, 0.5, 1.0),
 );
 
+impl Default for CameraUniform {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CameraUniform {
     /// Create an identity/inactive uniform.
     pub fn new() -> Self {
@@ -60,23 +66,28 @@ impl CameraUniform {
     /// Update the fields from a CPU-side [`Camera`] instance.
     pub fn update_view_proj(&mut self, camera: &Camera) {
         use ferrous_core::scene::camera::Projection;
-        
+
         let view = glam::Mat4::look_at_rh(camera.eye, camera.target, camera.up);
         let proj = match camera.projection {
-            Projection::Perspective { fov_y_radians, aspect_ratio, z_near, z_far } => glam::Mat4::perspective_rh(
+            Projection::Perspective {
                 fov_y_radians,
                 aspect_ratio,
                 z_near,
                 z_far,
-            ),
-            Projection::Orthographic { left, right, bottom, top, z_near, z_far } => {
-                glam::Mat4::orthographic_rh(left, right, bottom, top, z_near, z_far)
-            }
+            } => glam::Mat4::perspective_rh(fov_y_radians, aspect_ratio, z_near, z_far),
+            Projection::Orthographic {
+                left,
+                right,
+                bottom,
+                top,
+                z_near,
+                z_far,
+            } => glam::Mat4::orthographic_rh(left, right, bottom, top, z_near, z_far),
         };
 
         // Correct depth from [-1, 1] (GL) to [0, 1] (WGPU)
         let corrected_proj = OPENGL_TO_WGPU_MATRIX * proj;
-        
+
         self.view = view.to_cols_array_2d();
         self.proj = corrected_proj.to_cols_array_2d();
         self.view_proj = (corrected_proj * view).to_cols_array_2d();

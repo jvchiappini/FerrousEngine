@@ -1,20 +1,20 @@
-﻿//! [`TextFieldState`] â€” estado reutilizable para cualquier campo de texto de una lÃ­nea.
+﻿//! [`TextFieldState`] — estado reutilizable para cualquier campo de texto de una línea.
 //!
 //! Encapsula de forma **independiente del backend**:
 //! - Parpadeo del cursor (configurable).
 //! - Backspace mantenido con retardo inicial y cadencia de repeat.
 //! - Ctrl+A para seleccionar todo.
-//! - Ctrl+â†/â†’ para saltar palabras.
-//! - Shift+â†/â†’, Shift+Home/End, Ctrl+Shift+â†/â†’ para seleccionar con teclado.
+//! - Ctrl+←/→ para saltar palabras.
+//! - Shift+←/→, Shift+Home/End, Ctrl+Shift+←/→ para seleccionar con teclado.
 //! - Ctrl+C/X para copiar/cortar (devuelve el texto en el resultado).
 //! - Ctrl+V para pegar (el llamador provee el texto del portapapeles).
 //! - Ctrl+Z/Y para deshacer/rehacer.
-//! - PosiciÃ³n del cursor y rango de selecciÃ³n en el texto.
+//! - Posición del cursor y rango de selección en el texto.
 //!
-//! ## Uso rÃ¡pido
+//! ## Uso rápido
 //!
 //! ```rust,ignore
-//! // En tu estado de aplicaciÃ³n o widget:
+//! // En tu estado de aplicación o widget:
 //! let mut field = TextFieldState::new();
 //!
 //! // Cada frame (delta en segundos):
@@ -31,25 +31,25 @@
 //! field.blur();
 //!
 //! // En el render, consulta:
-//! field.cursor_visible   // Â¿mostrar cursor?
-//! field.selection()      // Option<(usize, usize)> rango normalizado de selecciÃ³n
-//! field.cursor_pos       // Ã­ndice de char en el buffer
+//! field.cursor_visible   // ¿mostrar cursor?
+//! field.selection()      // Option<(usize, usize)> rango normalizado de selección
+//! field.cursor_pos       // índice de char en el buffer
 //! ```
 
-// â”€â”€â”€ Constantes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Constantes ───────────────────────────────────────────────────────────────
 
-/// DuraciÃ³n de la fase "visible" del cursor parpadeante (segundos).
+/// Duración de la fase "visible" del cursor parpadeante (segundos).
 pub const BLINK_ON: f32 = 0.53;
-/// DuraciÃ³n de la fase "oculto" del cursor parpadeante (segundos).
+/// Duración de la fase "oculto" del cursor parpadeante (segundos).
 pub const BLINK_OFF: f32 = 0.53;
 /// Retardo inicial antes de que el backspace mantenido comience a repetirse.
 pub const BACKSPACE_DELAY: f32 = 0.40;
 /// Intervalo entre borrados consecutivos una vez en modo repeat.
 pub const BACKSPACE_REPEAT: f32 = 0.05;
-/// MÃ¡ximo de entradas en el historial de undo.
+/// Máximo de entradas en el historial de undo.
 pub const UNDO_LIMIT: usize = 100;
 
-// â”€â”€â”€ Tipos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Tipos ────────────────────────────────────────────────────────────────────
 
 /// Teclas especiales que `TextFieldState` entiende.
 /// Son independientes de cualquier backend de ventana.
@@ -72,7 +72,7 @@ pub enum FieldKey {
     SelectAll, // Ctrl+A
     Copy,      // Ctrl+C
     Cut,       // Ctrl+X
-    Paste,     // Ctrl+V â€” el llamador provee el texto mediante `clipboard_text`
+    Paste,     // Ctrl+V — el llamador provee el texto mediante `clipboard_text`
     Undo,      // Ctrl+Z
     Redo,      // Ctrl+Y
     Enter,
@@ -87,15 +87,15 @@ pub enum FieldKeyResult {
     Ignored,
     /// La tecla fue procesada (puede necesitar re-render).
     Handled,
-    /// El usuario confirmÃ³ la entrada (Enter).
+    /// El usuario confirmó la entrada (Enter).
     Submit,
-    /// El usuario cancelÃ³ la entrada (Escape).
+    /// El usuario canceló la entrada (Escape).
     Cancel,
-    /// Ctrl+C/X â€” el llamador debe enviar este texto al portapapeles.
+    /// Ctrl+C/X — el llamador debe enviar este texto al portapapeles.
     CopyToClipboard(String),
 }
 
-// â”€â”€â”€ Snapshot de undo â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Snapshot de undo ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 struct Snapshot {
@@ -104,36 +104,36 @@ struct Snapshot {
     sel_anchor: Option<usize>,
 }
 
-// â”€â”€â”€ TextFieldState â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── TextFieldState ───────────────────────────────────────────────────────────
 
-/// Estado completo de un campo de texto de una sola lÃ­nea.
+/// Estado completo de un campo de texto de una sola línea.
 ///
-/// No contiene el buffer de texto â€” ese lo gestiona el llamador para que
-/// sea fÃ¡cil integrarlo en cualquier estructura de datos existente.
+/// No contiene el buffer de texto — ese lo gestiona el llamador para que
+/// sea fácil integrarlo en cualquier estructura de datos existente.
 #[derive(Debug, Clone)]
 pub struct TextFieldState {
-    // â”€â”€ Cursor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    /// PosiciÃ³n del cursor en bytes dentro del buffer.
+    // ── Cursor ────────────────────────────────────────────────────────────
+    /// Posición del cursor en bytes dentro del buffer.
     pub cursor_pos: usize,
-    /// Si el cursor estÃ¡ actualmente visible (alterna con el timer de parpadeo).
+    /// Si el cursor está actualmente visible (alterna con el timer de parpadeo).
     pub cursor_visible: bool,
-    /// Ancla de selecciÃ³n. Cuando hay selecciÃ³n activa, el rango es
+    /// Ancla de selección. Cuando hay selección activa, el rango es
     /// `min(cursor_pos, sel_anchor)..max(cursor_pos, sel_anchor)`.
-    /// `None` = sin selecciÃ³n.
+    /// `None` = sin selección.
     pub sel_anchor: Option<usize>,
-    /// Si todo el texto estÃ¡ seleccionado (Ctrl+A). Atajo de conveniencia
-    /// â€” tambiÃ©n se refleja en `sel_anchor`.
+    /// Si todo el texto está seleccionado (Ctrl+A). Atajo de conveniencia
+    /// — también se refleja en `sel_anchor`.
     pub all_selected: bool,
     /// Si el campo tiene el foco.
     pub focused: bool,
 
-    // â”€â”€ Timers internos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Timers internos ───────────────────────────────────────────────────
     blink_timer: f32,
     backspace_held: bool,
     backspace_timer: f32,
     backspace_repeating: bool,
 
-    // â”€â”€ Historial de undo/redo â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Historial de undo/redo ─────────────────────────────────────────────
     undo_stack: Vec<Snapshot>,
     redo_stack: Vec<Snapshot>,
 }
@@ -156,9 +156,9 @@ impl TextFieldState {
         }
     }
 
-    // â”€â”€ SelecciÃ³n â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Selección ─────────────────────────────────────────────────────────
 
-    /// Devuelve el rango de selecciÃ³n normalizado `(start, end)` si hay texto seleccionado.
+    /// Devuelve el rango de selección normalizado `(start, end)` si hay texto seleccionado.
     pub fn selection(&self) -> Option<(usize, usize)> {
         if let Some(anchor) = self.sel_anchor {
             if anchor != self.cursor_pos {
@@ -175,13 +175,13 @@ impl TextFieldState {
         self.all_selected || self.selection().is_some()
     }
 
-    /// Borra la selecciÃ³n sin modificar el buffer.
+    /// Borra la selección sin modificar el buffer.
     fn clear_selection(&mut self) {
         self.sel_anchor = None;
         self.all_selected = false;
     }
 
-    /// Inicia o extiende una selecciÃ³n: fija el ancla si no hay ninguna,
+    /// Inicia o extiende una selección: fija el ancla si no hay ninguna,
     /// y mueve el cursor al nuevo `new_cursor`.
     fn extend_selection(&mut self, new_cursor: usize) {
         if self.sel_anchor.is_none() {
@@ -191,8 +191,8 @@ impl TextFieldState {
         self.cursor_pos = new_cursor;
     }
 
-    /// Borra el texto seleccionado del buffer y deja el cursor en el inicio de la selecciÃ³n.
-    /// Devuelve `true` si se borrÃ³ algo.
+    /// Borra el texto seleccionado del buffer y deja el cursor en el inicio de la selección.
+    /// Devuelve `true` si se borró algo.
     fn delete_selection(&mut self, buf: &mut String) -> bool {
         if self.all_selected {
             if buf.is_empty() {
@@ -225,15 +225,15 @@ impl TextFieldState {
         ""
     }
 
-    // â”€â”€ Foco â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Foco ──────────────────────────────────────────────────────────────
 
-    /// Marca el campo como enfocado y reinicia la animaciÃ³n del cursor.
+    /// Marca el campo como enfocado y reinicia la animación del cursor.
     pub fn focus(&mut self) {
         self.focused = true;
         self.reset_blink();
     }
 
-    /// Marca el campo como desenfocado y limpia el estado de animaciÃ³n.
+    /// Marca el campo como desenfocado y limpia el estado de animación.
     pub fn blur(&mut self) {
         self.focused = false;
         self.blink_timer = 0.0;
@@ -245,11 +245,11 @@ impl TextFieldState {
         self.sel_anchor = None;
     }
 
-    // â”€â”€ Tick (cada frame) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Tick (cada frame) ─────────────────────────────────────────────────
 
     /// Avanza los timers internos. Debe llamarse **una vez por frame**.
     ///
-    /// Devuelve `true` si la fase del cursor cambiÃ³ (para pedir re-render).
+    /// Devuelve `true` si la fase del cursor cambió (para pedir re-render).
     pub fn tick(&mut self, dt: f32) -> bool {
         if !self.focused {
             return false;
@@ -272,9 +272,9 @@ impl TextFieldState {
 
     /// Consulta si el backspace mantenido necesita disparar un borrado este frame.
     ///
-    /// Llama a este mÃ©todo **despuÃ©s de `tick()`** y antes de procesar eventos
+    /// Llama a este método **después de `tick()`** y antes de procesar eventos
     /// para el caso de tener un polling de teclas (modo inmediato). Si el
-    /// `is_backspace_held` es `true` y el timer expirÃ³, devuelve `true`.
+    /// `is_backspace_held` es `true` y el timer expiró, devuelve `true`.
     pub fn poll_backspace_repeat(&mut self, dt: f32, is_held: bool) -> bool {
         if !is_held {
             self.backspace_held = false;
@@ -302,13 +302,13 @@ impl TextFieldState {
         }
     }
 
-    // â”€â”€ Posicionamiento por click â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Posicionamiento por click ─────────────────────────────────────────
 
-    /// Posiciona el cursor en el carÃ¡cter mÃ¡s cercano a la coordenada `click_x`
-    /// dentro del campo. `field_x` es el borde izquierdo del Ã¡rea de texto (sin padding),
-    /// `char_width` es el ancho monoespaciado de cada carÃ¡cter.
+    /// Posiciona el cursor en el carácter más cercano a la coordenada `click_x`
+    /// dentro del campo. `field_x` es el borde izquierdo del área de texto (sin padding),
+    /// `char_width` es el ancho monoespaciado de cada carácter.
     ///
-    /// Si `extend_sel` es `true` (Shift+click), extiende la selecciÃ³n en lugar de limpiarla.
+    /// Si `extend_sel` es `true` (Shift+click), extiende la selección en lugar de limpiarla.
     pub fn click_at(
         &mut self,
         buf: &str,
@@ -320,7 +320,7 @@ impl TextFieldState {
     ) {
         let relative_x = click_x - field_x + scroll_offset;
         let char_index = ((relative_x / char_width).round() as usize).min(buf.chars().count());
-        // Convertir Ã­ndice de carÃ¡cter a byte-index
+        // Convertir índice de carácter a byte-index
         let byte_pos = char_to_byte_index(buf, char_index);
 
         if extend_sel {
@@ -332,11 +332,11 @@ impl TextFieldState {
         self.reset_blink();
     }
 
-    // â”€â”€ Entrada de carÃ¡cter â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Entrada de carácter ───────────────────────────────────────────────
 
-    /// Procesa un carÃ¡cter Unicode tipado.
+    /// Procesa un carácter Unicode tipado.
     ///
-    /// Si hay selecciÃ³n, la reemplaza con el carÃ¡cter.
+    /// Si hay selección, la reemplaza con el carácter.
     pub fn on_char(&mut self, c: char, buf: &mut String) {
         if c.is_control() {
             return;
@@ -351,12 +351,12 @@ impl TextFieldState {
         self.redo_stack.clear();
     }
 
-    // â”€â”€ Entrada de tecla especial â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Entrada de tecla especial ─────────────────────────────────────────
 
     /// Procesa una [`FieldKey`].
     ///
     /// Para `FieldKey::Paste`, pasa el texto del portapapeles en `clipboard_text`.
-    /// Devuelve un [`FieldKeyResult`] que indica quÃ© ocurriÃ³.
+    /// Devuelve un [`FieldKeyResult`] que indica qué ocurrió.
     pub fn on_key(&mut self, key: FieldKey, buf: &mut String) -> FieldKeyResult {
         self.on_key_with_clipboard(key, buf, None)
     }
@@ -369,7 +369,7 @@ impl TextFieldState {
         clipboard: Option<&str>,
     ) -> FieldKeyResult {
         match key {
-            // â”€â”€ SelecciÃ³n completa â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ── Selección completa ────────────────────────────────────────
             FieldKey::SelectAll => {
                 if !buf.is_empty() {
                     self.all_selected = true;
@@ -382,7 +382,7 @@ impl TextFieldState {
                 }
             }
 
-            // â”€â”€ Backspace â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ── Backspace ─────────────────────────────────────────────────
             FieldKey::Backspace => {
                 self.push_undo(buf);
                 let changed = if self.has_selection() {
@@ -405,7 +405,7 @@ impl TextFieldState {
                 }
             }
 
-            // â”€â”€ Delete â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ── Delete ────────────────────────────────────────────────────
             FieldKey::Delete => {
                 self.push_undo(buf);
                 let changed = if self.has_selection() {
@@ -426,10 +426,10 @@ impl TextFieldState {
                 }
             }
 
-            // â”€â”€ NavegaciÃ³n sin selecciÃ³n â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ── Navegación sin selección ──────────────────────────────────
             FieldKey::ArrowLeft => {
                 if self.has_selection() {
-                    // Colapsa la selecciÃ³n al inicio
+                    // Colapsa la selección al inicio
                     let start = self
                         .selection()
                         .map(|(s, _)| s)
@@ -451,7 +451,7 @@ impl TextFieldState {
 
             FieldKey::ArrowRight => {
                 if self.has_selection() {
-                    // Colapsa la selecciÃ³n al final
+                    // Colapsa la selección al final
                     let end = self
                         .selection()
                         .map(|(_, e)| e)
@@ -499,7 +499,7 @@ impl TextFieldState {
                 FieldKeyResult::Handled
             }
 
-            // â”€â”€ NavegaciÃ³n con selecciÃ³n (Shift) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ── Navegación con selección (Shift) ──────────────────────────
             FieldKey::ShiftArrowLeft => {
                 if self.cursor_pos > 0 {
                     let new_pos = prev_char_boundary(buf, self.cursor_pos);
@@ -548,7 +548,7 @@ impl TextFieldState {
                 FieldKeyResult::Handled
             }
 
-            // â”€â”€ Portapapeles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ── Portapapeles ──────────────────────────────────────────────
             FieldKey::Copy => {
                 let text = self.selected_text(buf).to_string();
                 if text.is_empty() {
@@ -589,7 +589,7 @@ impl TextFieldState {
                 }
             }
 
-            // â”€â”€ Undo / Redo â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            // ── Undo / Redo ───────────────────────────────────────────────
             FieldKey::Undo => {
                 if let Some(snap) = self.undo_stack.pop() {
                     let cur_snap = Snapshot {
@@ -642,7 +642,7 @@ impl TextFieldState {
         self.backspace_repeating = false;
     }
 
-    // â”€â”€ Undo helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Undo helpers ─────────────────────────────────────────────────────
 
     fn push_undo(&mut self, buf: &str) {
         if self.undo_stack.len() >= UNDO_LIMIT {
@@ -655,7 +655,7 @@ impl TextFieldState {
         });
     }
 
-    // â”€â”€ Helpers internos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Helpers internos ──────────────────────────────────────────────────
 
     fn reset_blink(&mut self) {
         self.blink_timer = 0.0;
@@ -680,9 +680,9 @@ impl Default for TextFieldState {
     }
 }
 
-// â”€â”€â”€ Helpers de navegaciÃ³n Unicode â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Helpers de navegación Unicode ───────────────────────────────────────────
 
-/// Convierte un Ã­ndice de carÃ¡cter (no byte) a byte-index.
+/// Convierte un índice de carácter (no byte) a byte-index.
 pub fn char_to_byte_index(s: &str, char_index: usize) -> usize {
     s.char_indices()
         .nth(char_index)
@@ -690,7 +690,7 @@ pub fn char_to_byte_index(s: &str, char_index: usize) -> usize {
         .unwrap_or(s.len())
 }
 
-/// Devuelve el byte-index del lÃ­mite de carÃ¡cter previo antes de `pos`.
+/// Devuelve el byte-index del límite de carácter previo antes de `pos`.
 fn prev_char_boundary(s: &str, pos: usize) -> usize {
     if pos == 0 {
         return 0;
@@ -702,7 +702,7 @@ fn prev_char_boundary(s: &str, pos: usize) -> usize {
     p
 }
 
-/// Devuelve el byte-index del lÃ­mite de carÃ¡cter siguiente despuÃ©s de `pos`.
+/// Devuelve el byte-index del límite de carácter siguiente después de `pos`.
 fn next_char_boundary(s: &str, pos: usize) -> usize {
     if pos >= s.len() {
         return s.len();
@@ -714,7 +714,7 @@ fn next_char_boundary(s: &str, pos: usize) -> usize {
     p
 }
 
-/// Salta hacia atrÃ¡s hasta el inicio de la palabra anterior.
+/// Salta hacia atrás hasta el inicio de la palabra anterior.
 /// Salta espacios, luego el bloque no-espacio.
 fn word_start_before(s: &str, pos: usize) -> usize {
     let bytes = s.as_bytes();

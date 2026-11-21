@@ -62,7 +62,7 @@ impl Text3dBuilder {
 
         let mut all_vertices = Vec::new();
         let mut all_indices: Vec<u32> = Vec::new();
-        
+
         let mut cursor_x = 0.0;
         let mut min_pos = Vec3::splat(f32::MAX);
         let mut max_pos = Vec3::splat(f32::MIN);
@@ -79,7 +79,7 @@ impl Text3dBuilder {
 
             // Generate 3D mesh for the character
             let char_mesh = fontmesh::char_to_mesh_3d(&face, c, self.depth, self.quality);
-            
+
             let mesh_3d = match char_mesh {
                 Ok(m) => m,
                 Err(_) => {
@@ -94,15 +94,20 @@ impl Text3dBuilder {
             struct VertInfo {
                 pos: Vec3,
                 norm: Vec3,
-                orig_idx: usize,
             }
-            let mut v_infos: Vec<VertInfo> = mesh_3d.vertices.iter().enumerate().map(|(i, v)| {
-                VertInfo {
+            let mut v_infos: Vec<VertInfo> = mesh_3d
+                .vertices
+                .iter()
+                .enumerate()
+                .map(|(i, v)| VertInfo {
                     pos: Vec3::new(v.x, v.y, v.z),
-                    norm: Vec3::new(mesh_3d.normals[i].x, mesh_3d.normals[i].y, mesh_3d.normals[i].z),
-                    orig_idx: i,
-                }
-            }).collect();
+                    norm: Vec3::new(
+                        mesh_3d.normals[i].x,
+                        mesh_3d.normals[i].y,
+                        mesh_3d.normals[i].z,
+                    ),
+                })
+                .collect();
 
             if self.bevel_enabled {
                 // 1. Group by position
@@ -129,7 +134,7 @@ impl Text3dBuilder {
                         if n.z.abs() < 0.2 {
                             avg_side_norm += n;
                             side_count += 1;
-                        } 
+                        }
                         if v_infos[idx].pos.z > self.depth * 0.4 {
                             is_front = true;
                         } else if v_infos[idx].pos.z < -self.depth * 0.4 {
@@ -140,12 +145,12 @@ impl Text3dBuilder {
                     if side_count > 0 {
                         avg_side_norm = avg_side_norm.normalize_or_zero();
                         let offset_xy = avg_side_norm * self.bevel_size;
-                        
+
                         for &idx in indices {
                             // Move along contours
                             v_infos[idx].pos.x -= offset_xy.x;
                             v_infos[idx].pos.y -= offset_xy.y;
-                            
+
                             // Move inward in Z
                             if is_front {
                                 v_infos[idx].pos.z -= self.bevel_thickness;
@@ -190,11 +195,11 @@ impl Text3dBuilder {
         }
 
         // --- Final Mesh Construction with Flat Shading ---
-        // To achieve crisp, non-melted edges (especially on bevels), we duplicate 
+        // To achieve crisp, non-melted edges (especially on bevels), we duplicate
         // vertices per triangle to ensure flat normals.
         let mut flat_vertices = Vec::new();
         let mut flat_indices = Vec::new();
-        
+
         for chunk in all_indices.chunks_exact(3) {
             let i0 = chunk[0] as usize;
             let i1 = chunk[1] as usize;
@@ -220,7 +225,7 @@ impl Text3dBuilder {
             flat_vertices.push(v0_obj);
             flat_vertices.push(v1_obj);
             flat_vertices.push(v2_obj);
-            
+
             flat_indices.push(base);
             flat_indices.push(base + 1);
             flat_indices.push(base + 2);

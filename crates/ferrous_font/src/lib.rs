@@ -6,26 +6,80 @@
 //! `ferrous_gui --no-default-features` to avoid pulling in the GPU/font logic.
 
 pub mod atlas;
+/// Pure-data baked atlases and their versioned binary form.
+pub mod baked;
 pub mod binary_reader;
+/// Byte budgets and size estimates for the font caches.
+pub mod budget;
+/// On-disk cache of baked atlases.
+pub mod cache;
 /// Pre-built Unicode character sets for atlas generation.
 pub mod charset;
+mod codec;
+pub mod icons;
+/// Optional bridge to the engine memory inventory.
+pub mod inventory;
+/// Pure-CPU single-line text layout (no GPU required).
+pub mod layout;
+pub mod layout_data;
 pub mod msdf_gen;
 pub mod parser;
 pub mod path;
 pub mod tables;
-pub mod icons;
-pub use icons::{IconAtlas, IconMetrics};
 
-
-pub use atlas::{FontAtlas, GlyphMetrics};
+pub use atlas::{FontAtlas, GlyphMetrics, DEFAULT_GLYPH_SIZE};
+pub use baked::{
+    AtlasDecodeError, AtlasOccupancy, BakedAtlas, FontKey, ATLAS_FORMAT_VERSION,
+    ATLAS_GENERATOR_VERSION,
+};
+pub use cache::{default_directory as default_cache_directory, AtlasCache, FontCacheConfig};
 pub use charset::{ascii, cyrillic, from_str as charset_from_str, latin_extended, latin_western};
+pub use icons::{IconAtlas, IconMetrics};
+pub use layout::{
+    layout_block, layout_line, measure_block, measure_line, GlyphLayout, GlyphQuad, LayoutFont,
+    LineMetrics, TextAlign, TextBounds, TextLineMetrics, TextMetrics, TextStyle,
+};
+pub use layout_data::LayoutData;
+pub use parser::{FontMetrics, FontParser, GlyphBounds, GposKerning, GposPair, ParseError};
+
+/// Errors returned by the typed font loading entry points.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FontError {
+    /// The font file could not be parsed.
+    Parse {
+        /// Parser diagnostic (missing or malformed tables).
+        message: String,
+    },
+    /// The font is valid but uses an outline format this parser does not read
+    /// (CFF/CFF2 outlines, CFF2 variable fonts).
+    Unsupported {
+        /// Why the font cannot be used.
+        reason: String,
+    },
+    /// The glyph atlas could not be built or uploaded.
+    Atlas {
+        /// Atlas diagnostic.
+        message: String,
+    },
+}
+
+impl std::fmt::Display for FontError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Parse { message } => write!(f, "failed to parse font: {message}"),
+            Self::Unsupported { reason } => write!(f, "unsupported font: {reason}"),
+            Self::Atlas { message } => write!(f, "failed to build font atlas: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for FontError {}
 
 /// High‑level font object holding an atlas; previously in `ferrous_assets`.
 pub struct Font {
     pub atlas: FontAtlas,
     pub icons: Option<IconAtlas>,
 }
-
 
 impl Font {
     /// Load a font from the filesystem (desktop) or use a fallback (wasm).
@@ -42,10 +96,7 @@ impl Font {
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
             Err(e) => {
-                eprintln!(
-                    "Warning: Font not found at {}: {}. Using fallback.",
-                    path, e
-                );
+                log::warn!("Font not found at {}: {}. Using fallback.", path, e);
                 Self::build_fallback_font()
             }
         };
@@ -57,43 +108,58 @@ impl Font {
             Self::build_fallback_font()
         };
 
-        Self::from_bytes_and_chars(bytes, char_list, device, queue)
+        Self::try_load_bytes(&bytes, device, queue, char_list).expect("Failed to load font")
     }
 
     /// Load a font from raw bytes in memory.  Useful for wasm builds or
     /// embedded assets.
+    ///
+    /// This is the legacy panicking wrapper: prefer [`Self::try_load_bytes`].
     pub fn load_bytes(
         bytes: &[u8],
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         chars: impl IntoIterator<Item = char>,
     ) -> Self {
-        let char_list: Vec<char> = chars.into_iter().collect();
-        Self::from_bytes_and_chars(bytes.to_vec(), char_list, device, queue)
+        Self::try_load_bytes(bytes, device, queue, chars).expect("Failed to load font from bytes")
     }
 
-    fn from_bytes_and_chars(
-        bytes: Vec<u8>,
-        char_list: Vec<char>,
+    /// Load a font from raw bytes, returning a typed [`FontError`] instead of
+    /// panicking on parse or atlas failure.
+    ///
+    /// An empty character list falls back to [`charset::latin_western`].
+    pub fn try_load_bytes(
+        bytes: &[u8],
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-    ) -> Self {
-        let parser = parser::FontParser::new(bytes).expect("Failed to parse font data");
-
-        // Fall back to the Latin Western set (ASCII + Latin-1 Supplement) so
-        // that Spanish, French, German, and common symbols render out of the box.
-        let final_chars = if char_list.is_empty() {
-            charset::latin_western()
-        } else {
-            char_list
-        };
-
-        let atlas = FontAtlas::new(device, queue, &parser, final_chars)
-            .expect("Failed to build font atlas");
- 
-        Self { atlas, icons: None }
+        chars: impl IntoIterator<Item = char>,
+    ) -> Result<Self, FontError> {
+        Self::try_load_bytes_cached(bytes, device, queue, chars, None)
     }
 
+    /// [`Self::try_load_bytes`] through an atlas cache.
+    ///
+    /// A cache hit skips the MSDF bake entirely; a miss bakes and stores the
+    /// result for the next process.  `None` bakes every time, which is what
+    /// [`Self::try_load_bytes`] does.
+    ///
+    /// # Errors
+    ///
+    /// The same conditions as [`Self::try_load_bytes`].
+    pub fn try_load_bytes_cached(
+        bytes: &[u8],
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        chars: impl IntoIterator<Item = char>,
+        cache: Option<&crate::AtlasCache>,
+    ) -> Result<Self, FontError> {
+        let char_list: Vec<char> = chars.into_iter().collect();
+        let baked = crate::BakedAtlas::build_cached(cache, bytes, &char_list)?;
+        Ok(Self {
+            atlas: baked.upload(device, queue),
+            icons: None,
+        })
+    }
 
     /// Generate a minimal in-memory TrueType fallback font containing only
     /// the character 'A'.  Used when loading fails or on wasm targets.
@@ -140,9 +206,7 @@ impl Font {
         glyf.extend(&[0; 8]); // bbox
         glyf.extend(&3u16.to_be_bytes()); // endPt
         glyf.extend(&0u16.to_be_bytes()); // instLen
-        for _ in 0..4 {
-            glyf.push(0x01);
-        }
+        glyf.extend([0x01u8; 4]);
         for v in &[0, 0, 0, 100, 100, 0, 0, -100] {
             glyf.extend(&((*v as i16).to_be_bytes()));
         }

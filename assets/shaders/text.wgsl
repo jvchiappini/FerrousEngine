@@ -73,11 +73,10 @@ fn vs_main(
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-/// Median of three values — collapses the three SDF channels into one.
-fn median(r: f32, g: f32, b: f32) -> f32 {
-    return max(min(r, g), min(max(r, g), b));
-}
+//
+// `msdf_median`, `msdf_cell_texels`, `msdf_screen_px_range` and
+// `msdf_opacity` live in `msdf_common.wgsl`, which the pipeline prepends to
+// this module.
 
 // Set to `true` to render the raw atlas texture (useful for debugging UVs).
 const DEBUG_MSDF: bool = false;
@@ -92,25 +91,17 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         return vec4<f32>(sample.rgb, in.color.a);
     }
 
-    let sig_dist = median(sample.r, sample.g, sample.b);
+    let sig_dist = msdf_median(sample.r, sample.g, sample.b);
 
     // Size of this glyph's atlas cell, in texels (uv span × atlas dimensions).
     // Works for both the font atlas and the icon atlas without a uniform.
     let dims = textureDimensions(font_tex, 0);
     let atlas_dim = vec2<f32>(f32(dims.x), f32(dims.y));
-    let cell = max(
-        (in.uv1.x - in.uv0.x) * atlas_dim.x,
-        (in.uv1.y - in.uv0.y) * atlas_dim.y,
-    );
+    let cell = msdf_cell_texels(in.uv0, in.uv1, atlas_dim);
 
     // Distance-field range in screen pixels; never below 1 (AA would fail).
-    let screen_px_range = max(PXRANGE * (in.quad_size.x / max(cell, 1.0)), 1.0);
-    // NOTE: our generator encodes `inside = negative` (sd < 0.5 inside).  The
-    // canonical msdfgen shader assumes the opposite sign, so the distance is
-    // measured as `0.5 - sd` here; using `sd - 0.5` fills the whole quad and
-    // punches the glyph out (solid squares).
-    let screen_px_distance = screen_px_range * (0.5 - sig_dist);
-    let opacity = clamp(screen_px_distance + 0.5, 0.0, 1.0);
+    let screen_px_range = msdf_screen_px_range(in.quad_size, cell, PXRANGE);
+    let opacity = msdf_opacity(sig_dist, screen_px_range);
 
     return vec4<f32>(in.color.rgb, in.color.a * opacity);
 }
