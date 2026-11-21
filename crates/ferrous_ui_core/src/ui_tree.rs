@@ -147,6 +147,22 @@ impl<App> UiTree<App> {
         self.root
     }
 
+    /// Whether the tree still has paint or hierarchy dirt that could move a rect.
+    ///
+    /// A clean tree lays out to exactly the same rectangles as the previous
+    /// frame, so `UiSystem::update` may skip the layout pass while the viewport
+    /// is unchanged. `subtree_dirty` is set on every ancestor of a dirty node by
+    /// `mark_subtree_dirty_up`, and `RenderCollector` clears it after a frame is
+    /// rendered, so this is a single root check, not a walk.
+    #[must_use]
+    pub fn needs_layout(&self) -> bool {
+        self.root.map_or(true, |root| {
+            self.nodes
+                .get(root)
+                .map_or(true, |node| node.dirty.subtree_dirty || node.dirty.hierarchy)
+        })
+    }
+
     /// Gets a mutable reference to a node in the tree.
     pub fn get_node_mut(&mut self, id: NodeId) -> Option<&mut Node<App>> {
         self.nodes.get_mut(id)

@@ -31,6 +31,8 @@ pub struct UiSystem<App> {
     pub toaster: Toaster<App>,
     /// Unique identity used by the retained batch store in [`GuiBatch`].
     render_epoch: u64,
+    /// The last viewport the layout ran with, so a clean frame can skip it.
+    last_viewport: Option<(f32, f32)>,
 }
 
 impl<App: 'static> UiSystem<App> {
@@ -43,7 +45,18 @@ impl<App: 'static> UiSystem<App> {
             parent_stack: Vec::new(),
             toaster: Toaster::new(),
             render_epoch: NEXT_RENDER_EPOCH.fetch_add(1, Ordering::Relaxed),
+            last_viewport: None,
         }
+    }
+
+    /// The number of layout passes run so far.
+    ///
+    /// A frame with no paint or hierarchy dirt and an unchanged viewport does
+    /// not increase it. This is the regression hook for the prompt 15 phase 3
+    /// "no layout while idle" proof.
+    #[must_use]
+    pub fn layout_passes(&self) -> u64 {
+        self.layout_engine.passes()
     }
 
     /// Pushes an implicit parent. Used by `PanelBuilder::spawn_with`.
@@ -81,10 +94,17 @@ impl<App: 'static> UiSystem<App> {
         // 1. Update internal widget logic and reactive system.
         self.tree.update(dt);
 
-        // 2. Recalculate layout for the entire tree.
-        // The layout pass always runs; GUIMaker owns the incremental skipping.
-        self.layout_engine
-            .compute_layout(&mut self.tree, viewport_width, viewport_height);
+        // 2. Recalculate layout only when something can move a rect: a node is
+        //    paint- or hierarchy-dirty (a style/size change, an added child, a
+        //    widget that asked for a redraw) or the viewport changed. A clean
+        //    frame skips the pass entirely; GUIMaker owns the finer-grained
+        //    subtree skipping.
+        let viewport = (viewport_width, viewport_height);
+        if self.tree.needs_layout() || self.last_viewport != Some(viewport) {
+            self.layout_engine
+                .compute_layout(&mut self.tree, viewport_width, viewport_height);
+            self.last_viewport = Some(viewport);
+        }
     }
 
     /// Dispatches an input event to the system.

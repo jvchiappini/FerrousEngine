@@ -52,8 +52,11 @@ impl EventManager {
     /// (the last child paints on top) before the node itself, so the first hit
     /// is the topmost widget.
     ///
-    /// This linear walk is temporary: phase 4 moves routing/hit-testing to
-    /// GUIMaker, where the accelerated spatial index now lives.
+    /// This linear walk is **temporary** (`TODO(prompt 15, phase 4)`): phase 4
+    /// moves routing and hit-testing to GUIMaker, where the accelerated spatial
+    /// index now lives. It is O(nodes) per pointer event and must not become the
+    /// permanent state: phase 4 either deletes this path or replaces it with a
+    /// bounded walk whose measured cost is reported.
     pub fn hit_test<App>(&self, tree: &UiTree<App>, pos: Vec2) -> Option<NodeId> {
         let root = tree.get_root()?;
         self.hit_test_node(tree, root, pos)

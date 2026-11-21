@@ -30,6 +30,8 @@ fn u64_to_taffy(v: u64) -> taffy::NodeId {
 pub struct LayoutEngine {
     /// Árbol interno de Taffy donde se realizan los cálculos pesados.
     pub taffy: TaffyTree<NodeId>,
+    /// Número de pases de layout realmente ejecutados.
+    passes: u64,
 }
 
 impl Default for LayoutEngine {
@@ -43,7 +45,18 @@ impl LayoutEngine {
     pub fn new() -> Self {
         Self {
             taffy: TaffyTree::new(),
+            passes: 0,
         }
+    }
+
+    /// Número de pases de layout ejecutados hasta ahora.
+    ///
+    /// Un frame limpio (sin pintura ni jerarquía sucias y con el viewport
+    /// igual) no lo incrementa; `UiSystem::update` es quien decide saltarse el
+    /// pase entero. Existe para que un test pueda probarlo.
+    #[must_use]
+    pub fn passes(&self) -> u64 {
+        self.passes
     }
 
     /// Recorre el `UiTree`, sincroniza todos los nodos con Taffy y calcula las
@@ -51,7 +64,8 @@ impl LayoutEngine {
     ///
     /// El pase siempre se ejecuta completo: el controlador incremental que
     /// decidía si había que correr (y qué subárboles saltar) vive ahora en
-    /// GUIMaker, no en el motor.
+    /// GUIMaker, no en el motor. Saltarse el pase entero cuando el árbol está
+    /// limpio es tarea de `UiSystem::update`; `passes()` permite probarlo.
     ///
     /// 1. `sync_node` recorre el árbol completo y vuelca el estilo y los hijos
     ///    de cada nodo, reutilizando su `taffy_id` cuando ya existe.
@@ -113,6 +127,7 @@ impl LayoutEngine {
 
             // 3. Aplicar resultados de vuelta al UiTree
             self.apply_layout(root_id, tree, 0.0, 0.0);
+            self.passes += 1;
         }
     }
 
