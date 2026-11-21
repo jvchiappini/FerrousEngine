@@ -14,7 +14,10 @@ crates/guimaker_designer   the visual designer
 
 Start with G-0001 (`decisions/G-0001.md`): crate layout, the rebuild model,
 the text trait, the draw-command contract, the token boundary, the damage
-contract and the dependency rule. The documentation set (getting started,
+contract and the dependency rule. The theme is the first concrete module:
+`theme.md` is its reference, and G-0002 (`decisions/G-0002.md`) fixes the
+typefaces while G-0003 (`decisions/G-0003.md`) fixes the theme file format.
+The documentation set (getting started,
 concepts, components, theming, backend contract, screenshots and lint, and
 the model-facing design guide) is written in phase 9; this file is the entry
 point until then.

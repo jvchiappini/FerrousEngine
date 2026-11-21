@@ -29,6 +29,28 @@ jobs:
           python scripts/check_boundaries.py
           python -m unittest discover -s scripts/tests -p "test_check_boundaries.py"
 
+      # GUIMaker crates are new, so they are held to a stricter bar than the
+      # rest of the workspace: fully fmt-clean, pedantic-clippy-clean and
+      # rustdoc-clean. The rest of the repository keeps its known debt.
+      - name: guimaker fmt
+        run: cargo fmt -p guimaker -- --check
+
+      - name: guimaker clippy (pedantic)
+        run: cargo clippy -p guimaker --all-targets -- -D warnings -W clippy::pedantic
+
+      - name: guimaker rustdoc
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc -p guimaker --no-deps
+
+      - name: guimaker unused dependencies
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-machete
+
+      - name: guimaker machete
+        run: cargo machete crates/guimaker
+
       # Only the files this job created or edited are format-checked; the rest
       # of the repository is not fmt-clean yet.  `skip_children` keeps rustfmt
       # from following `mod` declarations into untouched modules.

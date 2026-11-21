@@ -113,9 +113,12 @@ nav:
       - World Sync: ferrous_renderer/extending/world_sync.md
   - GUIMaker - the UI library:
     - Overview: guimaker/README.md
+    - Theme tokens: guimaker/theme.md
     - Decisions:
       - Decision log: guimaker/decisions/README.md
       - G-0001 - Library architecture: guimaker/decisions/G-0001.md
+      - G-0002 - Typefaces and densities: guimaker/decisions/G-0002.md
+      - G-0003 - Theme file format: guimaker/decisions/G-0003.md
   - Other crates:
     - ferrous_assets: ferrous_assets/README.md
     - ferrous_asset_types: ferrous_asset_types/README.md

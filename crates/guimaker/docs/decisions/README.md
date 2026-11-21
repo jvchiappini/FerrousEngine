@@ -9,9 +9,10 @@ carry does not.
 | ID | Title | Status |
 |---|---|---|
 | G-0001 | GUIMaker library architecture | accepted |
+| G-0002 | Typefaces and densities | accepted |
+| G-0003 | Theme file format | accepted |
 
-Next expected: G-0002 (typefaces and densities) and G-0003 (theme file
-format), both in phase 1.
+Next expected: G-0004 (view tree and layout), in phase 2.
 
 Rules:
 
