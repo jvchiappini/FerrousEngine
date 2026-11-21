@@ -53,20 +53,30 @@ zero heap allocations (there is a counting-allocator test for it).
 
 ## Layout time
 
-The start-screen recipe (`guimaker::recipe::start_screen`) at 1920×1080 and
-scale 1.5, release, median of three runs:
+The start-screen recipe (`guimaker::recipe::start_screen`) at 1920x1080 and
+scale 1.5, release, divan medians (phase 3 numbers; `cargo bench -p guimaker
+--bench layout`):
 
 | Workload | Median |
 |---|---|
-| full layout pass | 0.164 ms |
-| hover frame (pointer move, one damaged node) | 0.0075 ms |
-| relayout after one changed label | 0.023 ms |
-| cold frame (build + layout + paint) | 0.300 ms |
+| full layout pass (warm engine, viewport change) | 0.187 ms |
+| hover frame (pointer move, one damaged node) | 0.010 ms |
+| relayout after one changed label | 0.036 ms |
+| cold frame (build + layout + paint) | 0.497 ms |
 
-The hover/typing budget is 0.3 ms CPU per frame; the full pass is 0.164 ms and
-a hover is two orders of magnitude below it. The 8 192-node flat tree lays out
-in 3.885 ms, against 6.328 ms for the engine's full layout after the move and
-6.545 ms before it.
+The hover/typing budget is 0.3 ms CPU per frame; the full pass is 0.187 ms and
+a hover does no layout work at all. The recipe is responsive now (65 nodes), so
+a viewport change re-resolves the tokens and a fluid value that moved costs a
+second taffy pass; a cold frame pays that pass once (the containers are only
+known after the first pass), which is why that is the one row above 0.3 ms.
+Phase 2 (64 nodes, no responsive values) measured 0.164 / 0.0075 / 0.023 /
+0.300 ms on the same bench, so the per-frame paths stay inside the budget.
+
+The full layout at each sweep width is printed by `cargo test --release
+-p guimaker --test responsive layout_cost_by_width -- --nocapture`. The 8 192-node
+flat tree lays out in 3.885 ms, against 6.328 ms for the engine's full layout
+after the move and 6.545 ms before it.
+
 
 ## Inspect
 
@@ -99,6 +109,19 @@ or hide it below the breakpoint.
 resolved tokens, cache state, repaint reason, and the number of draw commands it
 produced. Every `DrawCommand` also carries its `node`, so the frame debugger can
 attribute a draw to a node without a lookup. No panel is part of this phase.
+
+## Responsive
+
+Every modifier that depends on the space a node has takes a
+[`Responsive<T>`](responsive.md) value: `pad(resp![Xs: S4, Lg: S8])`,
+`direction(resp![Xs: Column, Md: Row])`, `hidden_below(Sm)`, `columns(...)`.
+The breakpoint is the container's width (the parent's content width), so a card
+adapts to its pane, not to the window. Fluid widths and type sizes
+(`Fluid`, `FluidText`) clamp a fraction of the container between two tokens, and
+`.priority(n)` lets a label ellipsise before its siblings shrink. The adaptive
+patterns live in `guimaker::patterns`, and `guimaker::sweep` renders a view at
+ten widths and four scales and fails on overflow, overlap, an off-grid edge or
+an off-screen root.
 
 ## Hit testing
 

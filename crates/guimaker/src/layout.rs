@@ -13,9 +13,9 @@ use std::sync::Arc;
 
 use glam::Vec2;
 use taffy::prelude::{
-    AlignItems, AvailableSpace, Dimension, Display, FlexDirection, FlexWrap, JustifyContent,
-    LengthPercentage, LengthPercentageAuto, Position, Size as TSize, Style as TaffyStyle,
-    TaffyTree,
+    AlignItems, AlignSelf, AvailableSpace, Dimension, Display, FlexDirection, FlexWrap,
+    JustifyContent, LengthPercentage, LengthPercentageAuto, Position, Size as TSize,
+    Style as TaffyStyle, TaffyTree,
 };
 use taffy::style::{
     GridTrackRepetition, MaxTrackSizingFunction, MinTrackSizingFunction,
@@ -50,6 +50,8 @@ pub enum Cause {
     Max,
     /// The root filled the viewport.
     Viewport,
+    /// A fluid size won: `clamp(min, fraction * container, max)`.
+    Fluid(f32),
 }
 
 impl Cause {
@@ -65,6 +67,9 @@ impl Cause {
             Self::Min => "a minimum that is larger than the content".to_string(),
             Self::Max => "a maximum that is smaller than the content".to_string(),
             Self::Viewport => "the viewport".to_string(),
+            Self::Fluid(fraction) => {
+                format!("a fluid {:.0}% of the container, clamped", fraction * 100.0)
+            }
         }
     }
 }
@@ -93,6 +98,9 @@ pub struct LayoutStats {
     pub reused: usize,
     /// Rectangles in the damage list.
     pub damage_rects: usize,
+    /// Layout passes this frame: 1 normally, 2 when a responsive value moved
+    /// after the first pass measured the containers.
+    pub responsive_passes: u8,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -122,6 +130,10 @@ pub struct LayoutEngine {
     structure_hash: u64,
     first_frame: bool,
     viewport_dirty: bool,
+    containers: Vec<f32>,
+    restyled: Vec<bool>,
+    parent_directions: Vec<Option<Direction>>,
+    has_responsive: bool,
     stats: LayoutStats,
 }
 
@@ -155,6 +167,10 @@ impl LayoutEngine {
             structure_hash: 0,
             first_frame: true,
             viewport_dirty: true,
+            containers: Vec::new(),
+            restyled: Vec::new(),
+            parent_directions: Vec::new(),
+            has_responsive: false,
             stats: LayoutStats::default(),
         }
     }
@@ -235,6 +251,13 @@ impl LayoutEngine {
 
     /// Runs layout for a tree.
     ///
+    /// Responsive values resolve against the container width, which is only
+    /// known once the parents are laid out. The first pass uses the previous
+    /// frame's rectangles (the viewport on a cold frame); if that moved any
+    /// responsive value the engine runs a second pass with the fresh widths.
+    /// A view without a single responsive modifier never pays for the second
+    /// pass, so the phase 2 single-pass cost is unchanged.
+    ///
     /// # Panics
     ///
     /// Panics only if an internal vector is shorter than the tree's arena, an
@@ -250,6 +273,7 @@ impl LayoutEngine {
             nodes: tree.len(),
             ..LayoutStats::default()
         };
+        self.has_responsive = false;
         if tree.is_empty() {
             self.rects.clear();
             self.damage.clear();
@@ -272,7 +296,6 @@ impl LayoutEngine {
         }
 
         self.ensure_texts(tree);
-        self.resolve_styles(tree, theme);
 
         let Some(root) = tree.root else {
             return;
@@ -284,88 +307,172 @@ impl LayoutEngine {
 
         let mut shapes = std::mem::take(&mut self.shapes);
         let mut shape_keys = std::mem::take(&mut self.shape_keys);
-        let resolved = std::mem::take(&mut self.resolved);
+        let mut resolved = std::mem::take(&mut self.resolved);
+        let mut changed = std::mem::take(&mut self.changed);
+        let mut restyled = std::mem::take(&mut self.restyled);
+        let mut parents = std::mem::take(&mut self.parent_directions);
         let texts = std::mem::take(&mut self.texts);
-        let mut measure_calls = 0usize;
-        let mut style_updates = 0usize;
-        let mut nodes_created = 0usize;
-        let mut reused = 0usize;
+        let hairline = theme.borders.hairline;
+        let mut counters = Counters::default();
 
-        let taffy_root = self.sync(
+        self.resolve_containers(tree);
+        self.resolve_styles(
+            tree,
+            theme,
+            false,
+            &mut resolved,
+            &mut changed,
+            &mut restyled,
+        );
+        self.stats.responsive_passes = 1;
+        self.pass(
             tree,
             root,
-            None,
-            Direction::Column,
+            available,
+            hairline,
             &resolved,
-            theme.borders.hairline,
-            &mut style_updates,
-            &mut nodes_created,
-            &mut reused,
+            &restyled,
+            &mut parents,
+            &texts,
+            &mut shapes,
+            &mut shape_keys,
+            text_system,
+            store,
+            false,
+            &mut counters,
         );
 
-        if let Some(taffy_root) = taffy_root {
-            self.root = Some(taffy_root);
-            let _ = self.taffy.compute_layout_with_measure(
-                taffy_root,
-                available,
-                |known, available, _id, node_id, _style| {
-                    let Some(node_id) = node_id else {
-                        return TSize::ZERO;
-                    };
-                    let node_id = *node_id;
-                    let node = &tree.nodes[node_id.index()];
-                    let Some(text) = texts.get(node_id.index()).and_then(Option::as_ref) else {
-                        return TSize::ZERO;
-                    };
-                    let resolved_text = &resolved[node_id.index()];
-                    let width = known.width.or(match available.width {
-                        AvailableSpace::Definite(width) => Some(width),
-                        AvailableSpace::MinContent | AvailableSpace::MaxContent => None,
-                    });
-                    let mut key = Fnv::new();
-                    key.write_u64(node.content_hash);
-                    key.write_f32(width.unwrap_or(f32::NEG_INFINITY));
-                    key.write_u8(u8::from(resolved_text.text.style.tabular));
-                    let key = key.finish();
-                    if shape_keys.get(node_id.index()).copied() != Some(key)
-                        || shapes.get(node_id.index()).is_none_or(Option::is_none)
-                    {
-                        let shape = text_system.shape_clamped(
-                            text,
-                            resolved_text.text.style,
-                            width,
-                            resolved_text.max_lines,
-                            resolved_text.ellipsis,
-                        );
-                        if shapes.len() <= node_id.index() {
-                            shapes.resize(node_id.index() + 1, None);
-                        }
-                        shapes[node_id.index()] = Some(shape);
-                        if shape_keys.len() <= node_id.index() {
-                            shape_keys.resize(node_id.index() + 1, 0);
-                        }
-                        shape_keys[node_id.index()] = key;
-                        measure_calls += 1;
-                    }
-                    let shape = shapes[node_id.index()].as_ref().expect("just shaped");
-                    TSize {
-                        width: known.width.unwrap_or(shape.width),
-                        height: shape.height,
-                    }
-                },
-            );
-            self.collect(tree, root, Vec2::ZERO, store, &resolved);
+        if self.has_responsive {
+            self.resolve_containers(tree);
+            if self.resolve_styles(
+                tree,
+                theme,
+                true,
+                &mut resolved,
+                &mut changed,
+                &mut restyled,
+            ) {
+                self.stats.responsive_passes = 2;
+                self.pass(
+                    tree,
+                    root,
+                    available,
+                    hairline,
+                    &resolved,
+                    &restyled,
+                    &mut parents,
+                    &texts,
+                    &mut shapes,
+                    &mut shape_keys,
+                    text_system,
+                    store,
+                    true,
+                    &mut counters,
+                );
+            }
         }
 
         self.shapes = shapes;
         self.shape_keys = shape_keys;
         self.resolved = resolved;
+        self.restyled = restyled;
+        self.parent_directions = parents;
         self.texts = texts;
-        self.stats.style_updates = style_updates;
-        self.stats.nodes_created = nodes_created;
-        self.stats.measure_calls = measure_calls;
-        self.stats.reused = reused;
-        self.finish_frame(tree, structure_changed);
+        self.stats.style_updates = counters.style_updates;
+        self.stats.nodes_created = counters.nodes_created;
+        self.stats.measure_calls = counters.measure_calls;
+        self.stats.reused = counters.reused;
+        self.finish_frame(tree, structure_changed, &changed);
+        self.changed = changed;
+    }
+
+    #[allow(clippy::too_many_arguments)] // reason: the frame pipeline passes its owned scratch buffers explicitly
+    fn pass<Msg>(
+        &mut self,
+        tree: &Tree<Msg>,
+        root: NodeId,
+        available: TSize<AvailableSpace>,
+        hairline: f32,
+        resolved: &[ResolvedStyle],
+        restyled: &[bool],
+        parents: &mut Vec<Option<Direction>>,
+        texts: &[Option<Arc<str>>],
+        shapes: &mut Vec<Option<TextShape>>,
+        shape_keys: &mut Vec<u64>,
+        text_system: &mut dyn TextSystem,
+        store: &Store,
+        visit_all: bool,
+        counters: &mut Counters,
+    ) {
+        let taffy_root = self.sync(
+            tree,
+            root,
+            None,
+            Direction::Column,
+            resolved,
+            restyled,
+            parents,
+            hairline,
+            visit_all,
+            counters,
+        );
+        let Some(taffy_root) = taffy_root else {
+            return;
+        };
+        self.root = Some(taffy_root);
+        let shape_call_count = &mut counters.measure_calls;
+        let _ = self.taffy.compute_layout_with_measure(
+            taffy_root,
+            available,
+            |known, available, _id, node_id, _style| {
+                let Some(node_id) = node_id else {
+                    return TSize::ZERO;
+                };
+                let node_id = *node_id;
+                let node = &tree.nodes[node_id.index()];
+                let Some(text) = texts.get(node_id.index()).and_then(Option::as_ref) else {
+                    return TSize::ZERO;
+                };
+                let resolved_text = &resolved[node_id.index()];
+                let width = known.width.or(match available.width {
+                    AvailableSpace::Definite(width) => Some(width),
+                    AvailableSpace::MinContent | AvailableSpace::MaxContent => None,
+                });
+                let mut key = Fnv::new();
+                key.write_u64(node.content_hash);
+                key.write_f32(width.unwrap_or(f32::NEG_INFINITY));
+                key.write_u8(u8::from(resolved_text.text.style.tabular));
+                key.write_f32(resolved_text.text.style.size);
+                key.write_f32(resolved_text.text.style.line_height);
+                let key = key.finish();
+                if shape_keys.get(node_id.index()).copied() != Some(key)
+                    || shapes.get(node_id.index()).is_none_or(Option::is_none)
+                {
+                    let shape = text_system.shape_clamped(
+                        text,
+                        resolved_text.text.style,
+                        width,
+                        resolved_text.max_lines,
+                        resolved_text.ellipsis,
+                    );
+                    if shapes.len() <= node_id.index() {
+                        shapes.resize(node_id.index() + 1, None);
+                    }
+                    shapes[node_id.index()] = Some(shape);
+                    if shape_keys.len() <= node_id.index() {
+                        shape_keys.resize(node_id.index() + 1, 0);
+                    }
+                    shape_keys[node_id.index()] = key;
+                    *shape_call_count += 1;
+                }
+                let shape = shapes[node_id.index()].as_ref().expect("just shaped");
+                TSize {
+                    width: known.width.unwrap_or(shape.width),
+                    height: shape.height,
+                }
+            },
+        );
+        self.collect(tree, root, Vec2::ZERO, store, resolved);
     }
 
     fn rebuild(&mut self, nodes: usize) {
@@ -389,6 +496,12 @@ impl LayoutEngine {
         self.shapes.resize(nodes, None);
         self.shape_keys.clear();
         self.shape_keys.resize(nodes, 0);
+        self.containers.clear();
+        self.containers.resize(nodes, self.viewport.width);
+        self.restyled.clear();
+        self.restyled.resize(nodes, false);
+        self.parent_directions.clear();
+        self.parent_directions.resize(nodes, None);
         self.first_frame = true;
     }
 
@@ -408,28 +521,87 @@ impl LayoutEngine {
         }
     }
 
-    fn resolve_styles<Msg>(&mut self, tree: &Tree<Msg>, theme: &Theme) {
-        if self.resolved.len() != tree.len() {
-            let default = crate::style::Style::default().resolve(theme);
-            self.resolved.resize(tree.len(), default);
+    /// Fills `containers` with each node's parent content width.
+    ///
+    /// The root's container is the viewport; every other node resolves against
+    /// its parent's laid-out width minus the parent's horizontal padding. The
+    /// first pass of a frame reads the previous rectangles (the viewport on a
+    /// cold frame) and the second pass reads the fresh ones.
+    fn resolve_containers<Msg>(&mut self, tree: &Tree<Msg>) {
+        if self.containers.len() != tree.len() {
+            self.containers.resize(tree.len(), self.viewport.width);
         }
-        for (index, node) in tree.nodes.iter().enumerate() {
-            if self.hashes.get(index).copied() != Some(node.content_hash) {
-                self.resolved[index] = node.style.resolve(theme);
-                if self.changed.len() <= index {
-                    self.changed.resize(index + 1, false);
+        for node in &tree.nodes {
+            let width = match node.parent {
+                None => self.viewport.width,
+                Some(parent) => {
+                    let parent_rect = self
+                        .rects
+                        .get(parent.index())
+                        .copied()
+                        .unwrap_or(Rect::ZERO);
+                    let padding = self
+                        .resolved
+                        .get(parent.index())
+                        .map_or(0.0, |style| style.padding.left + style.padding.right);
+                    (parent_rect.width - padding).max(0.0)
                 }
-                self.changed[index] = true;
-            } else if self.changed.len() <= index {
-                self.changed.resize(index + 1, false);
-                self.changed[index] = false;
-            } else {
-                self.changed[index] = false;
-            }
+            };
+            self.containers[node.id.index()] = width;
         }
     }
 
-    #[allow(clippy::too_many_arguments)] // reason: the counters are explicit and local
+    /// Resolves the styles of every node whose content or container changed.
+    ///
+    /// Returns whether any resolved style moved, which is the trigger for the
+    /// second responsive pass.
+    #[allow(clippy::too_many_arguments)] // reason: the scratch buffers are owned by `run`
+    fn resolve_styles<Msg>(
+        &mut self,
+        tree: &Tree<Msg>,
+        theme: &Theme,
+        all: bool,
+        resolved: &mut Vec<ResolvedStyle>,
+        changed: &mut Vec<bool>,
+        restyled: &mut Vec<bool>,
+    ) -> bool {
+        if resolved.len() != tree.len() {
+            let default = crate::style::Style::default().resolve(theme, self.viewport.width);
+            resolved.resize(tree.len(), default);
+        }
+        if changed.len() != tree.len() {
+            changed.resize(tree.len(), true);
+        }
+        if restyled.len() != tree.len() {
+            restyled.resize(tree.len(), false);
+        }
+        let mut moved = false;
+        for (index, node) in tree.nodes.iter().enumerate() {
+            self.has_responsive |= node.style.is_responsive();
+            let content_changed = self.hashes.get(index).copied() != Some(node.content_hash);
+            if !content_changed && !all {
+                changed[index] = false;
+                restyled[index] = false;
+                continue;
+            }
+            let container = self
+                .containers
+                .get(index)
+                .copied()
+                .unwrap_or(self.viewport.width);
+            let next = node.style.resolve(theme, container);
+            let restyled_here = next != resolved[index];
+            if restyled_here {
+                resolved[index] = next;
+                moved = true;
+            }
+            changed[index] = content_changed;
+            restyled[index] = restyled_here;
+        }
+        moved
+    }
+
+    #[allow(clippy::too_many_arguments)] // reason: the counters and scratch buffers are explicit and local
     fn sync<Msg>(
         &mut self,
         tree: &Tree<Msg>,
@@ -437,17 +609,29 @@ impl LayoutEngine {
         parent_kind: Option<NodeKind>,
         parent_direction: Direction,
         resolved: &[ResolvedStyle],
+        restyled: &[bool],
+        parents: &mut Vec<Option<Direction>>,
         hairline: f32,
-        style_updates: &mut usize,
-        nodes_created: &mut usize,
-        reused: &mut usize,
+        visit_all: bool,
+        counters: &mut Counters,
     ) -> Option<taffy::NodeId> {
         let node = &tree.nodes[id.index()];
-        let changed = self.hashes.get(id.index()).copied() != Some(node.content_hash);
-        if !changed {
-            if let Some(entry) = self.entries.get(id.index()).and_then(|entry| *entry) {
-                *reused += 1;
-                self.hashes[id.index()] = node.content_hash;
+        let index = id.index();
+        if parents.len() <= index {
+            parents.resize(index + 1, None);
+        }
+        let direction_changed = node.parent.is_some() && parents[index] != Some(parent_direction);
+        parents[index] = Some(parent_direction);
+        let content_changed = self.hashes.get(index).copied() != Some(node.content_hash);
+        let changed =
+            content_changed || restyled.get(index).copied().unwrap_or(false) || direction_changed;
+        // A clean subtree is skipped, except on the second responsive pass: a
+        // descendant may have restyled under a clean parent, so that pass
+        // visits everything and only writes the styles that actually moved.
+        if !changed && !visit_all {
+            if let Some(entry) = self.entries.get(index).and_then(|entry| *entry) {
+                counters.reused += 1;
+                self.hashes[index] = node.content_hash;
                 return Some(entry.id);
             }
         }
@@ -458,45 +642,46 @@ impl LayoutEngine {
                 tree,
                 child,
                 Some(node.kind),
-                resolved[id.index()].direction,
+                resolved[index].direction,
                 resolved,
+                restyled,
+                parents,
                 hairline,
-                style_updates,
-                nodes_created,
-                reused,
+                visit_all,
+                counters,
             )?;
             children.push(child_id);
         }
 
         let style = taffy_style(
             node.kind,
-            &resolved[id.index()],
+            &resolved[index],
             parent_kind,
             parent_direction,
             node.parent.is_none(),
             hairline,
         );
-        let taffy_id = if let Some(entry) = self.entries.get(id.index()).and_then(|entry| *entry) {
+        let taffy_id = if let Some(entry) = self.entries.get(index).and_then(|entry| *entry) {
             if changed || entry.hash != node.content_hash {
                 let _ = self.taffy.set_style(entry.id, style);
                 let _ = self.taffy.set_children(entry.id, &children);
-                *style_updates += 1;
-                if let Some(slot) = self.entries[id.index()].as_mut() {
+                counters.style_updates += 1;
+                if let Some(slot) = self.entries[index].as_mut() {
                     slot.hash = node.content_hash;
                 }
             }
             entry.id
         } else {
             let taffy_id = self.taffy.new_with_children(style, &children).ok()?;
-            *nodes_created += 1;
-            self.entries[id.index()] = Some(TaffyEntry {
+            counters.nodes_created += 1;
+            self.entries[index] = Some(TaffyEntry {
                 id: taffy_id,
                 hash: node.content_hash,
             });
             taffy_id
         };
         let _ = self.taffy.set_node_context(taffy_id, Some(id));
-        self.hashes[id.index()] = node.content_hash;
+        self.hashes[index] = node.content_hash;
         Some(taffy_id)
     }
 
@@ -539,7 +724,7 @@ impl LayoutEngine {
         }
     }
 
-    fn finish_frame<Msg>(&mut self, tree: &Tree<Msg>, structure_changed: bool) {
+    fn finish_frame<Msg>(&mut self, tree: &Tree<Msg>, structure_changed: bool, changed: &[bool]) {
         self.damage.clear();
         if self.first_frame || structure_changed {
             self.damage.push(Rect::new(
@@ -554,7 +739,7 @@ impl LayoutEngine {
             let previous = self.previous.get(index).copied().unwrap_or(Rect::ZERO);
             let reason = if self.first_frame || structure_changed {
                 RepaintReason::FirstFrame
-            } else if self.changed.get(index).copied().unwrap_or(false) {
+            } else if changed.get(index).copied().unwrap_or(false) {
                 RepaintReason::ViewChanged
             } else if rect != previous {
                 RepaintReason::LayoutChanged
@@ -576,6 +761,14 @@ impl LayoutEngine {
     }
 }
 
+/// The counters one layout pass reports.
+#[derive(Clone, Copy, Debug, Default)]
+struct Counters {
+    style_updates: usize,
+    nodes_created: usize,
+    reused: usize,
+    measure_calls: usize,
+}
 fn taffy_style(
     kind: NodeKind,
     style: &ResolvedStyle,
@@ -608,6 +801,13 @@ fn taffy_style(
         Align::Stretch => AlignItems::Stretch,
         Align::Baseline => AlignItems::Baseline,
     });
+    output.align_self = style.align_self.map(|align| match align {
+        Align::Start => AlignSelf::Start,
+        Align::Center => AlignSelf::Center,
+        Align::End => AlignSelf::End,
+        Align::Stretch => AlignSelf::Stretch,
+        Align::Baseline => AlignSelf::Baseline,
+    });
     output.justify_content = Some(match style.justify {
         Justify::Start => JustifyContent::Start,
         Justify::Center => JustifyContent::Center,
@@ -628,7 +828,15 @@ fn taffy_style(
     let fill_height =
         matches!(style.height, SizeSpec::Fill) && parent_direction == Direction::Column;
     output.flex_grow = style.grow + if fill_width || fill_height { 1.0 } else { 0.0 };
-    output.flex_shrink = style.shrink;
+    // A priority lets a label give way to its siblings: 9 shrinks last, 1 first.
+    // Priority nodes also drop the automatic content min-size, which is what
+    // otherwise stops a text run from ever getting narrower than its content.
+    let priority_shrink = style.priority > 0;
+    output.flex_shrink = if priority_shrink {
+        f32::from(10u8.saturating_sub(style.priority.min(9)))
+    } else {
+        style.shrink
+    };
     let mut width = dimension(style.width, fill_width);
     let mut height = dimension(style.height, fill_height);
     if is_root {
@@ -653,7 +861,11 @@ fn taffy_style(
     }
     output.size = TSize { width, height };
     output.min_size = TSize {
-        width: optional_dimension(style.min_width),
+        width: if priority_shrink {
+            Dimension::Length(0.0)
+        } else {
+            optional_dimension(style.min_width)
+        },
         height: optional_dimension(style.min_height),
     };
     output.max_size = TSize {
@@ -694,7 +906,9 @@ fn taffy_style(
 
 fn dimension(spec: SizeSpec, fill: bool) -> Dimension {
     match spec {
-        SizeSpec::Auto | SizeSpec::Hug => Dimension::Auto,
+        // A fluid size is resolved to `Px` by `Style::resolve`, so a resolved
+        // style never carries one; keep the arm total without a second guess.
+        SizeSpec::Auto | SizeSpec::Hug | SizeSpec::Fluid(_) => Dimension::Auto,
         SizeSpec::Fill => {
             if fill {
                 Dimension::Auto
@@ -728,10 +942,12 @@ fn infer_causes<Msg>(node: &crate::view::Node<Msg>, style: Option<&ResolvedStyle
     };
     let width = if node.parent.is_none() {
         Some(Cause::Viewport)
+    } else if let Some(fraction) = style.fluid_width {
+        Some(Cause::Fluid(fraction))
     } else {
         match style.width {
             SizeSpec::Token(spacing) => Some(Cause::Token(spacing)),
-            SizeSpec::Px(_) | SizeSpec::Auto => None,
+            SizeSpec::Px(_) | SizeSpec::Auto | SizeSpec::Fluid(_) => None,
             SizeSpec::Hug => Some(Cause::Content),
             SizeSpec::Fill => Some(Cause::Grow),
             SizeSpec::Fraction(value) => Some(Cause::Fraction(value)),
@@ -739,10 +955,12 @@ fn infer_causes<Msg>(node: &crate::view::Node<Msg>, style: Option<&ResolvedStyle
     };
     let height = if node.parent.is_none() {
         Some(Cause::Viewport)
+    } else if let Some(fraction) = style.fluid_height {
+        Some(Cause::Fluid(fraction))
     } else {
         match style.height {
             SizeSpec::Token(spacing) => Some(Cause::Token(spacing)),
-            SizeSpec::Px(_) | SizeSpec::Auto => None,
+            SizeSpec::Px(_) | SizeSpec::Auto | SizeSpec::Fluid(_) => None,
             SizeSpec::Hug => Some(Cause::Content),
             SizeSpec::Fill => Some(Cause::Grow),
             SizeSpec::Fraction(value) => Some(Cause::Fraction(value)),

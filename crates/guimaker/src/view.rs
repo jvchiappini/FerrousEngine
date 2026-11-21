@@ -12,12 +12,12 @@ use std::sync::Arc;
 
 use crate::hash::Fnv;
 use crate::style::{
-    Align, Columns, Direction, Edges, Justify, ScrollAxes, SizeSpec, Span, Style, TextSpec, Tone,
-    Tooltip,
+    Align, Columns, Direction, Edges, Fluid, FluidText, Justify, Responsive, ScrollAxes, SizeSpec,
+    Span, Style, TextSpec, Tone, Tooltip,
 };
 use crate::text::Ellipsis;
 use crate::theme::{
-    BorderWidth, ColorRole, ContentWidth, ElevationLevel, Radius, Spacing, TypeRole,
+    BorderWidth, Breakpoint, ColorRole, ContentWidth, ElevationLevel, Radius, Spacing, TypeRole,
 };
 
 /// A stable identifier for a node inside one built tree.
@@ -225,9 +225,9 @@ impl<Msg> Element<Msg> {
 
     /// A grid with a column rule.
     #[must_use]
-    pub fn grid(columns: Columns) -> Self {
+    pub fn grid(columns: impl Into<Responsive<Columns>>) -> Self {
         let mut element = Self::new(NodeKind::Grid).flex(Direction::Column);
-        element.style.columns = Some(columns);
+        element.style.columns = Some(columns.into());
         element
     }
 
@@ -235,8 +235,8 @@ impl<Msg> Element<Msg> {
     #[must_use]
     pub fn center() -> Self {
         let mut element = Self::new(NodeKind::Center).flex(Direction::Column);
-        element.style.align = Align::Center;
-        element.style.justify = Justify::Center;
+        element.style.align = Align::Center.into();
+        element.style.justify = Justify::Center.into();
         element.style.grow = 1.0;
         element
     }
@@ -259,7 +259,7 @@ impl<Msg> Element<Msg> {
     #[must_use]
     pub fn scroll(axes: ScrollAxes) -> Self {
         let mut element = Self::new(NodeKind::Scroll).flex(Direction::Column);
-        element.style.scroll = axes;
+        element.style.scroll = axes.into();
         element.style.clip = true;
         element
     }
@@ -309,7 +309,7 @@ impl<Msg> Element<Msg> {
     }
 
     fn flex(mut self, direction: Direction) -> Self {
-        self.style.direction = direction;
+        self.style.direction = Responsive::single(direction);
         self
     }
 
@@ -343,14 +343,15 @@ impl<Msg> Element<Msg> {
 
     /// Sets padding on every edge.
     #[must_use]
-    pub fn pad(mut self, padding: Spacing) -> Self {
-        self.style.padding = Edges::all(padding);
+    pub fn pad(mut self, padding: impl Into<Responsive<Spacing>>) -> Self {
+        self.style.padding = Edges::all(padding.into());
         self
     }
 
     /// Sets horizontal padding.
     #[must_use]
-    pub fn pad_x(mut self, padding: Spacing) -> Self {
+    pub fn pad_x(mut self, padding: impl Into<Responsive<Spacing>>) -> Self {
+        let padding = padding.into();
         self.style.padding.left = padding;
         self.style.padding.right = padding;
         self
@@ -358,7 +359,8 @@ impl<Msg> Element<Msg> {
 
     /// Sets vertical padding.
     #[must_use]
-    pub fn pad_y(mut self, padding: Spacing) -> Self {
+    pub fn pad_y(mut self, padding: impl Into<Responsive<Spacing>>) -> Self {
+        let padding = padding.into();
         self.style.padding.top = padding;
         self.style.padding.bottom = padding;
         self
@@ -366,22 +368,22 @@ impl<Msg> Element<Msg> {
 
     /// Sets the gap between children.
     #[must_use]
-    pub fn gap(mut self, gap: Spacing) -> Self {
-        self.style.gap = gap;
+    pub fn gap(mut self, gap: impl Into<Responsive<Spacing>>) -> Self {
+        self.style.gap = gap.into();
         self
     }
 
     /// Sets cross-axis alignment.
     #[must_use]
-    pub fn align(mut self, align: Align) -> Self {
-        self.style.align = align;
+    pub fn align(mut self, align: impl Into<Responsive<Align>>) -> Self {
+        self.style.align = align.into();
         self
     }
 
     /// Sets main-axis distribution.
     #[must_use]
-    pub fn justify(mut self, justify: Justify) -> Self {
-        self.style.justify = justify;
+    pub fn justify(mut self, justify: impl Into<Responsive<Justify>>) -> Self {
+        self.style.justify = justify.into();
         self
     }
 
@@ -401,29 +403,29 @@ impl<Msg> Element<Msg> {
 
     /// Sets the width rule.
     #[must_use]
-    pub fn width(mut self, width: SizeSpec) -> Self {
-        self.style.width = width;
+    pub fn width(mut self, width: impl Into<Responsive<SizeSpec>>) -> Self {
+        self.style.width = width.into();
         self
     }
 
     /// Sets the height rule.
     #[must_use]
-    pub fn height(mut self, height: SizeSpec) -> Self {
-        self.style.height = height;
+    pub fn height(mut self, height: impl Into<Responsive<SizeSpec>>) -> Self {
+        self.style.height = height.into();
         self
     }
 
     /// Sets the minimum width.
     #[must_use]
-    pub fn min_width(mut self, width: Spacing) -> Self {
-        self.style.min_width = Some(width);
+    pub fn min_width(mut self, width: impl Into<Responsive<Spacing>>) -> Self {
+        self.style.min_width = Some(width.into());
         self
     }
 
     /// Sets the minimum height.
     #[must_use]
-    pub fn min_height(mut self, height: Spacing) -> Self {
-        self.style.min_height = Some(height);
+    pub fn min_height(mut self, height: impl Into<Responsive<Spacing>>) -> Self {
+        self.style.min_height = Some(height.into());
         self
     }
 
@@ -436,8 +438,8 @@ impl<Msg> Element<Msg> {
 
     /// Sets the maximum height.
     #[must_use]
-    pub fn max_height(mut self, height: Spacing) -> Self {
-        self.style.max_height = Some(height);
+    pub fn max_height(mut self, height: impl Into<Responsive<Spacing>>) -> Self {
+        self.style.max_height = Some(height.into());
         self
     }
 
@@ -445,6 +447,86 @@ impl<Msg> Element<Msg> {
     #[must_use]
     pub fn content_width(mut self, width: ContentWidth) -> Self {
         self.style.content_width = Some(width);
+        self
+    }
+
+    /// Overrides the node's alignment in its parent's cross axis.
+    ///
+    /// This is how a `max_width` content column centres itself on a wide
+    /// screen: `.max_width(ContentWidth::Prose).align_self(Align::Center)`.
+    #[must_use]
+    pub fn align_self(mut self, align: Align) -> Self {
+        self.style.align_self = Some(align);
+        self
+    }
+
+    /// Sets the flow direction, responsively.
+    ///
+    /// `.direction(resp![Xs: Direction::Column, Md: Direction::Row])` turns a
+    /// two-pane layout into a stack on narrow containers.
+    #[must_use]
+    pub fn direction(mut self, direction: impl Into<Responsive<Direction>>) -> Self {
+        self.style.direction = direction.into();
+        self
+    }
+
+    /// Sets the grid column rule, responsively.
+    #[must_use]
+    pub fn columns(mut self, columns: impl Into<Responsive<Columns>>) -> Self {
+        self.style.columns = Some(columns.into());
+        self
+    }
+
+    /// Hides the node and its subtree below `breakpoint`.
+    ///
+    /// The check is against the parent's content width, so it behaves like a
+    /// CSS container query: the same element hides at 400 px inside a narrow
+    /// pane even when the window is 1920 px wide.
+    #[must_use]
+    pub fn hidden_below(mut self, breakpoint: Breakpoint) -> Self {
+        self.style.hidden_below = Some(breakpoint);
+        self
+    }
+
+    /// Hides the node and its subtree from `breakpoint` upwards.
+    #[must_use]
+    pub fn hidden_above(mut self, breakpoint: Breakpoint) -> Self {
+        self.style.hidden_above = Some(breakpoint);
+        self
+    }
+
+    /// Declares how early this node gives up width to its siblings in a row.
+    ///
+    /// `1` is the least important (it shrinks and ellipsises first), `9` the
+    /// most (it keeps its size); `0` leaves the default flex shrink. Use it on
+    /// labels so text never forces a row wider than its container.
+    #[must_use]
+    pub fn priority(mut self, priority: u8) -> Self {
+        self.style.priority = priority.min(9);
+        self
+    }
+
+    /// Sets a fluid width: `clamp(min, fraction * container, max)`.
+    #[must_use]
+    pub fn fluid_width(mut self, fluid: Fluid) -> Self {
+        self.style.width = Responsive::single(SizeSpec::Fluid(fluid));
+        self
+    }
+
+    /// Sets a fluid height: `clamp(min, fraction * container, max)`.
+    #[must_use]
+    pub fn fluid_height(mut self, fluid: Fluid) -> Self {
+        self.style.height = Responsive::single(SizeSpec::Fluid(fluid));
+        self
+    }
+
+    /// Scales the type size smoothly between two roles.
+    ///
+    /// Call it after [`Element::text_role`]; pass the largest role as the node's
+    /// role so the weight and family come from the right end of the scale.
+    #[must_use]
+    pub fn fluid_text(mut self, fluid: FluidText) -> Self {
+        self.style.fluid_text = Some(fluid);
         self
     }
 
@@ -471,8 +553,8 @@ impl<Msg> Element<Msg> {
 
     /// Sets the corner radius token.
     #[must_use]
-    pub fn radius(mut self, radius: Radius) -> Self {
-        self.style.radius = radius;
+    pub fn radius(mut self, radius: impl Into<Responsive<Radius>>) -> Self {
+        self.style.radius = radius.into();
         self
     }
 
@@ -570,9 +652,8 @@ impl<Msg> Element<Msg> {
 
     /// Sets the scroll axes.
     #[must_use]
-    pub fn scroll_axes(mut self, axes: ScrollAxes) -> Self {
-        self.style.scroll = axes;
-        self.style.clip = self.style.clip || axes.clips();
+    pub fn scroll_axes(mut self, axes: impl Into<Responsive<ScrollAxes>>) -> Self {
+        self.style.scroll = axes.into();
         self
     }
 
@@ -615,6 +696,12 @@ pub trait MaxWidthToken {
 }
 
 impl MaxWidthToken for Spacing {
+    fn apply(self, style: &mut Style) {
+        style.max_width = Some(Responsive::single(self));
+    }
+}
+
+impl MaxWidthToken for Responsive<Spacing> {
     fn apply(self, style: &mut Style) {
         style.max_width = Some(self);
     }
@@ -886,46 +973,56 @@ fn kind_discriminant(kind: NodeKind) -> u8 {
 }
 
 fn hash_style(style: &Style, hash: &mut Fnv) {
-    hash.write_u8(match style.direction {
-        Direction::Row => 0,
-        Direction::Column => 1,
+    hash_responsive(&style.direction, hash, |value, hash| {
+        hash.write_u8(direction_discriminant(*value));
     });
     for edge in [
-        style.padding.top,
-        style.padding.right,
-        style.padding.bottom,
-        style.padding.left,
+        &style.padding.top,
+        &style.padding.right,
+        &style.padding.bottom,
+        &style.padding.left,
     ] {
-        hash.write_u32(edge as u32);
+        hash_responsive(edge, hash, |value, hash| {
+            hash.write_u32(*value as u32);
+        });
     }
-    hash.write_u32(style.gap as u32);
-    hash.write_u8(match style.align {
-        Align::Start => 0,
-        Align::Center => 1,
-        Align::End => 2,
-        Align::Stretch => 3,
-        Align::Baseline => 4,
+    hash_responsive(&style.gap, hash, |value, hash| {
+        hash.write_u32(*value as u32);
     });
-    hash.write_u8(match style.justify {
-        Justify::Start => 0,
-        Justify::Center => 1,
-        Justify::End => 2,
-        Justify::SpaceBetween => 3,
+    hash_responsive(&style.align, hash, |value, hash| {
+        hash.write_u8(align_discriminant(*value));
     });
+    hash_responsive(&style.justify, hash, |value, hash| {
+        hash.write_u8(justify_discriminant(*value));
+    });
+    match style.align_self {
+        Some(align) => {
+            hash.write_u8(1);
+            hash.write_u8(align_discriminant(align));
+        }
+        None => hash.write_u8(0),
+    }
     hash.write_f32(style.grow);
     hash.write_f32(style.shrink);
-    hash_size_spec(style.width, hash);
-    hash_size_spec(style.height, hash);
+    hash.write_u8(style.priority);
+    hash_responsive(&style.width, hash, |value, hash| {
+        hash_size_spec(*value, hash);
+    });
+    hash_responsive(&style.height, hash, |value, hash| {
+        hash_size_spec(*value, hash);
+    });
     for value in [
-        style.min_width,
-        style.min_height,
-        style.max_width,
-        style.max_height,
+        &style.min_width,
+        &style.min_height,
+        &style.max_width,
+        &style.max_height,
     ] {
         match value {
             Some(value) => {
                 hash.write_u8(1);
-                hash.write_u32(value as u32);
+                hash_responsive(value, hash, |value, hash| {
+                    hash.write_u32(*value as u32);
+                });
             }
             None => hash.write_u8(0),
         }
@@ -947,13 +1044,38 @@ fn hash_style(style: &Style, hash: &mut Fnv) {
         }
     }
     hash.write_u32(border_width_discriminant(style.border_width));
-    hash.write_u32(radius_discriminant(style.radius));
+    hash_responsive(&style.radius, hash, |value, hash| {
+        hash.write_u32(radius_discriminant(*value));
+    });
     hash.write_u8(style.elevation.level());
     hash.write_f32(style.opacity);
     hash.write_bool(style.clip);
     hash.write_bool(style.hidden);
+    match style.hidden_below {
+        Some(breakpoint) => {
+            hash.write_u8(1);
+            hash.write_u8(breakpoint.index() as u8);
+        }
+        None => hash.write_u8(0),
+    }
+    match style.hidden_above {
+        Some(breakpoint) => {
+            hash.write_u8(1);
+            hash.write_u8(breakpoint.index() as u8);
+        }
+        None => hash.write_u8(0),
+    }
     hash.write_u32(tone_discriminant(style.tone));
     hash.write_u32(type_role_discriminant(style.text_role));
+    match style.fluid_text {
+        Some(fluid) => {
+            hash.write_u8(1);
+            hash.write_u8(type_role_discriminant(fluid.min) as u8);
+            hash.write_u8(type_role_discriminant(fluid.max) as u8);
+            hash.write_f32(fluid.fraction);
+        }
+        None => hash.write_u8(0),
+    }
     hash.write_bool(style.tabular);
     match style.max_lines {
         Some(lines) => {
@@ -977,25 +1099,22 @@ fn hash_style(style: &Style, hash: &mut Fnv) {
     match style.columns {
         Some(columns) => {
             hash.write_u8(1);
-            match columns {
+            hash_responsive(&columns, hash, |columns, hash| match columns {
                 Columns::Fixed(count) => {
                     hash.write_u8(0);
-                    hash.write_u32(u32::from(count));
+                    hash.write_u32(u32::from(*count));
                 }
                 Columns::AutoFill(spacing) => {
                     hash.write_u8(1);
-                    hash.write_u32(spacing as u32);
+                    hash.write_u32(*spacing as u32);
                 }
-            }
+            });
         }
         None => hash.write_u8(0),
     }
     hash.write_bool(style.wrap);
-    hash.write_u8(match style.scroll {
-        ScrollAxes::None => 0,
-        ScrollAxes::Vertical => 1,
-        ScrollAxes::Horizontal => 2,
-        ScrollAxes::Both => 3,
+    hash_responsive(&style.scroll, hash, |value, hash| {
+        hash.write_u8(scroll_discriminant(*value));
     });
     hash.write_bool(style.interactive);
     hash.write_bool(style.disabled);
@@ -1008,6 +1127,50 @@ fn hash_style(style: &Style, hash: &mut Fnv) {
     }
 }
 
+fn hash_responsive<T>(value: &Responsive<T>, hash: &mut Fnv, mut each: impl FnMut(&T, &mut Fnv)) {
+    let mut count = 0u8;
+    value.for_each(|breakpoint, item| {
+        hash.write_u8(breakpoint.index() as u8);
+        each(item, hash);
+        count += 1;
+    });
+    hash.write_u8(count);
+}
+
+fn direction_discriminant(direction: Direction) -> u8 {
+    match direction {
+        Direction::Row => 0,
+        Direction::Column => 1,
+    }
+}
+
+fn align_discriminant(align: Align) -> u8 {
+    match align {
+        Align::Start => 0,
+        Align::Center => 1,
+        Align::End => 2,
+        Align::Stretch => 3,
+        Align::Baseline => 4,
+    }
+}
+
+fn justify_discriminant(justify: Justify) -> u8 {
+    match justify {
+        Justify::Start => 0,
+        Justify::Center => 1,
+        Justify::End => 2,
+        Justify::SpaceBetween => 3,
+    }
+}
+
+fn scroll_discriminant(scroll: ScrollAxes) -> u8 {
+    match scroll {
+        ScrollAxes::None => 0,
+        ScrollAxes::Vertical => 1,
+        ScrollAxes::Horizontal => 2,
+        ScrollAxes::Both => 3,
+    }
+}
 fn hash_size_spec(spec: SizeSpec, hash: &mut Fnv) {
     match spec {
         SizeSpec::Auto => hash.write_u8(0),
@@ -1020,6 +1183,12 @@ fn hash_size_spec(spec: SizeSpec, hash: &mut Fnv) {
         SizeSpec::Token(spacing) => {
             hash.write_u8(4);
             hash.write_u32(spacing as u32);
+        }
+        SizeSpec::Fluid(fluid) => {
+            hash.write_u8(6);
+            hash.write_f32(fluid.min.px());
+            hash.write_f32(fluid.fraction);
+            hash.write_f32(fluid.max.px());
         }
         SizeSpec::Px(value) => {
             hash.write_u8(5);
@@ -1177,6 +1346,10 @@ mod tests {
     #[test]
     fn size_escape_hatch_is_explicit() {
         let element = Element::<Msg>::row().width(SizeSpec::Px(13.0));
-        assert_eq!(element.style.width, SizeSpec::Px(13.0));
+        let breakpoints = crate::theme::Breakpoints::default();
+        assert_eq!(
+            *element.style.width.resolve(0.0, &breakpoints),
+            SizeSpec::Px(13.0)
+        );
     }
 }

@@ -115,6 +115,7 @@ nav:
     - Overview: guimaker/README.md
     - Theme tokens: guimaker/theme.md
     - View tree and layout: guimaker/layout.md
+    - Responsive layout: guimaker/responsive.md
     - Text: guimaker/text.md
     - Decisions:
       - Decision log: guimaker/decisions/README.md

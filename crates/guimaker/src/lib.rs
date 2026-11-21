@@ -95,10 +95,12 @@ pub mod hash;
 pub mod input;
 pub mod inspect;
 pub mod layout;
+pub mod patterns;
 pub mod recipe;
 pub mod spatial;
 pub mod store;
 pub mod style;
+pub mod sweep;
 pub mod text;
 pub mod theme;
 pub mod view;
@@ -112,15 +114,16 @@ pub mod prelude {
     pub use crate::input::{InputEvent, PointerButton};
     pub use crate::layout::{AxisCause, Cause, LayoutStats};
     pub use crate::recipe::{start_screen, StartMsg};
+    pub use crate::resp;
     pub use crate::store::{NodeState, RepaintReason};
     pub use crate::style::{
-        Align, Columns, Direction, Edges, Justify, ScrollAxes, SizeSpec, Span, Style, TextSpec,
-        Tone,
+        Align, Columns, Direction, Edges, Fluid, FluidText, Justify, Responsive, ScrollAxes,
+        SizeSpec, Span, Style, TextSpec, Tone,
     };
     pub use crate::text::{Ellipsis, MetricsTextSystem, TextShape, TextSystem};
     pub use crate::theme::{
-        AccentState, BorderWidth, Color, ColorRole, ColorSeed, ContentWidth, Density,
-        ElevationLevel, Radius, Spacing, Theme, ThemeMode, TypeRole,
+        AccentState, BorderWidth, Breakpoint, Breakpoints, Color, ColorRole, ColorSeed,
+        ContentWidth, Density, ElevationLevel, Radius, Spacing, Theme, ThemeMode, TypeRole,
     };
     pub use crate::view::{text, text_spans, Element, Key, NodeId, NodeKind, Tree};
 }

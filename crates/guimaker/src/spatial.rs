@@ -325,7 +325,7 @@ fn visible_rect<Msg>(tree: &Tree<Msg>, rects: &[Rect], id: NodeId) -> Option<Rec
     let mut parent = node.parent;
     while let Some(parent_id) = parent {
         let parent_node = tree.node(parent_id)?;
-        if parent_node.style.clip || parent_node.style.scroll.clips() {
+        if parent_node.style.clip || parent_node.style.scroll.any(|axes| axes.clips()) {
             let parent_rect = *rects.get(parent_id.index())?;
             visible = visible.intersect(parent_rect);
             if visible.is_empty() {

@@ -17,6 +17,134 @@ pub enum ThemeMode {
     Light,
 }
 
+/// A container breakpoint class.
+///
+/// Breakpoints answer "how much width does *this* element have?", like a CSS
+/// container query, not "how wide is the window?". A node resolves its
+/// responsive values against its parent's content width; the root resolves
+/// against the viewport. The widths are tunable through [`Breakpoints`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum Breakpoint {
+    /// Under 480 px.
+    Xs,
+    /// 480 px to 767 px.
+    Sm,
+    /// 768 px to 1023 px.
+    Md,
+    /// 1024 px to 1439 px.
+    Lg,
+    /// 1440 px and up.
+    Xl,
+}
+
+impl Breakpoint {
+    /// Every class, in ascending order.
+    pub const ALL: [Self; 5] = [Self::Xs, Self::Sm, Self::Md, Self::Lg, Self::Xl];
+
+    /// The number of classes.
+    pub const COUNT: usize = 5;
+
+    /// The class's index in the scale.
+    #[must_use]
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Xs => 0,
+            Self::Sm => 1,
+            Self::Md => 2,
+            Self::Lg => 3,
+            Self::Xl => 4,
+        }
+    }
+
+    /// The class's short, stable name (`xs` … `xl`).
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Xs => "xs",
+            Self::Sm => "sm",
+            Self::Md => "md",
+            Self::Lg => "lg",
+            Self::Xl => "xl",
+        }
+    }
+
+    /// The default minimum container width of the class, in logical pixels.
+    #[must_use]
+    pub const fn min_width(self) -> f32 {
+        match self {
+            Self::Xs => 0.0,
+            Self::Sm => 480.0,
+            Self::Md => 768.0,
+            Self::Lg => 1024.0,
+            Self::Xl => 1440.0,
+        }
+    }
+}
+
+/// The container widths where the breakpoint class changes.
+///
+/// The defaults follow the phase 3 scale
+/// (`Xs < 480 <= Sm < 768 <= Md < 1024 <= Lg < 1440 <= Xl`) and live in the
+/// theme so an app can tune them without touching a view.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Breakpoints {
+    /// The `Sm` threshold in logical pixels.
+    pub sm: f32,
+    /// The `Md` threshold in logical pixels.
+    pub md: f32,
+    /// The `Lg` threshold in logical pixels.
+    pub lg: f32,
+    /// The `Xl` threshold in logical pixels.
+    pub xl: f32,
+}
+
+impl Breakpoints {
+    /// Explicit thresholds.
+    #[must_use]
+    pub const fn new(sm: f32, md: f32, lg: f32, xl: f32) -> Self {
+        Self { sm, md, lg, xl }
+    }
+
+    /// The class a container of `width` logical pixels is in.
+    #[must_use]
+    pub fn class(&self, width: f32) -> Breakpoint {
+        if width >= self.xl {
+            Breakpoint::Xl
+        } else if width >= self.lg {
+            Breakpoint::Lg
+        } else if width >= self.md {
+            Breakpoint::Md
+        } else if width >= self.sm {
+            Breakpoint::Sm
+        } else {
+            Breakpoint::Xs
+        }
+    }
+
+    /// The smallest width of a class, in logical pixels.
+    #[must_use]
+    pub fn min_width(&self, breakpoint: Breakpoint) -> f32 {
+        match breakpoint {
+            Breakpoint::Xs => 0.0,
+            Breakpoint::Sm => self.sm,
+            Breakpoint::Md => self.md,
+            Breakpoint::Lg => self.lg,
+            Breakpoint::Xl => self.xl,
+        }
+    }
+}
+
+impl Default for Breakpoints {
+    fn default() -> Self {
+        Self {
+            sm: Breakpoint::Sm.min_width(),
+            md: Breakpoint::Md.min_width(),
+            lg: Breakpoint::Lg.min_width(),
+            xl: Breakpoint::Xl.min_width(),
+        }
+    }
+}
+
 /// A spacing step on a four-pixel grid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Spacing {

@@ -55,9 +55,9 @@ pub mod tokens;
 pub use color::{Color, Oklch};
 pub use roles::{ColorRole, ColorSeed, NeutralRamp, Roles, NEUTRAL_STEPS};
 pub use tokens::{
-    BorderWidth, Borders, ContentWidth, Density, Duration, Easing, Elevation, ElevationLevel,
-    ElevationSet, FontFamily, FontWeight, Motion, Radii, Radius, Shadow, Spacing, ThemeMode,
-    TypeRole, TypeStyle, Typography, MONO_FAMILY, SANS_FAMILY,
+    BorderWidth, Borders, Breakpoint, Breakpoints, ContentWidth, Density, Duration, Easing,
+    Elevation, ElevationLevel, ElevationSet, FontFamily, FontWeight, Motion, Radii, Radius, Shadow,
+    Spacing, ThemeMode, TypeRole, TypeStyle, Typography, MONO_FAMILY, SANS_FAMILY,
 };
 
 use serde::{Deserialize, Serialize};
@@ -90,6 +90,12 @@ pub struct Theme {
     pub elevation: ElevationSet,
     /// The resolved motion tokens.
     pub motion: Motion,
+    /// The container breakpoints responsive values resolve against.
+    ///
+    /// Added in phase 3, so a theme file written before the field existed still
+    /// loads: missing values take `Breakpoints::default`.
+    #[serde(default)]
+    pub breakpoints: Breakpoints,
 }
 
 /// The interaction state of a filled (primary) action.
@@ -154,6 +160,7 @@ impl Theme {
             borders: Borders::default(),
             elevation: ElevationSet::for_mode(mode),
             motion: Motion::default(),
+            breakpoints: Breakpoints::default(),
         }
     }
 
@@ -170,6 +177,7 @@ impl Theme {
             borders: Borders::default(),
             elevation: ElevationSet::for_mode(ThemeMode::Dark),
             motion: Motion::default(),
+            breakpoints: Breakpoints::default(),
         }
     }
 

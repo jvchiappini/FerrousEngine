@@ -314,11 +314,9 @@ impl<Msg: Clone> Ui<Msg> {
                 path,
                 kind: node.kind.name(),
                 rect: self.engine.rect(node.id),
-                resolved: self
-                    .engine
-                    .resolved(node.id)
-                    .cloned()
-                    .unwrap_or_else(|| crate::style::Style::default().resolve(&self.theme)),
+                resolved: self.engine.resolved(node.id).cloned().unwrap_or_else(|| {
+                    crate::style::Style::default().resolve(&self.theme, self.viewport.width)
+                }),
                 cache: CacheState {
                     layout_reused: !self.last_repainted || !layout_repaint.repaints(),
                     text_reused: !layout_repaint.repaints(),
@@ -385,11 +383,9 @@ impl<Msg: Clone> Ui<Msg> {
     }
 
     fn paint_node(&mut self, id: NodeId, output: &mut Vec<DrawCommand>) {
-        let resolved = self
-            .engine
-            .resolved(id)
-            .cloned()
-            .unwrap_or_else(|| crate::style::Style::default().resolve(&self.theme));
+        let resolved = self.engine.resolved(id).cloned().unwrap_or_else(|| {
+            crate::style::Style::default().resolve(&self.theme, self.viewport.width)
+        });
         if resolved.hidden || resolved.opacity <= 0.0 {
             return;
         }

@@ -1,64 +1,65 @@
-column start rect=0.0,0.0,800.0,600.0 pad=32.0/32.0/32.0/32.0 gap=24.0 bg=role text=body
-  row start/header rect=32.0,32.0,736.0,38.0 gap=12.0 text=body
-    column start/header/brand rect=32.0,32.0,152.0,38.0 gap=4.0 text=body
-      text start/header/brand/title rect=32.0,32.0,63.0,20.0 text=title text="Motioner"
-      text start/header/brand/#1 rect=32.0,56.0,152.0,14.0 text=caption text="Code-driven motion graphics"
-    spacer start/header/#1 rect=196.0,51.0,435.0,0.0 text=body
-    row start/header/header_actions rect=643.0,36.0,125.0,30.0 gap=8.0 text=body
-      text start/header/header_actions/#0 rect=643.0,36.0,66.0,30.0 pad=8.0/12.0/8.0/12.0 radius=sm text=label text="Settings"
-      text start/header/header_actions/#1 rect=717.0,36.0,51.0,30.0 pad=8.0/12.0/8.0/12.0 radius=sm text=label text="Docs"
-  divider start/#1 rect=32.0,94.0,736.0,1.0 text=body
-  row start/body rect=32.0,119.0,736.0,411.0 gap=32.0 text=body
-    column start/body/recent rect=32.0,119.0,376.0,360.0 gap=12.0 text=body
-      text start/body/recent/#0 rect=32.0,119.0,376.0,20.0 text=heading text="Recent projects"
-      row start/body/recent/#0000000000000000 rect=32.0,151.0,376.0,56.0 pad=12.0/12.0/12.0/12.0 gap=12.0 bg=role radius=md border=hairline text=body
-        column start/body/recent/#0000000000000000/#0 rect=44.0,163.0,310.0,32.0 gap=4.0 text=body
-          text start/body/recent/#0000000000000000/#0/#0 rect=44.0,163.0,47.0,14.0 text=label text="Project 0"
-          text start/body/recent/#0000000000000000/#0/#1 rect=44.0,181.0,78.0,14.0 text=caption text="Edited recently"
-        text start/body/recent/#0000000000000000/#1 rect=366.0,172.0,30.0,14.0 text=caption text="11:42"
-      row start/body/recent/#0000000000000001 rect=32.0,219.0,376.0,56.0 pad=12.0/12.0/12.0/12.0 gap=12.0 bg=role radius=md border=hairline text=body
-        column start/body/recent/#0000000000000001/#0 rect=44.0,231.0,310.0,32.0 gap=4.0 text=body
-          text start/body/recent/#0000000000000001/#0/#0 rect=44.0,231.0,44.0,14.0 text=label text="Project 1"
-          text start/body/recent/#0000000000000001/#0/#1 rect=44.0,249.0,78.0,14.0 text=caption text="Edited recently"
-        text start/body/recent/#0000000000000001/#1 rect=366.0,240.0,30.0,14.0 text=caption text="11:42"
-      row start/body/recent/#0000000000000002 rect=32.0,287.0,376.0,56.0 pad=12.0/12.0/12.0/12.0 gap=12.0 bg=role radius=md border=hairline text=body
-        column start/body/recent/#0000000000000002/#0 rect=44.0,299.0,310.0,32.0 gap=4.0 text=body
-          text start/body/recent/#0000000000000002/#0/#0 rect=44.0,299.0,47.0,14.0 text=label text="Project 2"
-          text start/body/recent/#0000000000000002/#0/#1 rect=44.0,317.0,78.0,14.0 text=caption text="Edited recently"
-        text start/body/recent/#0000000000000002/#1 rect=366.0,308.0,30.0,14.0 text=caption text="11:42"
-      row start/body/recent/#0000000000000003 rect=32.0,355.0,376.0,56.0 pad=12.0/12.0/12.0/12.0 gap=12.0 bg=role radius=md border=hairline text=body
-        column start/body/recent/#0000000000000003/#0 rect=44.0,367.0,310.0,32.0 gap=4.0 text=body
-          text start/body/recent/#0000000000000003/#0/#0 rect=44.0,367.0,47.0,14.0 text=label text="Project 3"
-          text start/body/recent/#0000000000000003/#0/#1 rect=44.0,385.0,78.0,14.0 text=caption text="Edited recently"
-        text start/body/recent/#0000000000000003/#1 rect=366.0,376.0,30.0,14.0 text=caption text="11:42"
-      row start/body/recent/#0000000000000004 rect=32.0,423.0,376.0,56.0 pad=12.0/12.0/12.0/12.0 gap=12.0 bg=role radius=md border=hairline text=body
-        column start/body/recent/#0000000000000004/#0 rect=44.0,435.0,310.0,32.0 gap=4.0 text=body
-          text start/body/recent/#0000000000000004/#0/#0 rect=44.0,435.0,47.0,14.0 text=label text="Project 4"
-          text start/body/recent/#0000000000000004/#0/#1 rect=44.0,453.0,78.0,14.0 text=caption text="Edited recently"
-        text start/body/recent/#0000000000000004/#1 rect=366.0,444.0,30.0,14.0 text=caption text="11:42"
-    column start/body/new_project rect=440.0,119.0,328.0,402.0 gap=16.0 text=body
-      text start/body/new_project/#0 rect=440.0,119.0,328.0,20.0 text=heading text="New project"
-      text start/body/new_project/#1 rect=440.0,155.0,328.0,16.0 text=body text="Start with a prompt, an example, or an e…"
-      column start/body/new_project/field_name rect=440.0,187.0,328.0,58.0 gap=4.0 text=body
-        text start/body/new_project/field_name/#0 rect=440.0,187.0,31.0,14.0 text=caption text="Name"
-        row start/body/new_project/field_name/#1 rect=440.0,205.0,328.0,40.0 pad=12.0/12.0/12.0/12.0 bg=role radius=sm border=hairline text=body
-          text start/body/new_project/field_name/#1/#0 rect=452.0,217.0,44.0,16.0 text=body text="Untitled"
-      column start/body/new_project/field_size rect=440.0,261.0,328.0,58.0 gap=4.0 text=body
-        text start/body/new_project/field_size/#0 rect=440.0,261.0,22.0,14.0 text=caption text="Size"
-        row start/body/new_project/field_size/#1 rect=440.0,279.0,328.0,40.0 pad=12.0/12.0/12.0/12.0 bg=role radius=sm border=hairline text=body
-          text start/body/new_project/field_size/#1/#0 rect=452.0,291.0,68.0,16.0 text=body text="1920 x 1080"
-      column start/body/new_project/field_rate rect=440.0,335.0,328.0,58.0 gap=4.0 text=body
-        text start/body/new_project/field_rate/#0 rect=440.0,335.0,56.0,14.0 text=caption text="Frame rate"
-        row start/body/new_project/field_rate/#1 rect=440.0,353.0,328.0,40.0 pad=12.0/12.0/12.0/12.0 bg=role radius=sm border=hairline text=body
-          text start/body/new_project/field_rate/#1/#0 rect=452.0,365.0,37.0,16.0 text=body text="60 fps"
-      column start/body/new_project/field_engine rect=440.0,409.0,328.0,58.0 gap=4.0 text=body
-        text start/body/new_project/field_engine/#0 rect=440.0,409.0,36.0,14.0 text=caption text="Engine"
-        row start/body/new_project/field_engine/#1 rect=440.0,427.0,328.0,40.0 pad=12.0/12.0/12.0/12.0 bg=role radius=sm border=hairline text=body
-          text start/body/new_project/field_engine/#1/#0 rect=452.0,439.0,83.0,16.0 text=body text="FerrousEngine"
-      row start/body/new_project/new_project_actions rect=440.0,483.0,328.0,38.0 gap=8.0 text=body
-        text start/body/new_project/new_project_actions/create rect=440.0,483.0,75.0,38.0 pad=12.0/20.0/12.0/20.0 bg=role radius=sm text=label text="Create"
-        text start/body/new_project/new_project_actions/browse rect=523.0,483.0,89.0,38.0 pad=12.0/20.0/12.0/20.0 bg=role radius=sm border=hairline text=label text="Browse…"
-  row start/footer rect=32.0,554.0,736.0,14.0 gap=8.0 text=body
-    text start/footer/#0 rect=32.0,554.0,93.0,14.0 text=caption text="FerrousEngine 0.1"
-    spacer start/footer/#1 rect=133.0,561.0,565.0,0.0 text=body
-    text start/footer/#2 rect=706.0,554.0,62.0,14.0 text=caption text="Apache-2.0"
+column start rect=0.0,0.0,800.0,600.0 pad=24.0/24.0/24.0/24.0 gap=16.0 bg=role text=body
+  row start/header rect=24.0,24.0,752.0,36.0 gap=12.0 text=body
+    column start/header/brand rect=24.0,24.0,152.0,36.0 gap=4.0 text=body
+      text start/header/brand/title rect=24.0,24.0,59.0,18.0 text=display text="Motioner"
+      text start/header/brand/#1 rect=24.0,46.0,152.0,14.0 text=caption text="Code-driven motion graphics"
+    row start/header/header_actions rect=655.0,27.0,121.0,30.0 gap=4.0 text=body
+      text start/header/header_actions/#0 rect=655.0,27.0,66.0,30.0 pad=8.0/12.0/8.0/12.0 radius=sm text=label text="Settings"
+      text start/header/header_actions/#1 rect=725.0,27.0,51.0,30.0 pad=8.0/12.0/8.0/12.0 radius=sm text=label text="Docs"
+  divider start/#1 rect=24.0,76.0,752.0,0.0 text=body
+  row start/body rect=24.0,92.0,752.0,694.0 gap=16.0 text=body
+    row start/body/#0 rect=24.0,92.0,752.0,300.0 text=body
+      column start/body/#0/recent rect=24.0,92.0,752.0,300.0 gap=8.0 text=body
+        text start/body/#0/recent/#0 rect=24.0,92.0,752.0,20.0 text=heading text="Recent projects"
+        row start/body/#0/recent/#0000000000000000 rect=24.0,120.0,752.0,48.0 pad=8.0/8.0/8.0/8.0 gap=8.0 bg=role radius=md border=hairline text=body
+          column start/body/#0/recent/#0000000000000000/#0 rect=32.0,128.0,698.0,32.0 gap=4.0 text=body
+            text start/body/#0/recent/#0000000000000000/#0/#0 rect=32.0,128.0,47.0,14.0 text=label text="Project 0"
+            text start/body/#0/recent/#0000000000000000/#0/#1 rect=32.0,146.0,78.0,14.0 text=caption text="Edited recently"
+          text start/body/#0/recent/#0000000000000000/#1 rect=738.0,137.0,30.0,14.0 text=caption text="11:42"
+        row start/body/#0/recent/#0000000000000001 rect=24.0,176.0,752.0,48.0 pad=8.0/8.0/8.0/8.0 gap=8.0 bg=role radius=md border=hairline text=body
+          column start/body/#0/recent/#0000000000000001/#0 rect=32.0,184.0,698.0,32.0 gap=4.0 text=body
+            text start/body/#0/recent/#0000000000000001/#0/#0 rect=32.0,184.0,44.0,14.0 text=label text="Project 1"
+            text start/body/#0/recent/#0000000000000001/#0/#1 rect=32.0,202.0,78.0,14.0 text=caption text="Edited recently"
+          text start/body/#0/recent/#0000000000000001/#1 rect=738.0,193.0,30.0,14.0 text=caption text="11:42"
+        row start/body/#0/recent/#0000000000000002 rect=24.0,232.0,752.0,48.0 pad=8.0/8.0/8.0/8.0 gap=8.0 bg=role radius=md border=hairline text=body
+          column start/body/#0/recent/#0000000000000002/#0 rect=32.0,240.0,698.0,32.0 gap=4.0 text=body
+            text start/body/#0/recent/#0000000000000002/#0/#0 rect=32.0,240.0,47.0,14.0 text=label text="Project 2"
+            text start/body/#0/recent/#0000000000000002/#0/#1 rect=32.0,258.0,78.0,14.0 text=caption text="Edited recently"
+          text start/body/#0/recent/#0000000000000002/#1 rect=738.0,249.0,30.0,14.0 text=caption text="11:42"
+        row start/body/#0/recent/#0000000000000003 rect=24.0,288.0,752.0,48.0 pad=8.0/8.0/8.0/8.0 gap=8.0 bg=role radius=md border=hairline text=body
+          column start/body/#0/recent/#0000000000000003/#0 rect=32.0,296.0,698.0,32.0 gap=4.0 text=body
+            text start/body/#0/recent/#0000000000000003/#0/#0 rect=32.0,296.0,47.0,14.0 text=label text="Project 3"
+            text start/body/#0/recent/#0000000000000003/#0/#1 rect=32.0,314.0,78.0,14.0 text=caption text="Edited recently"
+          text start/body/#0/recent/#0000000000000003/#1 rect=738.0,305.0,30.0,14.0 text=caption text="11:42"
+        row start/body/#0/recent/#0000000000000004 rect=24.0,344.0,752.0,48.0 pad=8.0/8.0/8.0/8.0 gap=8.0 bg=role radius=md border=hairline text=body
+          column start/body/#0/recent/#0000000000000004/#0 rect=32.0,352.0,698.0,32.0 gap=4.0 text=body
+            text start/body/#0/recent/#0000000000000004/#0/#0 rect=32.0,352.0,47.0,14.0 text=label text="Project 4"
+            text start/body/#0/recent/#0000000000000004/#0/#1 rect=32.0,370.0,78.0,14.0 text=caption text="Edited recently"
+          text start/body/#0/recent/#0000000000000004/#1 rect=738.0,361.0,30.0,14.0 text=caption text="11:42"
+    row start/body/#1 rect=24.0,408.0,752.0,378.0 text=body
+      column start/body/#1/new_project rect=80.0,408.0,640.0,378.0 gap=12.0 text=body
+        text start/body/#1/new_project/#0 rect=80.0,408.0,640.0,20.0 text=heading text="New project"
+        text start/body/#1/new_project/#1 rect=80.0,440.0,640.0,16.0 text=body text="Start with a prompt, an example, or an e…"
+        column start/body/#1/new_project/field_name rect=80.0,468.0,640.0,58.0 gap=4.0 text=body
+          text start/body/#1/new_project/field_name/#0 rect=80.0,468.0,31.0,14.0 text=caption text="Name"
+          row start/body/#1/new_project/field_name/#1 rect=80.0,486.0,640.0,40.0 pad=12.0/12.0/12.0/12.0 bg=role radius=sm border=hairline text=body
+            text start/body/#1/new_project/field_name/#1/#0 rect=92.0,498.0,44.0,16.0 text=body text="Untitled"
+        column start/body/#1/new_project/field_size rect=80.0,538.0,640.0,58.0 gap=4.0 text=body
+          text start/body/#1/new_project/field_size/#0 rect=80.0,538.0,22.0,14.0 text=caption text="Size"
+          row start/body/#1/new_project/field_size/#1 rect=80.0,556.0,640.0,40.0 pad=12.0/12.0/12.0/12.0 bg=role radius=sm border=hairline text=body
+            text start/body/#1/new_project/field_size/#1/#0 rect=92.0,568.0,68.0,16.0 text=body text="1920 x 1080"
+        column start/body/#1/new_project/field_rate rect=80.0,608.0,640.0,58.0 gap=4.0 text=body
+          text start/body/#1/new_project/field_rate/#0 rect=80.0,608.0,56.0,14.0 text=caption text="Frame rate"
+          row start/body/#1/new_project/field_rate/#1 rect=80.0,626.0,640.0,40.0 pad=12.0/12.0/12.0/12.0 bg=role radius=sm border=hairline text=body
+            text start/body/#1/new_project/field_rate/#1/#0 rect=92.0,638.0,37.0,16.0 text=body text="60 fps"
+        column start/body/#1/new_project/field_engine rect=80.0,678.0,640.0,58.0 gap=4.0 text=body
+          text start/body/#1/new_project/field_engine/#0 rect=80.0,678.0,35.0,14.0 text=caption text="Engine"
+          row start/body/#1/new_project/field_engine/#1 rect=80.0,696.0,640.0,40.0 pad=12.0/12.0/12.0/12.0 bg=role radius=sm border=hairline text=body
+            text start/body/#1/new_project/field_engine/#1/#0 rect=92.0,708.0,82.0,16.0 text=body text="FerrousEngine"
+        row start/body/#1/new_project/new_project_actions rect=80.0,748.0,640.0,38.0 gap=8.0 text=body
+          text start/body/#1/new_project/new_project_actions/create rect=80.0,748.0,59.0,38.0 pad=12.0/12.0/12.0/12.0 bg=role radius=sm text=label text="Create"
+          text start/body/#1/new_project/new_project_actions/browse rect=147.0,748.0,72.0,38.0 pad=12.0/12.0/12.0/12.0 bg=role radius=sm border=hairline text=label text="Browse…"
+  row start/footer rect=24.0,802.0,752.0,14.0 gap=8.0 text=body
+    text start/footer/#0 rect=24.0,802.0,93.0,14.0 text=caption text="FerrousEngine 0.1"
+    spacer start/footer/#1 rect=125.0,809.0,581.0,0.0 text=body
+    text start/footer/#2 rect=714.0,802.0,62.0,14.0 text=caption text="Apache-2.0"

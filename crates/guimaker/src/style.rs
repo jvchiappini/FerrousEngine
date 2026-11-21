@@ -7,8 +7,8 @@
 
 use crate::text::{Ellipsis, TextStyle};
 use crate::theme::{
-    BorderWidth, Color, ColorRole, ContentWidth, Elevation, ElevationLevel, Radius, Spacing, Theme,
-    TypeRole,
+    BorderWidth, Breakpoint, Color, ColorRole, ContentWidth, Elevation, ElevationLevel, Radius,
+    Spacing, Theme, TypeRole,
 };
 
 /// The resize axis of a spacing value.
@@ -136,20 +136,196 @@ pub enum SizeSpec {
     Fraction(f32),
     /// A named spacing token.
     Token(Spacing),
+    /// A clamped fraction of the container, in logical pixels.
+    Fluid(Fluid),
     /// The explicit pixel escape hatch; the design lint reports it.
     Px(f32),
 }
 
 impl SizeSpec {
-    /// Resolves a token or pixel size; `None` for auto/hug/fill/fraction.
+    /// Resolves a token or pixel size; `None` for auto/hug/fill/fraction/fluid.
     #[must_use]
     pub fn length(self) -> Option<f32> {
         match self {
             Self::Token(spacing) => Some(spacing.px()),
             Self::Px(value) | Self::Fraction(value) => Some(value),
-            Self::Auto | Self::Hug | Self::Fill => None,
+            Self::Auto | Self::Hug | Self::Fill | Self::Fluid(_) => None,
         }
     }
+}
+
+/// A fluid size: `clamp(min, fraction * container, max)`.
+///
+/// This is how a width or a type size scales smoothly between breakpoints
+/// without a step. The fraction is a layout ratio like
+/// [`SizeSpec::Fraction`], not a design value; the bounds are tokens.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fluid {
+    /// The smallest value, in logical pixels.
+    pub min: Spacing,
+    /// The share of the container width (or height) to aim for.
+    pub fraction: f32,
+    /// The largest value, in logical pixels.
+    pub max: Spacing,
+}
+
+impl Fluid {
+    /// A clamp of a spacing token, a container fraction and a spacing token.
+    #[must_use]
+    pub const fn new(min: Spacing, fraction: f32, max: Spacing) -> Self {
+        Self { min, fraction, max }
+    }
+
+    /// The resolved value for a container of `container` logical pixels.
+    #[must_use]
+    pub fn resolve(&self, container: f32) -> f32 {
+        let preferred = container * self.fraction;
+        preferred.clamp(self.min.px(), self.max.px())
+    }
+}
+
+/// A fluid type size: the role whose size scales between two roles.
+///
+/// The resolved size is `clamp(min.size, fraction * container, max.size)` and
+/// the line height keeps its ratio. Weight, family and tracking come from the
+/// node's [`TypeRole`]; use [`Style::text_role`] with the largest of the two.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FluidText {
+    /// The smallest role.
+    pub min: TypeRole,
+    /// The share of the container width (or height) to aim for.
+    pub fraction: f32,
+    /// The largest role.
+    pub max: TypeRole,
+}
+
+impl FluidText {
+    /// A clamp between two type roles.
+    #[must_use]
+    pub const fn new(min: TypeRole, fraction: f32, max: TypeRole) -> Self {
+        Self { min, fraction, max }
+    }
+}
+
+/// A value that can change with the container's breakpoint class.
+///
+/// `.pad(resp![Xs: S4, Lg: S8])` builds one of these. A plain value converts
+/// into a constant one, so `.pad(S4)` still reads the same. Resolution picks the
+/// entry of the largest declared class that is at or below the container's
+/// class; a constant value therefore applies at every width.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Responsive<T> {
+    slots: [Option<(Breakpoint, T)>; Breakpoint::COUNT],
+}
+
+impl<T> Responsive<T> {
+    /// A value with no slots yet; [`Responsive::at`] fills them.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            slots: [None, None, None, None, None],
+        }
+    }
+
+    /// The same value at every width.
+    #[must_use]
+    pub fn single(value: T) -> Self {
+        Self::new().at(Breakpoint::Xs, value)
+    }
+
+    /// The value to use from `breakpoint` upwards.
+    #[must_use]
+    pub fn at(mut self, breakpoint: Breakpoint, value: T) -> Self {
+        self.slots[breakpoint.index()] = Some((breakpoint, value));
+        self
+    }
+
+    /// The value for a container of `container_width` logical pixels.
+    ///
+    /// # Panics
+    ///
+    /// Panics when no slot was ever declared. The [`resp!`](crate::resp) macro
+    /// and `From<T>` always declare one, so this only happens if
+    /// [`Responsive::new`] is used directly without [`Responsive::at`].
+    #[must_use]
+    pub fn resolve(&self, container_width: f32, breakpoints: &crate::theme::Breakpoints) -> &T {
+        let class = breakpoints.class(container_width);
+        let mut best: Option<&(Breakpoint, T)> = None;
+        let mut first: Option<&(Breakpoint, T)> = None;
+        for entry in self.slots.iter().flatten() {
+            first.get_or_insert(entry);
+            if entry.0 <= class {
+                best = Some(entry);
+            }
+        }
+        let entry = best
+            .or(first)
+            .expect("responsive value has no declared slot");
+        &entry.1
+    }
+
+    /// Whether the value is the same at every width.
+    ///
+    /// A constant value lets layout skip the second responsive pass; a view made
+    /// only of constants lays out exactly once, as before phase 3.
+    #[must_use]
+    pub fn is_constant(&self) -> bool {
+        self.slots.iter().flatten().count() <= 1
+    }
+
+    /// Whether any declared value matches `predicate`.
+    #[must_use]
+    pub fn any(&self, predicate: impl Fn(&T) -> bool) -> bool {
+        self.slots
+            .iter()
+            .flatten()
+            .any(|(_, value)| predicate(value))
+    }
+
+    /// Calls `visit` for every declared slot, in class order.
+    pub fn for_each(&self, mut visit: impl FnMut(Breakpoint, &T)) {
+        for (breakpoint, value) in self.slots.iter().flatten() {
+            visit(*breakpoint, value);
+        }
+    }
+}
+
+impl<T> Default for Responsive<T>
+where
+    T: Default,
+{
+    fn default() -> Self {
+        Self::single(T::default())
+    }
+}
+
+impl<T> From<T> for Responsive<T> {
+    fn from(value: T) -> Self {
+        Self::single(value)
+    }
+}
+
+/// Builds a [`Responsive`] from `Breakpoint: value` pairs.
+///
+/// ```
+/// use guimaker::prelude::*;
+/// let pad: Responsive<Spacing> = resp![Xs: Spacing::S4, Lg: Spacing::S8];
+/// let theme = Theme::dark();
+/// assert_eq!(*pad.resolve(600.0, &theme.breakpoints), Spacing::S4);
+/// assert_eq!(*pad.resolve(1400.0, &theme.breakpoints), Spacing::S8);
+/// ```
+#[macro_export]
+macro_rules! resp {
+    ($($breakpoint:ident : $value:expr),+ $(,)?) => {{
+        let mut responsive = $crate::style::Responsive::new();
+        $(
+            responsive = responsive.at(
+                $crate::theme::Breakpoint::$breakpoint,
+                ::core::convert::Into::into($value),
+            );
+        )+
+        responsive
+    }};
 }
 
 /// A grid column rule.
@@ -269,31 +445,33 @@ pub struct Tooltip {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Style {
     /// Flow direction for `column`/`row`.
-    pub direction: Direction,
+    pub direction: Responsive<Direction>,
     /// Padding on every edge.
-    pub padding: Edges<Spacing>,
+    pub padding: Edges<Responsive<Spacing>>,
     /// Gap between children.
-    pub gap: Spacing,
+    pub gap: Responsive<Spacing>,
     /// Cross-axis alignment.
-    pub align: Align,
+    pub align: Responsive<Align>,
     /// Main-axis distribution.
-    pub justify: Justify,
+    pub justify: Responsive<Justify>,
+    /// The node's own alignment override in its parent's cross axis.
+    pub align_self: Option<Align>,
     /// Flex grow factor.
     pub grow: f32,
     /// Flex shrink factor.
     pub shrink: f32,
     /// Width rule.
-    pub width: SizeSpec,
+    pub width: Responsive<SizeSpec>,
     /// Height rule.
-    pub height: SizeSpec,
+    pub height: Responsive<SizeSpec>,
     /// Minimum width as a spacing token.
-    pub min_width: Option<Spacing>,
+    pub min_width: Option<Responsive<Spacing>>,
     /// Minimum height as a spacing token.
-    pub min_height: Option<Spacing>,
+    pub min_height: Option<Responsive<Spacing>>,
     /// Maximum width as a spacing token.
-    pub max_width: Option<Spacing>,
+    pub max_width: Option<Responsive<Spacing>>,
     /// Maximum height as a spacing token.
-    pub max_height: Option<Spacing>,
+    pub max_height: Option<Responsive<Spacing>>,
     /// A content column maximum (`max_width(ContentWidth::Prose)`).
     pub content_width: Option<ContentWidth>,
     /// Background colour role.
@@ -303,7 +481,7 @@ pub struct Style {
     /// Border width token.
     pub border_width: BorderWidth,
     /// Corner radius token.
-    pub radius: Radius,
+    pub radius: Responsive<Radius>,
     /// Shadow level.
     pub elevation: ElevationLevel,
     /// Opacity, `0.0..=1.0`.
@@ -312,10 +490,16 @@ pub struct Style {
     pub clip: bool,
     /// Whether the node (and subtree) is laid out at all.
     pub hidden: bool,
+    /// Hides the node below a breakpoint, like a CSS container query.
+    pub hidden_below: Option<Breakpoint>,
+    /// Hides the node from a breakpoint upwards.
+    pub hidden_above: Option<Breakpoint>,
     /// The default text tone.
     pub tone: Tone,
     /// The default text role.
     pub text_role: TypeRole,
+    /// A fluid type size clamped between two roles.
+    pub fluid_text: Option<FluidText>,
     /// Whether digits are tabular.
     pub tabular: bool,
     /// How many lines to show.
@@ -325,11 +509,13 @@ pub struct Style {
     /// Aspect ratio (width / height).
     pub aspect: Option<f32>,
     /// Grid columns, when the element is a grid.
-    pub columns: Option<Columns>,
+    pub columns: Option<Responsive<Columns>>,
     /// Flow wrapping.
     pub wrap: bool,
     /// Scroll axes, when the element is a scroll container.
-    pub scroll: ScrollAxes,
+    pub scroll: Responsive<ScrollAxes>,
+    /// Shrink priority in a row: 1 gives way first, 9 last; 0 is unmanaged.
+    pub priority: u8,
     /// Whether the element is a hit-test target.
     pub interactive: bool,
     /// Whether the element is disabled.
@@ -341,15 +527,16 @@ pub struct Style {
 impl Default for Style {
     fn default() -> Self {
         Self {
-            direction: Direction::Row,
-            padding: Edges::all(Spacing::S0),
-            gap: Spacing::S0,
-            align: Align::Start,
-            justify: Justify::Start,
+            direction: Responsive::single(Direction::Row),
+            padding: Edges::all(Responsive::single(Spacing::S0)),
+            gap: Responsive::single(Spacing::S0),
+            align: Responsive::single(Align::Start),
+            justify: Responsive::single(Justify::Start),
+            align_self: None,
             grow: 0.0,
             shrink: 1.0,
-            width: SizeSpec::Auto,
-            height: SizeSpec::Auto,
+            width: Responsive::single(SizeSpec::Auto),
+            height: Responsive::single(SizeSpec::Auto),
             min_width: None,
             min_height: None,
             max_width: None,
@@ -358,24 +545,60 @@ impl Default for Style {
             bg: None,
             border: None,
             border_width: BorderWidth::Hairline,
-            radius: Radius::None,
+            radius: Responsive::single(Radius::None),
             elevation: ElevationLevel::E0,
             opacity: 1.0,
             clip: false,
             hidden: false,
+            hidden_below: None,
+            hidden_above: None,
             tone: Tone::Default,
             text_role: TypeRole::Body,
+            fluid_text: None,
             tabular: false,
             max_lines: None,
             ellipsis: Ellipsis::None,
             aspect: None,
             columns: None,
             wrap: false,
-            scroll: ScrollAxes::None,
+            scroll: Responsive::single(ScrollAxes::None),
+            priority: 0,
             interactive: false,
             disabled: false,
             tooltip: None,
         }
+    }
+}
+
+impl Style {
+    /// Whether any part of the style resolves differently at another width.
+    ///
+    /// A view whose styles are all constant lays out in one pass; this is what
+    /// keeps the phase 2 single-pass cost for a non-responsive screen.
+    #[must_use]
+    pub fn is_responsive(&self) -> bool {
+        !self.direction.is_constant()
+            || !self.padding.top.is_constant()
+            || !self.padding.right.is_constant()
+            || !self.padding.bottom.is_constant()
+            || !self.padding.left.is_constant()
+            || !self.gap.is_constant()
+            || !self.align.is_constant()
+            || !self.justify.is_constant()
+            || !self.width.is_constant()
+            || !self.height.is_constant()
+            || self.min_width.is_some_and(|value| !value.is_constant())
+            || self.min_height.is_some_and(|value| !value.is_constant())
+            || self.max_width.is_some_and(|value| !value.is_constant())
+            || self.max_height.is_some_and(|value| !value.is_constant())
+            || self.columns.is_some_and(|value| !value.is_constant())
+            || !self.scroll.is_constant()
+            || !self.radius.is_constant()
+            || self.hidden_below.is_some()
+            || self.hidden_above.is_some()
+            || self.fluid_text.is_some()
+            || self.width.any(|value| matches!(value, SizeSpec::Fluid(_)))
+            || self.height.any(|value| matches!(value, SizeSpec::Fluid(_)))
     }
 }
 
@@ -402,14 +625,22 @@ pub struct ResolvedStyle {
     pub align: Align,
     /// Main-axis distribution.
     pub justify: Justify,
+    /// The node's own alignment override in its parent's cross axis.
+    pub align_self: Option<Align>,
     /// Flex grow.
     pub grow: f32,
     /// Flex shrink.
     pub shrink: f32,
+    /// Shrink priority (see [`Style::priority`]).
+    pub priority: u8,
     /// Width rule.
     pub width: SizeSpec,
     /// Height rule.
     pub height: SizeSpec,
+    /// The fraction a fluid width resolved from, when it is one.
+    pub fluid_width: Option<f32>,
+    /// The fraction a fluid height resolved from, when it is one.
+    pub fluid_height: Option<f32>,
     /// Minimum width in pixels.
     pub min_width: Option<f32>,
     /// Minimum height in pixels.
@@ -461,33 +692,79 @@ pub struct ResolvedStyle {
 }
 
 impl Style {
-    /// Resolves every token against `theme`.
+    /// Resolves every token against `theme` for a node whose container is
+    /// `container_width` logical pixels wide.
+    ///
+    /// The container is the parent's content width (the viewport for the root),
+    /// which is what a CSS container query measures. Fluid sizes and
+    /// breakpoints both use it.
     #[must_use]
-    pub fn resolve(&self, theme: &Theme) -> ResolvedStyle {
+    pub fn resolve(&self, theme: &Theme, container_width: f32) -> ResolvedStyle {
         let spacing = |value: Spacing| theme.spacing(value);
+        let breakpoints = &theme.breakpoints;
+        let resolved_size = |rule: &Responsive<SizeSpec>| {
+            let spec = *rule.resolve(container_width, breakpoints);
+            match spec {
+                SizeSpec::Fluid(fluid) => SizeSpec::Px(fluid.resolve(container_width)),
+                other => other,
+            }
+        };
+        let fluid_fraction =
+            |rule: &Responsive<SizeSpec>| match *rule.resolve(container_width, breakpoints) {
+                SizeSpec::Fluid(fluid) => Some(fluid.fraction),
+                _ => None,
+            };
         let type_style = theme.typography.get(self.text_role);
+        let mut text_style = TextStyle::from_type(type_style, self.tabular);
+        if let Some(fluid) = self.fluid_text {
+            let size = (container_width * fluid.fraction).clamp(
+                theme.typography.get(fluid.min).size,
+                theme.typography.get(fluid.max).size,
+            );
+            let base = type_style.size;
+            let factor = if base > 0.0 { size / base } else { 1.0 };
+            text_style.size = size;
+            text_style.line_height = (text_style.line_height * factor).max(size);
+        }
+        let class = breakpoints.class(container_width);
+        let hidden_below = self
+            .hidden_below
+            .is_some_and(|breakpoint| class < breakpoint);
+        let hidden_above = self
+            .hidden_above
+            .is_some_and(|breakpoint| class >= breakpoint);
         ResolvedStyle {
-            direction: self.direction,
+            direction: *self.direction.resolve(container_width, breakpoints),
             padding: Edges {
-                top: spacing(self.padding.top),
-                right: spacing(self.padding.right),
-                bottom: spacing(self.padding.bottom),
-                left: spacing(self.padding.left),
+                top: spacing(*self.padding.top.resolve(container_width, breakpoints)),
+                right: spacing(*self.padding.right.resolve(container_width, breakpoints)),
+                bottom: spacing(*self.padding.bottom.resolve(container_width, breakpoints)),
+                left: spacing(*self.padding.left.resolve(container_width, breakpoints)),
             },
-            gap: spacing(self.gap),
-            align: self.align,
-            justify: self.justify,
+            gap: spacing(*self.gap.resolve(container_width, breakpoints)),
+            align: *self.align.resolve(container_width, breakpoints),
+            justify: *self.justify.resolve(container_width, breakpoints),
+            align_self: self.align_self,
             grow: self.grow,
             shrink: self.shrink,
-            width: self.width,
-            height: self.height,
-            min_width: self.min_width.map(spacing),
-            min_height: self.min_height.map(spacing),
+            priority: self.priority,
+            width: resolved_size(&self.width),
+            height: resolved_size(&self.height),
+            fluid_width: fluid_fraction(&self.width),
+            fluid_height: fluid_fraction(&self.height),
+            min_width: self
+                .min_width
+                .map(|value| spacing(*value.resolve(container_width, breakpoints))),
+            min_height: self
+                .min_height
+                .map(|value| spacing(*value.resolve(container_width, breakpoints))),
             max_width: self
                 .max_width
-                .map(spacing)
+                .map(|value| spacing(*value.resolve(container_width, breakpoints)))
                 .or_else(|| self.content_width.map(|width| theme.content_width(width))),
-            max_height: self.max_height.map(spacing),
+            max_height: self
+                .max_height
+                .map(|value| spacing(*value.resolve(container_width, breakpoints))),
             bg: self.bg.map(|role| theme.role(role)),
             border: self.border.map(|role| theme.role(role)),
             border_width: if self.border.is_some() {
@@ -495,57 +772,66 @@ impl Style {
             } else {
                 0.0
             },
-            radius: self.radius,
+            radius: *self.radius.resolve(container_width, breakpoints),
             elevation_level: self.elevation,
             elevation: theme.elevation_at(self.elevation),
             opacity: self.opacity.clamp(0.0, 1.0),
-            clip: self.clip || self.scroll.clips(),
-            hidden: self.hidden,
+            clip: self.clip || self.scroll.resolve(container_width, breakpoints).clips(),
+            hidden: self.hidden || hidden_below || hidden_above,
             tone: self.tone,
             text_role: self.text_role,
             text: ResolvedText {
-                style: TextStyle::from_type(type_style, self.tabular),
+                style: text_style,
                 color: self.tone.color(theme),
             },
             max_lines: self.max_lines,
             ellipsis: self.ellipsis,
             aspect: self.aspect,
-            columns: self.columns,
+            columns: self
+                .columns
+                .map(|value| *value.resolve(container_width, breakpoints)),
             wrap: self.wrap,
-            scroll: self.scroll,
+            scroll: *self.scroll.resolve(container_width, breakpoints),
             interactive: self.interactive,
             disabled: self.disabled,
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
-    use super::{Columns, Edges, SizeSpec, Style, Tone};
-    use crate::theme::{BorderWidth, ContentWidth, Radius, Spacing, Theme, TypeRole};
+    use super::{Columns, Edges, Fluid, Responsive, SizeSpec, Style, Tone};
+    use crate::theme::{
+        BorderWidth, Breakpoint, Breakpoints, ContentWidth, Radius, Spacing, Theme, TypeRole,
+    };
+
+    fn at(style: &Style, width: f32) -> super::ResolvedStyle {
+        style.resolve(&Theme::dark(), width)
+    }
 
     #[test]
     fn defaults_are_tokens_not_numbers() {
         let style = Style::default();
-        assert_eq!(style.padding, Edges::all(Spacing::S0));
-        assert_eq!(style.gap, Spacing::S0);
-        assert_eq!(style.radius, Radius::None);
+        let breakpoints = Breakpoints::default();
+        assert_eq!(*style.padding.top.resolve(0.0, &breakpoints), Spacing::S0);
+        assert_eq!(*style.gap.resolve(0.0, &breakpoints), Spacing::S0);
+        assert_eq!(*style.width.resolve(0.0, &breakpoints), SizeSpec::Auto);
+        assert_eq!(*style.radius.resolve(0.0, &breakpoints), Radius::None);
         assert_eq!(style.text_role, TypeRole::Body);
         assert_eq!(style.border_width, BorderWidth::Hairline);
-        assert_eq!(style.width, SizeSpec::Auto);
+        assert!(!style.is_responsive(), "the defaults are constant");
     }
 
     #[test]
     fn resolution_uses_the_theme() {
         let theme = Theme::dark();
         let style = Style {
-            padding: Edges::all(Spacing::S4),
-            gap: Spacing::S2,
+            padding: Edges::all(Responsive::single(Spacing::S4)),
+            gap: Responsive::single(Spacing::S2),
             bg: Some(crate::theme::ColorRole::Surface),
             content_width: Some(ContentWidth::Prose),
             ..Style::default()
         };
-        let resolved = style.resolve(&theme);
+        let resolved = style.resolve(&theme, 1280.0);
         assert!((resolved.padding.top - 16.0).abs() < 1e-6);
         assert!((resolved.gap - 8.0).abs() < 1e-6);
         assert_eq!(
@@ -570,5 +856,52 @@ mod tests {
             Columns::AutoFill(Spacing::S6),
             Columns::AutoFill(Spacing::S6)
         );
+    }
+
+    #[test]
+    fn responsive_values_pick_the_largest_declared_class() {
+        let breakpoints = Breakpoints::default();
+        let value = Responsive::single(Spacing::S2)
+            .at(Breakpoint::Md, Spacing::S6)
+            .at(Breakpoint::Lg, Spacing::S12);
+        assert_eq!(*value.resolve(360.0, &breakpoints), Spacing::S2);
+        assert_eq!(*value.resolve(767.0, &breakpoints), Spacing::S2);
+        assert_eq!(*value.resolve(768.0, &breakpoints), Spacing::S6);
+        assert_eq!(*value.resolve(1439.0, &breakpoints), Spacing::S12);
+        assert_eq!(*value.resolve(3840.0, &breakpoints), Spacing::S12);
+        assert!(!value.is_constant());
+        assert!(Responsive::single(Spacing::S4).is_constant());
+    }
+
+    #[test]
+    fn a_value_declared_from_md_applies_at_small_widths() {
+        let breakpoints = Breakpoints::default();
+        let value = Responsive::new().at(Breakpoint::Md, Spacing::S8);
+        // No entry at or below `Xs`, so the smallest declared entry is used.
+        assert_eq!(*value.resolve(320.0, &breakpoints), Spacing::S8);
+    }
+
+    #[test]
+    fn fluid_sizes_clamp_between_the_tokens() {
+        let breakpoints = Breakpoints::default();
+        let style = Style {
+            width: Responsive::single(SizeSpec::Fluid(Fluid::new(Spacing::S24, 0.5, Spacing::S24))),
+            ..Style::default()
+        };
+        let resolved = style.resolve(&Theme::dark(), 200.0);
+        assert_eq!(resolved.width, SizeSpec::Px(96.0));
+        assert_eq!(resolved.fluid_width, Some(0.5));
+        assert!(style.is_responsive());
+        assert_eq!(breakpoints.class(0.0), Breakpoint::Xs);
+    }
+
+    #[test]
+    fn hidden_below_resolves_to_hidden() {
+        let style = Style {
+            hidden_below: Some(Breakpoint::Md),
+            ..Style::default()
+        };
+        assert!(at(&style, 500.0).hidden);
+        assert!(!at(&style, 800.0).hidden);
     }
 }
