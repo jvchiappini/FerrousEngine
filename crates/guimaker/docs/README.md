@@ -28,5 +28,9 @@ Rules that hold from the first commit:
 - no engine crate may depend on a `guimaker*` crate;
 - no literal design value outside `guimaker::theme`; `Px` is the only
   explicit escape hatch and the lint reports it;
+- the literal guard (`scripts/check_guimaker_literals.py`) fails the gate
+  when a GUIMaker crate calls a literal `Color` constructor or passes a raw
+  pixel number to a spacing/radius API outside `guimaker::theme`; tests and
+  the theme are exempt;
 - layout and paint depend only on the view, theme, viewport, scale and the
   injected clock, so the same inputs give a byte-identical screenshot.

@@ -102,6 +102,54 @@ impl Spacing {
     }
 }
 
+/// A maximum content-column width for `max_width` layouts.
+///
+/// These are design values, not runtime measurements: a layout clamps a
+/// content column to one of them so prose and forms keep a comfortable
+/// measure on wide screens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ContentWidth {
+    /// 480 px, a narrow form or dialog column.
+    Sm,
+    /// 640 px, a single-column form or card.
+    Md,
+    /// 800 px, a wide panel or dashboard section.
+    Lg,
+    /// 1024 px, the widest content column.
+    Xl,
+    /// 672 px, a comfortable prose measure.
+    Prose,
+}
+
+impl ContentWidth {
+    /// Every content width, in the documented order.
+    pub const ALL: [Self; 5] = [Self::Sm, Self::Md, Self::Lg, Self::Xl, Self::Prose];
+
+    /// The width in logical pixels.
+    #[must_use]
+    pub const fn px(self) -> f32 {
+        match self {
+            Self::Sm => 480.0,
+            Self::Md => 640.0,
+            Self::Lg => 800.0,
+            Self::Xl => 1024.0,
+            Self::Prose => 672.0,
+        }
+    }
+
+    /// The width's short, stable name.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Sm => "sm",
+            Self::Md => "md",
+            Self::Lg => "lg",
+            Self::Xl => "xl",
+            Self::Prose => "prose",
+        }
+    }
+}
+
 /// A font weight, mapped to a numeric font weight.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FontWeight {
@@ -810,9 +858,26 @@ impl Default for Motion {
 #[cfg(test)]
 mod tests {
     use super::{
-        BorderWidth, Borders, Density, Duration, Easing, ElevationLevel, ElevationSet, FontFamily,
-        Motion, Radii, Radius, Spacing, ThemeMode, TypeRole, Typography,
+        BorderWidth, Borders, ContentWidth, Density, Duration, Easing, ElevationLevel,
+        ElevationSet, FontFamily, Motion, Radii, Radius, Spacing, ThemeMode, TypeRole, Typography,
     };
+
+    #[test]
+    #[allow(clippy::float_cmp)] // reason: token values are exact literals
+    fn content_widths_are_the_documented_values() {
+        let expected = [
+            (ContentWidth::Sm, 480.0, "sm"),
+            (ContentWidth::Md, 640.0, "md"),
+            (ContentWidth::Lg, 800.0, "lg"),
+            (ContentWidth::Xl, 1024.0, "xl"),
+            (ContentWidth::Prose, 672.0, "prose"),
+        ];
+        for (width, px, name) in expected {
+            assert_eq!(width.px(), px);
+            assert_eq!(width.name(), name);
+        }
+        assert_eq!(ContentWidth::ALL.len(), expected.len());
+    }
 
     #[test]
     #[allow(clippy::float_cmp)] // reason: token values are exact literals

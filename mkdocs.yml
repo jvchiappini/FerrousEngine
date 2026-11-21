@@ -114,6 +114,8 @@ nav:
   - GUIMaker - the UI library:
     - Overview: guimaker/README.md
     - Theme tokens: guimaker/theme.md
+    - View tree and layout: guimaker/layout.md
+    - Text: guimaker/text.md
     - Decisions:
       - Decision log: guimaker/decisions/README.md
       - G-0001 - Library architecture: guimaker/decisions/G-0001.md

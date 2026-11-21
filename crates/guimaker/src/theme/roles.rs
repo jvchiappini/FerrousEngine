@@ -5,7 +5,7 @@
 //! hue plus chroma) and this module generates a coherent palette from it:
 //!
 //! 1. a monotonic neutral ramp in `OKLCH` lightness;
-//! 2. the accent and its hover, pressed and subtle variants;
+//! 2. the accent and its hover, pressed, filled and subtle variants;
 //! 3. the success, warning, danger and info families;
 //! 4. the overlay scrim, the selection fill and the focus ring.
 //!
@@ -164,12 +164,20 @@ pub enum ColorRole {
     TextFaint,
     /// Text drawn on the accent.
     TextOnAccent,
+    /// Text drawn on a filled accent background.
+    TextOnAccentFill,
     /// The single meaning-carrying accent.
     Accent,
     /// The accent on hover.
     AccentHover,
     /// The accent while pressed.
     AccentPressed,
+    /// The filled accent background at rest.
+    AccentFill,
+    /// The filled accent background on hover.
+    AccentFillHover,
+    /// The filled accent background while pressed.
+    AccentFillPressed,
     /// The accent at 14 % alpha, for subtle fills.
     AccentSubtle,
     /// The keyboard focus ring.
@@ -196,7 +204,7 @@ pub enum ColorRole {
 
 impl ColorRole {
     /// Every role, in palette order.
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 29] = [
         Self::Bg,
         Self::Surface,
         Self::SurfaceRaised,
@@ -208,9 +216,13 @@ impl ColorRole {
         Self::TextMuted,
         Self::TextFaint,
         Self::TextOnAccent,
+        Self::TextOnAccentFill,
         Self::Accent,
         Self::AccentHover,
         Self::AccentPressed,
+        Self::AccentFill,
+        Self::AccentFillHover,
+        Self::AccentFillPressed,
         Self::AccentSubtle,
         Self::FocusRing,
         Self::Selection,
@@ -239,9 +251,13 @@ impl ColorRole {
             Self::TextMuted => "text_muted",
             Self::TextFaint => "text_faint",
             Self::TextOnAccent => "text_on_accent",
+            Self::TextOnAccentFill => "text_on_accent_fill",
             Self::Accent => "accent",
             Self::AccentHover => "accent_hover",
             Self::AccentPressed => "accent_pressed",
+            Self::AccentFill => "accent_fill",
+            Self::AccentFillHover => "accent_fill_hover",
+            Self::AccentFillPressed => "accent_fill_pressed",
             Self::AccentSubtle => "accent_subtle",
             Self::FocusRing => "focus_ring",
             Self::Selection => "selection",
@@ -286,12 +302,20 @@ pub struct Roles {
     pub text_faint: Color,
     /// Text drawn on the accent.
     pub text_on_accent: Color,
+    /// Text drawn on a filled accent background.
+    pub text_on_accent_fill: Color,
     /// The single meaning-carrying accent.
     pub accent: Color,
     /// The accent on hover.
     pub accent_hover: Color,
     /// The accent while pressed.
     pub accent_pressed: Color,
+    /// The filled accent background at rest.
+    pub accent_fill: Color,
+    /// The filled accent background on hover.
+    pub accent_fill_hover: Color,
+    /// The filled accent background while pressed.
+    pub accent_fill_pressed: Color,
     /// The accent at 14 % alpha, for subtle fills.
     pub accent_subtle: Color,
     /// The keyboard focus ring.
@@ -359,9 +383,13 @@ impl Roles {
             ColorRole::TextMuted => self.text_muted,
             ColorRole::TextFaint => self.text_faint,
             ColorRole::TextOnAccent => self.text_on_accent,
+            ColorRole::TextOnAccentFill => self.text_on_accent_fill,
             ColorRole::Accent => self.accent,
             ColorRole::AccentHover => self.accent_hover,
             ColorRole::AccentPressed => self.accent_pressed,
+            ColorRole::AccentFill => self.accent_fill,
+            ColorRole::AccentFillHover => self.accent_fill_hover,
+            ColorRole::AccentFillPressed => self.accent_fill_pressed,
             ColorRole::AccentSubtle => self.accent_subtle,
             ColorRole::FocusRing => self.focus_ring,
             ColorRole::Selection => self.selection,
@@ -391,9 +419,13 @@ impl Roles {
             ColorRole::TextMuted => self.text_muted = color,
             ColorRole::TextFaint => self.text_faint = color,
             ColorRole::TextOnAccent => self.text_on_accent = color,
+            ColorRole::TextOnAccentFill => self.text_on_accent_fill = color,
             ColorRole::Accent => self.accent = color,
             ColorRole::AccentHover => self.accent_hover = color,
             ColorRole::AccentPressed => self.accent_pressed = color,
+            ColorRole::AccentFill => self.accent_fill = color,
+            ColorRole::AccentFillHover => self.accent_fill_hover = color,
+            ColorRole::AccentFillPressed => self.accent_fill_pressed = color,
             ColorRole::AccentSubtle => self.accent_subtle = color,
             ColorRole::FocusRing => self.focus_ring = color,
             ColorRole::Selection => self.selection = color,
@@ -432,6 +464,15 @@ impl Roles {
         let accent = Color::oklch(accent_lightness, seed.accent_chroma, seed.accent_hue);
         let accent_hover = Color::oklch(hover_lightness, seed.accent_chroma, seed.accent_hue);
         let accent_pressed = Color::oklch(pressed_lightness, seed.accent_chroma, seed.accent_hue);
+        let (fill_lightness, fill_hover_lightness, fill_pressed_lightness) = match variant {
+            Variant::Dark => (0.480, 0.520, 0.440),
+            Variant::Light | Variant::HighContrast => (0.500, 0.540, 0.460),
+        };
+        let accent_fill = Color::oklch(fill_lightness, seed.accent_chroma, seed.accent_hue);
+        let accent_fill_hover =
+            Color::oklch(fill_hover_lightness, seed.accent_chroma, seed.accent_hue);
+        let accent_fill_pressed =
+            Color::oklch(fill_pressed_lightness, seed.accent_chroma, seed.accent_hue);
         let focus_ring = Color::oklch(ring_lightness, ring_chroma, seed.accent_hue);
         let overlay_alpha = match variant {
             Variant::Dark => 0.55,
@@ -470,9 +511,13 @@ impl Roles {
             text_muted,
             text_faint,
             text_on_accent: steps[0],
+            text_on_accent_fill: steps[11],
             accent,
             accent_hover,
             accent_pressed,
+            accent_fill,
+            accent_fill_hover,
+            accent_fill_pressed,
             accent_subtle: accent.with_alpha(0.14),
             focus_ring,
             selection: accent.with_alpha(0.30),
@@ -529,7 +574,7 @@ mod tests {
         assert_eq!(roles.accent, replacement);
         assert_eq!(
             ColorRole::ALL.len(),
-            25,
+            29,
             "the role count is part of the public palette"
         );
     }

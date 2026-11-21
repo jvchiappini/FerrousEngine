@@ -11,7 +11,7 @@
 //!   and motion.
 //! - [`color`]: one [`Color`] type whose constructors name their colour space,
 //!   plus `OKLCH` conversion and `WCAG` contrast.
-//! - [`roles`]: the 25 colour roles, generated from a [`ColorSeed`] through a
+//! - [`roles`]: the 29 colour roles, generated from a [`ColorSeed`] through a
 //!   monotonic `OKLCH` neutral ramp.
 //! - [`Theme`]: the assembled data (`mode`, `density`, `colors`, `typography`,
 //!   `radii`, `borders`, `elevation`, `motion`), serialisable to RON.
@@ -28,6 +28,7 @@
 //! | `text_muted` | 4.5:1 | secondary text |
 //! | `text_faint` | 3:1 | large or secondary text only |
 //! | `text_on_accent` | 4.5:1 | labels on all three accent states |
+//! | `text_on_accent_fill` | 4.5:1 | labels on all three filled accent states |
 //! | `focus_ring` | 3:1 | against the four surfaces |
 //!
 //! A focus ring must be drawn with a surface-coloured gap (an outline offset):
@@ -54,9 +55,9 @@ pub mod tokens;
 pub use color::{Color, Oklch};
 pub use roles::{ColorRole, ColorSeed, NeutralRamp, Roles, NEUTRAL_STEPS};
 pub use tokens::{
-    BorderWidth, Borders, Density, Duration, Easing, Elevation, ElevationLevel, ElevationSet,
-    FontFamily, FontWeight, Motion, Radii, Radius, Shadow, Spacing, ThemeMode, TypeRole, TypeStyle,
-    Typography, MONO_FAMILY, SANS_FAMILY,
+    BorderWidth, Borders, ContentWidth, Density, Duration, Easing, Elevation, ElevationLevel,
+    ElevationSet, FontFamily, FontWeight, Motion, Radii, Radius, Shadow, Spacing, ThemeMode,
+    TypeRole, TypeStyle, Typography, MONO_FAMILY, SANS_FAMILY,
 };
 
 use serde::{Deserialize, Serialize};
@@ -89,6 +90,34 @@ pub struct Theme {
     pub elevation: ElevationSet,
     /// The resolved motion tokens.
     pub motion: Motion,
+}
+
+/// The interaction state of a filled (primary) action.
+///
+/// A filled button asks [`Theme::filled_action`] for its background and text;
+/// the theme picks the matching fill role for the state so view code never
+/// selects an accent colour by hand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccentState {
+    /// The resting state.
+    Rest,
+    /// The pointer is over the control.
+    Hover,
+    /// The control is held down.
+    Pressed,
+}
+
+/// The resolved colours of a filled (primary) action.
+///
+/// `fill` is the accent fill for the current [`AccentState`]; `text` is the
+/// light neutral drawn on it. Both come from the theme, and the pair is
+/// guaranteed to meet 4.5:1 in every state and every built-in theme.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FilledAction {
+    /// The background fill.
+    pub fill: Color,
+    /// The text drawn on the fill.
+    pub text: Color,
 }
 
 impl Theme {
@@ -161,10 +190,35 @@ impl Theme {
         self.colors.get(role)
     }
 
+    /// Resolves the fill and text of a filled (primary) action.
+    ///
+    /// This is the single hook filled buttons use: it maps [`AccentState`] to
+    /// `accent_fill`, `accent_fill_hover` or `accent_fill_pressed` and always
+    /// pairs it with `text_on_accent_fill`. The accent roles themselves stay
+    /// reserved for focus, links, selection outlines and accent text.
+    #[must_use]
+    pub fn filled_action(&self, state: AccentState) -> FilledAction {
+        let fill = match state {
+            AccentState::Rest => ColorRole::AccentFill,
+            AccentState::Hover => ColorRole::AccentFillHover,
+            AccentState::Pressed => ColorRole::AccentFillPressed,
+        };
+        FilledAction {
+            fill: self.role(fill),
+            text: self.role(ColorRole::TextOnAccentFill),
+        }
+    }
+
     /// Resolves a spacing token to logical pixels.
     #[must_use]
     pub fn spacing(&self, spacing: Spacing) -> f32 {
         spacing.px()
+    }
+
+    /// Resolves a content-column width token to logical pixels.
+    #[must_use]
+    pub fn content_width(&self, width: ContentWidth) -> f32 {
+        width.px()
     }
 
     /// Resolves an elevation level.
@@ -200,7 +254,7 @@ impl Default for Theme {
 
 #[cfg(test)]
 mod tests {
-    use super::{Color, ColorRole, Density, Spacing, Theme, TypeRole};
+    use super::{AccentState, Color, ColorRole, ContentWidth, Density, Spacing, Theme, TypeRole};
 
     /// The surfaces a text role may sit on.
     const SURFACES: [ColorRole; 4] = [
@@ -295,6 +349,26 @@ mod tests {
                 accent.name()
             );
         }
+        for fill in [
+            ColorRole::AccentFill,
+            ColorRole::AccentFillHover,
+            ColorRole::AccentFillPressed,
+        ] {
+            let ratio = theme
+                .role(ColorRole::TextOnAccentFill)
+                .contrast_ratio(theme.role(fill));
+            if print {
+                println!(
+                    "{name:13} {:14} text_on_accent_fill {ratio:5.2}",
+                    fill.name()
+                );
+            }
+            assert!(
+                ratio >= 4.5,
+                "{name}: text_on_accent_fill on {} is {ratio:.2}:1, needs 4.5:1",
+                fill.name()
+            );
+        }
     }
 
     #[test]
@@ -310,6 +384,44 @@ mod tests {
             println!("== {name}");
             assert_contrast(name, &build(), true);
         }
+    }
+
+    #[test]
+    fn filled_action_states_and_role_count() {
+        assert_eq!(
+            ColorRole::ALL.len(),
+            29,
+            "the role count is part of the public palette"
+        );
+        for (name, build) in BUILT_INS {
+            let theme = build();
+            for (state, fill) in [
+                (AccentState::Rest, ColorRole::AccentFill),
+                (AccentState::Hover, ColorRole::AccentFillHover),
+                (AccentState::Pressed, ColorRole::AccentFillPressed),
+            ] {
+                let action = theme.filled_action(state);
+                assert_eq!(action.fill, theme.role(fill));
+                assert_eq!(action.text, theme.role(ColorRole::TextOnAccentFill));
+                let ratio = action.text.contrast_ratio(action.fill);
+                assert!(
+                    ratio >= 4.5,
+                    "{name}: filled_action text on {} is {ratio:.2}:1, needs 4.5:1",
+                    fill.name()
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)] // reason: token values are exact literals
+    fn content_width_resolves_through_the_theme() {
+        let theme = Theme::dark();
+        assert_eq!(theme.content_width(ContentWidth::Sm), 480.0);
+        assert_eq!(theme.content_width(ContentWidth::Md), 640.0);
+        assert_eq!(theme.content_width(ContentWidth::Lg), 800.0);
+        assert_eq!(theme.content_width(ContentWidth::Xl), 1024.0);
+        assert_eq!(theme.content_width(ContentWidth::Prose), 672.0);
     }
 
     #[test]

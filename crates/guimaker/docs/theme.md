@@ -12,7 +12,7 @@ reference for the module as it stands, not for a UI that does not exist yet.
 
 ## Tokens
 
-The theme exposes six token groups, each a field on `Theme`:
+The theme exposes seven token groups, each reachable through `Theme`:
 
 | Field | Type group | What it holds |
 |---|---|---|
@@ -22,6 +22,11 @@ The theme exposes six token groups, each a field on `Theme`:
 | `theme.elevation` | `ElevationLevel` | the five shadow levels |
 | `theme.borders` | `Borders` | hairline and regular border widths |
 | `theme.motion` | `Duration`, `Easing` | durations and easing curves |
+| `theme.content_width(ContentWidth::Md)` | `ContentWidth` | max content-column widths |
+
+A `ContentWidth` (`sm` 480, `md` 640, `lg` 800, `xl` 1024, `prose` 672 px) is
+the design value a `max_width` layout clamps a content column to, so prose and
+forms keep a comfortable measure on wide screens.
 
 ### Spacing
 
@@ -93,21 +98,34 @@ neutral_chroma, accent_hue, accent_chroma)` builds a custom one;
 `ColorSeed::dark()` and `ColorSeed::light()` are the built-in seeds. From the
 seed the theme generates an OKLCH neutral ramp and the accent states.
 
-The 25 roles:
+The 29 roles:
 
 ```text
-bg                surface           surface_raised     surface_sunken
-overlay           border            border_strong      text
-text_muted        text_faint        text_on_accent     accent
-accent_hover      accent_pressed    accent_subtle      focus_ring
-selection         success           success_subtle     warning
-warning_subtle    danger            danger_subtle      info
-info_subtle
+bg                    surface               surface_raised
+surface_sunken        overlay               border
+border_strong         text                  text_muted
+text_faint            text_on_accent        text_on_accent_fill
+accent                accent_hover          accent_pressed
+accent_fill           accent_fill_hover     accent_fill_pressed
+accent_subtle         focus_ring            selection
+success               success_subtle        warning
+warning_subtle        danger                danger_subtle
+info                  info_subtle
 ```
 
 Read a role with `theme.role(ColorRole::Accent)` or through the field, e.g.
 `theme.colors.accent`. Every role can be overridden after construction:
 `theme.colors.set(ColorRole::Accent, color)` or `theme.colors.accent = color`.
+
+### Filled actions
+
+`accent`, `accent_hover` and `accent_pressed` stay the roles for focus, links,
+selection outlines and accent text. A filled (primary) button instead uses
+`accent_fill` / `accent_fill_hover` / `accent_fill_pressed` as its background
+with `text_on_accent_fill` (the light neutral) as its text. The guarantee is
+>= 4.5:1 in all three states and all three themes. Views do not pick those
+roles by hand: they call the single hook `theme.filled_action(AccentState::Rest
+| Hover | Pressed)`, which returns the `FilledAction { fill, text }` pair.
 
 ## Contrast guarantees
 
@@ -119,6 +137,8 @@ of the module, not suggestions:
 - `text_faint` >= 3:1, large or secondary text only;
 - `text_on_accent` >= 4.5:1 on all three accent states
   (`accent`, `accent_hover`, `accent_pressed`);
+- `text_on_accent_fill` >= 4.5:1 on all three filled states
+  (`accent_fill`, `accent_fill_hover`, `accent_fill_pressed`);
 - `focus_ring` >= 3:1 against the four surfaces.
 
 The focus ring is the hard case. It is drawn with a surface-coloured gap —
@@ -130,6 +150,96 @@ Contrast is `(L1 + 0.05) / (L2 + 0.05)`. Against the surface the ring needs
 `0.30 / (R + 0.05) >= 3`, so `R <= 0.05`. Both cannot hold, so the gap is the
 only correct answer: the surface colour separates the ring from the fill, and
 the ring is only ever measured against the surface it covers.
+
+## Contrast table (generated)
+
+`cargo test -p guimaker theme::tests::contrast_table -- --nocapture` prints
+every role on every surface it may sit on. The output for the three built-ins
+is the contract:
+
+```text
+== dark
+dark          bg             text 18.35 muted  9.32 faint  4.30 ring 13.92
+dark          bg             success         6.88
+dark          bg             warning         9.85
+dark          bg             danger          5.95
+dark          bg             info            6.98
+dark          surface        text 17.24 muted  8.76 faint  4.04 ring 13.08
+dark          surface        success         6.46
+dark          surface        warning         9.25
+dark          surface        danger          5.59
+dark          surface        info            6.56
+dark          surface_raised text 15.88 muted  8.06 faint  3.72 ring 12.04
+dark          surface_raised success         5.95
+dark          surface_raised warning         8.52
+dark          surface_raised danger          5.15
+dark          surface_raised info            6.04
+dark          surface_sunken text 17.80 muted  9.04 faint  4.17 ring 13.50
+dark          surface_sunken success         6.67
+dark          surface_sunken warning         9.55
+dark          surface_sunken danger          5.77
+dark          surface_sunken info            6.77
+dark          accent         text_on_accent  6.27
+dark          accent_hover   text_on_accent  7.36
+dark          accent_pressed text_on_accent  5.32
+dark          accent_fill    text_on_accent_fill  6.28
+dark          accent_fill_hover text_on_accent_fill  5.27
+dark          accent_fill_pressed text_on_accent_fill  7.50
+== light
+light         bg             text 18.81 muted  6.00 faint  3.95 ring 10.62
+light         bg             success         6.15
+light         bg             warning         5.59
+light         bg             danger          6.63
+light         bg             info            6.01
+light         surface        text 17.24 muted  5.50 faint  3.62 ring  9.74
+light         surface        success         5.64
+light         surface        warning         5.12
+light         surface        danger          6.08
+light         surface        info            5.51
+light         surface_raised text 18.81 muted  6.00 faint  3.95 ring 10.62
+light         surface_raised success         6.15
+light         surface_raised warning         5.59
+light         surface_raised danger          6.63
+light         surface_raised info            6.01
+light         surface_sunken text 15.30 muted  4.88 faint  3.21 ring  8.64
+light         surface_sunken success         5.00
+light         surface_sunken warning         4.55
+light         surface_sunken danger          5.39
+light         surface_sunken info            4.89
+light         accent         text_on_accent  5.00
+light         accent_hover   text_on_accent  5.89
+light         accent_pressed text_on_accent  4.60
+light         accent_fill    text_on_accent_fill  6.27
+light         accent_fill_hover text_on_accent_fill  5.27
+light         accent_fill_pressed text_on_accent_fill  7.49
+== high_contrast
+high_contrast bg             text 20.70 muted 15.36 faint 11.08 ring 18.42
+high_contrast bg             success        11.80
+high_contrast bg             warning        13.37
+high_contrast bg             danger          9.08
+high_contrast bg             info           11.15
+high_contrast surface        text 20.12 muted 14.92 faint 10.77 ring 17.90
+high_contrast surface        success        11.47
+high_contrast surface        warning        12.99
+high_contrast surface        danger          8.83
+high_contrast surface        info           10.83
+high_contrast surface_raised text 19.12 muted 14.19 faint 10.23 ring 17.02
+high_contrast surface_raised success        10.90
+high_contrast surface_raised warning        12.35
+high_contrast surface_raised danger          8.39
+high_contrast surface_raised info           10.30
+high_contrast surface_sunken text 20.46 muted 15.18 faint 10.95 ring 18.21
+high_contrast surface_sunken success        11.66
+high_contrast surface_sunken warning        13.21
+high_contrast surface_sunken danger          8.98
+high_contrast surface_sunken info           11.01
+high_contrast accent         text_on_accent 10.26
+high_contrast accent_hover   text_on_accent 11.80
+high_contrast accent_pressed text_on_accent  8.87
+high_contrast accent_fill    text_on_accent_fill  6.31
+high_contrast accent_fill_hover text_on_accent_fill  5.29
+high_contrast accent_fill_pressed text_on_accent_fill  7.53
+```
 
 ## Built-in themes and seeds
 
