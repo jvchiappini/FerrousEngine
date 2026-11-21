@@ -275,3 +275,23 @@ the direct path because it repaints the same composition at the same size and
 format; it does not yet redraw only the damaged rectangle, so it adds a
 full-frame copy. Treat it as opt-in infrastructure to measure, not a default
 win. `Game3D` always uses the direct path.
+
+## Engine gate
+
+The performance changes are held by the engine's own gate. Run it from the
+engine clone (not the Motioner submodule), with `-j 2`:
+
+```text
+cargo check --workspace --all-targets -j 2
+cargo clippy -p ferrous_ui_render -p ferrous_renderer -p ferrous_engine --all-targets --no-deps -- -D warnings
+cargo test -p ferrous_ui_render -p ferrous_renderer -p ferrous_engine -j 2
+cargo check -p ferrous_engine --target wasm32-unknown-unknown
+cargo check -p ferrous_web --target wasm32-unknown-unknown
+cargo doc -p ferrous_engine -p ferrous_ui_render -p ferrous_renderer --no-deps
+```
+
+The two wasm checks are required: the engine no longer pulls `rand`/
+`getrandom`, so an engine-only wasm graph builds as well as `ferrous_web`
+(which already enables `getrandom/js`). `ferrous_engine` and
+`ferrous_ui_render` still carry pre-existing clippy/rustdoc debt outside the
+performance files; the gate requires no new warnings in the touched files.
