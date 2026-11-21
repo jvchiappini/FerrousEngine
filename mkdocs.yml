@@ -111,6 +111,11 @@ nav:
       - New Pipeline: ferrous_renderer/extending/new_pipeline.md
       - Compute Pipeline: ferrous_renderer/extending/compute_pipeline.md
       - World Sync: ferrous_renderer/extending/world_sync.md
+  - GUIMaker - the UI library:
+    - Overview: guimaker/README.md
+    - Decisions:
+      - Decision log: guimaker/decisions/README.md
+      - G-0001 - Library architecture: guimaker/decisions/G-0001.md
   - Other crates:
     - ferrous_assets: ferrous_assets/README.md
     - ferrous_asset_types: ferrous_asset_types/README.md

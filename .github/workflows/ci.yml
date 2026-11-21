@@ -24,6 +24,11 @@ jobs:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
 
+      - name: dependency boundaries (no GUIMaker in engine crates)
+        run: |
+          python scripts/check_boundaries.py
+          python -m unittest discover -s scripts/tests -p "test_check_boundaries.py"
+
       # Only the files this job created or edited are format-checked; the rest
       # of the repository is not fmt-clean yet.  `skip_children` keeps rustfmt
       # from following `mod` declarations into untouched modules.

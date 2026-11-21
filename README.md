@@ -28,6 +28,11 @@ application lifecycle, rendering, UI, and asset management fully decoupled.
 | `ferrous_assets` | Asset loading & caching | `AssetServer`, `Font`, `GltfModel`, `Texture2d` |
 | `ferrous_ecs` | Entity-Component-System | `Entity`, `Stage`, `StagedScheduler`, `System` |
 
+The GUIMaker design-system crates (`guimaker`, `guimaker_ferrous`,
+`guimaker_gallery`, `guimaker_designer`) may depend on engine crates, but no
+engine crate may depend on them. Run `python scripts/check_boundaries.py` to
+enforce the rule; tests live in `scripts/tests/test_check_boundaries.py`.
+
 ## Building a UI application — minimum viable recipe
 
 ```toml
