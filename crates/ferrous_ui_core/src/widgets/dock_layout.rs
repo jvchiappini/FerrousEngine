@@ -40,8 +40,8 @@
 //! las zonas adyacentes. Los divisores son arrastrables exactamente como en `SplitPane`.
 
 use crate::{
-    Widget, RenderCommand, DrawContext, BuildContext, LayoutContext, EventContext,
-    EventResponse, UiEvent, Rect, Vec2, NodeId, StyleBuilder, Units,
+    BuildContext, DrawContext, EventContext, EventResponse, LayoutContext, NodeId, Rect,
+    RenderCommand, StyleBuilder, UiEvent, Units, Vec2, Widget,
 };
 
 // ─── DockZone ────────────────────────────────────────────────────────────────
@@ -103,7 +103,10 @@ struct DockDivider {
 
 impl DockDivider {
     fn new(vertical: bool) -> Self {
-        Self { _vertical: vertical, is_hovered: false }
+        Self {
+            _vertical: vertical,
+            is_hovered: false,
+        }
     }
 }
 
@@ -132,8 +135,14 @@ impl<App> Widget<App> for DockDivider {
 
     fn on_event(&mut self, _ctx: &mut EventContext<App>, event: &UiEvent) -> EventResponse {
         match event {
-            UiEvent::MouseEnter => { self.is_hovered = true;  EventResponse::Redraw }
-            UiEvent::MouseLeave => { self.is_hovered = false; EventResponse::Redraw }
+            UiEvent::MouseEnter => {
+                self.is_hovered = true;
+                EventResponse::Redraw
+            }
+            UiEvent::MouseLeave => {
+                self.is_hovered = false;
+                EventResponse::Redraw
+            }
             _ => EventResponse::Ignored,
         }
     }
@@ -232,11 +241,7 @@ impl<App> DockLayout<App> {
                 .height_px(size)
                 .clip()
                 .build(),
-            DockZone::Center => StyleBuilder::new()
-                .flex(1.0)
-                .fill_height()
-                .clip()
-                .build(),
+            DockZone::Center => StyleBuilder::new().flex(1.0).fill_height().clip().build(),
         }
     }
 }
@@ -252,14 +257,20 @@ impl<App: 'static + Send + Sync> Widget<App> for DockLayout<App> {
         let my_id = ctx.node_id;
 
         // Raíz: columna vertical [top | middle_row | bottom]
-        let root_style = StyleBuilder::new().column().fill_width().fill_height().build();
+        let root_style = StyleBuilder::new()
+            .column()
+            .fill_width()
+            .fill_height()
+            .build();
         ctx.tree.set_node_style(my_id, root_style);
 
         // ── Top panel ─────────────────────────────────────────────────────
         if let Some(i) = self.find(DockZone::Top) {
             let size = self.entries[i].size;
             let vis = self.entries[i].visible;
-            let widget = self.entries[i].widget.take()
+            let widget = self.entries[i]
+                .widget
+                .take()
                 .unwrap_or_else(|| Box::new(crate::widgets::PlaceholderWidget));
             let style = self.entry_style(DockZone::Top, size, vis);
             let nid = ctx.tree.add_node(widget, Some(my_id));
@@ -268,7 +279,10 @@ impl<App: 'static + Send + Sync> Widget<App> for DockLayout<App> {
 
             // Divisor top-middle
             let div = Box::new(DockDivider::new(false));
-            let ds = StyleBuilder::new().fill_width().height_px(DIVIDER_SIZE).build();
+            let ds = StyleBuilder::new()
+                .fill_width()
+                .height_px(DIVIDER_SIZE)
+                .build();
             let div_id = ctx.tree.add_node(div, Some(my_id));
             ctx.tree.set_node_style(div_id, ds);
             self.div_tc_id = Some(div_id);
@@ -276,7 +290,9 @@ impl<App: 'static + Send + Sync> Widget<App> for DockLayout<App> {
 
         // ── Fila central (left | center | right) ──────────────────────────
         let mid_style = StyleBuilder::new().row().fill_width().flex(1.0).build();
-        let mid_id = ctx.tree.add_node(Box::new(crate::widgets::Panel::new()), Some(my_id));
+        let mid_id = ctx
+            .tree
+            .add_node(Box::new(crate::widgets::Panel::new()), Some(my_id));
         ctx.tree.set_node_style(mid_id, mid_style);
         self.middle_row_id = Some(mid_id);
 
@@ -284,7 +300,9 @@ impl<App: 'static + Send + Sync> Widget<App> for DockLayout<App> {
         if let Some(i) = self.find(DockZone::Left) {
             let size = self.entries[i].size;
             let vis = self.entries[i].visible;
-            let widget = self.entries[i].widget.take()
+            let widget = self.entries[i]
+                .widget
+                .take()
                 .unwrap_or_else(|| Box::new(crate::widgets::PlaceholderWidget));
             let style = self.entry_style(DockZone::Left, size, vis);
             let nid = ctx.tree.add_node(widget, Some(mid_id));
@@ -293,7 +311,10 @@ impl<App: 'static + Send + Sync> Widget<App> for DockLayout<App> {
 
             // Divisor left-center
             let div = Box::new(DockDivider::new(true));
-            let ds = StyleBuilder::new().width_px(DIVIDER_SIZE).fill_height().build();
+            let ds = StyleBuilder::new()
+                .width_px(DIVIDER_SIZE)
+                .fill_height()
+                .build();
             let div_id = ctx.tree.add_node(div, Some(mid_id));
             ctx.tree.set_node_style(div_id, ds);
             self.div_lc_id = Some(div_id);
@@ -302,7 +323,9 @@ impl<App: 'static + Send + Sync> Widget<App> for DockLayout<App> {
         // Center
         if let Some(i) = self.find(DockZone::Center) {
             let vis = self.entries[i].visible;
-            let widget = self.entries[i].widget.take()
+            let widget = self.entries[i]
+                .widget
+                .take()
                 .unwrap_or_else(|| Box::new(crate::widgets::PlaceholderWidget));
             let style = self.entry_style(DockZone::Center, 0.0, vis);
             let nid = ctx.tree.add_node(widget, Some(mid_id));
@@ -313,7 +336,10 @@ impl<App: 'static + Send + Sync> Widget<App> for DockLayout<App> {
         // Divisor center-right
         if self.find(DockZone::Right).is_some() {
             let div = Box::new(DockDivider::new(true));
-            let ds = StyleBuilder::new().width_px(DIVIDER_SIZE).fill_height().build();
+            let ds = StyleBuilder::new()
+                .width_px(DIVIDER_SIZE)
+                .fill_height()
+                .build();
             let div_id = ctx.tree.add_node(div, Some(mid_id));
             ctx.tree.set_node_style(div_id, ds);
             self.div_cr_id = Some(div_id);
@@ -323,7 +349,9 @@ impl<App: 'static + Send + Sync> Widget<App> for DockLayout<App> {
         if let Some(i) = self.find(DockZone::Right) {
             let size = self.entries[i].size;
             let vis = self.entries[i].visible;
-            let widget = self.entries[i].widget.take()
+            let widget = self.entries[i]
+                .widget
+                .take()
                 .unwrap_or_else(|| Box::new(crate::widgets::PlaceholderWidget));
             let style = self.entry_style(DockZone::Right, size, vis);
             let nid = ctx.tree.add_node(widget, Some(mid_id));
@@ -334,14 +362,19 @@ impl<App: 'static + Send + Sync> Widget<App> for DockLayout<App> {
         // ── Divisor bottom + Bottom panel ─────────────────────────────────
         if let Some(i) = self.find(DockZone::Bottom) {
             let div = Box::new(DockDivider::new(false));
-            let ds = StyleBuilder::new().fill_width().height_px(DIVIDER_SIZE).build();
+            let ds = StyleBuilder::new()
+                .fill_width()
+                .height_px(DIVIDER_SIZE)
+                .build();
             let div_id = ctx.tree.add_node(div, Some(my_id));
             ctx.tree.set_node_style(div_id, ds);
             self.div_cb_id = Some(div_id);
 
             let size = self.entries[i].size;
             let vis = self.entries[i].visible;
-            let widget = self.entries[i].widget.take()
+            let widget = self.entries[i]
+                .widget
+                .take()
                 .unwrap_or_else(|| Box::new(crate::widgets::PlaceholderWidget));
             let style = self.entry_style(DockZone::Bottom, size, vis);
             let nid = ctx.tree.add_node(widget, Some(my_id));
@@ -356,29 +389,45 @@ impl<App: 'static + Send + Sync> Widget<App> for DockLayout<App> {
         Vec2::ZERO
     }
 
-    fn on_event(
-        &mut self,
-        ctx: &mut EventContext<App>,
-        event: &UiEvent,
-    ) -> EventResponse {
+    fn on_event(&mut self, ctx: &mut EventContext<App>, event: &UiEvent) -> EventResponse {
         match event {
             UiEvent::MouseDown { pos, .. } => {
                 // Detectar qué divisor se está pulsando y comenzar drag
                 let dividers: &[(Option<NodeId>, usize, bool)] = &[
-                    (self.div_lc_id, self.find(DockZone::Left).unwrap_or(usize::MAX), true),
-                    (self.div_cr_id, self.find(DockZone::Right).unwrap_or(usize::MAX), true),
-                    (self.div_tc_id, self.find(DockZone::Top).unwrap_or(usize::MAX), false),
-                    (self.div_cb_id, self.find(DockZone::Bottom).unwrap_or(usize::MAX), false),
+                    (
+                        self.div_lc_id,
+                        self.find(DockZone::Left).unwrap_or(usize::MAX),
+                        true,
+                    ),
+                    (
+                        self.div_cr_id,
+                        self.find(DockZone::Right).unwrap_or(usize::MAX),
+                        true,
+                    ),
+                    (
+                        self.div_tc_id,
+                        self.find(DockZone::Top).unwrap_or(usize::MAX),
+                        false,
+                    ),
+                    (
+                        self.div_cb_id,
+                        self.find(DockZone::Bottom).unwrap_or(usize::MAX),
+                        false,
+                    ),
                 ];
 
                 for &(div_id_opt, entry_i, horizontal) in dividers {
-                    if entry_i == usize::MAX { continue; }
+                    if entry_i == usize::MAX {
+                        continue;
+                    }
                     if let Some(div_id) = div_id_opt {
                         if let Some(div_rect) = ctx.tree.get_node_rect(div_id) {
                             // Ampliar hitbox del divisor a 6px para usabilidad
                             let hit = Rect::new(
-                                div_rect.x - 2.0, div_rect.y - 2.0,
-                                div_rect.width + 4.0, div_rect.height + 4.0,
+                                div_rect.x - 2.0,
+                                div_rect.y - 2.0,
+                                div_rect.width + 4.0,
+                                div_rect.height + 4.0,
                             );
                             if hit.contains([pos.x, pos.y]) {
                                 let start_pos = if horizontal { pos.x } else { pos.y };
@@ -416,20 +465,19 @@ impl<App: 'static + Send + Sync> Widget<App> for DockLayout<App> {
                 let node_id = self.entries[i].node_id;
 
                 let sign = match zone {
-                    DockZone::Left | DockZone::Top    =>  1.0,
+                    DockZone::Left | DockZone::Top => 1.0,
                     DockZone::Right | DockZone::Bottom => -1.0,
                     DockZone::Center => 0.0,
                 };
 
-                let new_size = (drag.start_size + (current - drag.start_pos) * sign)
-                    .clamp(min_size, max_size);
+                let new_size =
+                    (drag.start_size + (current - drag.start_pos) * sign).clamp(min_size, max_size);
 
                 if (new_size - old_size).abs() > 0.5 {
                     self.entries[i].size = new_size;
                     if let Some(nid) = node_id {
                         let style = self.entry_style(zone, new_size, visible);
                         ctx.tree.set_node_style(nid, style);
-                        ctx.tree.mark_layout_dirty(nid);
                     }
                     return EventResponse::Redraw;
                 }

@@ -111,7 +111,6 @@ Button::new("Vista › Jerarquía").on_click(|ctx| {
             dock.set_visible(0, !visible);
         }
     }
-    ctx.tree.mark_layout_dirty(dock_layout_id);
 });
 ```
 

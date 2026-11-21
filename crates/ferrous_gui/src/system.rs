@@ -82,12 +82,9 @@ impl<App: 'static> UiSystem<App> {
         self.tree.update(dt);
 
         // 2. Recalculate layout for the entire tree.
-        // Taffy is efficient and only recalculates changed nodes (Dirty Nodes).
+        // The layout pass always runs; GUIMaker owns the incremental skipping.
         self.layout_engine
             .compute_layout(&mut self.tree, viewport_width, viewport_height);
-
-        // 3. Update UI AABB index to accelerate hit-testing collisions to O(1).
-        self.tree.update_spatial_index();
     }
 
     /// Dispatches an input event to the system.
@@ -150,24 +147,15 @@ impl<App: 'static> UiSystem<App> {
         batch.damage_union = self.damage_union();
     }
 
-    /// Returns the union of all damaged regions in this frame.
+    /// The engine's retained UI no longer computes damage; GUIMaker owns
+    /// damage tracking and the adapter feeds the engine's damage path.
+    /// Always returns `None`.
     pub fn damage_union(&self) -> Option<Rect> {
-        let mut regions = self
-            .tree
-            .damage_regions
-            .iter()
-            .filter(|rect| rect.width > 0.0 && rect.height > 0.0);
-        let mut union = *regions.next()?;
-        for rect in regions {
-            union = union.union(*rect);
-        }
-        Some(union)
+        None
     }
 
-    /// Clears the list of damaged regions after rendering.
-    pub fn clear_damage(&mut self) {
-        self.tree.clear_damage();
-    }
+    /// No-op: damage tracking moved to GUIMaker.
+    pub fn clear_damage(&mut self) {}
 
     // =========================================================================
     // Fluent API — convenience for creating widgets without touching UiTree directly
@@ -232,24 +220,18 @@ mod retained_tests {
     }
 
     #[test]
-    fn a_single_node_repaint_reports_only_its_rect_as_damage() {
+    fn retained_ui_reports_no_damage() {
         let mut ui = UiSystem::<()>::new();
         let root = ui.add(Solid);
-        let child = ui.tree.add_node(Box::new(Solid), Some(root));
-        let root_rect = Rect {
-            x: 0.0,
-            y: 0.0,
-            width: 200.0,
-            height: 200.0,
-        };
-        let child_rect = Rect {
-            x: 10.0,
-            y: 10.0,
-            width: 40.0,
-            height: 40.0,
-        };
-        ui.tree.set_node_rect(root, root_rect);
-        ui.tree.set_node_rect(child, child_rect);
+        ui.tree.set_node_rect(
+            root,
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 200.0,
+                height: 200.0,
+            },
+        );
         let viewport = Rect {
             x: 0.0,
             y: 0.0,
@@ -259,15 +241,10 @@ mod retained_tests {
 
         let mut batch = GuiBatch::new();
         ui.render_into(&mut batch, viewport, None);
-        ui.clear_damage();
-        ui.tree.mark_paint_dirty(child);
-        batch.clear();
-        ui.render_into(&mut batch, viewport, None);
 
         assert_eq!(
-            batch.damage_union,
-            Some(child_rect),
-            "a one-node repaint must damage only that node's rect"
+            batch.damage_union, None,
+            "damage tracking lives in GUIMaker, not in the engine's retained UI"
         );
     }
 }

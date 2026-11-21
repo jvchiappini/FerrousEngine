@@ -43,7 +43,7 @@ let acc = Accordion::<MyApp>::new("Shaders")
 
 ## Comportamiento
 
-- **Clic en cabecera**: Invierte `is_expanded`. El área de contenido cambia a `height: Auto` (expandido) o `height: 0px` (colapsado). `mark_layout_dirty` propaga el cambio al motor de layout.
+- **Clic en cabecera**: Invierte `is_expanded`. El área de contenido cambia a `height: Auto` (expandido) o `height: 0px` (colapsado). El pase de layout siempre se ejecuta, así que el nuevo tamaño se resuelve sin invalidación explícita.
 - **Múltiples Accordions**: Cada instancia es independiente. Para un comportamiento "exclusivo" (solo uno abierto a la vez), gestiona el estado con un `Observable<usize>` en tu `App`.
 
 ---

@@ -7,8 +7,8 @@
 //! Optimizaciones activas:
 //!   - El `taffy::NodeId` se guarda en `Node::taffy_id` (como u64) en lugar de un HashMap separado,
 //!     eliminando un hash-lookup por nodo en cada frame.
-//!   - `sync_node` sólo actualiza el estilo de Taffy cuando `node.dirty.layout == true`,
-//!     saltando ramas completas del árbol si `subtree_dirty == false`.
+//!   - `sync_node` reutiliza el nodo de Taffy existente y vuelca estilo e hijos en cada pase;
+//!     el control incremental (saltar subárboles limpios) vive ahora en GUIMaker.
 //!   - `apply_layout` y `sync_node` evitan allocations intermedias usando slices directos.
 
 pub use ferrous_ui_core::{Alignment, DisplayMode, NodeId, Rect, UiTree, Units};
@@ -30,9 +30,12 @@ fn u64_to_taffy(v: u64) -> taffy::NodeId {
 pub struct LayoutEngine {
     /// Árbol interno de Taffy donde se realizan los cálculos pesados.
     pub taffy: TaffyTree<NodeId>,
-    /// Último tamaño disponible recibido. Un cambio (resize) obliga a un pase
-    /// de layout aunque ningún nodo esté sucio.
-    last_available_size: Option<(f32, f32)>,
+}
+
+impl Default for LayoutEngine {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LayoutEngine {
@@ -40,41 +43,29 @@ impl LayoutEngine {
     pub fn new() -> Self {
         Self {
             taffy: TaffyTree::new(),
-            last_available_size: None,
         }
     }
 
-    /// Recorre el `UiTree`, sincroniza sólo los nodos sucios con Taffy y calcula las posiciones finales.
+    /// Recorre el `UiTree`, sincroniza todos los nodos con Taffy y calcula las
+    /// posiciones finales.
     ///
-    /// Si el árbol no tiene ningún nodo pendiente de layout (`UiTree::is_layout_dirty`),
-    /// retorna sin recorrer nada ni invocar a Taffy. Cuando sí hay trabajo:
+    /// El pase siempre se ejecuta completo: el controlador incremental que
+    /// decidía si había que correr (y qué subárboles saltar) vive ahora en
+    /// GUIMaker, no en el motor.
     ///
-    /// 1. `sync_node` recorre únicamente los subárboles con `subtree_dirty`; los nodos
-    ///    limpios retornan por el fast-path y no se re-sincroniza su estilo.
-    /// 2. Taffy calcula el layout (aprovechando su propia caché interna).
-    /// 3. `apply_layout` recorre el árbol completo para volcar los rectángulos; los
-    ///    rectángulos idénticos no generan paint dirty ni damage (`UiTree::set_node_rect`).
+    /// 1. `sync_node` recorre el árbol completo y vuelca el estilo y los hijos
+    ///    de cada nodo, reutilizando su `taffy_id` cuando ya existe.
+    /// 2. Taffy calcula el layout.
+    /// 3. `apply_layout` recorre el árbol completo para volcar los rectángulos;
+    ///    los rectángulos idénticos no generan paint dirty (`UiTree::set_node_rect`).
     pub fn compute_layout<App>(
         &mut self,
         tree: &mut UiTree<App>,
         available_width: f32,
         available_height: f32,
     ) {
-        let size_changed = match self.last_available_size {
-            Some((width, height)) => {
-                width.to_bits() != available_width.to_bits()
-                    || height.to_bits() != available_height.to_bits()
-            }
-            None => true,
-        };
-
-        if !tree.is_layout_dirty() && !size_changed {
-            return;
-        }
-        self.last_available_size = Some((available_width, available_height));
-
         if let Some(root_id) = tree.get_root() {
-            // 1. Sincronización selectiva: sólo nodos con dirty.layout o sin taffy_id
+            // 1. Sincronizar el árbol completo con Taffy.
             let Some(taff_root) = self.sync_node(root_id, tree) else {
                 // Taffy no pudo crear el nodo raíz; reintentar en el próximo frame.
                 return;
@@ -123,27 +114,15 @@ impl LayoutEngine {
             // 3. Aplicar resultados de vuelta al UiTree
             self.apply_layout(root_id, tree, 0.0, 0.0);
         }
-
-        tree.clear_layout_dirty();
     }
 
     /// Sincroniza recursivamente el nodo con Taffy.
     /// - Si el nodo no existe en Taffy aún, lo crea.
-    /// - Si ya existe y `subtree_dirty == false`, lo salta por completo.
-    /// - Si `dirty.layout == true`, actualiza sólo el estilo de Taffy (no recrea el nodo).
-    /// - Si `dirty.hierarchy == true`, actualiza sólo la lista de hijos.
+    /// - Si ya existe, reutiliza su id y actualiza siempre el estilo y los hijos.
     ///
     /// Retorna `None` si Taffy no pudo crear el nodo, para reintentar sin panic.
     fn sync_node<App>(&mut self, id: NodeId, tree: &mut UiTree<App>) -> Option<taffy::NodeId> {
-        let flags = tree.get_node(id)?.dirty;
         let existing_taffy = tree.get_node(id)?.taffy_id;
-
-        // Fast-path: si el subárbol está limpio y el nodo ya tiene un taffy_id, no hacemos nada.
-        if let Some(existing) = existing_taffy {
-            if !flags.subtree_dirty {
-                return Some(u64_to_taffy(existing));
-            }
-        }
 
         // Sincronizar hijos primero, iterando por índice para no clonar la lista.
         let child_count = tree.get_node(id).map_or(0, |n| n.children.len());
@@ -158,17 +137,10 @@ impl LayoutEngine {
 
         let taffy_id = if let Some(existing) = existing_taffy {
             let existing = u64_to_taffy(existing);
-
-            // Sólo re-sincronizamos lo que realmente cambió.
-            if flags.layout {
-                let style = tree.get_node_style(id).cloned().unwrap_or_default();
-                let taffy_style = self.convert_style(&style);
-                let _ = self.taffy.set_style(existing, taffy_style);
-            }
-            if flags.hierarchy {
-                let _ = self.taffy.set_children(existing, &taffy_children);
-            }
-
+            let style = tree.get_node_style(id).cloned().unwrap_or_default();
+            let taffy_style = self.convert_style(&style);
+            let _ = self.taffy.set_style(existing, taffy_style);
+            let _ = self.taffy.set_children(existing, &taffy_children);
             existing
         } else {
             // Nodo nuevo: crear en Taffy
@@ -181,12 +153,10 @@ impl LayoutEngine {
 
         let _ = self.taffy.set_node_context(taffy_id, Some(id));
 
-        // Limpiar los flags de layout y jerarquía (paint se limpia en el render)
+        // Limpiar el flag de jerarquía (paint se limpia en el render).
         if let Some(node) = tree.get_node_mut(id) {
             node.taffy_id = Some(taffy_to_u64(taffy_id));
-            node.dirty.layout = false;
             node.dirty.hierarchy = false;
-            node.dirty.subtree_dirty = node.dirty.paint; // conservar si hay paint pendiente
         }
 
         Some(taffy_id)
@@ -232,6 +202,7 @@ impl LayoutEngine {
         }
     }
 
+    #[allow(clippy::field_reassign_with_default)] // reason: one field-by-field taffy style conversion
     fn convert_style(&self, style: &ferrous_ui_core::Style) -> taffy::Style {
         let mut t_style = taffy::Style::default();
 
@@ -358,20 +329,24 @@ mod tests {
         let root = tree.add_node(Box::new(PlaceholderWidget), None);
         let child = tree.add_node(Box::new(PlaceholderWidget), Some(root));
 
-        let mut root_style = Style::default();
-        root_style.display = DisplayMode::FlexColumn;
-        root_style.size = (Units::Px(200.0), Units::Px(100.0));
+        let root_style = Style {
+            display: DisplayMode::FlexColumn,
+            size: (Units::Px(200.0), Units::Px(100.0)),
+            ..Style::default()
+        };
         tree.set_node_style(root, root_style);
 
-        let mut child_style = Style::default();
-        child_style.size = (Units::Px(40.0), Units::Px(20.0));
+        let child_style = Style {
+            size: (Units::Px(40.0), Units::Px(20.0)),
+            ..Style::default()
+        };
         tree.set_node_style(child, child_style);
 
         (tree, child)
     }
 
     #[test]
-    fn clean_tree_skips_layout() {
+    fn clean_tree_still_recomputes_layout() {
         let (mut tree, child) = build_tree();
         let mut engine = LayoutEngine::new();
         engine.compute_layout(&mut tree, 800.0, 600.0);
@@ -382,11 +357,11 @@ mod tests {
             node.rect = sentinel;
         }
 
-        // No layout flag is set, so the pass must early-out and leave the rect.
+        // There is no layout-dirty flag: every pass must recompute and restore
+        // the real rect over the sentinel.
         engine.compute_layout(&mut tree, 800.0, 600.0);
 
-        assert_ne!(laid_out, sentinel);
-        assert_eq!(tree.get_node_rect(child), Some(sentinel));
+        assert_eq!(tree.get_node_rect(child), Some(laid_out));
     }
 
     #[test]
@@ -403,7 +378,8 @@ mod tests {
         engine.compute_layout(&mut tree, 800.0, 600.0);
         assert_eq!(tree.get_node_rect(root).map(|r| r.width), Some(800.0));
 
-        // No node is dirty, but the available size changed.
+        // Every pass recomputes, so the new available size is applied even
+        // though no node is individually dirty.
         engine.compute_layout(&mut tree, 400.0, 600.0);
         assert_eq!(tree.get_node_rect(root).map(|r| r.width), Some(400.0));
     }
@@ -416,7 +392,6 @@ mod tests {
 
         let sentinel = Rect::new(7.0, 9.0, 11.0, 13.0);
         tree.set_node_rect(child, sentinel);
-        tree.mark_layout_dirty(child);
 
         engine.compute_layout(&mut tree, 800.0, 600.0);
 

@@ -23,9 +23,8 @@
 //! - El icono de flecha `▶` / `▼` rota según el estado.
 
 use crate::{
-    Widget, RenderCommand, DrawContext, BuildContext, LayoutContext, EventContext,
-    EventResponse, UiEvent, Rect, Vec2, NodeId, Color, StyleBuilder,
-    Units,
+    BuildContext, Color, DrawContext, EventContext, EventResponse, LayoutContext, NodeId, Rect,
+    RenderCommand, StyleBuilder, UiEvent, Units, Vec2, Widget,
 };
 
 // ─── Accordion ───────────────────────────────────────────────────────────────
@@ -91,7 +90,10 @@ impl<App> Accordion<App> {
     /// Registra una función que se invoca cuando el usuario expande o colapsa la sección.
     ///
     /// El parámetro es el nuevo estado: `true` = expandido, `false` = colapsado.
-    pub fn on_toggle(mut self, f: impl Fn(&mut EventContext<App>, bool) + Send + Sync + 'static) -> Self {
+    pub fn on_toggle(
+        mut self,
+        f: impl Fn(&mut EventContext<App>, bool) + Send + Sync + 'static,
+    ) -> Self {
         self.on_toggle_cb = Some(Box::new(f));
         self
     }
@@ -106,7 +108,11 @@ impl<App: 'static + Send + Sync> Widget<App> for Accordion<App> {
         ctx.tree.set_node_style(my_id, root_style);
 
         // ── Cabecera ──────────────────────────────────────────────────────
-        let header_panel = Box::new(AccordionHeader::new(&self.title, self.is_expanded, self.header_color));
+        let header_panel = Box::new(AccordionHeader::new(
+            &self.title,
+            self.is_expanded,
+            self.header_color,
+        ));
         let header_style = StyleBuilder::new().fill_width().height_px(40.0).build();
         let header_id = ctx.tree.add_node(header_panel, Some(my_id));
         ctx.tree.set_node_style(header_id, header_style);
@@ -114,13 +120,14 @@ impl<App: 'static + Send + Sync> Widget<App> for Accordion<App> {
 
         // ── Área de contenido ─────────────────────────────────────────────
         // Siempre creamos el nodo de área; la altura se anima vía `update`.
-        let area_h = if self.is_expanded { Units::Auto } else { Units::Px(0.0) };
-        let _area_style = StyleBuilder::new()
-            .fill_width()
-            .clip()
-            .build();
-        let content_area_panel = Box::new(crate::widgets::Panel::new()
-            .with_color(Color::hex("#181825")));
+        let area_h = if self.is_expanded {
+            Units::Auto
+        } else {
+            Units::Px(0.0)
+        };
+        let _area_style = StyleBuilder::new().fill_width().clip().build();
+        let content_area_panel =
+            Box::new(crate::widgets::Panel::new().with_color(Color::hex("#181825")));
         let content_area_id = ctx.tree.add_node(content_area_panel, Some(my_id));
         ctx.tree.set_node_style(content_area_id, {
             let mut s = StyleBuilder::new().fill_width().clip().build();
@@ -145,11 +152,7 @@ impl<App: 'static + Send + Sync> Widget<App> for Accordion<App> {
         // Por simplicidad: dibujamos el hitbox del nodo raíz sin fondo.
     }
 
-    fn on_event(
-        &mut self,
-        ctx: &mut EventContext<App>,
-        event: &UiEvent,
-    ) -> EventResponse {
+    fn on_event(&mut self, ctx: &mut EventContext<App>, event: &UiEvent) -> EventResponse {
         if let UiEvent::MouseDown { pos, .. } = event {
             // ¿El clic fue en la cabecera?
             if let Some(hid) = self.header_id {
@@ -162,13 +165,17 @@ impl<App: 'static + Send + Sync> Widget<App> for Accordion<App> {
                             cb(ctx, self.is_expanded);
                         }
 
-                        // Marcar el área de contenido dirty para que se relayoute
+                        // Marcar el área de contenido dirty para que se repinte;
+                        // el pase de layout siempre se ejecuta.
                         if let Some(area_id) = self.content_area_id {
-                            let target_h = if self.is_expanded { Units::Auto } else { Units::Px(0.0) };
+                            let target_h = if self.is_expanded {
+                                Units::Auto
+                            } else {
+                                Units::Px(0.0)
+                            };
                             if let Some(node) = ctx.tree.get_node_mut(area_id) {
                                 node.style.size.1 = target_h;
                             }
-                            ctx.tree.mark_layout_dirty(area_id);
                         }
                         ctx.tree.mark_paint_dirty(ctx.node_id);
                         return EventResponse::Redraw;

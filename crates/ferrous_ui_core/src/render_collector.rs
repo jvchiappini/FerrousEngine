@@ -165,7 +165,6 @@ impl RenderCollector {
                     };
                     node.widget.draw(&mut ctx, &mut node.cached_cmds);
                     node.dirty.paint = false;
-                    node.dirty.layout = false;
                     node.dirty.hierarchy = false;
                 }
                 redrawn = true;

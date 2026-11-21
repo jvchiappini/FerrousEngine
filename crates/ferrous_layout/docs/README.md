@@ -235,7 +235,7 @@ Style {
 
 ## Optimizaciones
 
-El cálculo de layout solo ocurre cuando un nodo o uno de sus hijos es marcado con la bandera `layout_dirty`. Si la jerarquía no ha cambiado y los tamaños son estables, el motor de layout no consume ciclos de CPU. Taffy también implementa caching interno de sus propios resultados para nodos no modificados.
+El motor de layout ejecuta un pase completo en cada llamada: sincroniza el árbol con Taffy y recalcula las posiciones. El control incremental que decidía si correr y qué subárboles saltar vive ahora en GUIMaker. Taffy también implementa caching interno de sus propios resultados para nodos no modificados.
 
 ---
 

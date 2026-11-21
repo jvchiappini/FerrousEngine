@@ -26,7 +26,7 @@ ramas intactas del árbol en cada ciclo (estrategia "Lag Cero").
 | `Overflow` | `Visible` · `Hidden` · `Scroll` |
 | `Alignment` | `Start` · `Center` · `End` · `Stretch` |
 | `RenderCommand` | Primitiva de dibujo: `Quad`, `Text`, `Image`, `PushClip`, `PopClip` |
-| `DirtyFlags` | Bits `layout`, `paint`, `hierarchy`, `subtree_dirty` para el sistema de invalidación |
+| `DirtyFlags` | Bits `paint`, `hierarchy`, `subtree_dirty` para el sistema de invalidación |
 | `NodeId` | Clave de `SlotMap` — identificador estable de un nodo |
 | `CmdQueue` | Cola de comandos diferidos (acciones post-frame) |
 
@@ -51,9 +51,8 @@ Métodos principales:
 |---|---|
 | `add_node(widget, parent)` | Inserta un nodo y lo enlaza a su padre |
 | `add_node_with_id(widget, parent, id_str)` | Ídem con ID de texto para búsqueda |
-| `set_node_style(id, style)` | Aplica un `Style` e invalida el layout |
+| `set_node_style(id, style)` | Aplica un `Style` y marca el nodo para repintado |
 | `set_node_rect(id, rect)` | Escribe el rect resuelto (resultado del layout engine) |
-| `mark_layout_dirty(id)` | Invalida layout y propaga hacia arriba |
 | `mark_paint_dirty(id)` | Invalida repintado del nodo |
 | `collect_commands(cmds, viewport)` | Recorre el árbol y recolecta `RenderCommand`s, usando caché si el nodo está limpio y aplicando culling por viewport |
 | `get_node_by_id(id_str)` | Busca un nodo por su ID de texto |

@@ -74,6 +74,6 @@ root        → x = 0, y = 0   (origen de pantalla)
 
 ## 🚀 Optimizaciones
 
-- **Dirty-flag aware**: El cálculo de layout solo ocurre si algún nodo tiene `layout_dirty = true`. Si la jerarquía no ha cambiado, el motor de layout no consume ciclos de CPU.
+- **Pase completo**: cada llamada a `compute_layout` sincroniza el árbol y vuelve a calcular las posiciones. El control incremental (decidir si correr y qué subárboles saltar) vive ahora en GUIMaker.
 - **Caching en Taffy**: Taffy implementa su propio sistema de caché interno; los nodos cuyo estilo y hijos no han cambiado no se recalculan.
-- **Reuso de NodeIds**: Los nodos de Taffy se reutilizan entre frames mediante el `node_map`, evitando allocations innecesarias.
+- **Reuso de NodeIds**: Los nodos de Taffy se reutilizan entre frames mediante `Node::taffy_id`, evitando allocations innecesarias.

@@ -7,7 +7,7 @@
 //! 2. **`Widget::hit_test()`** — Allows precise hit-testing for custom shapes.
 
 pub use ferrous_ui_core::{
-    NodeId, UiTree, UiEvent, Rect, EventResponse, EventContext, GuiKey, MouseButton
+    EventContext, EventResponse, GuiKey, MouseButton, NodeId, Rect, UiEvent, UiTree,
 };
 use glam::Vec2;
 
@@ -23,13 +23,12 @@ pub struct EventManager {
     pub cursor_pos: Vec2,
     /// Result from GPU hit-test (if performed this frame).
     pub gpu_hit_test_result: Option<NodeId>,
-    
+
     // --- Native Drag & Drop State ---
     pub dragging_data: Option<String>,
     pub dragging_source: Option<NodeId>,
     pub last_drag_target: Option<NodeId>,
 }
-
 
 impl EventManager {
     pub fn new() -> Self {
@@ -45,50 +44,66 @@ impl EventManager {
         }
     }
 
-
     // ─── Hit-testing ──────────────────────────────────────────────────────────
 
     /// 2-level hit-test: Fast AABB + precise `Widget::hit_test()`.
     ///
-    /// Iterates through the tree front-to-back (last child = highest visual priority).
+    /// Walks the tree front-to-back: the children are visited in reverse order
+    /// (the last child paints on top) before the node itself, so the first hit
+    /// is the topmost widget.
+    ///
+    /// This linear walk is temporary: phase 4 moves routing/hit-testing to
+    /// GUIMaker, where the accelerated spatial index now lives.
     pub fn hit_test<App>(&self, tree: &UiTree<App>, pos: Vec2) -> Option<NodeId> {
-        let candidates = tree.spatial_index.bounding_candidates_at(pos);
-        
-        for candidate_id in candidates {
-            let node = match tree.get_node(candidate_id) {
-                Some(n) => n,
-                None => continue,
-            };
+        let root = tree.get_root()?;
+        self.hit_test_node(tree, root, pos)
+    }
 
-            // For widgets with `needs_gpu_hit_test() == true`, GPU will handle it
-            if node.widget.needs_gpu_hit_test() {
-                if let Some(gpu_id) = self.gpu_hit_test_result {
-                    if gpu_id == candidate_id {
-                        return Some(candidate_id);
-                    }
-                }
-                continue;
-            }
+    /// Allocation-free recursive step of [`Self::hit_test`].
+    fn hit_test_node<App>(&self, tree: &UiTree<App>, id: NodeId, pos: Vec2) -> Option<NodeId> {
+        // A fully clipped node (and therefore its subtree) cannot be hit.
+        let visible = tree.visible_rect(id)?;
 
-            let rect = node.rect;
-            let local_pos = Vec2::new(pos.x - rect.x, pos.y - rect.y);
-            let size = Vec2::new(rect.width, rect.height);
-            
-            if node.widget.hit_test(local_pos, size) {
-                return Some(candidate_id);
+        let node = tree.get_node(id)?;
+
+        // Children paint above their parent, so the topmost hit is found by
+        // descending front-to-back before testing the node itself.
+        for &child in node.children.iter().rev() {
+            if let Some(hit) = self.hit_test_node(tree, child, pos) {
+                return Some(hit);
             }
         }
-        None
+
+        // The point is outside this node's visible rect, but its unclipped
+        // descendants were still visited above.
+        if !visible.contains([pos.x, pos.y]) {
+            return None;
+        }
+
+        // For widgets with `needs_gpu_hit_test() == true`, GPU will handle it
+        if node.widget.needs_gpu_hit_test() {
+            if let Some(gpu_id) = self.gpu_hit_test_result {
+                if gpu_id == id {
+                    return Some(id);
+                }
+            }
+            return None;
+        }
+
+        let rect = node.rect;
+        let local_pos = Vec2::new(pos.x - rect.x, pos.y - rect.y);
+        let size = Vec2::new(rect.width, rect.height);
+
+        if node.widget.hit_test(local_pos, size) {
+            Some(id)
+        } else {
+            None
+        }
     }
 
     // ─── Dispatch ─────────────────────────────────────────────────────────────
 
-    pub fn dispatch_event<App>(
-        &mut self,
-        tree: &mut UiTree<App>,
-        app: &mut App,
-        event: UiEvent,
-    ) {
+    pub fn dispatch_event<App>(&mut self, tree: &mut UiTree<App>, app: &mut App, event: UiEvent) {
         match &event {
             UiEvent::MouseMove { pos } => {
                 let pos = *pos;
@@ -106,7 +121,13 @@ impl EventManager {
 
                     if let Some(id) = target {
                         // Current DragOver
-                        self.bubble_event(tree, app, id, UiEvent::DragOver { pos, data }, Some(pos));
+                        self.bubble_event(
+                            tree,
+                            app,
+                            id,
+                            UiEvent::DragOver { pos, data },
+                            Some(pos),
+                        );
                     }
                 } else {
                     // --- Normal Hover Logic ---
@@ -157,16 +178,20 @@ impl EventManager {
                     self.last_drag_target = None;
                     // Note: We consume the MouseUp here to prevent normal click logic if it was a drag
                 } else {
-                    let target = self.pressed_node
-                        .or_else(|| self.hit_test(tree, pos));
+                    let target = self.pressed_node.or_else(|| self.hit_test(tree, pos));
 
                     if let Some(id) = target {
-                        self.bubble_event(tree, app, id, UiEvent::MouseUp { button, pos }, Some(pos));
+                        self.bubble_event(
+                            tree,
+                            app,
+                            id,
+                            UiEvent::MouseUp { button, pos },
+                            Some(pos),
+                        );
                     }
                 }
                 self.pressed_node = None;
             }
-
 
             UiEvent::KeyDown { key } => {
                 let key = *key;
@@ -193,8 +218,13 @@ impl EventManager {
                 let (dx, dy) = (*delta_x, *delta_y);
                 if let Some(id) = self.hovered_node {
                     self.bubble_event(
-                        tree, app, id,
-                        UiEvent::MouseWheel { delta_x: dx, delta_y: dy },
+                        tree,
+                        app,
+                        id,
+                        UiEvent::MouseWheel {
+                            delta_x: dx,
+                            delta_y: dy,
+                        },
                         Some(self.cursor_pos),
                     );
                 }
@@ -257,12 +287,20 @@ impl EventManager {
             self.dragging_source = Some(id);
             self.last_drag_target = Some(id);
             // Inform the widget that drag has started
-            self.send_to_node(tree, app, id, UiEvent::DragStart { pos: self.cursor_pos, data: data.clone() }, Some(self.cursor_pos));
+            self.send_to_node(
+                tree,
+                app,
+                id,
+                UiEvent::DragStart {
+                    pos: self.cursor_pos,
+                    data: data.clone(),
+                },
+                Some(self.cursor_pos),
+            );
         }
 
         response
     }
-
 
     fn bubble_event<App>(
         &mut self,
@@ -292,26 +330,26 @@ impl Default for EventManager {
 
 pub fn winit_to_guikey(k: winit::keyboard::KeyCode) -> GuiKey {
     match k {
-        winit::keyboard::KeyCode::Backspace  => GuiKey::Backspace,
-        winit::keyboard::KeyCode::Delete     => GuiKey::Delete,
-        winit::keyboard::KeyCode::ArrowLeft  => GuiKey::ArrowLeft,
+        winit::keyboard::KeyCode::Backspace => GuiKey::Backspace,
+        winit::keyboard::KeyCode::Delete => GuiKey::Delete,
+        winit::keyboard::KeyCode::ArrowLeft => GuiKey::ArrowLeft,
         winit::keyboard::KeyCode::ArrowRight => GuiKey::ArrowRight,
-        winit::keyboard::KeyCode::ArrowUp    => GuiKey::ArrowUp,
-        winit::keyboard::KeyCode::ArrowDown  => GuiKey::ArrowDown,
-        winit::keyboard::KeyCode::Home       => GuiKey::Home,
-        winit::keyboard::KeyCode::End        => GuiKey::End,
+        winit::keyboard::KeyCode::ArrowUp => GuiKey::ArrowUp,
+        winit::keyboard::KeyCode::ArrowDown => GuiKey::ArrowDown,
+        winit::keyboard::KeyCode::Home => GuiKey::Home,
+        winit::keyboard::KeyCode::End => GuiKey::End,
         winit::keyboard::KeyCode::Enter | winit::keyboard::KeyCode::NumpadEnter => GuiKey::Enter,
-        winit::keyboard::KeyCode::Escape     => GuiKey::Escape,
-        winit::keyboard::KeyCode::Tab        => GuiKey::Tab,
-        _                                    => GuiKey::Backspace,
+        winit::keyboard::KeyCode::Escape => GuiKey::Escape,
+        winit::keyboard::KeyCode::Tab => GuiKey::Tab,
+        _ => GuiKey::Backspace,
     }
 }
 
 pub fn winit_to_mousebutton(b: winit::event::MouseButton) -> ferrous_ui_core::MouseButton {
     match b {
-        winit::event::MouseButton::Left   => ferrous_ui_core::MouseButton::Left,
-        winit::event::MouseButton::Right  => ferrous_ui_core::MouseButton::Right,
+        winit::event::MouseButton::Left => ferrous_ui_core::MouseButton::Left,
+        winit::event::MouseButton::Right => ferrous_ui_core::MouseButton::Right,
         winit::event::MouseButton::Middle => ferrous_ui_core::MouseButton::Middle,
-        _                                 => ferrous_ui_core::MouseButton::Left,
+        _ => ferrous_ui_core::MouseButton::Left,
     }
 }

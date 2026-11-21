@@ -40,10 +40,9 @@ Métodos principales:
 | `build()` | Ejecuta la fase `build` de todos los widgets recursivamente. |
 | `update(delta_time)` | Ejecuta la fase `update` y aplica cambios reactivos pendientes. |
 | `collect_commands(&mut cmds, viewport)` | Recolecta `RenderCommand`s. Omite nodos fuera del `viewport` (culling). |
-| `mark_layout_dirty(id)` | Invalida el layout del nodo y propaga hacia arriba. |
 | `mark_paint_dirty(id)` | Invalida solo el aspecto visual del nodo. |
 | `get_node_by_id(id_str)` | Búsqueda O(1) de un nodo por su identificador de texto. |
-| `set_node_style(id, style)` | Establece el estilo y lanza `mark_layout_dirty`. |
+| `set_node_style(id, style)` | Establece el estilo y marca el nodo para repintado. |
 
 ### `Node`
 La unidad de almacenamiento en el árbol. Contiene:
@@ -52,7 +51,7 @@ La unidad de almacenamiento en el árbol. Contiene:
 - `style`: Preferencias de diseño (Padding, Margin, Alignment).
 - `rect`: Geometría final calculada por el motor de layout.
 - `cached_cmds`: Caché de comandos de dibujo.
-- `dirty`: Flags de estado (`layout`, `paint`, `hierarchy`, `subtree_dirty`).
+- `dirty`: Flags de estado (`paint`, `hierarchy`, `subtree_dirty`).
 
 ### Trait `Widget<App>`
 Cualquier componente UI de Ferrous debe implementar este trait, siendo genérico sobre el estado de la aplicación `App`:
@@ -165,9 +164,9 @@ tree.reactivity.notify_change(dirty);
 
 El sistema utiliza una propagación de flags `subtree_dirty`. Si un nodo en la profundidad del árbol cambia, solo se marcan sus padres como sucios hacia arriba. Durante el recorrido de renderizado:
 
-1. Si un nodo tiene `subtree_dirty = false` → se salta toda su descendencia **instantáneamente**.
-2. Si el nodo está sucio (`paint`/`layout`) → se regeneran sus comandos.
-3. Si no está sucio → se usan los comandos del **frame anterior** sin ningún cómputo adicional.
+1. Si el nodo y su subárbol están limpios (`subtree_dirty = false`) y tiene comandos cacheados, se reutilizan los comandos del **frame anterior** sin ningún cómputo adicional.
+2. Si el nodo está sucio (`paint`/`hierarchy`) → se regeneran sus comandos.
+3. Los hijos se recorren siempre, así que un ancestro limpio no oculta a un descendiente sucio.
 
 ---
 
