@@ -1,19 +1,19 @@
-//! # ferrous_core
+﻿//! # ferrous_core
 //!
 //! Foundational types shared by every layer of FerrousEngine.  This crate
-//! has **zero renderer dependencies** — it is safe to use in headless tests,
+//! has **zero renderer dependencies** â€” it is safe to use in headless tests,
 //! tools, and server-side game logic.
 //!
 //! ## What lives here
 //!
 //! | Module | Purpose |
 //! |--------|---------|
-//! [`transform`] | `Transform` — position / rotation / scale + `matrix()` |
-//! [`color`]     | `Color` — RGBA f32 with a large palette of constants |
-//! [`time`]      | `Time` / `TimeClock` — frame delta, elapsed, FPS |
-//! [`input`]     | `InputState` — keyboard, mouse, scroll; `just_pressed` / `just_released` |
+//! [`transform`] | `Transform` â€” position / rotation / scale + `matrix()` |
+//! [`color`]     | `Color` â€” RGBA f32 with a large palette of constants |
+//! [`time`]      | `Time` / `TimeClock` â€” frame delta, elapsed, FPS |
+//! [`input`]     | `InputState` â€” keyboard, mouse, scroll; `just_pressed` / `just_released` |
 //! [`scene`]     | `World`, `Element`, ECS systems (`TimeSystem`, `VelocitySystem`, `AnimationSystem`, `BehaviorSystem`, `TransformSystem`), hierarchy components (`Parent`, `Children`, `GlobalTransform`), `AnimationClip/Player`, `BehaviorComponent`, `Camera` |
-//! [`context`]   | `EngineContext` — wgpu device + queue |
+//! [`context`]   | `EngineContext` â€” wgpu device + queue |
 //! [`metrics`]   | CPU / RAM usage helpers |
 //! [`startup`]   | Process startup trace: marks, spans and stderr/JSON reports |
 //!
@@ -31,7 +31,7 @@
 //!     .build();
 //! ```
 
-// ─── Module declarations ───────────────────────────────────────────────────
+// â”€â”€â”€ Module declarations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// Public API types (NodeId, etc).
 pub mod api;
@@ -59,11 +59,11 @@ pub mod context;
 /// Scene graph: `World`, `Element`, `Handle`, `ElementKind`, `Camera`, `Controller`.
 ///
 /// **ECS systems** (register via `StagedScheduler`):
-/// - `TimeSystem` (PreUpdate) — ticks `TimeClock` resource each frame.
-/// - `VelocitySystem` (Update) — integrates `Velocity` into `Transform::position`.
-/// - `AnimationSystem` (Update) — advances `AnimationPlayer` and applies keyframe positions.
-/// - `BehaviorSystem` (Update) — calls per-entity `Behavior::update` hooks.
-/// - `TransformSystem` (PostUpdate) — propagates `GlobalTransform` through the parent chain.
+/// - `TimeSystem` (PreUpdate) â€” ticks `TimeClock` resource each frame.
+/// - `VelocitySystem` (Update) â€” integrates `Velocity` into `Transform::position`.
+/// - `AnimationSystem` (Update) â€” advances `AnimationPlayer` and applies keyframe positions.
+/// - `BehaviorSystem` (Update) â€” calls per-entity `Behavior::update` hooks.
+/// - `TransformSystem` (PostUpdate) â€” propagates `GlobalTransform` through the parent chain.
 ///
 /// **New components**: `Velocity`, `Parent`, `Children`, `GlobalTransform`,
 /// `AnimationClip`, `AnimationPlayer`, `BehaviorComponent`.
@@ -73,6 +73,9 @@ pub mod scene;
 
 /// CPU / RAM usage helpers.
 pub mod metrics;
+
+/// Uniform-grid spatial index shared by UI routing and scene picking.
+pub mod spatial;
 
 /// Process startup tracing (marks, spans, table and JSON reports).
 pub mod startup;
@@ -101,7 +104,7 @@ pub mod viewport;
 /// Per-frame renderer statistics (vertices, triangles, draw calls).
 pub mod render_stats;
 
-// ─── Top-level re-exports ──────────────────────────────────────────────────
+// â”€â”€â”€ Top-level re-exports â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // These are the types a game author uses every day.  Import them from the
 // crate root so you don't have to care about which sub-module they live in.

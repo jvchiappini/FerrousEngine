@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "guimaker"
 version = "0.1.0"
 edition = "2021"
@@ -13,6 +13,7 @@ ron = "0.8"
 glam = { workspace = true }
 taffy = "0.7.7"
 unicode-segmentation = "1.13"
+ferrous_core = { path = "../ferrous_core" }
 
 [dev-dependencies]
 divan = "0.1.21"
