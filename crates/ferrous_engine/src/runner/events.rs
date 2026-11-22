@@ -1,4 +1,4 @@
-//! `ApplicationHandler` implementation for `Runner` â€” window lifecycle and events.
+//! `ApplicationHandler` implementation for `Runner` — window lifecycle and events.
 
 use std::sync::Arc;
 use winit::{
@@ -99,7 +99,7 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
             height: window_size.1,
         };
 
-        // â”€â”€ Desktop: hidden window, GPU state on a worker â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Desktop: hidden window, GPU state on a worker ───────────────────
         #[cfg(not(target_arch = "wasm32"))]
         {
             let mut work = self.startup_work.take();
@@ -133,7 +133,7 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
             self.window = Some(window);
         }
 
-        // â”€â”€ Web (WASM): asynchronous init â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // ── Web (WASM): asynchronous init ───────────────────────────────────
         #[cfg(target_arch = "wasm32")]
         {
             window.set_visible(true);
@@ -226,12 +226,8 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
         // Prompt 18 P3: enter/leave are pointer events too. They change
         // nothing visible unless the app's hover actually changes, so they
         // follow the same opt-out as a move instead of forcing a frame.
-        let is_cursor = matches!(
-            event,
-            WindowEvent::CursorMoved { .. }
-                | WindowEvent::CursorEntered { .. }
-                | WindowEvent::CursorLeft { .. }
-        );
+        let requests_frame =
+            crate::redraw::event_requests_frame(&event, self.config.redraw_on_pointer_move);
         if let WindowEvent::CursorMoved { position, .. } = &event {
             #[cfg(target_arch = "wasm32")]
             let (mx, my) = (
@@ -256,8 +252,9 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
             _ => {
                 self.last_action_time = Instant::now();
                 // Prompt 18 P1: one frame to process the input. A pointer
-                // move is opt-out: the app's `on_window_event` decides.
-                if !is_cursor || self.config.redraw_on_pointer_move {
+                // move is opt-out: the app's `on_window_event` decides, and
+                // `event_requests_frame` is the same decision the test drives.
+                if requests_frame {
                     // Prompt 18 P6: the presented frame answers this input
                     // instant. Only an event that asks for a redraw counts:
                     // recording every event (a pointer move the app opted out
@@ -273,9 +270,9 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
             WindowEvent::CursorMoved { position, .. } => {
                 let (mx, my) = (position.x, position.y);
                 #[cfg(target_arch = "wasm32")]
-                // On web the render buffer is `css Ã— dpr Ã— resolution_scale`
+                // On web the render buffer is `css × dpr × resolution_scale`
                 // (see `resumed`), while winit reports the pointer in
-                // `css Ã— dpr` physical pixels. Scale the pointer into the
+                // `css × dpr` physical pixels. Scale the pointer into the
                 // same buffer space as `window_size`, otherwise every
                 // interaction is offset by the resolution_scale factor.
                 let (mx, my) = (

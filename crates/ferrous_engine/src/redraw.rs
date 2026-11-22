@@ -33,6 +33,7 @@
 //! # impl ferrous_engine::FerrousApp for MyEditor {}
 //! ```
 
+use winit::event::WindowEvent;
 use winit::event_loop::EventLoopProxy;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -115,6 +116,22 @@ pub(crate) enum NextFrame {
     WaitUntil(Instant),
     /// Sleep until the next input, worker wake or event.
     Wait,
+}
+
+/// Whether one window event asks the on-demand scheduler for a frame by itself.
+///
+/// Cursor events are opt-out: the app's `on_window_event` decides whether the
+/// move changed something visible (`AppConfig::redraw_on_pointer_move`), so a
+/// move that changes nothing schedules no frame. Every other event asks for
+/// one frame. `Runner::window_event` and the redraw tests share this decision.
+pub(crate) fn event_requests_frame(event: &WindowEvent, redraw_on_pointer_move: bool) -> bool {
+    let is_cursor = matches!(
+        event,
+        WindowEvent::CursorMoved { .. }
+            | WindowEvent::CursorEntered { .. }
+            | WindowEvent::CursorLeft { .. }
+    );
+    !is_cursor || redraw_on_pointer_move
 }
 
 /// The runner's redraw state.
@@ -287,6 +304,14 @@ mod tests {
             }
             self.now = self.now.max(until);
         }
+
+        /// The default redraw decision `Runner::window_event` makes for one
+        /// event, without the app and the GPU.
+        fn on_window_event(&mut self, event: &WindowEvent, redraw_on_pointer_move: bool) {
+            if event_requests_frame(event, redraw_on_pointer_move) {
+                self.scheduler.on_input();
+            }
+        }
     }
 
     #[test]
@@ -295,6 +320,41 @@ mod tests {
         let mut runner = HeadlessRunner::new(start);
         runner.advance_to(start + Duration::from_secs(10));
         assert_eq!(runner.frames, 0, "idle means zero presented frames");
+    }
+
+    #[test]
+    fn a_pointer_move_the_app_does_not_forward_presents_no_frame() {
+        use winit::dpi::PhysicalPosition;
+        use winit::event::DeviceId;
+
+        let start = at(0);
+        let moved = WindowEvent::CursorMoved {
+            device_id: DeviceId::dummy(),
+            position: PhysicalPosition::new(40.0, 24.0),
+        };
+
+        // The real event goes through the same decision `Runner::window_event`
+        // makes before it can deliver it to the app. With
+        // `redraw_on_pointer_move == false` the move is opt-out and schedules
+        // nothing, so the simulated loop presents no frame.
+        let mut runner = HeadlessRunner::new(start);
+        runner.on_window_event(&moved, false);
+        runner.advance_to(start + Duration::from_secs(10));
+        assert_eq!(
+            runner.frames, 0,
+            "a pointer move the app does not forward must present no frame"
+        );
+
+        // Positive control: the same event does ask for a frame when the
+        // config forwards pointer moves, so the assertion above is not the
+        // idle test under another name.
+        let mut forwarding = HeadlessRunner::new(start);
+        forwarding.on_window_event(&moved, true);
+        forwarding.advance_to(start + Duration::from_secs(1));
+        assert_eq!(
+            forwarding.frames, 1,
+            "the same move presents one frame when it is forwarded"
+        );
     }
 
     #[test]
