@@ -1,7 +1,7 @@
-site_name: FerrousEngine Documentation
+﻿site_name: FerrousEngine Documentation
 site_url: https://jvchiappini.github.io/FerrousEngine
 site_description: >
-  Complete reference for FerrousEngine â€” a modular Rust application/game
+  Complete reference for FerrousEngine Ã¢â‚¬â€ a modular Rust application/game
   framework. Covers the App builder, GUI widgets, layout system, renderer,
   ECS, and asset pipeline. Optimised for both human readers and AI agents.
 site_author: jvchiappini
@@ -33,7 +33,7 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Getting Started: ferrous_engine/getting-started.md
-  - ferrous_engine â€” Application Shell:
+  - ferrous_engine Ã¢â‚¬â€ Application Shell:
     - Overview: ferrous_engine/README.md
     - App Builder (App<T>): ferrous_engine/app-builder.md
     - AppBuilder & Plugins: ferrous_engine/plugins.md
@@ -46,7 +46,7 @@ nav:
     - Performance & GPU timing: ferrous_engine/performance.md
     - Redraw policy: ferrous_engine/redraw.md
     - Present modes & persistent UI: ferrous_engine/present.md
-  - ferrous_2d â€” 2D Rendering:
+  - ferrous_2d Ã¢â‚¬â€ 2D Rendering:
     - Overview: ferrous_2d/README.md
     - Text: ferrous_2d/text.md
     - Images: ferrous_2d/images.md
@@ -55,8 +55,9 @@ nav:
     - Layer Effects: ferrous_2d/effects.md
     - Layer Masks: ferrous_2d/masks.md
     - Temporal Accumulation: ferrous_2d/accumulation.md
+    - Picking: ferrous_2d/picking.md
     - Textured Meshes: ferrous_renderer/textured-meshes.md
-  - ferrous_ui_core â€” UI Core:
+  - ferrous_ui_core Ã¢â‚¬â€ UI Core:
     - Overview: ferrous_ui_core/README.md
     - Core API (Ui / Canvas / Widget): ferrous_ui_core/CORE.md
     - Creating Widgets: ferrous_ui_core/creating-widgets.md
@@ -90,13 +91,13 @@ nav:
       - Tree View: ferrous_ui_core/widgets/tree_view.md
       - Virtual Grid: ferrous_ui_core/widgets/virtual_grid.md
       - Virtual List: ferrous_ui_core/widgets/virtual_list.md
-  - ferrous_gui â€” GUI Framework:
+  - ferrous_gui Ã¢â‚¬â€ GUI Framework:
     - Overview: ferrous_gui/README.md
     - Core API (Ui / Canvas / Widget): ferrous_gui/api/core.md
-  - ferrous_layout â€” Layout System:
+  - ferrous_layout Ã¢â‚¬â€ Layout System:
     - Overview: ferrous_layout/README.md
     - Layout Reference: ferrous_layout/LAYOUT.md
-  - ferrous_renderer â€” GPU Renderer:
+  - ferrous_renderer Ã¢â‚¬â€ GPU Renderer:
     - Overview: ferrous_renderer/README.md
     - Architecture: ferrous_renderer/architecture.md
     - Camera: ferrous_renderer/camera.md
@@ -132,7 +133,7 @@ nav:
     - ferrous_ecs_macros: ferrous_ecs_macros/README.md
     - ferrous_editor: ferrous_editor/README.md
     - ferrous_events: ferrous_events/README.md
-    - ferrous_events â€” Events: ferrous_events/EVENTS.md
+    - ferrous_events Ã¢â‚¬â€ Events: ferrous_events/EVENTS.md
     - ferrous_font: ferrous_font/README.md
     - ferrous_font - Baked atlases and the cache: ferrous_font/atlas-cache.md
     - ferrous_font - Memory budgets: ferrous_font/memory-budgets.md
@@ -143,7 +144,7 @@ nav:
     - ferrous_svg: ferrous_svg/README.md
     - ferrous_ui_macros: ferrous_ui_macros/README.md
     - ferrous_ui_render: ferrous_ui_render/README.md
-    - ferrous_ui_render â€” Internals: ferrous_ui_render/RENDER.md
+    - ferrous_ui_render Ã¢â‚¬â€ Internals: ferrous_ui_render/RENDER.md
     - ferrous_ui_render - Partial redraw: ferrous_ui_render/PARTIAL.md
     - ferrous_voxels: ferrous_voxels/README.md
     - ferrous_web: ferrous_web/README.md

@@ -1,4 +1,13 @@
-# Ferrous GUI
+﻿# Ferrous GUI
+
+> **Status: draw-only.** Since prompt 15 phase 4 the runner no longer
+> dispatches pointer or keyboard input to UiSystem, and
+> errous_events::EventManager is gone. Widgets built with this crate lay
+> out and paint, but on_click/on_change/on_event callbacks do not fire.
+> Input, gestures, focus, shortcuts, scrolling and text editing live in
+> **guimaker::input**; new UI should be built on GUIMaker. The retained UI
+> remains only because the engine still uses it for layout/paint and because
+> the legacy editor has not been ported yet (Phase 11 backlog).
 
 The **2D Widget Toolkit and Orchestrator** for [FerrousEngine](https://github.com/your-repo/FerrousEngine).
 

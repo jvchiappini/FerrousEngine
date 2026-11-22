@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+﻿use std::path::PathBuf;
 
 use crate::context::AppContext;
 use crate::screenshot::Screenshot;
@@ -158,9 +158,9 @@ impl<'a, 'b> DrawContext<'a, 'b> {
 ///
 /// | Callback | `Flat2D` | `Flat2D` | `Game3D` |
 /// |----------|:-----------:|:--------:|:--------:|
-/// | `setup` / `update` / `draw_ui` | ✓ | ✓ | ✓ |
-/// | `draw_3d` | ✗ | ✗ | ✓ |
-/// | ECS world sync | ✗ | ✗ | ✓ |
+/// | `setup` / `update` / `draw_ui` | âœ“ | âœ“ | âœ“ |
+/// | `draw_3d` | âœ— | âœ— | âœ“ |
+/// | ECS world sync | âœ— | âœ— | âœ“ |
 ///
 /// A minimal "hello world" GUI tool needs zero methods and
 /// `App::new(MyTool).with_mode(AppMode::Flat2D).run()`.
@@ -199,7 +199,12 @@ pub trait FerrousApp {
 
     /// Register persistent GUI widgets (called once, during `resumed`).
     ///
-    /// Use `ui.add(widget)` / `ui.button(...)` here.
+    /// **Draw-only since prompt 15 phase 4.** The retained `UiSystem` lays out
+    /// and paints; the runner no longer dispatches pointer or key events to it,
+    /// so widget callbacks do not fire. Input, focus and controllers are
+    /// `guimaker::input`; build interactive UI on GUIMaker.
+    ///
+    /// Use `ui.add(widget)` / `ui.button(...)` here for layout/paint.
     fn configure_ui(&mut self, ui: &mut ferrous_gui::UiSystem<Self>)
     where
         Self: Sized,

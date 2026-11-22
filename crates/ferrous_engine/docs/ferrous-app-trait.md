@@ -1,7 +1,7 @@
-# `FerrousApp` Trait
+﻿# `FerrousApp` Trait
 
 `FerrousApp` is the trait your application struct implements. Every method has
-an empty default implementation — override only the ones you need.
+an empty default implementation â€” override only the ones you need.
 
 ```rust
 pub trait FerrousApp {
@@ -15,6 +15,13 @@ pub trait FerrousApp {
                        ctx: &mut AppContext) {}
 }
 ```
+
+> **`configure_ui` is draw-only since prompt 15 phase 4.** The retained
+> `UiSystem` lays out and paints; the runner no longer dispatches pointer or key
+> events to it, so widget `on_click`/`on_change` callbacks never fire. Input,
+> gestures, focus, shortcuts, scrolling and text editing are
+> `guimaker::input`; build interactive UI on GUIMaker. `ferrous_editor` is the
+> in-repo app affected and is in the Phase 11 port backlog.
 
 ---
 
@@ -46,20 +53,20 @@ fn draw_ui(&mut self, dc: &mut DrawContext<'_, '_>) {
 
 ## App modes
 
-Use `App::new(state).with_mode(AppMode::…)` to tell the runner which
+Use `App::new(state).with_mode(AppMode::â€¦)` to tell the runner which
 subsystems to activate.  Only override what you actually need.
 
 | Mode | ECS world sync | `draw_3d` called | Typical use |
 |------|:--------------:|:----------------:|-------------|
-| `AppMode::Game3D` *(default)* | ✓ | ✓ | 3-D games, simulations |
-| `AppMode::Game2D` | ✗ | ✗ | 2-D games, side-scrollers |
-| `AppMode::Desktop2D` | ✗ | ✗ | GUI tools, editors, utilities |
+| `AppMode::Game3D` *(default)* | âœ“ | âœ“ | 3-D games, simulations |
+| `AppMode::Game2D` | âœ— | âœ— | 2-D games, side-scrollers |
+| `AppMode::Desktop2D` | âœ— | âœ— | GUI tools, editors, utilities |
 
 All three modes have a live renderer so `draw_ui`, fonts, and GUI widgets
 work everywhere.
 
 ```rust
-// Desktop tool — no 3D overhead at all
+// Desktop tool â€” no 3D overhead at all
 App::new(MyTool)
     .with_mode(AppMode::Desktop2D)
     .run();
@@ -80,13 +87,13 @@ App::new(MyGame)
 
 ```
 resumed (once)
-    └─▶ setup()
-    └─▶ configure_ui()
+    â””â”€â–¶ setup()
+    â””â”€â–¶ configure_ui()
 
 every frame
-    ├─▶ update()
-    ├─▶ draw_3d()   ← Game3D only; skipped in Game2D / Desktop2D
-    └─▶ draw_ui()   ← always; 2D GUI layer composited on top
+    â”œâ”€â–¶ update()
+    â”œâ”€â–¶ draw_3d()   â† Game3D only; skipped in Game2D / Desktop2D
+    â””â”€â–¶ draw_ui()   â† always; 2D GUI layer composited on top
 ```
 
 `on_resize` and `on_window_event` are called as events arrive, outside the
@@ -101,8 +108,8 @@ fn setup(&mut self, ctx: &mut AppContext) {}
 ```
 
 Called **once**, after the window and GPU are ready. Use it to:
-- Spawn initial ECS entities (`ctx.world.spawn_cube(…)`)
-- Load assets (`ctx.asset_server.load(…)`)
+- Spawn initial ECS entities (`ctx.world.spawn_cube(â€¦)`)
+- Load assets (`ctx.asset_server.load(â€¦)`)
 - Set the initial camera position
 
 ---
@@ -137,8 +144,8 @@ fn update(&mut self, ctx: &mut AppContext) {}
 ```
 
 Called every frame, **before** rendering. This is the main place for:
-- Reading input (`ctx.input.just_pressed(…)`)
-- Mutating scene state (`ctx.world.set_position(…)`)
+- Reading input (`ctx.input.just_pressed(â€¦)`)
+- Mutating scene state (`ctx.world.set_position(â€¦)`)
 - Reading widget state that was updated by input routing
 - Requesting exit (`ctx.request_exit()`)
 
@@ -159,7 +166,7 @@ provided batches via `DrawContext`. These are composited **on top** of the 3D sc
 pub struct DrawContext<'a, 'b> {
     pub gui:  &'a mut GuiBatch,
     pub text: &'a mut TextBatch,
-    pub font: &'a Font,          // always valid — no Option unwrap needed
+    pub font: &'a Font,          // always valid â€” no Option unwrap needed
     pub ctx:  &'a mut AppContext<'b>,
 }
 ```
@@ -169,7 +176,7 @@ fn draw_ui(&mut self, dc: &mut DrawContext<'_, '_>) {
     self.toolbar_bg.draw(dc.gui);
     self.color_btn.draw(dc.gui);
 
-    // font is always &Font — no Option check needed
+    // font is always &Font â€” no Option check needed
     dc.text.draw_text(dc.font, "FPS: 60", [10.0, 10.0], 16.0, [1.0; 4]);
 
     // shape helpers
@@ -186,7 +193,7 @@ fn draw_3d(&mut self, ctx: &mut AppContext) {}
 ```
 
 Called every frame before `draw_ui`. Use it to push gizmos or read camera
-state. The 3D scene is rendered automatically from the ECS world — you only
+state. The 3D scene is rendered automatically from the ECS world â€” you only
 need this callback for manual overlays or imperative rendering.
 
 ---

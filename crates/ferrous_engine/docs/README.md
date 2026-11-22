@@ -1,9 +1,25 @@
-# ferrous_app — Application Shell
+﻿# ferrous_app â€” Application Shell
 
 `ferrous_app` is the top-level crate you depend on to build any FerrousEngine
 application. It wires together the window (winit), the GPU renderer, the GUI
 system, the asset server, and the ECS scheduler into a single coherent frame
 loop.
+
+## Retained UI is draw-only (prompt 15 phase 4)
+
+The retained UI (errous_gui::UiSystem + errous_ui_core widgets) is
+**layout and paint only**. The runner no longer dispatches pointer and key
+events to it; errous_events::EventManager was removed. Input, gestures,
+focus, shortcuts, scrolling and text editing are guimaker::input. Apps that
+need interaction build on GUIMaker.
+
+Affected: crates/ferrous_editor (configure_ui builds Button/Slider/
+ViewportWidget; they draw but their callbacks do not fire), any external
+desktop or web app that implements FerrousApp::configure_ui, and web apps
+linked against errous_web/errous_gui that use the trait. Tests such as
+	ests/zero_alloc.rs use UiSystem for layout/paint only. Retained-UI input
+is not being restored: the errous_editor port to GUIMaker is in the
+Phase 11 backlog.
 
 ## What lives here
 
@@ -12,7 +28,7 @@ loop.
 | `App<T>` | Fluent builder that accepts your `FerrousApp` impl and starts the event loop |
 | `AppBuilder` | Plugin-based alternative builder (compose `Plugin` impls instead of a trait impl) |
 | `FerrousApp` | Trait your application struct implements; six optional frame callbacks |
-| `AppContext<'_>` | Per-frame handle passed to every callback — input, world, render, assets |
+| `AppContext<'_>` | Per-frame handle passed to every callback â€” input, world, render, assets |
 | `RenderContext<'_>` | User-facing renderer facade inside `AppContext::render` |
 | `FileDropEvent` | Queued OS file-drag events delivered to `FerrousApp::on_file_drop` |
 | `AppConfig` | Plain struct with all window / rendering configuration |
@@ -22,14 +38,14 @@ loop.
 
 ```
 docs/
-├── README.md              ← this file
-├── getting-started.md     ← step-by-step first app
-├── app-builder.md         ← App<T> fluent API reference
-├── plugins.md             ← AppBuilder + Plugin trait
-├── ferrous-app-trait.md   ← FerrousApp callbacks
-├── app-context.md         ← AppContext field & method reference
-├── render-context.md      ← RenderContext method reference
-└── config.md              ← ferrous.toml & AppConfig fields
+â”œâ”€â”€ README.md              â† this file
+â”œâ”€â”€ getting-started.md     â† step-by-step first app
+â”œâ”€â”€ app-builder.md         â† App<T> fluent API reference
+â”œâ”€â”€ plugins.md             â† AppBuilder + Plugin trait
+â”œâ”€â”€ ferrous-app-trait.md   â† FerrousApp callbacks
+â”œâ”€â”€ app-context.md         â† AppContext field & method reference
+â”œâ”€â”€ render-context.md      â† RenderContext method reference
+â””â”€â”€ config.md              â† ferrous.toml & AppConfig fields
 - performance.md         GPU instruments, pass timing, MSAA and target sizes
 - present.md             present modes (Fifo/FifoRelaxed/Mailbox) and pacing
 - memory.md              memory hints and the GPU/CPU inventory
