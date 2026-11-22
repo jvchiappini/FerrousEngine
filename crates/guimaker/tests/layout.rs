@@ -15,7 +15,9 @@ fn paint<Msg: Clone>(
 }
 
 fn snapshot(width: f32, height: f32, scale: f32) -> String {
-    let view = start_screen();
+    // The committed snapshots were captured at 11:42; inject that instant so
+    // the layout guard stays stable regardless of when it runs.
+    let view = start_screen(42_120_000.0);
     let mut ui: Ui<StartMsg> = Ui::new(Theme::dark());
     ui.set_viewport(Size::new(width, height), scale);
     let mut text = MetricsTextSystem::new();
@@ -57,7 +59,7 @@ fn layout_snapshots_at_three_sizes_and_two_scales() {
 #[test]
 fn every_rect_is_snapped_to_the_physical_grid() {
     for scale in [1.0f32, 1.25, 1.5, 2.0] {
-        let view = start_screen();
+        let view = start_screen(0.0);
         let mut ui: Ui<StartMsg> = Ui::new(Theme::dark());
         ui.set_viewport(Size::new(1920.0, 1080.0), scale);
         let mut text = MetricsTextSystem::new();
@@ -112,7 +114,7 @@ fn text_wraps_clamps_and_ellipsises() {
 
 #[test]
 fn a_click_on_the_create_button_emits_new_project() {
-    let view = start_screen();
+    let view = start_screen(0.0);
     let mut ui: Ui<StartMsg> = Ui::new(Theme::dark());
     ui.set_viewport(Size::new(1920.0, 1080.0), 1.5);
     let mut text = MetricsTextSystem::new();
@@ -208,7 +210,7 @@ fn describe_a_mistake_in_plain_english() {
 
 #[test]
 fn a_still_frame_reuses_the_display_list_and_reports_no_damage() {
-    let view = start_screen();
+    let view = start_screen(0.0);
     let mut ui: Ui<StartMsg> = Ui::new(Theme::dark());
     ui.set_viewport(Size::new(1920.0, 1080.0), 1.5);
     let mut text = MetricsTextSystem::new();
@@ -247,7 +249,7 @@ fn changing_one_label_damages_its_subtree_only() {
 
 #[test]
 fn two_instances_produce_identical_commands() {
-    let view = start_screen();
+    let view = start_screen(0.0);
     let mut text_a = MetricsTextSystem::new();
     let mut text_b = MetricsTextSystem::new();
     let mut first: Ui<StartMsg> = Ui::new(Theme::light());

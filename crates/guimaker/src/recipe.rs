@@ -36,9 +36,14 @@ pub enum StartMsg {
     Browse,
 }
 
-/// Builds the start screen.
+/// Builds the start screen at the injected clock instant, in milliseconds.
+///
+/// The recent-project times are formatted from `now_ms`; the library never
+/// reads the wall clock, so a story or a golden injects a fixed instant and
+/// stays identical at any hour.
 #[must_use]
-pub fn start_screen() -> Element<StartMsg> {
+pub fn start_screen(now_ms: f64) -> Element<StartMsg> {
+    let time = clock_label(now_ms);
     let header = Element::row()
         .key("header")
         .gap(resp![Xs: Spacing::S2, Md: Spacing::S3])
@@ -87,7 +92,7 @@ pub fn start_screen() -> Element<StartMsg> {
                 .tone(Tone::Default),
         );
     for index in 0..5u64 {
-        recent = recent.child(recent_row(index));
+        recent = recent.child(recent_row(index, time.clone()));
     }
 
     let mut fields = Element::column()
@@ -125,10 +130,9 @@ pub fn start_screen() -> Element<StartMsg> {
                 text::<StartMsg>("Create")
                     .key("create")
                     .text_role(TypeRole::Label)
-                    .tone(Tone::Default)
                     .pad_x(resp![Xs: Spacing::S3, Md: Spacing::S5])
                     .pad_y(Spacing::S3)
-                    .bg(ColorRole::AccentFill)
+                    .on_accent_fill()
                     .radius(Radius::Sm)
                     .on_click(StartMsg::NewProject),
             )
@@ -218,7 +222,7 @@ fn link(label: &'static str, message: StartMsg) -> Element<StartMsg> {
         .on_click(message)
 }
 
-fn recent_row(index: u64) -> Element<StartMsg> {
+fn recent_row(index: u64, time: std::sync::Arc<str>) -> Element<StartMsg> {
     Element::row()
         .key_id(index)
         .gap(resp![Xs: Spacing::S2, Md: Spacing::S3])
@@ -248,13 +252,28 @@ fn recent_row(index: u64) -> Element<StartMsg> {
                 ),
         )
         .child(
-            text::<StartMsg>("11:42")
+            text::<StartMsg>(time)
                 .text_role(TypeRole::Caption)
                 .tone(Tone::Faint)
                 .priority(9)
                 .tabular(),
         )
         .on_click(StartMsg::OpenRecent(index))
+}
+
+/// Formats an injected millisecond instant as `HH:MM` on a 24-hour clock.
+fn clock_label(now_ms: f64) -> std::sync::Arc<str> {
+    let millis = if now_ms.is_finite() {
+        now_ms.max(0.0)
+    } else {
+        0.0
+    };
+    // A finite, non-negative instant fits in `u64` after saturating casts; the
+    // modulo keeps only the time of day.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    // reason: `millis` is finite and non-negative; saturation is acceptable
+    let minutes = (millis / 60_000.0) as u64 % (24 * 60);
+    format!("{:02}:{:02}", minutes / 60, minutes % 60).into()
 }
 
 fn field(key: &'static str, label: &'static str, placeholder: &'static str) -> Element<StartMsg> {
@@ -287,12 +306,12 @@ fn field(key: &'static str, label: &'static str, placeholder: &'static str) -> E
 
 #[cfg(test)]
 mod tests {
-    use super::start_screen;
+    use super::{clock_label, start_screen};
     use crate::view::Tree;
 
     #[test]
     fn the_recipe_has_a_real_structure() {
-        let tree = Tree::build(&start_screen());
+        let tree = Tree::build(&start_screen(0.0));
         assert!(tree.len() > 40, "the recipe is {} nodes", tree.len());
         assert!(tree.find_key("start").is_some());
         assert!(tree.find_key("recent").is_some());
@@ -308,7 +327,7 @@ mod tests {
 
     #[test]
     fn the_recipe_is_responsive() {
-        let view = start_screen();
+        let view = start_screen(0.0);
         let tree = Tree::build(&view);
         let body = tree.find_key("body").expect("body");
         assert!(tree.nodes[body.index()].style.is_responsive());
@@ -316,5 +335,24 @@ mod tests {
         assert!(tree.nodes[title.index()].style.fluid_text.is_some());
         let start = tree.find_key("start").expect("start");
         assert!(tree.nodes[start.index()].style.is_responsive());
+    }
+
+    #[test]
+    fn the_clock_comes_from_the_injected_instant() {
+        assert_eq!(&*clock_label(0.0), "00:00");
+        assert_eq!(&*clock_label(11.0 * 3_600_000.0 + 42.0 * 60_000.0), "11:42");
+        assert_eq!(&*clock_label(f64::NAN), "00:00");
+
+        let first = Tree::build(&start_screen(0.0));
+        let second = Tree::build(&start_screen(9.0 * 3_600_000.0 + 5.0 * 60_000.0));
+        assert!(has_text(&first, "00:00"));
+        assert!(has_text(&second, "09:05"));
+        assert!(!has_text(&second, "00:00"));
+    }
+
+    fn has_text(tree: &Tree<super::StartMsg>, needle: &str) -> bool {
+        tree.nodes
+            .iter()
+            .any(|node| node.text.as_ref().is_some_and(|text| text.text() == needle))
     }
 }

@@ -30,6 +30,9 @@ Thumbs.db
 /docs/
 /brain/
 
+# Ignore local screenshot/benchmark output (the gallery shot command)
+/out/
+
 
 # Ignore compiled binaries
 *.exe

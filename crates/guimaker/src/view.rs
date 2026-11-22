@@ -537,6 +537,21 @@ impl<Msg> Element<Msg> {
         self
     }
 
+    /// Pairs a filled accent background with its on-accent label role.
+    ///
+    /// This is the theme's filled-action pairing: the background is
+    /// [`ColorRole::AccentFill`] and the text resolves to
+    /// [`ColorRole::TextOnAccentFill`]
+    /// through [`Tone::OnAccentFill`]. Hover
+    /// and pressed fills keep the same label because the pairing lives in the
+    /// resolved style, not in a hand-picked colour.
+    #[must_use]
+    pub fn on_accent_fill(mut self) -> Self {
+        self.style.bg = Some(ColorRole::AccentFill);
+        self.style.tone = Tone::OnAccentFill;
+        self
+    }
+
     /// Sets the border colour role.
     #[must_use]
     pub fn border(mut self, role: ColorRole) -> Self {
@@ -1285,6 +1300,7 @@ fn tone_discriminant(tone: Tone) -> u32 {
         Tone::Warning => 5,
         Tone::Danger => 6,
         Tone::Info => 7,
+        Tone::OnAccentFill => 8,
     }
 }
 

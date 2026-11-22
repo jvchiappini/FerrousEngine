@@ -71,6 +71,8 @@ pub enum Tone {
     Danger,
     /// Informational.
     Info,
+    /// Text drawn on a filled accent background.
+    OnAccentFill,
 }
 
 impl Tone {
@@ -86,6 +88,7 @@ impl Tone {
             Self::Warning => ColorRole::Warning,
             Self::Danger => ColorRole::Danger,
             Self::Info => ColorRole::Info,
+            Self::OnAccentFill => ColorRole::TextOnAccentFill,
         }
     }
 
@@ -93,6 +96,27 @@ impl Tone {
     #[must_use]
     pub fn color(self, theme: &Theme) -> Color {
         theme.role(self.role())
+    }
+
+    /// Pairs a tone with a background role through the theme.
+    ///
+    /// A filled accent always draws its label with
+    /// [`ColorRole::TextOnAccentFill`], so the default tone becomes
+    /// [`Tone::OnAccentFill`]. Any other background keeps `self`; an explicit
+    /// tone (a span colour, a semantic label) is never overridden.
+    #[must_use]
+    pub const fn paired_with(self, background: Option<ColorRole>) -> Self {
+        match (background, self) {
+            (
+                Some(
+                    ColorRole::AccentFill
+                    | ColorRole::AccentFillHover
+                    | ColorRole::AccentFillPressed,
+                ),
+                Self::Default,
+            ) => Self::OnAccentFill,
+            _ => self,
+        }
     }
 }
 
@@ -783,6 +807,7 @@ impl Style {
         let hidden_above = self
             .hidden_above
             .is_some_and(|breakpoint| class >= breakpoint);
+        let tone = self.tone.paired_with(self.bg);
         ResolvedStyle {
             direction: *self.direction.resolve(container_width, breakpoints),
             padding: Edges {
@@ -828,11 +853,11 @@ impl Style {
             opacity: self.opacity.clamp(0.0, 1.0),
             clip: self.clip || self.scroll.resolve(container_width, breakpoints).clips(),
             hidden: self.hidden || hidden_below || hidden_above,
-            tone: self.tone,
+            tone,
             text_role: self.text_role,
             text: ResolvedText {
                 style: text_style,
-                color: self.tone.color(theme),
+                color: tone.color(theme),
             },
             max_lines: self.max_lines,
             ellipsis: self.ellipsis,
@@ -897,6 +922,38 @@ mod tests {
         assert_eq!(Tone::Muted.color(&theme), theme.colors.text_muted);
         assert_eq!(Tone::Accent.color(&theme), theme.colors.accent);
         assert_eq!(Tone::Danger.color(&theme), theme.colors.danger);
+        assert_eq!(
+            Tone::OnAccentFill.color(&theme),
+            theme.colors.text_on_accent_fill
+        );
+    }
+
+    #[test]
+    fn a_filled_accent_pairs_with_on_accent_fill() {
+        let theme = Theme::light();
+        for fill in [
+            crate::theme::ColorRole::AccentFill,
+            crate::theme::ColorRole::AccentFillHover,
+            crate::theme::ColorRole::AccentFillPressed,
+        ] {
+            assert_eq!(Tone::Default.paired_with(Some(fill)), Tone::OnAccentFill);
+        }
+        assert_eq!(
+            Tone::Default.paired_with(Some(crate::theme::ColorRole::Surface)),
+            Tone::Default
+        );
+        assert_eq!(
+            Tone::Danger.paired_with(Some(crate::theme::ColorRole::AccentFill)),
+            Tone::Danger
+        );
+
+        let style = Style {
+            bg: Some(crate::theme::ColorRole::AccentFill),
+            ..Style::default()
+        };
+        let resolved = style.resolve(&theme, 1280.0);
+        assert_eq!(resolved.tone, Tone::OnAccentFill);
+        assert_eq!(resolved.text.color, theme.colors.text_on_accent_fill);
     }
 
     #[test]

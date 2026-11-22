@@ -1,0 +1,19 @@
+[package]
+name = "guimaker_gallery"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "GUIMaker gallery: stories, headless screenshots, tolerance goldens and the FerrousApp host adapter."
+license = "Apache-2.0"
+repository = "https://github.com/jvchiappini/FerrousEngine"
+
+[dependencies]
+guimaker = { path = "../guimaker" }
+guimaker_ferrous = { path = "../guimaker_ferrous" }
+ferrous_engine = { path = "../ferrous_engine" }
+ferrous_renderer = { path = "../ferrous_renderer" }
+ferrous_ui_render = { path = "../ferrous_ui_render", features = ["text", "assets"] }
+ferrous_font = { path = "../ferrous_font" }
+glam = { workspace = true }
+png = "0.17"
+wgpu = { workspace = true }

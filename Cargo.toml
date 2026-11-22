@@ -19,6 +19,8 @@ members = [
     "crates/ferrous_svg", "crates/ferrous_state", "crates/ferrous_reflection",
     "crates/ferrous_web", "crates/ferrous_2d",
     "crates/guimaker",
+    "crates/guimaker_ferrous",
+    "crates/guimaker_gallery",
 ]
 resolver = "2"
 

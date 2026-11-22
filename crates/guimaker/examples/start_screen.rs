@@ -21,7 +21,7 @@ fn main() {
         .and_then(|value| value.parse().ok())
         .unwrap_or(1.5);
 
-    let view = start_screen();
+    let view = start_screen(0.0);
     let mut ui: Ui<StartMsg> = Ui::new(Theme::dark());
     ui.set_viewport(Size::new(width, height), scale);
     let mut text = MetricsTextSystem::new();

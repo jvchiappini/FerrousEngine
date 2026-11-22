@@ -31,7 +31,7 @@ fn start_screen_ui() -> (
     MetricsTextSystem,
     Frame<StartMsg>,
 ) {
-    let view = start_screen();
+    let view = start_screen(0.0);
     let mut ui: Ui<StartMsg> = Ui::new(Theme::dark());
     ui.set_viewport(Size::new(1920.0, 1080.0), 1.5);
     let text = MetricsTextSystem::new();
@@ -102,7 +102,7 @@ fn start_screen_relayout_frame(bencher: divan::Bencher) {
 /// The full layout pass on the start screen, with the viewport forced dirty.
 #[divan::bench]
 fn start_screen_full_layout(bencher: divan::Bencher) {
-    let view = start_screen();
+    let view = start_screen(0.0);
     let tree = Tree::build(&view);
     let theme = Theme::dark();
     let mut text = MetricsTextSystem::new();

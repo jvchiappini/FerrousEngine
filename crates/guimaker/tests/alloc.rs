@@ -7,10 +7,16 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use guimaker::prelude::*;
 
 struct Counting;
+
+/// Both tests measure the same process-global counter, so they must not run
+/// concurrently; without this lock the other test's warm-up allocations leak
+/// into the measured window.
+static SERIAL: Mutex<()> = Mutex::new(());
 
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 static BYTES: AtomicUsize = AtomicUsize::new(0);
@@ -51,7 +57,8 @@ fn bytes() -> usize {
 
 #[test]
 fn steady_state_allocates_nothing() {
-    let view = start_screen();
+    let _serial = SERIAL.lock().expect("alloc test lock");
+    let view = start_screen(0.0);
     let mut ui: Ui<StartMsg> = Ui::new(Theme::dark());
     ui.set_viewport(Size::new(1920.0, 1080.0), 1.5);
     let mut text = MetricsTextSystem::new();
@@ -86,6 +93,7 @@ fn steady_state_allocates_nothing() {
 
 #[test]
 fn steady_state_input_allocates_nothing() {
+    let _serial = SERIAL.lock().expect("alloc test lock");
     let mut children: Vec<Element<()>> = Vec::with_capacity(1000);
     for index in 0..1000u64 {
         let mut row = Element::row()

@@ -600,9 +600,16 @@ impl<Msg: Clone> Ui<Msg> {
                     cursor = end;
                 }
                 let text: Arc<str> = Arc::from(text.text());
+                let content = content_box(rect, resolved);
+                let text_rect = Rect::new(
+                    content.x,
+                    content.y + (content.height - shape.height) * 0.5,
+                    content.width,
+                    shape.height,
+                );
                 commands.push(DrawCommand::Text {
                     node: id,
-                    rect,
+                    rect: text_rect,
                     run: TextRun {
                         text,
                         lines: Arc::from(shape.lines.as_slice()),
@@ -650,4 +657,15 @@ fn corners(rect: Rect, radius: crate::theme::Radius, theme: &Theme) -> [f32; 4] 
     let min_side = rect.width.min(rect.height);
     let value = theme.radii.resolve(radius, min_side);
     [value; 4]
+}
+
+/// The padded content box of a border-box rectangle.
+fn content_box(rect: Rect, resolved: &crate::style::ResolvedStyle) -> Rect {
+    let padding = resolved.padding;
+    Rect::new(
+        rect.x + padding.left,
+        rect.y + padding.top,
+        (rect.width - padding.left - padding.right).max(0.0),
+        (rect.height - padding.top - padding.bottom).max(0.0),
+    )
 }

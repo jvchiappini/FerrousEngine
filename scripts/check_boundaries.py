@@ -12,7 +12,12 @@ dependency graph must stay acyclic and optional:
 - The Ferrous drawing backend (``guimaker_ferrous``) may use that
   foundation plus the drawing crates in DRAWING_ALLOWED_ENGINE; only this
   layer may touch the GPU stack.
-- ``guimaker_gallery`` and ``guimaker_designer`` may use both sets.
+- ``guimaker_gallery`` and ``guimaker_designer`` are applications: they may
+  use both sets *and* the application shell ``ferrous_engine`` (for the
+  ``FerrousApp`` host adapter, winit input and the runner), but never the
+  other way round.  This is deliberately the only extra edge applications
+  get; ``guimaker`` stays headless and ``guimaker_ferrous`` stays a pure
+  drawing backend so a product can embed either without the shell.
 - The core may not depend back on the drawing GUIMaker crates (no cycle),
   and the core may not depend on a GPU or windowing crate directly.
 - No GUIMaker crate may be built on egui, iced, Slint or a web view: the
@@ -59,7 +64,10 @@ GUIMAKER_ENGINE_PACKAGES = {
     "ferrous_renderer": "main renderer",
     "ferrous_svg": "SVG tessellation",
     "ferrous_ui_render": "UI batch and renderer",
-    # Higher-level / application crates: neither GUIMaker layer may use them.
+    # Higher-level / application crates: the core and the drawing backend may
+    # not use them.  Applications additionally get only `ferrous_engine`; see
+    # APPLICATION_ALLOWED_ENGINE.  The check below still forbids every engine
+    # crate (including ferrous_engine) from depending on GUIMaker.
     "ferrous_assets": "asset I/O; GPU and text are optional features",
     "ferrous_editor": "editor application",
     "ferrous_engine": "application shell",
@@ -104,14 +112,22 @@ DRAWING_ALLOWED_ENGINE = frozenset(
     }
 )
 
-# Gallery and designer are applications: they may use core and drawing. The
-# adapter gets the foundation too (input event types, math), but it is the
-# only layer allowed to reach the drawing crates.
+# Applications (gallery, designer) additionally get the application shell
+# ``ferrous_engine``: its ``FerrousApp`` + ``DrawContext`` is the host contract
+# the gallery adapter implements, and the runner/winit types are how a real
+# window is driven.  The core (``guimaker``) and the drawing backend
+# (``guimaker_ferrous``) must NOT get this edge: they stay embeddable without
+# the shell.  ``ferrous_engine`` itself may never depend on a GUIMaker crate
+# (checked below), so the edge cannot create a cycle.
+APPLICATION_ALLOWED_ENGINE = (
+    CORE_ALLOWED_ENGINE | DRAWING_ALLOWED_ENGINE | {"ferrous_engine"}
+)
+
 GUIMAKER_ALLOWED_ENGINE = {
     GUIMAKER_CORE: CORE_ALLOWED_ENGINE,
     GUIMAKER_FERROUS: CORE_ALLOWED_ENGINE | DRAWING_ALLOWED_ENGINE,
-    GUIMAKER_GALLERY: CORE_ALLOWED_ENGINE | DRAWING_ALLOWED_ENGINE,
-    GUIMAKER_DESIGNER: CORE_ALLOWED_ENGINE | DRAWING_ALLOWED_ENGINE,
+    GUIMAKER_GALLERY: APPLICATION_ALLOWED_ENGINE,
+    GUIMAKER_DESIGNER: APPLICATION_ALLOWED_ENGINE,
 }
 
 # Third-party UI stacks: a GUIMaker crate that depended on one of these would
@@ -237,7 +253,7 @@ def _summary(metadata: dict) -> list[str]:
         elif name == GUIMAKER_FERROUS:
             mode = "core+drawing, gpu"
         else:
-            mode = "core+drawing"
+            mode = "core+drawing+engine"
         count = len(engine_deps)
         noun = "engine dep" if count == 1 else "engine deps"
         lines.append(f"{name}: {count} {noun} ({mode})")

@@ -1,0 +1,15 @@
+[package]
+name = "guimaker_ferrous"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "GUIMaker's FerrousEngine backend: display list to GuiBatch, real text layout, textures and icons."
+license = "Apache-2.0"
+repository = "https://github.com/jvchiappini/FerrousEngine"
+
+[dependencies]
+guimaker = { path = "../guimaker" }
+ferrous_ui_render = { path = "../ferrous_ui_render", features = ["text", "assets"] }
+ferrous_font = { path = "../ferrous_font" }
+ferrous_svg = { path = "../ferrous_svg" }
+glam = { workspace = true }

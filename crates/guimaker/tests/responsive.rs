@@ -271,7 +271,7 @@ fn a_content_column_centres_on_a_wide_screen() {
 
 #[test]
 fn every_rect_is_snapped_at_each_dpi_scale() {
-    let view = start_screen();
+    let view = start_screen(0.0);
     for scale in [1.0f32, 1.25, 1.5, 2.0] {
         let mut ui = Ui::new(Theme::dark());
         ui.set_viewport(Size::new(1600.0, 900.0), scale);
@@ -292,7 +292,7 @@ fn every_rect_is_snapped_at_each_dpi_scale() {
 
 #[test]
 fn the_start_screen_passes_the_sweep() {
-    let report = sweep(&start_screen(), &Theme::dark());
+    let report = sweep(&start_screen(0.0), &Theme::dark());
     assert_eq!(report.cases.len(), 40, "10 widths x 4 scales");
     assert_clean("start_screen", &report);
 }
@@ -454,7 +454,7 @@ fn the_table_pattern_passes_the_sweep() {
 
 #[test]
 fn a_responsive_view_is_deterministic() {
-    let view = start_screen();
+    let view = start_screen(0.0);
     let mut first: Ui<StartMsg> = Ui::new(Theme::light());
     let mut second: Ui<StartMsg> = Ui::new(Theme::light());
     first.set_viewport(Size::new(1024.0, 900.0), 1.25);
@@ -490,7 +490,7 @@ fn a_responsive_view_settles_in_at_most_two_passes() {
     ui.set_viewport(Size::new(360.0, 900.0), 1.0);
     let mut text = MetricsTextSystem::new();
     let mut frame = Frame::new();
-    ui.paint(&start_screen(), &mut frame, &mut text);
+    ui.paint(&start_screen(0.0), &mut frame, &mut text);
     let passes = frame.stats.layout.responsive_passes;
     println!("start screen at 360 px: {passes} layout pass(es)");
     assert!(
@@ -512,7 +512,7 @@ fn layout_cost_by_width() {
     use guimaker::store::Store;
     use guimaker::view::Tree;
 
-    let view = start_screen();
+    let view = start_screen(0.0);
     let tree = Tree::build(&view);
     let theme = Theme::dark();
     let mut text = MetricsTextSystem::new();
