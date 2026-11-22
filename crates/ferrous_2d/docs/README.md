@@ -6,7 +6,8 @@ render path: batched untextured SDF shapes (`ShapeInstance`), batched sprites
 `Shape2d`, `Camera2d`, `Path2d`). It also carries the generic canvas and
 scene picker (`picking/`): exact point, marquee, lasso, nearest-point/edge and
 screen-world camera queries over the same spatial index GUIMaker routes UI
-input with. See [picking.md](picking.md).
+input with, plus an on-demand GPU id-buffer pass (`GpuPicker`) for large
+regions. See [picking.md](picking.md) and [picking-gpu.md](picking-gpu.md).
 
 Most applications do **not** use this crate directly. They draw through the
 user-facing facade on `RenderContext`:

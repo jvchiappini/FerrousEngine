@@ -17,4 +17,4 @@ log = { workspace = true }
 [features]
 default = ["text"]
 text = ["dep:ferrous_assets"]
-assets = ["dep:ferrous_assets"]
+assets = ["dep:ferrous_assets", "ferrous_ui_core/assets"]

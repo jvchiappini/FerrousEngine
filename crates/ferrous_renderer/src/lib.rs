@@ -20,6 +20,10 @@ pub mod renderer_resource;
 // The Pure2D headless path does not need the `gui` feature.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod headless;
+// Generic off-screen colour target for the 2D renderer (screenshots, editor
+// viewports, goldens). Native-only for the same reason as `headless`.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod scene_target;
 
 // Support modules located in src/
 pub mod camera;
@@ -44,6 +48,10 @@ pub mod static_2d;
 
 // Re-export core renderer types
 pub use renderer_core::{Renderer, RendererMode};
+
+// Generic off-screen 2D scene target.
+#[cfg(not(target_arch = "wasm32"))]
+pub use scene_target::SceneTarget2d;
 
 // Re-export all public API methods
 pub use renderer_api::*;

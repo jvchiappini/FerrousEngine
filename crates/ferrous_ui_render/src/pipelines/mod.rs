@@ -1,3 +1,4 @@
+pub mod blur;
 pub mod id;
 pub mod layout;
 pub mod overdraw;

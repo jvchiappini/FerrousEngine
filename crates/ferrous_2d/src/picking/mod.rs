@@ -20,18 +20,27 @@
 //!
 //! # GPU ID-buffer alternative
 //!
-//! The engine already ships an id-buffer pass for the UI (`id_buffer.wgsl`,
-//! `ferrous_ui_render::GuiRenderer::hit_test_gpu`). For a 2D scene the same
-//! technique applies: draw each item in a colour that encodes its id into a
-//! small off-screen target on demand, read back one pixel (or a region for a
-//! marquee) and map the value back. [`IdBuffer`] is the CPU reference for that
-//! encoding; `benches/picking.rs` compares it with the spatial index. The
-//! index wins at this phase's budgets (a 10 000-shape point pick is
-//! microseconds; a GPU submit + `map_async` + readback is hundreds of
-//! microseconds at best) and the id buffer wins when the scene is so dense that
-//! one pass is cheaper than many indexed queries, or when the picks are
-//! screen-space and the draw already exists. Use it on demand only, never once
-//! per pointer move.
+//! [`gpu::GpuPicker`] implements the same id-buffer technique the UI uses
+//! (`id_buffer.wgsl`, `ferrous_ui_render::GuiRenderer::hit_test_gpu`) for the
+//! 2D scene: it draws the pickable items into a small `R32Uint` target on
+//! demand, reads back one pixel or a region and decodes it with the integer
+//! counterpart of [`IdBuffer`] ([`IdBuffer::encode_u32`] /
+//! [`IdBuffer::decode_u32`]).
+//!
+//! The index wins at this phase's budgets: a 10 000-shape point pick is tens of
+//! nanoseconds, while one GPU submit + `map_async` + readback is hundreds of
+//! microseconds. The id buffer wins when the query is a large region (a brush
+//! or a whole-canvas id map): on the reference host the crossover is between
+//! 128x128 and 256x256 sampled pixels, and the pass is 4.3x faster than
+//! [`IdBuffer::rasterize`] at 1024x1024. Use it on demand only, never once per
+//! pointer move, and use the CPU queries when there is no GPU adapter (the
+//! readback is synchronous, so the pass is native-only).
+//!
+//! [`IdBuffer`]: self::IdBuffer
+//! [`IdBuffer::encode_u32`]: self::IdBuffer::encode_u32
+//! [`IdBuffer::decode_u32`]: self::IdBuffer::decode_u32
+//! [`IdBuffer::rasterize`]: self::IdBuffer::rasterize
+//! [`gpu::GpuPicker`]: self::gpu::GpuPicker
 
 #![allow(
     clippy::cast_possible_truncation,
@@ -41,6 +50,10 @@
 )] // reason: picking is bounded pixel/index arithmetic and one linear exact-test pass
 
 pub mod camera;
+/// GPU id-buffer picking: renders the same items into an `R32Uint` target and
+/// reads back one pixel or a region. Native only (the readback is synchronous).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod gpu;
 
 use std::sync::Arc;
 
@@ -51,6 +64,8 @@ use ferrous_core::spatial::SpatialIndex;
 pub use ferrous_core::spatial::Aabb;
 
 pub use camera::PickCamera;
+#[cfg(not(target_arch = "wasm32"))]
+pub use gpu::{GpuPickError, GpuPicker};
 
 /// An application-defined id for a pickable item.
 pub type PickId = u32;
@@ -1156,6 +1171,29 @@ impl IdBuffer {
             return None;
         }
         Some(u32::from(color[0]) | u32::from(color[1]) << 8 | u32::from(color[2]) << 16)
+    }
+
+    /// Encodes an id for an integer (`R32Uint`) id target.
+    ///
+    /// An integer target has no alpha channel, so `0` can only mean "clear".
+    /// The GPU pass stores `id + 1`; the value wraps for `u32::MAX`, which is
+    /// therefore reserved. This is the GPU counterpart of [`Self::encode`].
+    #[must_use]
+    pub const fn encode_u32(id: PickId) -> u32 {
+        id.wrapping_add(1)
+    }
+
+    /// Decodes one `R32Uint` texel read back from an integer id target.
+    ///
+    /// `0` is the clear value. Add [`Self::encode_u32`] to the CPU reference
+    /// and this is the exact map that turns a GPU pixel into a [`PickId`].
+    #[must_use]
+    pub const fn decode_u32(raw: u32) -> Option<PickId> {
+        if raw == 0 {
+            None
+        } else {
+            Some(raw - 1)
+        }
     }
 
     /// Rasterizes a 1:1 id buffer: the item index of the topmost hit per pixel.

@@ -22,8 +22,9 @@ pub fn create_text_pipeline(
     // prepended as one WGSL module; the GUI module keeps only its bindings and
     // entry points.
     const SHARED_MSDF: &str = include_str!("../../../../assets/shaders/msdf_common.wgsl");
+    const CLIP: &str = include_str!("../../../../assets/shaders/gui_clip_common.wgsl");
     const GUI_TEXT: &str = include_str!("../../../../assets/shaders/text.wgsl");
-    let source = format!("{SHARED_MSDF}\n{GUI_TEXT}");
+    let source = format!("{SHARED_MSDF}\n{CLIP}\n{GUI_TEXT}");
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("GUI Text Shader"),
         source: wgpu::ShaderSource::Wgsl(source.into()),

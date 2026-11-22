@@ -6,6 +6,7 @@
 use crate::gpu_types::{GuiQuad, TextQuad};
 use crate::gui_batch::GuiBatch;
 use crate::pipelines::{
+    blur::create_blur_pipeline,
     id::create_id_pipeline,
     layout::Layouts,
     overdraw::{create_overdraw_pipeline, create_overdraw_text_pipeline},
@@ -14,9 +15,37 @@ use crate::pipelines::{
 };
 use crate::MAX_TEXTURE_SLOTS;
 use ferrous_core::memory::{self, Subsystem};
+use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
+
+/// Size of one per-segment uniform: clip rect, radii and params (three vec4s).
+const SEGMENT_UNIFORM_BYTES: u64 = 48;
+/// Size of the blur pass parameters (two floats plus radius and direction).
+const BLUR_UNIFORM_BYTES: u64 = 16;
+/// Initial number of per-segment uniform slots (grows on demand).
+const INITIAL_SEGMENT_CAPACITY: usize = 64;
+/// The backdrop blur runs at one quarter of the scene resolution per axis.
+const BACKDROP_DOWNSCALE: u32 = 4;
+
+/// GPU layout of the per-segment clip/backdrop uniform.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct SegmentUniforms {
+    rect: [f32; 4],
+    radii: [f32; 4],
+    params: [f32; 4],
+}
+
+/// GPU layout of the backdrop blur parameters.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct BlurParams {
+    texel: [f32; 2],
+    radius: f32,
+    horizontal: f32,
+}
 
 /// Forwards the `ferrous_font` / `ferrous_assets` cache inventory to
 /// [`ferrous_core::memory`].
@@ -100,6 +129,8 @@ struct PassBindState {
     pipeline: Option<u64>,
     bind0: Option<u64>,
     bind1: Option<u64>,
+    /// Group 2 keys on both the bind-group identity and the dynamic offset.
+    bind2: Option<(u64, u32)>,
     vertex0: Option<u64>,
     vertex1: Option<u64>,
     index: Option<u64>,
@@ -190,6 +221,44 @@ pub struct GuiRenderer {
     counters_pipeline_binds: AtomicU32,
     counters_bind_group_binds: AtomicU32,
     counters_buffer_binds: AtomicU32,
+
+    // ── Per-segment rounded clip + backdrop blur ──────────────────────────
+    /// Stride between per-segment uniforms (device dynamic-offset alignment).
+    segment_stride: u64,
+    /// Number of uniform slots the segment buffer can hold.
+    segment_capacity: usize,
+    /// Dynamic uniform buffer holding every segment's clip shape.
+    segment_buffer: wgpu::Buffer,
+    /// Group 2: clip uniform (dynamic) + blurred backdrop texture/sampler.
+    segment_bind_group: wgpu::BindGroup,
+    /// CPU scratch for building the packed segment uniforms.
+    segment_scratch: Vec<SegmentUniforms>,
+    segment_bytes: Vec<u8>,
+    /// The 1x1 placeholder texture used when no backdrop is bound.
+    dummy_backdrop_texture: wgpu::Texture,
+    backdrop_sampler: wgpu::Sampler,
+    /// The texture currently bound at group 2 binding 1.
+    backdrop_view: wgpu::TextureView,
+    backdrop: BackdropState,
+    backdrop_size: [u32; 2],
+    backdrop_format: wgpu::TextureFormat,
+    blur_pipeline: wgpu::RenderPipeline,
+    /// Views keep their textures alive; the texture handles are not stored.
+    blur_h_view: Option<wgpu::TextureView>,
+    blur_v_view: Option<wgpu::TextureView>,
+    blur_h_bind_group: Option<wgpu::BindGroup>,
+    blur_v_bind_group: Option<wgpu::BindGroup>,
+    horizontal_blur_uniform: wgpu::Buffer,
+    vertical_blur_uniform: wgpu::Buffer,
+}
+
+/// Whether a backdrop source is available and whether this frame uses it.
+#[derive(Clone, Copy, Debug, Default)]
+struct BackdropState {
+    /// A source view is bound and the blur targets exist.
+    ready: bool,
+    /// The batch contains at least one backdrop-blur quad this frame.
+    this_frame: bool,
 }
 
 impl GuiRenderer {
@@ -450,6 +519,75 @@ impl GuiRenderer {
         memory::register_gpu("gui:svg vertices", svg_vertex_buffer.size(), Subsystem::Gui);
         memory::register_gpu("gui:svg indices", svg_index_buffer.size(), Subsystem::Gui);
 
+        // Per-segment clip uniforms and the backdrop blur plumbing.
+        let segment_stride = Self::segment_stride(&device);
+        let segment_capacity = INITIAL_SEGMENT_CAPACITY;
+        let segment_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("GUI Segment Uniform Buffer"),
+            size: segment_stride * segment_capacity as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let dummy_backdrop_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("GUI Dummy Backdrop Texture"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let dummy_backdrop_view =
+            dummy_backdrop_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // A second view of the same 1x1 texture backs group 2 until a real
+        // backdrop arrives (texture views are not cloneable in wgpu 23).
+        let backdrop_view =
+            dummy_backdrop_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let backdrop_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("GUI Backdrop Sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            ..Default::default()
+        });
+        let segment_bind_group = Self::create_segment_bind_group(
+            &device,
+            &layouts.segment_layout,
+            &segment_buffer,
+            &dummy_backdrop_view,
+            &backdrop_sampler,
+        );
+        let horizontal_blur_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("GUI Backdrop Blur H Uniform"),
+            size: BLUR_UNIFORM_BYTES,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let vertical_blur_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("GUI Backdrop Blur V Uniform"),
+            size: BLUR_UNIFORM_BYTES,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let blur_pipeline = create_blur_pipeline(
+            &device,
+            format,
+            &layouts.blur_pipeline_layout,
+            pipeline_cache.as_deref(),
+        );
+        memory::register_gpu(
+            "gui:segment uniforms",
+            segment_buffer.size(),
+            Subsystem::Gui,
+        );
+
         Self {
             device,
             layouts,
@@ -500,7 +638,182 @@ impl GuiRenderer {
             counters_pipeline_binds: AtomicU32::new(0),
             counters_bind_group_binds: AtomicU32::new(0),
             counters_buffer_binds: AtomicU32::new(0),
+            segment_stride,
+            segment_capacity,
+            segment_buffer,
+            segment_bind_group,
+            segment_scratch: Vec::new(),
+            segment_bytes: Vec::new(),
+            dummy_backdrop_texture,
+            backdrop_sampler,
+            backdrop_view,
+            backdrop: BackdropState::default(),
+            backdrop_size: [0, 0],
+            backdrop_format: format,
+            blur_pipeline,
+            blur_h_view: None,
+            blur_v_view: None,
+            blur_h_bind_group: None,
+            blur_v_bind_group: None,
+            horizontal_blur_uniform,
+            vertical_blur_uniform,
         }
+    }
+
+    /// Dynamic-offset stride: the device alignment rounded up to the uniform
+    /// size (at least 48 bytes).
+    fn segment_stride(device: &wgpu::Device) -> u64 {
+        let alignment = u64::from(device.limits().min_uniform_buffer_offset_alignment).max(1);
+        SEGMENT_UNIFORM_BYTES.div_ceil(alignment) * alignment
+    }
+
+    /// Builds group 2: the dynamic clip uniform plus the backdrop texture.
+    fn create_segment_bind_group(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        buffer: &wgpu::Buffer,
+        backdrop: &wgpu::TextureView,
+        sampler: &wgpu::Sampler,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("GUI Segment Bind Group"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer,
+                        offset: 0,
+                        size: NonZeroU64::new(SEGMENT_UNIFORM_BYTES),
+                    }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(backdrop),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ],
+        })
+    }
+
+    /// Rebuilds group 2 after the segment buffer or the backdrop changed.
+    fn rebuild_segment_bind_group(&mut self) {
+        self.segment_bind_group = Self::create_segment_bind_group(
+            &self.device,
+            &self.layouts.segment_layout,
+            &self.segment_buffer,
+            &self.backdrop_view,
+            &self.backdrop_sampler,
+        );
+    }
+
+    /// Creates one quarter-resolution blur target.
+    fn create_blur_target(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("GUI Backdrop Blur Target"),
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        (texture, view)
+    }
+
+    fn create_blur_bind_group(
+        &self,
+        source: &wgpu::TextureView,
+        params: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("GUI Backdrop Blur Bind Group"),
+            layout: &self.layouts.blur_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(source),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.backdrop_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: params.as_entire_binding(),
+                },
+            ],
+        })
+    }
+
+    /// Supplies the scene colour view the backdrop blur reads.
+    ///
+    /// `ferrous_ui_render` never depends on `ferrous_renderer`: the caller
+    /// passes a `SceneTarget2d::view()` (or any sampled colour view of the
+    /// same size) before [`Self::prepare`]. The blur is downsampled by a
+    /// factor of four per axis and run as one horizontal plus one vertical
+    /// pass, so its cost is bounded by the quarter-resolution target and a
+    /// fixed nine-tap kernel. Positions and radii are in physical pixels.
+    ///
+    /// Call this every frame with the scene view; a same-size call only
+    /// rebuilds the horizontal source bind group.
+    pub fn set_backdrop_source(&mut self, source: &wgpu::TextureView, width: u32, height: u32) {
+        let width = (width / BACKDROP_DOWNSCALE).max(1);
+        let height = (height / BACKDROP_DOWNSCALE).max(1);
+        let recreate = self.blur_h_view.is_none()
+            || self.backdrop_size != [width, height]
+            || self.backdrop_format != self.format;
+
+        if recreate {
+            self.backdrop_size = [width, height];
+            self.backdrop_format = self.format;
+            let (_h_texture, h_view) =
+                Self::create_blur_target(&self.device, width, height, self.format);
+            let (v_texture, v_view) =
+                Self::create_blur_target(&self.device, width, height, self.format);
+            let backdrop_view = v_texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let h_bind_group = self.create_blur_bind_group(source, &self.horizontal_blur_uniform);
+            let v_bind_group = self.create_blur_bind_group(&h_view, &self.vertical_blur_uniform);
+            self.blur_h_view = Some(h_view);
+            self.blur_v_view = Some(v_view);
+            self.blur_h_bind_group = Some(h_bind_group);
+            self.blur_v_bind_group = Some(v_bind_group);
+            self.backdrop_view = backdrop_view;
+            self.rebuild_segment_bind_group();
+        } else {
+            self.blur_h_bind_group =
+                Some(self.create_blur_bind_group(source, &self.horizontal_blur_uniform));
+        }
+
+        self.backdrop.ready = true;
+    }
+
+    /// Drops the blur targets so the next `set_backdrop_source` recreates them
+    /// (format changes and resizes).
+    fn clear_backdrop_targets(&mut self) {
+        self.blur_h_view = None;
+        self.blur_v_view = None;
+        self.blur_h_bind_group = None;
+        self.blur_v_bind_group = None;
+        self.backdrop = BackdropState::default();
+        self.backdrop_view = self
+            .dummy_backdrop_texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        self.rebuild_segment_bind_group();
     }
 
     /// Enables or disables the overdraw debug view (prompt 18 P5).
@@ -642,6 +955,15 @@ impl GuiRenderer {
             depth_format,
             cache,
         );
+        self.blur_pipeline = create_blur_pipeline(
+            &self.device,
+            format,
+            &self.layouts.blur_pipeline_layout,
+            cache,
+        );
+        // The blur targets use the color format; drop them so the next
+        // `set_backdrop_source` recreates them at the new format.
+        self.clear_backdrop_targets();
     }
 
     pub fn update_output_config(
@@ -1055,6 +1377,125 @@ impl GuiRenderer {
                 bytemuck::cast_slice(&self.svg_scratch_indices),
             );
         }
+
+        self.prepare_segments(queue, batch);
+    }
+
+    /// Ensures the segment buffer can hold `segments` uniforms.
+    fn ensure_segment_capacity(&mut self, segments: usize) {
+        if segments <= self.segment_capacity {
+            return;
+        }
+        let capacity = segments.next_power_of_two().max(INITIAL_SEGMENT_CAPACITY);
+        self.segment_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("GUI Segment Uniform Buffer (resized)"),
+            size: self.segment_stride * capacity as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.segment_capacity = capacity;
+        memory::register_gpu(
+            "gui:segment uniforms",
+            self.segment_buffer.size(),
+            Subsystem::Gui,
+        );
+        self.rebuild_segment_bind_group();
+    }
+
+    /// Packs the per-segment clip shapes and the backdrop blur parameters.
+    ///
+    /// The uniform stride (a device alignment, at most a few KiB) and the
+    /// 48-byte uniform both fit `usize` and `u32` on every supported target;
+    /// the segment count is bounded by the draw-segment ranges, which are
+    /// already `u32`.
+    #[allow(clippy::cast_possible_truncation)]
+    fn prepare_segments(&mut self, queue: &wgpu::Queue, batch: &GuiBatch) {
+        let count = batch.segments.len();
+        if count == 0 {
+            self.backdrop.this_frame = false;
+            return;
+        }
+        self.ensure_segment_capacity(count);
+
+        let stride = self.segment_stride as usize;
+        self.segment_scratch.clear();
+        self.segment_scratch.reserve(count);
+        let mut radius = 0.0_f32;
+        let mut has_backdrop = false;
+
+        for (index, segment) in batch.segments.iter().enumerate() {
+            let (rect, radii, enabled) = match segment.clip {
+                Some(shape) if shape.is_rounded() => (shape.rect, shape.radii, 1.0_f32),
+                _ => (
+                    ferrous_ui_core::Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 0.0,
+                        height: 0.0,
+                    },
+                    [0.0; 4],
+                    0.0_f32,
+                ),
+            };
+            self.segment_scratch.push(SegmentUniforms {
+                rect: [rect.x, rect.y, rect.width, rect.height],
+                radii,
+                params: [
+                    enabled,
+                    if self.backdrop.ready { 1.0 } else { 0.0 },
+                    0.0,
+                    0.0,
+                ],
+            });
+
+            let offset = index * stride;
+            if self.segment_bytes.len() < offset + SEGMENT_UNIFORM_BYTES as usize {
+                self.segment_bytes.resize(offset + stride, 0);
+            }
+            let uniform = self.segment_scratch[index];
+            self.segment_bytes[offset..offset + SEGMENT_UNIFORM_BYTES as usize]
+                .copy_from_slice(bytemuck::bytes_of(&uniform));
+        }
+
+        for quad in &batch.quads {
+            if quad.flags & crate::BACKDROP_BLUR_BIT != 0 {
+                has_backdrop = true;
+                radius = radius.max(quad.uv0[0].max(0.0));
+            }
+        }
+        self.backdrop.this_frame = has_backdrop && self.backdrop.ready;
+
+        queue.write_buffer(
+            &self.segment_buffer,
+            0,
+            &self.segment_bytes[..count * stride],
+        );
+
+        if self.backdrop.this_frame {
+            let [width, height] = self.backdrop_size;
+            let texel = [1.0 / width as f32, 1.0 / height as f32];
+            let texels = radius / BACKDROP_DOWNSCALE as f32;
+            let horizontal = BlurParams {
+                texel,
+                radius: texels,
+                horizontal: 1.0,
+            };
+            let vertical = BlurParams {
+                texel,
+                radius: texels,
+                horizontal: 0.0,
+            };
+            queue.write_buffer(
+                &self.horizontal_blur_uniform,
+                0,
+                bytemuck::bytes_of(&horizontal),
+            );
+            queue.write_buffer(
+                &self.vertical_blur_uniform,
+                0,
+                bytemuck::bytes_of(&vertical),
+            );
+        }
     }
 
     #[inline]
@@ -1155,6 +1596,85 @@ impl GuiRenderer {
         }
     }
 
+    #[inline]
+    fn bind_segment_cached(
+        &self,
+        rpass: &mut wgpu::RenderPass<'_>,
+        state: &mut PassBindState,
+        bind_group: &wgpu::BindGroup,
+        offset: u32,
+    ) {
+        let id = bind_group as *const wgpu::BindGroup as u64;
+        if state.bind2 != Some((id, offset)) {
+            rpass.set_bind_group(2, bind_group, &[offset]);
+            state.bind2 = Some((id, offset));
+            self.counters_bind_group_binds
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Dynamic-offset value for `index`.
+    ///
+    /// An offset cannot exceed the segment buffer (a few MiB at most) and is
+    /// therefore representable as the `u32` that `set_bind_group` takes.
+    #[allow(clippy::cast_possible_truncation)]
+    fn segment_offset(&self, index: usize) -> u32 {
+        if index < self.segment_capacity {
+            (index as u64 * self.segment_stride) as u32
+        } else {
+            0
+        }
+    }
+
+    /// Encodes the horizontal and vertical backdrop blur passes.
+    ///
+    /// Pass 1 samples the caller's scene view into the quarter-resolution
+    /// horizontal target; pass 2 samples that target into the vertical target
+    /// that the GUI quads sample. Both targets are cleared, so the result is
+    /// fully overwritten and no history leaks between frames.
+    fn encode_backdrop_blur(&self, encoder: &mut wgpu::CommandEncoder) {
+        if !self.backdrop.this_frame {
+            return;
+        }
+        let (Some(h_view), Some(v_view), Some(h_bind), Some(v_bind)) = (
+            &self.blur_h_view,
+            &self.blur_v_view,
+            &self.blur_h_bind_group,
+            &self.blur_v_bind_group,
+        ) else {
+            return;
+        };
+
+        let clear = wgpu::Color {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.0,
+        };
+        for (label, view, bind) in [
+            ("GUI Backdrop Blur Horizontal", h_view, h_bind),
+            ("GUI Backdrop Blur Vertical", v_view, v_bind),
+        ] {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some(label),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(clear),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.blur_pipeline);
+            pass.set_bind_group(0, bind, &[]);
+            pass.draw(0..3, 0..1);
+        }
+    }
+
     /// Fase RENDER: Ejecuta los comandos de dibujo sobre la vista proporcionada.
     pub fn render(
         &self,
@@ -1184,6 +1704,12 @@ impl GuiRenderer {
         if batch.segments.is_empty() && matches!(load_op, wgpu::LoadOp::Load) {
             return;
         }
+
+        // Blur the scene into the quarter-resolution targets before this pass
+        // samples them. The GUI pass then overwrites the scene attachment, so
+        // reading it in the earlier passes is safe. The blur passes must be
+        // encoded before the GUI pass borrows `encoder`.
+        self.encode_backdrop_blur(encoder);
 
         self.counters_passes.store(1, Ordering::Relaxed);
         let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1233,9 +1759,14 @@ impl GuiRenderer {
         // still bound.
         let mut state = PassBindState::default();
 
-        for segment in &batch.segments {
+        for (segment_index, segment) in batch.segments.iter().enumerate() {
             self.counters_segments.fetch_add(1, Ordering::Relaxed);
-            // Apply scissor if present, intersected with base_scissor
+            // Apply scissor if present, intersected with base_scissor.
+            //
+            // A segment may also carry `clip: Some(ClipShape)` with per-corner
+            // radii. `set_scissor_rect` is axis-aligned, so it is only the
+            // early reject; the exact rounded mask is delivered per segment
+            // through group 2 and evaluated as an SDF in the fragment stage.
             let (sx, sy, sw, sh) = if let Some(s) = segment.scissor {
                 let sx = (s.x.max(base_sx as f32) as u32).min(base_sx + base_sw);
                 let sy = (s.y.max(base_sy as f32) as u32).min(base_sy + base_sh);
@@ -1255,6 +1786,17 @@ impl GuiRenderer {
             } else {
                 continue;
             }
+
+            // Bind the per-segment clip uniform (and the blurred backdrop) for
+            // every draw in this segment. The offset is the segment index in
+            // the dynamic uniform buffer prepared by `prepare_segments`.
+            let segment_offset = self.segment_offset(segment_index);
+            self.bind_segment_cached(
+                &mut rpass,
+                &mut state,
+                &self.segment_bind_group,
+                segment_offset,
+            );
 
             // Draw Quads (Using transparent pipeline to support blended edges/shadows safely)
             // TODO: En Fase 5 implementaremos el split Opaque/Transparent por segmento
@@ -1334,6 +1876,10 @@ impl GuiRenderer {
             if !segment.svg_range.is_empty() {
                 self.bind_pipeline_cached(&mut rpass, &mut state, &self.svg_pipeline);
                 self.bind_group0_cached(&mut rpass, &mut state, &self.uniform_bind_group);
+                // The SVG shader uses group 2 (the clip mask); wgpu requires
+                // every lower group in the pipeline layout to be bound, even
+                // though the shader does not sample group 1.
+                self.bind_group1_cached(&mut rpass, &mut state, &self.image_bind_group);
                 self.bind_vertex0_cached(&mut rpass, &mut state, &self.svg_vertex_buffer);
                 self.bind_index_cached(
                     &mut rpass,

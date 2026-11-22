@@ -25,6 +25,18 @@
 //   bit 6 (0x40): BORDER_BIT          — borde (outline) sin relleno; uv0.x = border_width
 //   bit 7 (0x80): SHADOW_BIT          — sombra suavizada (box-shadow aproximado)
 //   bit 9 (0x200): LINE_BIT           — segmento anti-aliased; uv0/uv1 = extremos, radii.x = half width
+//   bit 10 (0x400): BACKDROP_BLUR_BIT - samples the pre-blurred scene backdrop bound at
+//                  group 2 (texture/sampler) and composites the tint over it. When no
+//                  backdrop source is bound, the translucent tint is drawn instead.
+//
+// Gradient border: a border is a gradient border when BORDER_BIT is combined with
+// GRADIENT_BIT (color = start, color_b = end); base_color is resolved before the
+// outline SDF is applied, so no extra bit is needed.
+//
+// Rounded clip masks are a DrawSegment-level flag (ROUNDED_CLIP_BIT), not an
+// instance flag. The renderer delivers the clip rect + per-corner radii as a
+// dynamically-offset uniform (group 2 binding 0) and `gui_clip_common.wgsl`
+// evaluates the rounded-rect SDF per fragment; the scissor is the early reject.
 
 struct VsOut {
     @builtin(position) clip_pos: vec4<f32>,
@@ -53,6 +65,14 @@ const MAX_TEXTURE_SLOTS: u32 = 16u;
 var gui_textures: binding_array<texture_2d<f32>, MAX_TEXTURE_SLOTS>;
 @group(1) @binding(1)
 var gui_samplers: binding_array<sampler, MAX_TEXTURE_SLOTS>;
+
+// Blurred backdrop (group 2). Binding 0 (the per-segment clip uniform) and
+// `clip_coverage` come from `gui_clip_common.wgsl`, which is prepended to this
+// module. Binding 1/2 hold the quarter-resolution blurred scene target.
+@group(2) @binding(1)
+var backdrop_tex: texture_2d<f32>;
+@group(2) @binding(2)
+var backdrop_sampler: sampler;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -127,6 +147,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let half_size = in.size * 0.5;
     // Coordenadas relativas al centro del quad (para SDF)
     let p_center = vec2<f32>(px - half_size.x, py - half_size.y);
+    // Framebuffer position for the segment's rounded-clip SDF.
+    let frag_px = in.clip_pos.xy;
+    let clip_a = clip_coverage(frag_px);
 
     // ── Pre-compute SDFs y fwidth ANTES de cualquier branch no-uniforme ───────
     // WebGPU exige que fwidth() se llame solo desde flujo de control uniforme.
@@ -149,7 +172,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let rgb  = hsv2rgb(hue, sat, 1.0);
         let d    = dist - r;
         let alpha = 1.0 - smoothstep(0.0, 1.0, d);
-        return vec4<f32>(rgb, alpha);
+        return vec4<f32>(rgb, alpha * clip_a);
     }
 
     // ── LINE (flag 0x200) ─────────────────────────────────────────────────────
@@ -166,7 +189,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let t = clamp(dot(point - a, segment) / length_sq, 0.0, 1.0);
         let distance = length(point - (a + segment * t));
         let alpha = 1.0 - smoothstep(in.radii.x - 0.5, in.radii.x + 0.5, distance);
-        return vec4<f32>(in.color.rgb, in.color.a * alpha);
+        return vec4<f32>(in.color.rgb, in.color.a * alpha * clip_a);
     }
 
     // ── SHADOW (flag 0x80) ────────────────────────────────────────────────────
@@ -175,8 +198,25 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // color_b.xy encodes original rect size for SDF computation
         let orig_size = in.color_b.xy;
         let sdf = sdf_rounded_rect(p_center, orig_size * 0.5, in.radii);
-        let a   = shadow_alpha(sdf, blur) * in.color.a;
+        let a   = shadow_alpha(sdf, blur) * in.color.a * clip_a;
         return vec4<f32>(in.color.rgb, a);
+    }
+
+    // ── BACKDROP BLUR (flag 0x400) ───────────────────────────────────────────
+    // The GUI renderer pre-blurs the scene target (downsample + separable blur
+    // at quarter resolution) and binds it at group 2. The rounded rect samples
+    // that blurred backdrop and composites the tint over it. When no backdrop
+    // source was supplied (`clip_params.y == 0`) this falls back to the
+    // translucated tint, which is the documented degraded path.
+    if (in.flags & 0x400u) != 0u {
+        let shape_alpha = 1.0 - smoothstep(-aa_main, aa_main, sdf_main);
+        if segment.clip_params.y < 0.5 {
+            return vec4<f32>(in.color.rgb, in.color.a * shape_alpha * clip_a);
+        }
+        let uv = clamp(frag_px / uniforms.resolution, vec2<f32>(0.0), vec2<f32>(1.0));
+        let blurred = textureSampleLevel(backdrop_tex, backdrop_sampler, uv, 0.0).rgb;
+        let tinted = mix(blurred, in.color.rgb, clamp(in.color.a, 0.0, 1.0));
+        return vec4<f32>(tinted, shape_alpha * clip_a);
     }
 
     // ── COLOR BASE (solid, gradient o textura) ────────────────────────────────
@@ -215,12 +255,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let outer_alpha  = 1.0 - smoothstep(-aa_border, aa_border, outer_sdf_early);
         let inner_alpha  = 1.0 - smoothstep(-aa_border, aa_border, inner_sdf_early);
         let border_alpha = outer_alpha * (1.0 - inner_alpha);
-        return vec4<f32>(base_color.rgb, base_color.a * border_alpha);
+        return vec4<f32>(base_color.rgb, base_color.a * border_alpha * clip_a);
     }
 
     // ── SDF de esquinas redondeadas (todos los demás paths) ───────────────────
     // Usa sdf_main y aa_main pre-calculados desde flujo uniforme arriba.
-    var alpha = base_color.a * (1.0 - smoothstep(-aa_main, aa_main, sdf_main));
+    var alpha = base_color.a * (1.0 - smoothstep(-aa_main, aa_main, sdf_main)) * clip_a;
 
     // ── TEXTURED (flag 0x02) ──────────────────────────────────────────────────
     if (in.flags & 0x02u) != 0u {

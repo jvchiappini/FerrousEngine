@@ -27,7 +27,8 @@ pub mod system;
 pub mod toaster;
 
 pub use ferrous_ui_render::{
-    GuiBatch, GuiQuad, GuiRenderer, TextQuad, ToBatches, BORDER_BIT, GRADIENT_BIT,
+    BackdropBlurSpec, BorderSpec, GradientBorderSpec, GuiBatch, GuiQuad, GuiRenderer, LineSpec,
+    ShadowSpec, TextQuad, TexturedRectSpec, ToBatches, BORDER_BIT, GRADIENT_BIT,
     GRADIENT_RADIAL_BIT, GRADIENT_STRIP_BIT, GRADIENT_V_BIT, MAX_TEXTURE_SLOTS, SHADOW_BIT,
     TEXTURED_BIT,
 };

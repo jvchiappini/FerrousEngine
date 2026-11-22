@@ -101,7 +101,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 
     // Distance-field range in screen pixels; never below 1 (AA would fail).
     let screen_px_range = msdf_screen_px_range(in.quad_size, cell, PXRANGE);
-    let opacity = msdf_opacity(sig_dist, screen_px_range);
+    let opacity = msdf_opacity(sig_dist, screen_px_range) * clip_coverage(in.clip_pos.xy);
 
     return vec4<f32>(in.color.rgb, in.color.a * opacity);
 }

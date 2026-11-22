@@ -17,11 +17,14 @@ pub fn create_svg_pipeline(
     depth_format: Option<wgpu::TextureFormat>,
     cache: Option<&wgpu::PipelineCache>,
 ) -> RenderPipeline {
+    const CLIP: &str = include_str!("../../../../assets/shaders/gui_clip_common.wgsl");
+    let source = format!(
+        "{CLIP}\n{}",
+        include_str!("../../../../assets/shaders/svg.wgsl")
+    );
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("GUI SVG Shader"),
-        source: wgpu::ShaderSource::Wgsl(
-            include_str!("../../../../assets/shaders/svg.wgsl").into(),
-        ),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
     });
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {

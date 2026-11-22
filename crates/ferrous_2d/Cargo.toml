@@ -14,7 +14,12 @@ log = "0.4"
 
 [dev-dependencies]
 divan = "0.1.21"
+pollster = "0.3"
 
 [[bench]]
 name = "picking"
+harness = false
+
+[[bench]]
+name = "picking_gpu"
 harness = false

@@ -103,26 +103,30 @@ screen-to-world affine matrix. No host writes its own screen/world maths again.
 
 ## GPU ID-buffer picking
 
-The engine already has an id-buffer pass for the UI (`id_buffer.wgsl`,
-`ferrous_ui_render::GuiRenderer::hit_test_gpu`): draw ids to a small offscreen
-target on demand, read back one pixel, map it to a node. The 2D scene can use
-the same technique, and `IdBuffer::encode` / `decode` define the 24-bit encoding
-both sides must agree on (alpha 255, zero = clear).
+The GPU path is implemented in `picking::GpuPicker` and documented with its
+measured numbers in [picking-gpu.md](picking-gpu.md). It renders the same items
+into a small `R32Uint` target (`scene_id_2d.wgsl`) with the same geometry, clips,
+tolerance and `(z, insertion)` order, reads back one pixel or a region, and
+decodes it with the integer counterpart of `IdBuffer` (`encode_u32` /
+`decode_u32`, since `R32Uint` has no alpha channel and reserves `0` for clear).
 
 When it wins:
 
-- **spatial index** — interactive picking, hover and drag, 10 000–100 000
+- **spatial index** - interactive picking, hover and drag, 10 000-100 000
   shapes: tens to hundreds of nanoseconds per query, already built.
-- **id buffer** — one pass over a very dense scene (hundreds of thousands of
-  simple shapes), picking many pixels at once (a brush or a marquee region), or
-  when the scene is already being drawn into an offscreen target. It costs a
-  render pass plus a `map_async` readback (hundreds of microseconds at best),
-  so never call it once per pointer move.
+- **id buffer** - one pass over a very dense scene, a large region (a brush or
+  a whole-canvas id map), or when the scene is already being drawn into an
+  offscreen target. It costs a render pass plus a `map_async` readback (hundreds
+  of microseconds at best), so never call it once per pointer move.
 
-`IdBuffer::rasterize` is the CPU reference (one pick per pixel): 114 µs for
-64×64 and 467 µs for 128×128 on a 10 000-shape scene here. That is the floor a
-GPU implementation has to beat, and it shows why the index is the default.
-Use the GPU pass on demand only, and verify its output against the reference.
+On the reference host the GPU pass wins from about 256x256 sampled pixels
+(2.0 ms CPU reference vs 0.8 ms GPU), 3.7x at 512x512 and 4.3x at 1024x1024. A
+point pick stays on the CPU (63 ns vs 399 us), and lasso, contain, nearest and
+image-alpha queries have no GPU version.
+
+`IdBuffer::rasterize` remains the CPU reference (one pick per pixel): 117 us for
+64x64 and 33 ms for 1024x1024 on a 10 000-shape scene here. Use the GPU pass on
+demand only, and verify its output against the reference.
 
 ## Migrating a hand-written picker
 

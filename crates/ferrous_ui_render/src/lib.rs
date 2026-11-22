@@ -14,12 +14,22 @@ pub mod to_batches;
 pub mod ui_present;
 
 // Re-exports
-pub use gpu_types::{DrawSegment, GuiQuad, SvgCommand, TextQuad};
-pub use gui_batch::GuiBatch;
+pub use gpu_types::{ClipShape, DrawSegment, GuiQuad, SvgCommand, TextQuad};
+pub use gui_batch::{
+    BackdropBlurSpec, BorderSpec, GradientBorderSpec, GuiBatch, LineSpec, ShadowSpec,
+    TexturedRectSpec,
+};
 pub use gui_renderer::{GuiRenderer, UiFrameCounters};
 pub use persist::PersistentUiTarget;
 pub use to_batches::ToBatches;
 pub use ui_present::UiPresenter;
+// Re-exported for the GUIMaker backend so it can name the batch types without
+// depending on `ferrous_ui_core` or `ferrous_assets` directly (G-0001 boundary).
+#[cfg(feature = "text")]
+pub use ferrous_assets::Font;
+#[cfg(feature = "assets")]
+pub use ferrous_assets::Texture2d;
+pub use ferrous_ui_core::Rect;
 
 /// Maximum number of distinct textures that can be referenced in a single draw batch.
 pub const MAX_TEXTURE_SLOTS: u32 = 16;
@@ -67,3 +77,37 @@ pub const OPAQUE_BIT: u32 = 1 << 8;
 /// documented limitation of the primitive; see that method for the guidance
 /// and the test that pins the overlap.
 pub const LINE_BIT: u32 = 1 << 9;
+
+/// Flag: the quad asks for a backdrop blur behind its rounded rect.
+///
+/// `color` is the translucent tint composited over the blurred backdrop,
+/// `uv0.x` is the requested blur radius in pixels, and `radii` are the
+/// per-corner radii of the blurred region.
+///
+/// [`GuiRenderer::set_backdrop_source`](crate::GuiRenderer::set_backdrop_source)
+/// supplies the scene view; the renderer downsamples it, runs a separable
+/// horizontal + vertical blur at quarter resolution and binds the result at
+/// group 2. `gui.wgsl` samples that blurred texture and composites the tint on
+/// top. Without a backdrop source the shader falls back to the translucent
+/// tint masked by the rounded-rect SDF (the documented degraded path).
+pub const BACKDROP_BLUR_BIT: u32 = 1 << 10;
+
+/// Convenience mask for a gradient border: [`BORDER_BIT`] | [`GRADIENT_BIT`].
+///
+/// `gui.wgsl` resolves the base colour from the two-stop gradient before it
+/// applies the outline mask, so a border with this flag pair is a gradient
+/// border. [`GuiBatch::gradient_border`] packs it with `color` = start and
+/// `color_b` = end.
+pub const GRADIENT_BORDER_BITS: u32 = BORDER_BIT | GRADIENT_BIT;
+
+// ─── DrawSegment flags (segment-level, not instance flags) ───────────────
+
+/// Flag: the segment's clip is a rounded rectangle with per-corner radii.
+///
+/// Stored in [`DrawSegment::flags`](crate::DrawSegment), not in
+/// [`GuiQuad::flags`](crate::GuiQuad). The precise shape travels in
+/// [`DrawSegment::clip`](crate::DrawSegment); the renderer keeps the
+/// rectangular `scissor` as an early reject and uploads the rect + radii to
+/// the fragment shader's rounded-rectangle SDF mask, so quads, text and images
+/// are also alpha-masked at the corners.
+pub const ROUNDED_CLIP_BIT: u32 = 1 << 0;

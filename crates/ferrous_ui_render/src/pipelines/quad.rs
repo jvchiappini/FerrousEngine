@@ -19,14 +19,21 @@ pub fn create_quad_pipeline(
     depth_format: Option<wgpu::TextureFormat>,
     cache: Option<&wgpu::PipelineCache>,
 ) -> RenderPipeline {
+    // The rounded-clip mask is shared with the text and SVG pipelines.
+    const CLIP: &str = include_str!("../../../../assets/shaders/gui_clip_common.wgsl");
+    #[cfg(not(target_arch = "wasm32"))]
+    let source = format!(
+        "{CLIP}\n{}",
+        include_str!("../../../../assets/shaders/gui.wgsl")
+    );
+    // The WebGL fallback shader does not declare the clip binding; the
+    // pipeline layout still exposes group 2 but the shader leaves it unused.
+    #[cfg(target_arch = "wasm32")]
+    let source = include_str!("../../../../assets/shaders/gui_web.wgsl").to_string();
+
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("GUI Shader"),
-        source: wgpu::ShaderSource::Wgsl(
-            #[cfg(not(target_arch = "wasm32"))]
-            include_str!("../../../../assets/shaders/gui.wgsl").into(),
-            #[cfg(target_arch = "wasm32")]
-            include_str!("../../../../assets/shaders/gui_web.wgsl").into(),
-        ),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
     });
 
     let instance_size = std::mem::size_of::<GuiQuad>() as u64;

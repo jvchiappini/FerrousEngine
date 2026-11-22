@@ -56,6 +56,7 @@ nav:
     - Layer Masks: ferrous_2d/masks.md
     - Temporal Accumulation: ferrous_2d/accumulation.md
     - Picking: ferrous_2d/picking.md
+    - GPU ID-buffer picking: ferrous_2d/picking-gpu.md
     - Textured Meshes: ferrous_renderer/textured-meshes.md
   - ferrous_ui_core Ã¢â‚¬â€ UI Core:
     - Overview: ferrous_ui_core/README.md
@@ -119,6 +120,9 @@ nav:
     - Responsive layout: guimaker/responsive.md
     - Input, focus and text editing: guimaker/input.md
     - Text: guimaker/text.md
+    - FerrousEngine backend: guimaker_ferrous/backend.md
+    - Gallery overview: guimaker_gallery/README.md
+    - Gallery, screenshots and goldens: guimaker_gallery/gallery.md
     - Decisions:
       - Decision log: guimaker/decisions/README.md
       - G-0001 - Library architecture: guimaker/decisions/G-0001.md
@@ -146,6 +150,7 @@ nav:
     - ferrous_ui_render: ferrous_ui_render/README.md
     - ferrous_ui_render Ã¢â‚¬â€ Internals: ferrous_ui_render/RENDER.md
     - ferrous_ui_render - Partial redraw: ferrous_ui_render/PARTIAL.md
+    - ferrous_ui_render - Drawing effects: ferrous_ui_render/EFFECTS.md
     - ferrous_voxels: ferrous_voxels/README.md
     - ferrous_web: ferrous_web/README.md
 

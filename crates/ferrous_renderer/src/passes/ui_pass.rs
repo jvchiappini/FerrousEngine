@@ -33,6 +33,15 @@ impl UiPass {
         self.renderer.set_font_atlas(view, sampler);
     }
 
+    /// Supplies the scene colour view the GUI backdrop blur reads.
+    ///
+    /// Pass a `SceneTarget2d::view()` (or any sampled colour view of the same
+    /// size) that already holds the current scene. `ferrous_ui_render` does not
+    /// depend on `ferrous_renderer`; this is the caller-provided view.
+    pub fn set_backdrop_source(&mut self, view: &wgpu::TextureView, width: u32, height: u32) {
+        self.renderer.set_backdrop_source(view, width, height);
+    }
+
     /// Enables or disables the GUI depth attachment (prompt 18 P5).
     pub fn set_ui_depth(&mut self, enabled: bool) {
         self.renderer.set_ui_depth(enabled);

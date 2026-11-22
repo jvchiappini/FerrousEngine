@@ -4530,6 +4530,20 @@ impl Renderer {
         self.mark_dirty();
     }
 
+    /// Supplies the scene colour view the GUI backdrop blur reads.
+    ///
+    /// `ferrous_ui_render` does not depend on this crate: pass a
+    /// `SceneTarget2d::view()` (or any sampled colour view of the same size)
+    /// that already holds the current scene. The GUI pass blurs it at quarter
+    /// resolution for the quads marked with `BACKDROP_BLUR_BIT`.
+    pub fn set_gui_backdrop_source(&mut self, view: &wgpu::TextureView, width: u32, height: u32) {
+        #[cfg(not(feature = "gui"))]
+        let _ = (view, width, height);
+        #[cfg(feature = "gui")]
+        self.ui_pass.set_backdrop_source(view, width, height);
+        self.mark_dirty();
+    }
+
     pub fn set_directional_light(&mut self, direction: [f32; 3], color: [f32; 3], intensity: f32) {
         if let Some(world_pass) = self.world_pass.as_mut() {
             crate::renderer_api::set_directional_light(

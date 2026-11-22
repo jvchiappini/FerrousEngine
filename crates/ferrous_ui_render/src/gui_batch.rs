@@ -3,12 +3,120 @@
 //! This module contains GuiBatch, which aggregates UI primitives into
 //! rendering segments optimized for GPU execution.
 
-use crate::gpu_types::{DrawSegment, GuiQuad, SvgCommand, TextQuad};
+use crate::gpu_types::{ClipShape, DrawSegment, GuiQuad, SvgCommand, TextQuad};
 use crate::to_batches::ToBatches;
 use crate::TEXTURED_BIT;
 use ferrous_ui_core::render_collector::NodeBatch;
 use ferrous_ui_core::{Background, Rect, RenderCommand};
 use std::collections::HashMap;
+
+/// Geometry and paint for [`GuiBatch::border`].
+#[derive(Clone, Copy, Debug)]
+pub struct BorderSpec {
+    /// Outline rectangle (`x`, `y`, `width`, `height`) in physical pixels.
+    pub rect: Rect,
+    /// Straight RGBA border colour.
+    pub color: [f32; 4],
+    /// Per-corner radii (top-left, top-right, bottom-left, bottom-right).
+    pub radii: [f32; 4],
+    /// Stroke width in physical pixels.
+    pub width: f32,
+}
+
+impl BorderSpec {
+    /// Builds an outline spec from positional arguments.
+    #[must_use]
+    pub const fn new(
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        color: [f32; 4],
+        radii: [f32; 4],
+        stroke_width: f32,
+    ) -> Self {
+        Self {
+            rect: Rect {
+                x,
+                y,
+                width,
+                height,
+            },
+            color,
+            radii,
+            width: stroke_width,
+        }
+    }
+}
+
+/// Geometry and paint for [`GuiBatch::gradient_border`].
+#[derive(Clone, Copy, Debug)]
+pub struct GradientBorderSpec {
+    /// Outline geometry and stroke width.
+    pub border: BorderSpec,
+    /// Gradient end colour.
+    pub color_b: [f32; 4],
+    /// `true` ramps top to bottom; `false` ramps left to right.
+    pub vertical: bool,
+}
+
+/// Geometry and paint for [`GuiBatch::shadow`].
+#[derive(Clone, Copy, Debug)]
+pub struct ShadowSpec {
+    /// The unexpanded rectangle the shadow belongs to.
+    pub rect: Rect,
+    /// Straight RGBA shadow colour.
+    pub color: [f32; 4],
+    /// Gaussian blur radius in physical pixels.
+    pub blur_radius: f32,
+    /// Spread in physical pixels.
+    pub spread: f32,
+    /// Offset in physical pixels.
+    pub offset: [f32; 2],
+    /// Per-corner radii (top-left, top-right, bottom-left, bottom-right).
+    pub radii: [f32; 4],
+}
+
+/// Geometry and paint for [`GuiBatch::line`].
+#[derive(Clone, Copy, Debug)]
+pub struct LineSpec {
+    /// First endpoint in physical pixels.
+    pub from: [f32; 2],
+    /// Second endpoint in physical pixels.
+    pub to: [f32; 2],
+    /// Stroke width in physical pixels.
+    pub width: f32,
+    /// Straight RGBA colour.
+    pub color: [f32; 4],
+}
+
+/// Geometry and paint for [`GuiBatch::rect_textured`].
+#[derive(Clone, Copy, Debug)]
+pub struct TexturedRectSpec {
+    /// Destination rectangle in physical pixels.
+    pub rect: Rect,
+    /// Straight RGBA tint multiplied with the sampled texel.
+    pub color: [f32; 4],
+    /// Top-left texture coordinate.
+    pub uv0: [f32; 2],
+    /// Bottom-right texture coordinate.
+    pub uv1: [f32; 2],
+    /// Texture array slot.
+    pub tex_index: u32,
+}
+
+/// Geometry and paint for [`GuiBatch::backdrop_blur`].
+#[derive(Clone, Copy, Debug)]
+pub struct BackdropBlurSpec {
+    /// Rectangle covered by the blurred backdrop.
+    pub rect: Rect,
+    /// Per-corner radii (top-left, top-right, bottom-left, bottom-right).
+    pub radii: [f32; 4],
+    /// Translucent tint composited over the blurred backdrop.
+    pub tint: [f32; 4],
+    /// Requested Gaussian radius in physical pixels.
+    pub blur_radius: f32,
+}
 
 /// Grouping of UI primitives organized by rendering segments.
 #[derive(Clone)]
@@ -20,6 +128,10 @@ pub struct GuiBatch {
     pub segments: Vec<DrawSegment>,
     pub current_scissor: Option<ferrous_ui_core::Rect>,
     pub scissor_stack: Vec<ferrous_ui_core::Rect>,
+    /// Precise shape behind `current_scissor` (rounded clips keep their radii).
+    pub current_clip: Option<ClipShape>,
+    /// Clip stack matching `scissor_stack`, including per-corner radii.
+    pub clip_stack: Vec<ClipShape>,
     #[cfg(feature = "assets")]
     pub textures: Vec<std::sync::Arc<ferrous_assets::Texture2d>>,
     pub damage_union: Option<ferrous_ui_core::Rect>,
@@ -132,6 +244,15 @@ fn overflow_identity(overflow: Option<Rect>) -> u64 {
     }
 }
 
+/// Segment flags derived from the active rounded clip.
+#[inline]
+fn segment_clip_flags(clip: Option<ClipShape>) -> u32 {
+    match clip {
+        Some(shape) if shape.is_rounded() => crate::ROUNDED_CLIP_BIT,
+        _ => 0,
+    }
+}
+
 /// Identity of the font atlas, or `0` when no font is bound.
 ///
 /// The atlas content key is used instead of the `Font` pointer: a `Font` can
@@ -184,17 +305,31 @@ impl GuiBatch {
         (self.segments.len(), last)
     }
 
-    /// Identity of the active scissor stack.
+    /// Identity of the active scissor stack, including rounded-clip radii.
     fn clip_identity(&self) -> u64 {
         let mut hash = FNV_OFFSET;
-        match self.current_scissor {
-            Some(rect) => hash = hash_rect(hash_u64(hash, 1), rect),
+        match self.current_clip {
+            Some(shape) => {
+                hash = hash_rect(hash_u64(hash, 1), shape.rect);
+                for radius in shape.radii {
+                    hash = hash_f32(hash, radius);
+                }
+            }
             None => hash = hash_u64(hash, 0),
         }
-        for rect in &self.scissor_stack {
-            hash = hash_rect(hash_u64(hash, 2), *rect);
+        for shape in &self.clip_stack {
+            hash = hash_rect(hash_u64(hash, 2), shape.rect);
+            for radius in shape.radii {
+                hash = hash_f32(hash, radius);
+            }
         }
         hash
+    }
+
+    /// The active clip only when it carries rounded corners; a plain rectangle
+    /// is already represented exactly by `current_scissor`.
+    fn current_rounded_clip(&self) -> Option<ClipShape> {
+        self.current_clip.filter(ClipShape::is_rounded)
     }
 
     /// Identity and order of the registered texture slots.
@@ -635,6 +770,8 @@ impl GuiBatch {
             segments: Vec::new(),
             current_scissor: None,
             scissor_stack: Vec::new(),
+            current_clip: None,
+            clip_stack: Vec::new(),
             #[cfg(feature = "assets")]
             textures: Vec::new(),
             damage_union: None,
@@ -654,6 +791,8 @@ impl GuiBatch {
         self.segments.clear();
         self.current_scissor = None;
         self.scissor_stack.clear();
+        self.current_clip = None;
+        self.clip_stack.clear();
         self.damage_union = None;
         #[cfg(feature = "assets")]
         {
@@ -808,7 +947,7 @@ impl GuiBatch {
     /// end up on top of panels drawn later. A layer is simply a new segment
     /// with the same scissor. No-op when the current segment is empty.
     pub fn begin_layer(&mut self) {
-        let empty = self.segments.last().map_or(true, |s| {
+        let empty = self.segments.last().is_none_or(|s| {
             s.quad_range.is_empty()
                 && s.text_range.is_empty()
                 && s.icon_range.is_empty()
@@ -821,20 +960,24 @@ impl GuiBatch {
         let t = self.text_quads.len() as u32;
         let i = self.icon_quads.len() as u32;
         let s = self.svg_commands.len() as u32;
+        let clip = self.current_rounded_clip();
         self.segments.push(DrawSegment {
             quad_range: q..q,
             text_range: t..t,
             icon_range: i..i,
             svg_range: s..s,
             scissor: self.current_scissor,
+            clip,
+            flags: segment_clip_flags(clip),
             layer_start: true,
         });
     }
 
-    /// Ensures there is an active segment for the current scissor.
+    /// Ensures there is an active segment for the current scissor and clip.
     pub fn ensure_segment(&mut self) {
+        let clip = self.current_rounded_clip();
         let needs_new = match self.segments.last() {
-            Some(last) => last.scissor != self.current_scissor,
+            Some(last) => last.scissor != self.current_scissor || last.clip != clip,
             None => true,
         };
 
@@ -849,6 +992,8 @@ impl GuiBatch {
                 icon_range: i_start..i_start,
                 svg_range: s_start..s_start,
                 scissor: self.current_scissor,
+                clip,
+                flags: segment_clip_flags(clip),
                 layer_start: false,
             });
         }
@@ -869,6 +1014,8 @@ impl GuiBatch {
             Some(last) => {
                 !segment.layer_start
                     && last.scissor == segment.scissor
+                    && last.clip == segment.clip
+                    && last.flags == segment.flags
                     && last.quad_range.end == segment.quad_range.start
                     && last.text_range.end == segment.text_range.start
                     && last.icon_range.end == segment.icon_range.start
@@ -953,26 +1100,85 @@ impl GuiBatch {
     /// Packing follows `assets/shaders/gui.wgsl`, which reads the border width
     /// from `uv0.x`; `uv1` is unused by the border path (it is set to
     /// `[0, 0]` so the interpolated `uv` cannot leak gradient data).
-    pub fn border(
-        &mut self,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        color: [f32; 4],
-        radii: [f32; 4],
-        width: f32,
-    ) {
+    pub fn border(&mut self, spec: BorderSpec) {
         self.push_quad(GuiQuad {
-            pos: [x, y],
-            size: [w, h],
-            uv0: [width, 0.0], // gui.wgsl: border width (uv0.x)
+            pos: [spec.rect.x, spec.rect.y],
+            size: [spec.rect.width, spec.rect.height],
+            uv0: [spec.width, 0.0], // gui.wgsl: border width (uv0.x)
             uv1: [0.0, 0.0],
-            color,
+            color: spec.color,
             color_b: [0.0; 4],
-            radii,
+            radii: spec.radii,
             tex_index: 0,
             flags: crate::BORDER_BIT,
+            z_order: 0.0,
+            node_id: 0,
+        });
+        self.update_last_segment();
+    }
+
+    /// Pushes an outline whose colour ramps between `color` (start) and
+    /// `color_b` (end), using the same geometry as [`Self::border`].
+    ///
+    /// The packing is [`crate::GRADIENT_BORDER_BITS`] (`BORDER_BIT |
+    /// GRADIENT_BIT`). The gradient is horizontal (left to right) by default;
+    /// set [`GradientBorderSpec::vertical`] to make it top to bottom. Because `gui.wgsl`
+    /// resolves the two-stop gradient before applying the outline SDF, an
+    /// existing border with both bits already renders as a gradient border.
+    pub fn gradient_border(&mut self, spec: GradientBorderSpec) {
+        let mut flags = crate::GRADIENT_BORDER_BITS;
+        if spec.vertical {
+            flags |= crate::GRADIENT_V_BIT;
+        }
+        self.push_quad(GuiQuad {
+            pos: [spec.border.rect.x, spec.border.rect.y],
+            size: [spec.border.rect.width, spec.border.rect.height],
+            uv0: [spec.border.width, 0.0], // gui.wgsl: border width (uv0.x)
+            uv1: [0.0, 0.0],
+            color: spec.border.color,
+            color_b: spec.color_b,
+            radii: spec.border.radii,
+            tex_index: 0,
+            flags,
+            z_order: 0.0,
+            node_id: 0,
+        });
+        self.update_last_segment();
+    }
+
+    /// Pushes a backdrop-blur request over the rounded rect at `(x, y, w, h)`.
+    ///
+    /// Contract: `tint` is the translucent colour composited over the backdrop
+    /// (for example `[0, 0, 0, 0.4]` for a modal scrim) and `blur_radius` is the
+    /// requested Gaussian radius in pixels. The quad is packed with
+    /// [`crate::BACKDROP_BLUR_BIT`], the tint in `color`, the radius in
+    /// `uv0.x` and the per-corner radii in `radii`.
+    ///
+    /// # Rendering contract
+    ///
+    /// The GUI renderer needs the scene colour behind the UI. Call
+    /// [`GuiRenderer::set_backdrop_source`](crate::GuiRenderer::set_backdrop_source)
+    /// with the scene view (for example `SceneTarget2d::view()`) before
+    /// [`GuiRenderer::prepare`](crate::GuiRenderer::prepare). The renderer
+    /// downsamples the scene and runs one horizontal and one vertical blur
+    /// pass at quarter resolution, then `gui.wgsl` samples the blurred result
+    /// and composites `tint` over it inside the rounded rect.
+    ///
+    /// Without a backdrop source the shader draws the translucent tint masked
+    /// by the rounded-rect SDF and ignores `blur_radius` (the documented
+    /// degraded path). The blur cost is bounded by the quarter-resolution
+    /// target and a fixed nine-tap kernel, independent of `blur_radius`.
+    pub fn backdrop_blur(&mut self, spec: BackdropBlurSpec) {
+        self.push_quad(GuiQuad {
+            pos: [spec.rect.x, spec.rect.y],
+            size: [spec.rect.width, spec.rect.height],
+            uv0: [spec.blur_radius, 0.0],
+            uv1: [0.0, 0.0],
+            color: spec.tint,
+            color_b: [0.0; 4],
+            radii: spec.radii,
+            tex_index: 0,
+            flags: crate::BACKDROP_BLUR_BIT,
             z_order: 0.0,
             node_id: 0,
         });
@@ -987,30 +1193,31 @@ impl GuiBatch {
     /// larger offset` around the *offset* rectangle, so the unexpanded rect
     /// lands where the shadow belongs.  `uv1` keeps the offset for debugging;
     /// the shader does not read it.
-    pub fn shadow(
-        &mut self,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        color: [f32; 4],
-        blur_radius: f32,
-        spread: f32,
-        offset: [f32; 2],
-        radii: [f32; 4],
-    ) {
+    ///
+    /// Repeated calls compose: each call appends its own quad in painter order,
+    /// so draw a wide ambient shadow first and a tight key shadow second.
+    pub fn shadow(&mut self, spec: ShadowSpec) {
         // To include the shadow in the SDF, the quad must be expanded around
         // the offset rectangle.
-        let expand = blur_radius * 2.0 + spread.abs() + offset[0].abs().max(offset[1].abs());
+        let expand = spec.blur_radius * 2.0
+            + spec.spread.abs()
+            + spec.offset[0].abs().max(spec.offset[1].abs());
 
         self.push_quad(GuiQuad {
-            pos: [x + offset[0] - expand, y + offset[1] - expand],
-            size: [w + expand * 2.0, h + expand * 2.0],
-            uv0: [blur_radius, 0.0],     // gui.wgsl: blur radius (uv0.x)
-            uv1: [offset[0], offset[1]], // informational only
-            color,
-            color_b: [w, h, 0.0, 0.0], // gui.wgsl: unexpanded size (color_b.xy)
-            radii,
+            pos: [
+                spec.rect.x + spec.offset[0] - expand,
+                spec.rect.y + spec.offset[1] - expand,
+            ],
+            size: [
+                spec.rect.width + expand * 2.0,
+                spec.rect.height + expand * 2.0,
+            ],
+            uv0: [spec.blur_radius, 0.0], // gui.wgsl: blur radius (uv0.x)
+            uv1: [spec.offset[0], spec.offset[1]], // informational only
+            color: spec.color,
+            // gui.wgsl: unexpanded size (color_b.xy)
+            color_b: [spec.rect.width, spec.rect.height, 0.0, 0.0],
+            radii: spec.radii,
             tex_index: 0,
             flags: crate::SHADOW_BIT,
             z_order: 0.0,
@@ -1021,17 +1228,19 @@ impl GuiBatch {
 
     pub fn shadow_rect(&mut self, x: f32, y: f32, w: f32, h: f32) {
         // Helper MD default shadow
-        self.shadow(
-            x,
-            y,
-            w,
-            h,
-            [0.0, 0.0, 0.0, 0.35],
-            8.0,
-            0.0,
-            [0.0, 4.0],
-            [0.0; 4],
-        );
+        self.shadow(ShadowSpec {
+            rect: Rect {
+                x,
+                y,
+                width: w,
+                height: h,
+            },
+            color: [0.0, 0.0, 0.0, 0.35],
+            blur_radius: 8.0,
+            spread: 0.0,
+            offset: [0.0, 4.0],
+            radii: [0.0; 4],
+        });
     }
 
     /// Pushes one anti-aliased line segment.
@@ -1045,20 +1254,26 @@ impl GuiBatch {
     ///
     /// A non-positive width or a transparent colour is ignored. `color` is
     /// straight RGBA, like every other batch quad.
-    pub fn line(&mut self, from: [f32; 2], to: [f32; 2], width: f32, color: [f32; 4]) {
-        if !(width > 0.0) || color[3] <= 0.0 {
+    pub fn line(&mut self, spec: LineSpec) {
+        if !spec.width.is_finite() || spec.width <= 0.0 || spec.color[3] <= 0.0 {
             return;
         }
-        let half = (width * 0.5).max(0.5);
+        let half = (spec.width * 0.5).max(0.5);
         let pad = half + 1.0;
-        let min = [from[0].min(to[0]) - pad, from[1].min(to[1]) - pad];
-        let max = [from[0].max(to[0]) + pad, from[1].max(to[1]) + pad];
+        let min = [
+            spec.from[0].min(spec.to[0]) - pad,
+            spec.from[1].min(spec.to[1]) - pad,
+        ];
+        let max = [
+            spec.from[0].max(spec.to[0]) + pad,
+            spec.from[1].max(spec.to[1]) + pad,
+        ];
         self.push_quad(GuiQuad {
             pos: min,
             size: [max[0] - min[0], max[1] - min[1]],
-            uv0: [from[0] - min[0], from[1] - min[1]],
-            uv1: [to[0] - min[0], to[1] - min[1]],
-            color,
+            uv0: [spec.from[0] - min[0], spec.from[1] - min[1]],
+            uv1: [spec.to[0] - min[0], spec.to[1] - min[1]],
+            color: spec.color,
             color_b: [0.0; 4],
             radii: [half, 0.0, 0.0, 0.0],
             tex_index: 0,
@@ -1084,30 +1299,25 @@ impl GuiBatch {
     /// `polyline_joints_overlap_at_the_shared_endpoint`.
     pub fn polyline(&mut self, points: &[[f32; 2]], width: f32, color: [f32; 4]) {
         for pair in points.windows(2) {
-            self.line(pair[0], pair[1], width, color);
+            self.line(LineSpec {
+                from: pair[0],
+                to: pair[1],
+                width,
+                color,
+            });
         }
     }
 
-    pub fn rect_textured(
-        &mut self,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        color: [f32; 4],
-        uv0: [f32; 2],
-        uv1: [f32; 2],
-        tex_index: u32,
-    ) {
+    pub fn rect_textured(&mut self, spec: TexturedRectSpec) {
         self.push_quad(GuiQuad {
-            pos: [x, y],
-            size: [w, h],
-            uv0,
-            uv1,
-            color,
+            pos: [spec.rect.x, spec.rect.y],
+            size: [spec.rect.width, spec.rect.height],
+            uv0: spec.uv0,
+            uv1: spec.uv1,
+            color: spec.color,
             color_b: [0.0; 4],
             radii: [0.0; 4],
-            tex_index,
+            tex_index: spec.tex_index,
             flags: TEXTURED_BIT,
             z_order: 0.0,
             node_id: 0,
@@ -1128,7 +1338,18 @@ impl GuiBatch {
         color: [f32; 4],
     ) {
         let idx = self.reserve_texture_slot(texture);
-        self.rect_textured(x, y, w, h, color, uv0, uv1, idx);
+        self.rect_textured(TexturedRectSpec {
+            rect: Rect {
+                x,
+                y,
+                width: w,
+                height: h,
+            },
+            color,
+            uv0,
+            uv1,
+            tex_index: idx,
+        });
     }
 
     pub fn len(&self) -> usize {
@@ -1149,17 +1370,16 @@ impl GuiBatch {
     /// deliberately excluded: it belongs to the live tree, not to a batch that
     /// is cached and replayed as a panel.
     pub fn byte_size(&self) -> usize {
-        let mut bytes = self.quads.capacity() * std::mem::size_of::<GuiQuad>()
+        let bytes = self.quads.capacity() * std::mem::size_of::<GuiQuad>()
             + self.text_quads.capacity() * std::mem::size_of::<TextQuad>()
             + self.icon_quads.capacity() * std::mem::size_of::<TextQuad>()
             + self.svg_commands.capacity() * std::mem::size_of::<SvgCommand>()
             + self.segments.capacity() * std::mem::size_of::<DrawSegment>()
             + self.scissor_stack.capacity() * std::mem::size_of::<Rect>();
         #[cfg(feature = "assets")]
-        {
-            bytes += self.textures.capacity()
+        let bytes = bytes
+            + self.textures.capacity()
                 * std::mem::size_of::<std::sync::Arc<ferrous_assets::Texture2d>>();
-        }
         bytes
     }
 
@@ -1185,20 +1405,42 @@ impl GuiBatch {
         bytemuck::cast_slice(&self.icon_quads)
     }
 
+    /// Starts a rectangular clip, intersected with the current one.
     pub fn push_clip(&mut self, rect: ferrous_ui_core::Rect) {
-        let new_rect = if let Some(current) = self.current_scissor {
-            current.intersect(&rect)
-        } else {
-            rect
+        self.push_clip_shape(ClipShape::rectangular(rect));
+    }
+
+    /// Starts a rounded clip with per-corner radii
+    /// (top-left, top-right, bottom-left, bottom-right).
+    ///
+    /// This is the generic form of [`Self::push_clip`]. The batch keeps the
+    /// exact shape and intersects it with the enclosing clip. The renderer
+    /// uses the rectangular bounds as the scissor early reject and delivers
+    /// the rect + radii to the fragment shader's rounded-rectangle SDF mask,
+    /// which applies to quads, text and images. See [`ClipShape`] and
+    /// [`crate::ROUNDED_CLIP_BIT`].
+    pub fn push_clip_rounded(&mut self, rect: ferrous_ui_core::Rect, radii: [f32; 4]) {
+        self.push_clip_shape(ClipShape::rounded(rect, radii));
+    }
+
+    /// Starts a clip from an explicit [`ClipShape`].
+    pub fn push_clip_shape(&mut self, shape: ClipShape) {
+        let new_shape = match self.current_clip {
+            Some(current) => current.intersect(&shape),
+            None => ClipShape::rounded(shape.rect, shape.radii),
         };
-        self.scissor_stack.push(new_rect);
-        self.current_scissor = Some(new_rect);
+        self.scissor_stack.push(new_shape.rect);
+        self.clip_stack.push(new_shape);
+        self.current_scissor = Some(new_shape.rect);
+        self.current_clip = Some(new_shape);
         self.ensure_segment();
     }
 
     pub fn pop_clip(&mut self) {
         self.scissor_stack.pop();
+        self.clip_stack.pop();
         self.current_scissor = self.scissor_stack.last().copied();
+        self.current_clip = self.clip_stack.last().copied();
         self.ensure_segment();
     }
 }
@@ -1236,8 +1478,10 @@ mod tests {
         }
     }
 
+    type TreeFixture = (UiTree<()>, NodeId, Rc<Cell<[f32; 4]>>, Rc<Cell<[f32; 4]>>);
+
     /// Root at `(0, 0, 200, 200)` with one child at `(10, 10, 50, 50)`.
-    fn two_node_tree() -> (UiTree<()>, NodeId, Rc<Cell<[f32; 4]>>, Rc<Cell<[f32; 4]>>) {
+    fn two_node_tree() -> TreeFixture {
         let root_color = Rc::new(Cell::new([0.1, 0.2, 0.3, 1.0]));
         let child_color = Rc::new(Cell::new([0.4, 0.5, 0.6, 1.0]));
         let mut tree = UiTree::<()>::new();
@@ -1320,7 +1564,9 @@ mod tests {
     #[test]
     fn border_puts_width_in_uv0_where_the_shader_reads_it() {
         let quad = quad_of(|b| {
-            b.border(10.0, 20.0, 100.0, 40.0, [1.0; 4], [4.0; 4], 2.5);
+            b.border(BorderSpec::new(
+                10.0, 20.0, 100.0, 40.0, [1.0; 4], [4.0; 4], 2.5,
+            ));
         });
         assert_eq!(
             quad.uv0,
@@ -1335,7 +1581,14 @@ mod tests {
 
     #[test]
     fn line_packs_endpoints_and_bounds_for_the_shader() {
-        let quad = quad_of(|b| b.line([10.0, 20.0], [110.0, 60.0], 2.0, [1.0; 4]));
+        let quad = quad_of(|b| {
+            b.line(LineSpec {
+                from: [10.0, 20.0],
+                to: [110.0, 60.0],
+                width: 2.0,
+                color: [1.0; 4],
+            });
+        });
         assert_eq!(quad.flags, crate::LINE_BIT);
         // pad = half width (1) + 1 AA pixel; the endpoints are stored local
         // to the expanded box.
@@ -1473,7 +1726,11 @@ mod tests {
         let last = destination.segments.last().expect("a segment");
         // Both appends share the source scissor and are contiguous, so the
         // coalescing append merges them into the one rebased range `1..3`.
-        assert_eq!(last.quad_range, 1..3, "the second append is rebased and merged");
+        assert_eq!(
+            last.quad_range,
+            1..3,
+            "the second append is rebased and merged"
+        );
         assert_eq!(last.scissor, Some(rect(40.0, 40.0, 100.0, 100.0)));
     }
 
@@ -1515,17 +1772,14 @@ mod tests {
     #[test]
     fn shadow_packs_blur_and_unexpanded_size_where_the_shader_reads_them() {
         let quad = quad_of(|b| {
-            b.shadow(
-                100.0,
-                200.0,
-                300.0,
-                150.0,
-                [0.0, 0.0, 0.0, 0.5],
-                8.0,
-                0.0,
-                [0.0, 4.0],
-                [6.0; 4],
-            );
+            b.shadow(ShadowSpec {
+                rect: rect(100.0, 200.0, 300.0, 150.0),
+                color: [0.0, 0.0, 0.0, 0.5],
+                blur_radius: 8.0,
+                spread: 0.0,
+                offset: [0.0, 4.0],
+                radii: [6.0; 4],
+            });
         });
         assert_eq!(quad.uv0[0], 8.0, "gui.wgsl reads the blur from uv0.x");
         assert_eq!(quad.color_b[0], 300.0, "unexpanded width in color_b.x");
@@ -1804,6 +2058,8 @@ mod tests {
             icon_range: 0..0,
             svg_range: 0..0,
             scissor: None,
+            clip: None,
+            flags: 0,
             layer_start: false,
         });
         batch.quads.push(incoming[1]);
@@ -1813,6 +2069,8 @@ mod tests {
             icon_range: 0..0,
             svg_range: 0..0,
             scissor: None,
+            clip: None,
+            flags: 0,
             layer_start: false,
         });
 
@@ -1820,6 +2078,221 @@ mod tests {
         assert_eq!(batch.segments[0].quad_range, 0..2);
         assert_eq!(batch.quads[0].tex_index, 1);
         assert_eq!(batch.quads[1].tex_index, 0);
+    }
+
+    #[test]
+    fn per_corner_radii_are_already_packed_for_every_rounded_primitive() {
+        // Gap audit: GuiQuad.radii is [f32; 4] and every rounded primitive
+        // already forwards it to the shader unchanged.
+        let solid = quad_of(|b| {
+            b.rect_radii(0.0, 0.0, 40.0, 40.0, [1.0; 4], [1.0, 2.0, 3.0, 4.0]);
+        });
+        assert_eq!(solid.radii, [1.0, 2.0, 3.0, 4.0]);
+
+        let border = quad_of(|b| {
+            b.border(BorderSpec::new(
+                0.0,
+                0.0,
+                40.0,
+                40.0,
+                [1.0; 4],
+                [5.0, 6.0, 7.0, 8.0],
+                2.0,
+            ));
+        });
+        assert_eq!(border.radii, [5.0, 6.0, 7.0, 8.0]);
+
+        let shadow = quad_of(|b| {
+            b.shadow(ShadowSpec {
+                rect: rect(0.0, 0.0, 40.0, 40.0),
+                color: [0.0, 0.0, 0.0, 0.5],
+                blur_radius: 4.0,
+                spread: 0.0,
+                offset: [0.0, 2.0],
+                radii: [9.0, 10.0, 11.0, 12.0],
+            });
+        });
+        assert_eq!(shadow.radii, [9.0, 10.0, 11.0, 12.0]);
+    }
+
+    #[test]
+    fn multiple_soft_shadows_compose_in_paint_order() {
+        // Each shadow is its own quad; repeated calls stack in call order, so
+        // the painter composites them (a tight shadow plus a wide ambient one).
+        let mut batch = GuiBatch::new();
+        batch.shadow(ShadowSpec {
+            rect: rect(10.0, 10.0, 100.0, 50.0),
+            color: [0.0, 0.0, 0.0, 0.3],
+            blur_radius: 4.0,
+            spread: 0.0,
+            offset: [0.0, 2.0],
+            radii: [6.0; 4],
+        });
+        batch.shadow(ShadowSpec {
+            rect: rect(10.0, 10.0, 100.0, 50.0),
+            color: [0.0, 0.0, 0.0, 0.15],
+            blur_radius: 24.0,
+            spread: 0.0,
+            offset: [0.0, 8.0],
+            radii: [6.0; 4],
+        });
+
+        assert_eq!(batch.quads.len(), 2, "both shadows are emitted");
+        assert!(batch
+            .quads
+            .iter()
+            .all(|quad| quad.flags == crate::SHADOW_BIT));
+        assert_eq!(batch.quads[0].color, [0.0, 0.0, 0.0, 0.3]);
+        assert_eq!(batch.quads[1].color, [0.0, 0.0, 0.0, 0.15]);
+        assert_eq!(batch.quads[0].uv0[0], 4.0);
+        assert_eq!(batch.quads[1].uv0[0], 24.0);
+    }
+
+    #[test]
+    fn a_rectangular_clip_keeps_segments_plain() {
+        let mut batch = GuiBatch::new();
+        batch.push_clip(rect(10.0, 10.0, 50.0, 50.0));
+        batch.rect(20.0, 20.0, 10.0, 10.0, [1.0; 4]);
+
+        let segment = batch.segments.last().expect("a segment");
+        assert_eq!(segment.scissor, Some(rect(10.0, 10.0, 50.0, 50.0)));
+        assert_eq!(segment.clip, None, "plain clips stay on the scissor path");
+        assert_eq!(segment.flags, 0);
+        assert!(!segment.has_rounded_clip());
+    }
+
+    #[test]
+    fn a_rounded_clip_packs_the_shape_and_the_segment_flag() {
+        let shape = ClipShape::rounded(rect(10.0, 20.0, 100.0, 60.0), [8.0; 4]);
+        let mut batch = GuiBatch::new();
+        batch.push_clip_shape(shape);
+        batch.rect(20.0, 30.0, 10.0, 10.0, [1.0; 4]);
+
+        let segment = batch.segments.last().expect("a segment");
+        assert_eq!(segment.clip, Some(shape));
+        assert_eq!(segment.flags, crate::ROUNDED_CLIP_BIT);
+        assert!(segment.has_rounded_clip());
+        assert_eq!(
+            segment.scissor,
+            Some(rect(10.0, 20.0, 100.0, 60.0)),
+            "the scissor keeps the rectangular fallback bounds"
+        );
+        assert_eq!(batch.current_clip, Some(shape));
+        assert_eq!(batch.current_scissor, Some(shape.scissor()));
+    }
+
+    #[test]
+    fn nested_rounded_clips_keep_the_inner_shape_when_contained() {
+        let outer = ClipShape::rounded(rect(0.0, 0.0, 100.0, 100.0), [10.0; 4]);
+        let inner = ClipShape::rounded(rect(10.0, 10.0, 20.0, 20.0), [4.0; 4]);
+        let mut batch = GuiBatch::new();
+
+        batch.push_clip_shape(outer);
+        batch.push_clip_shape(inner);
+        assert_eq!(batch.current_clip, Some(inner));
+        assert_eq!(batch.scissor_stack.len(), 2);
+        assert_eq!(batch.clip_stack.len(), 2);
+
+        batch.pop_clip();
+        assert_eq!(batch.current_clip, Some(outer));
+        assert_eq!(batch.current_scissor, Some(outer.rect));
+
+        batch.pop_clip();
+        assert_eq!(batch.current_clip, None);
+        assert_eq!(batch.current_scissor, None);
+    }
+
+    #[test]
+    fn a_partial_rounded_clip_overlap_falls_back_to_the_rectangle() {
+        let outer = ClipShape::rounded(rect(0.0, 0.0, 100.0, 100.0), [10.0; 4]);
+        let inner = ClipShape::rounded(rect(50.0, 50.0, 100.0, 100.0), [4.0; 4]);
+        let mut batch = GuiBatch::new();
+
+        batch.push_clip_shape(outer);
+        batch.push_clip_shape(inner);
+
+        let expected = ClipShape::rectangular(rect(50.0, 50.0, 50.0, 50.0));
+        assert_eq!(batch.current_clip, Some(expected));
+        let segment = batch.segments.last().expect("a segment");
+        assert_eq!(segment.flags, 0, "the fallback is a plain scissor");
+        assert!(!segment.has_rounded_clip());
+    }
+
+    #[test]
+    fn different_rounded_radii_split_segments_with_the_same_bounds() {
+        let bounds = rect(0.0, 0.0, 50.0, 50.0);
+        let mut batch = GuiBatch::new();
+
+        batch.push_clip_rounded(bounds, [4.0; 4]);
+        batch.rect(5.0, 5.0, 10.0, 10.0, [1.0; 4]);
+        batch.pop_clip();
+        batch.push_clip_rounded(bounds, [8.0; 4]);
+        batch.rect(5.0, 5.0, 10.0, 10.0, [1.0; 4]);
+
+        let rounded: Vec<_> = batch
+            .segments
+            .iter()
+            .filter_map(|segment| segment.clip.map(|shape| shape.radii))
+            .collect();
+        assert_eq!(rounded, vec![[4.0; 4], [8.0; 4]]);
+    }
+
+    #[test]
+    fn gradient_border_packs_both_flags_and_the_colour_ramp() {
+        let quad = quad_of(|b| {
+            b.gradient_border(GradientBorderSpec {
+                border: BorderSpec::new(0.0, 0.0, 100.0, 40.0, [1.0, 0.0, 0.0, 1.0], [6.0; 4], 2.0),
+                color_b: [0.0, 0.0, 1.0, 1.0],
+                vertical: false,
+            });
+        });
+        assert_eq!(
+            quad.flags,
+            crate::GRADIENT_BORDER_BITS,
+            "border + gradient share one quad"
+        );
+        assert_eq!(quad.color, [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(quad.color_b, [0.0, 0.0, 1.0, 1.0]);
+        assert_eq!(quad.uv0[0], 2.0, "border width still lives in uv0.x");
+
+        let vertical = quad_of(|b| {
+            b.gradient_border(GradientBorderSpec {
+                border: BorderSpec::new(0.0, 0.0, 100.0, 40.0, [1.0; 4], [0.0; 4], 1.0),
+                color_b: [0.0; 4],
+                vertical: true,
+            });
+        });
+        assert_ne!(vertical.flags & crate::GRADIENT_V_BIT, 0);
+    }
+
+    #[test]
+    fn backdrop_blur_packs_the_flag_and_the_tint() {
+        let quad = quad_of(|b| {
+            b.backdrop_blur(BackdropBlurSpec {
+                rect: rect(10.0, 20.0, 300.0, 200.0),
+                radii: [12.0; 4],
+                tint: [0.0, 0.0, 0.0, 0.4],
+                blur_radius: 16.0,
+            });
+        });
+        assert_eq!(quad.flags, crate::BACKDROP_BLUR_BIT);
+        assert_eq!(quad.color, [0.0, 0.0, 0.0, 0.4]);
+        assert_eq!(quad.uv0[0], 16.0, "requested blur radius");
+        assert_eq!(quad.radii, [12.0; 4]);
+        assert_eq!(quad.pos, [10.0, 20.0]);
+        assert_eq!(quad.size, [300.0, 200.0]);
+    }
+
+    #[test]
+    fn the_backdrop_blur_bit_matches_the_shader_mask() {
+        // The constant is CPU-side packing; the shader branch reads a literal.
+        // Keep them in sync so the backdrop path actually triggers.
+        let shader = include_str!("../../../assets/shaders/gui.wgsl");
+        let expected = format!("in.flags & {:#x}u", crate::BACKDROP_BLUR_BIT);
+        assert!(
+            shader.contains(&expected),
+            "gui.wgsl must test {expected} for BACKDROP_BLUR_BIT"
+        );
     }
 
     #[test]

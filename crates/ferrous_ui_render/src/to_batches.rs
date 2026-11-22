@@ -77,8 +77,7 @@ fn background_to_quads(
                 batch.push_quad(GuiQuad::gradient(
                     [rect.x, rect.y],
                     [rect.width, rect.height],
-                    color_a,
-                    color_b,
+                    [color_a, color_b],
                     radii,
                     if color_a[3] >= 1.0 && color_b[3] >= 1.0 {
                         grad_flags | crate::OPAQUE_BIT
@@ -126,8 +125,7 @@ fn background_to_quads(
                 batch.push_quad(GuiQuad::gradient(
                     [rect.x, rect.y],
                     [rect.width, rect.height],
-                    color_a,
-                    color_b,
+                    [color_a, color_b],
                     radii,
                     GRADIENT_BIT | GRADIENT_RADIAL_BIT,
                     z,
