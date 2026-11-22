@@ -1,358 +1,420 @@
-//! `ferrous_events` — Event manager and hit-testing for the UI system.
+//! Raw input events, platform input parameters and the injected clock.
 //!
-//! Separates interaction logic from the graphics engine and windowing system.
-//! Provides 2-level hit-testing:
+//! This crate stops at the boundary of the operating system. It describes what
+//! the platform delivered (a pointer position, a button transition, a wheel
+//! delta, a key, committed text, an IME composition, a clipboard payload, a
+//! file drop, the modifier state and window focus) together with the instant
+//! it happened, the double-click time and distance the platform uses, and a
+//! [`Clock`] the host injects so every consumer is deterministic in tests.
 //!
-//! 1. **CPU AABB** — Instantly discards 99% of nodes.
-//! 2. **`Widget::hit_test()`** — Allows precise hit-testing for custom shapes.
+//! It deliberately contains **no routing, no hit testing, no hover or focus
+//! state**. GUIMaker owns the gesture state machine, the spatial index, the
+//! focus order, the shortcut registry and the text-editing engine
+//! (`guimaker::input`); an engine-side retained UI system that wants to try
+//! again must implement its own policy on top of these raw events.
+//!
+//! # The clock
+//!
+//! Nothing here reads `Instant::now()` behind the caller's back: a host that
+//! wants wall-clock time uses [`SystemClock`]; a test uses [`ManualClock`] and
+//! advances it by hand. Every stamped event carries `time_ms`, so gesture
+//! recognition can be replayed byte for byte.
 
-pub use ferrous_ui_core::{
-    EventContext, EventResponse, GuiKey, MouseButton, NodeId, Rect, UiEvent, UiTree,
-};
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
+
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
 use glam::Vec2;
 
-/// Manages focus and hover states for the event system.
-pub struct EventManager {
-    /// Node currently under the cursor. Used for visual effects and MouseMove routing.
-    pub hovered_node: Option<NodeId>,
-    /// Node with keyboard focus. All KeyDown events are directed here first.
-    pub focused_node: Option<NodeId>,
-    /// Node that initiated a MouseDown (ensures MouseUp goes to the same node).
-    pub pressed_node: Option<NodeId>,
-    /// Current cursor position (updated on every MouseMove).
-    pub cursor_pos: Vec2,
-    /// Result from GPU hit-test (if performed this frame).
-    pub gpu_hit_test_result: Option<NodeId>,
+/// A monotonic timestamp in milliseconds.
+pub type TimeMs = f64;
 
-    // --- Native Drag & Drop State ---
-    pub dragging_data: Option<String>,
-    pub dragging_source: Option<NodeId>,
-    pub last_drag_target: Option<NodeId>,
+/// The modifier keys held at the instant of an event.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Modifiers {
+    /// Shift is held.
+    pub shift: bool,
+    /// Control is held.
+    pub control: bool,
+    /// Alt (Option on macOS) is held.
+    pub alt: bool,
+    /// The platform key (Windows, Command) is held.
+    pub super_key: bool,
 }
 
-impl EventManager {
+impl Modifiers {
+    /// No modifier is held.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self {
+            shift: false,
+            control: false,
+            alt: false,
+            super_key: false,
+        }
+    }
+
+    /// Whether any modifier is held.
+    #[must_use]
+    pub const fn any(self) -> bool {
+        self.shift || self.control || self.alt || self.super_key
+    }
+}
+
+/// A pointer button.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PointerButton {
+    /// The primary (left) button.
+    Primary,
+    /// The secondary (right) button.
+    Secondary,
+    /// The middle (wheel click) button.
+    Middle,
+    /// An extra back button.
+    Back,
+    /// An extra forward button.
+    Forward,
+}
+
+/// Whether a button or key went down or up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ButtonState {
+    /// The button or key was pressed.
+    Pressed,
+    /// The button or key was released.
+    Released,
+}
+
+/// How a wheel delta is expressed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ScrollKind {
+    /// Discrete wheel lines (a notch, typically 1.0).
+    Line,
+    /// Pixel deltas from a precision touchpad or a high-resolution wheel.
+    Pixel,
+}
+
+/// A platform key, independent of the keyboard layout.
+pub use winit::keyboard::KeyCode;
+
+/// An IME (input method editor) transition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Ime {
+    /// The composition text changed; it is shown underlined and not committed.
+    Composition(String),
+    /// The composition was committed as final text.
+    Commit(String),
+    /// The composition was cancelled and its text discarded.
+    Cancel,
+}
+
+/// A clipboard operation the platform performed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Clipboard {
+    /// The host copied the selection.
+    Copy,
+    /// The host cut the selection.
+    Cut,
+    /// The host pasted this text.
+    Paste(String),
+}
+
+/// A file-drag transition from the operating system.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FileDrop {
+    /// A drag entered the window.
+    Entered(PathBuf),
+    /// A drag is hovering the window.
+    Hovered(PathBuf),
+    /// A drag was dropped on the window.
+    Dropped(PathBuf),
+    /// A drag left the window.
+    Left,
+}
+
+/// One raw input event, tagged with the instant the platform delivered it.
+///
+/// The enum is `Clone` but not `Copy`: text payloads own their bytes. A host
+/// that needs to keep an event around clones it; a hot path forwards it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RawInput {
+    /// The pointer moved. High-frequency moves may be coalesced by the host.
+    PointerMoved {
+        /// Position in logical pixels.
+        position: Vec2,
+        /// The instant the platform delivered the move.
+        time_ms: TimeMs,
+    },
+    /// A pointer button changed state.
+    PointerButton {
+        /// Position in logical pixels.
+        position: Vec2,
+        /// The button.
+        button: PointerButton,
+        /// Whether it went down or up.
+        state: ButtonState,
+        /// Modifiers held at the transition.
+        modifiers: Modifiers,
+        /// The instant of the transition.
+        time_ms: TimeMs,
+    },
+    /// The wheel or touchpad scrolled.
+    PointerWheel {
+        /// Position in logical pixels.
+        position: Vec2,
+        /// The delta; `positive y` scrolls up, as winit reports it.
+        delta: Vec2,
+        /// Lines or pixels.
+        kind: ScrollKind,
+        /// Modifiers held (`Shift` asks for horizontal scrolling).
+        modifiers: Modifiers,
+        /// The instant of the scroll.
+        time_ms: TimeMs,
+    },
+    /// The pointer left the window.
+    PointerLeft,
+    /// The pointer entered the window.
+    PointerEntered {
+        /// Position in logical pixels.
+        position: Vec2,
+        /// The instant of the enter.
+        time_ms: TimeMs,
+    },
+    /// The modifier state changed.
+    ModifiersChanged(Modifiers),
+    /// A key changed state.
+    Key {
+        /// The platform key code, layout independent.
+        code: KeyCode,
+        /// Whether it went down or up.
+        state: ButtonState,
+        /// Whether this is an auto-repeat, not the first press.
+        repeat: bool,
+        /// Modifiers held at the transition.
+        modifiers: Modifiers,
+        /// The text the platform produced for this key, if any.
+        text: Option<String>,
+        /// The instant of the transition.
+        time_ms: TimeMs,
+    },
+    /// Committed text (typed, pasted or an IME commit the host forwards here).
+    Text(String),
+    /// An IME transition.
+    Ime(Ime),
+    /// The platform performed a clipboard operation.
+    Clipboard(Clipboard),
+    /// A file drag transition.
+    FileDrop(FileDrop),
+    /// The window gained or lost focus.
+    FocusChanged(bool),
+}
+
+impl RawInput {
+    /// The instant carried by the event, when it carries one.
+    #[must_use]
+    pub fn time_ms(&self) -> Option<TimeMs> {
+        match self {
+            Self::PointerMoved { time_ms, .. }
+            | Self::PointerButton { time_ms, .. }
+            | Self::PointerWheel { time_ms, .. }
+            | Self::PointerEntered { time_ms, .. }
+            | Self::Key { time_ms, .. } => Some(*time_ms),
+            Self::PointerLeft
+            | Self::ModifiersChanged(_)
+            | Self::Text(_)
+            | Self::Ime(_)
+            | Self::Clipboard(_)
+            | Self::FileDrop(_)
+            | Self::FocusChanged(_) => None,
+        }
+    }
+
+    /// The modifiers carried by the event, when it carries them.
+    #[must_use]
+    pub fn modifiers(&self) -> Option<Modifiers> {
+        match self {
+            Self::PointerButton { modifiers, .. }
+            | Self::PointerWheel { modifiers, .. }
+            | Self::Key { modifiers, .. } => Some(*modifiers),
+            Self::ModifiersChanged(modifiers) => Some(*modifiers),
+            _ => None,
+        }
+    }
+
+    /// The pointer position carried by the event, when it carries one.
+    #[must_use]
+    pub fn position(&self) -> Option<Vec2> {
+        match self {
+            Self::PointerMoved { position, .. }
+            | Self::PointerButton { position, .. }
+            | Self::PointerWheel { position, .. }
+            | Self::PointerEntered { position, .. } => Some(*position),
+            _ => None,
+        }
+    }
+}
+
+/// The platform parameters a gesture recognizer needs.
+///
+/// The defaults are the Windows and GNOME values (500 ms / 4 logical pixels /
+/// 3 logical pixels); a host may read them from its toolkit and replace them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InputConfig {
+    /// Maximum delay between two clicks of a double or triple click.
+    pub double_click_time_ms: TimeMs,
+    /// Maximum pointer travel between two clicks of a multi-click.
+    pub double_click_distance: f32,
+    /// Pointer travel after a press before it becomes a drag.
+    pub drag_threshold: f32,
+}
+
+impl Default for InputConfig {
+    fn default() -> Self {
+        Self {
+            double_click_time_ms: 500.0,
+            double_click_distance: 4.0,
+            drag_threshold: 3.0,
+        }
+    }
+}
+
+impl InputConfig {
+    /// The defaults for the current platform.
+    ///
+    /// The desktop values are shared; keeping this constructor named makes the
+    /// injection point obvious when a host does read the real system values.
+    #[must_use]
+    pub fn platform_default() -> Self {
+        Self::default()
+    }
+}
+
+/// A source of monotonic time, injected by the host.
+pub trait Clock {
+    /// The current instant, in milliseconds.
+    fn now_ms(&self) -> TimeMs;
+}
+
+/// A clock backed by the monotonic system timer.
+#[derive(Clone, Copy, Debug)]
+pub struct SystemClock {
+    start: Instant,
+}
+
+impl SystemClock {
+    /// Starts a clock at "now".
+    #[must_use]
     pub fn new() -> Self {
         Self {
-            hovered_node: None,
-            focused_node: None,
-            pressed_node: None,
-            cursor_pos: Vec2::ZERO,
-            gpu_hit_test_result: None,
-            dragging_data: None,
-            dragging_source: None,
-            last_drag_target: None,
-        }
-    }
-
-    // ─── Hit-testing ──────────────────────────────────────────────────────────
-
-    /// 2-level hit-test: Fast AABB + precise `Widget::hit_test()`.
-    ///
-    /// Walks the tree front-to-back: the children are visited in reverse order
-    /// (the last child paints on top) before the node itself, so the first hit
-    /// is the topmost widget.
-    ///
-    /// This linear walk is **temporary** (`TODO(prompt 15, phase 4)`): phase 4
-    /// moves routing and hit-testing to GUIMaker, where the accelerated spatial
-    /// index now lives. It is O(nodes) per pointer event and must not become the
-    /// permanent state: phase 4 either deletes this path or replaces it with a
-    /// bounded walk whose measured cost is reported.
-    pub fn hit_test<App>(&self, tree: &UiTree<App>, pos: Vec2) -> Option<NodeId> {
-        let root = tree.get_root()?;
-        self.hit_test_node(tree, root, pos)
-    }
-
-    /// Allocation-free recursive step of [`Self::hit_test`].
-    fn hit_test_node<App>(&self, tree: &UiTree<App>, id: NodeId, pos: Vec2) -> Option<NodeId> {
-        // A fully clipped node (and therefore its subtree) cannot be hit.
-        let visible = tree.visible_rect(id)?;
-
-        let node = tree.get_node(id)?;
-
-        // Children paint above their parent, so the topmost hit is found by
-        // descending front-to-back before testing the node itself.
-        for &child in node.children.iter().rev() {
-            if let Some(hit) = self.hit_test_node(tree, child, pos) {
-                return Some(hit);
-            }
-        }
-
-        // The point is outside this node's visible rect, but its unclipped
-        // descendants were still visited above.
-        if !visible.contains([pos.x, pos.y]) {
-            return None;
-        }
-
-        // For widgets with `needs_gpu_hit_test() == true`, GPU will handle it
-        if node.widget.needs_gpu_hit_test() {
-            if let Some(gpu_id) = self.gpu_hit_test_result {
-                if gpu_id == id {
-                    return Some(id);
-                }
-            }
-            return None;
-        }
-
-        let rect = node.rect;
-        let local_pos = Vec2::new(pos.x - rect.x, pos.y - rect.y);
-        let size = Vec2::new(rect.width, rect.height);
-
-        if node.widget.hit_test(local_pos, size) {
-            Some(id)
-        } else {
-            None
-        }
-    }
-
-    // ─── Dispatch ─────────────────────────────────────────────────────────────
-
-    pub fn dispatch_event<App>(&mut self, tree: &mut UiTree<App>, app: &mut App, event: UiEvent) {
-        match &event {
-            UiEvent::MouseMove { pos } => {
-                let pos = *pos;
-                self.cursor_pos = pos;
-                let target = self.hit_test(tree, pos);
-
-                // --- Handle Dragging State ---
-                if let Some(data) = self.dragging_data.clone() {
-                    if target != self.last_drag_target {
-                        if let Some(old_id) = self.last_drag_target {
-                            self.send_to_node(tree, app, old_id, UiEvent::DragLeave, None);
-                        }
-                        self.last_drag_target = target;
-                    }
-
-                    if let Some(id) = target {
-                        // Current DragOver
-                        self.bubble_event(
-                            tree,
-                            app,
-                            id,
-                            UiEvent::DragOver { pos, data },
-                            Some(pos),
-                        );
-                    }
-                } else {
-                    // --- Normal Hover Logic ---
-                    if target != self.hovered_node {
-                        if let Some(old_id) = self.hovered_node {
-                            self.send_to_node(tree, app, old_id, UiEvent::MouseLeave, None);
-                        }
-                        if let Some(new_id) = target {
-                            self.send_to_node(tree, app, new_id, UiEvent::MouseEnter, Some(pos));
-                        }
-                        self.hovered_node = target;
-                    }
-
-                    if let Some(id) = self.hovered_node {
-                        self.bubble_event(tree, app, id, UiEvent::MouseMove { pos }, Some(pos));
-                    }
-                }
-            }
-
-            UiEvent::MouseDown { button, pos } => {
-                let pos = *pos;
-                let button = *button;
-                self.cursor_pos = pos;
-                let target = self.hit_test(tree, pos);
-                if let Some(id) = target {
-                    self.focused_node = Some(id);
-                    self.pressed_node = Some(id);
-                    self.bubble_event(tree, app, id, UiEvent::MouseDown { button, pos }, Some(pos));
-                } else {
-                    self.focused_node = None;
-                    self.pressed_node = None;
-                }
-            }
-
-            UiEvent::MouseUp { button, pos } => {
-                let pos = *pos;
-                let button = *button;
-                self.cursor_pos = pos;
-
-                // --- Handle Drop ---
-                if let Some(data) = self.dragging_data.clone() {
-                    let target = self.hit_test(tree, pos);
-                    if let Some(id) = target {
-                        self.bubble_event(tree, app, id, UiEvent::Drop { pos, data }, Some(pos));
-                    }
-                    self.dragging_data = None;
-                    self.dragging_source = None;
-                    self.last_drag_target = None;
-                    // Note: We consume the MouseUp here to prevent normal click logic if it was a drag
-                } else {
-                    let target = self.pressed_node.or_else(|| self.hit_test(tree, pos));
-
-                    if let Some(id) = target {
-                        self.bubble_event(
-                            tree,
-                            app,
-                            id,
-                            UiEvent::MouseUp { button, pos },
-                            Some(pos),
-                        );
-                    }
-                }
-                self.pressed_node = None;
-            }
-
-            UiEvent::KeyDown { key } => {
-                let key = *key;
-                if let Some(id) = self.focused_node {
-                    self.bubble_event(tree, app, id, UiEvent::KeyDown { key }, None);
-                }
-            }
-
-            UiEvent::KeyUp { key } => {
-                let key = *key;
-                if let Some(id) = self.focused_node {
-                    self.bubble_event(tree, app, id, UiEvent::KeyUp { key }, None);
-                }
-            }
-
-            UiEvent::Char { c } => {
-                let c = *c;
-                if let Some(id) = self.focused_node {
-                    self.bubble_event(tree, app, id, UiEvent::Char { c }, None);
-                }
-            }
-
-            UiEvent::MouseWheel { delta_x, delta_y } => {
-                let (dx, dy) = (*delta_x, *delta_y);
-                if let Some(id) = self.hovered_node {
-                    self.bubble_event(
-                        tree,
-                        app,
-                        id,
-                        UiEvent::MouseWheel {
-                            delta_x: dx,
-                            delta_y: dy,
-                        },
-                        Some(self.cursor_pos),
-                    );
-                }
-            }
-
-            _ => {}
-        }
-    }
-
-    // ─── Private Helpers ──────────────────────────────────────────────────────
-
-    fn send_to_node<App>(
-        &mut self,
-        tree: &mut UiTree<App>,
-        app: &mut App,
-        id: NodeId,
-        event: UiEvent,
-        mouse_pos: Option<Vec2>,
-    ) -> EventResponse {
-        let (rect, theme) = if let Some(node) = tree.get_node(id) {
-            (node.rect, tree.theme)
-        } else {
-            return EventResponse::Ignored;
-        };
-
-        let local_mouse_pos = mouse_pos.map(|p| Vec2::new(p.x - rect.x, p.y - rect.y));
-
-        let mut widget = if let Some(n) = tree.get_node_mut(id) {
-            std::mem::replace(
-                &mut n.widget,
-                Box::new(ferrous_ui_core::widgets::PlaceholderWidget),
-            )
-        } else {
-            return EventResponse::Ignored;
-        };
-
-        let response = {
-            let mut ctx = EventContext {
-                node_id: id,
-                rect,
-                theme,
-                tree,
-                app,
-                mouse_pos,
-                local_mouse_pos,
-            };
-            widget.on_event(&mut ctx, &event)
-        };
-
-        if let Some(n) = tree.get_node_mut(id) {
-            n.widget = widget;
-        }
-
-        if matches!(response, EventResponse::Redraw) {
-            tree.mark_paint_dirty(id);
-        }
-
-        if let EventResponse::StartDrag { data } = &response {
-            self.dragging_data = Some(data.clone());
-            self.dragging_source = Some(id);
-            self.last_drag_target = Some(id);
-            // Inform the widget that drag has started
-            self.send_to_node(
-                tree,
-                app,
-                id,
-                UiEvent::DragStart {
-                    pos: self.cursor_pos,
-                    data: data.clone(),
-                },
-                Some(self.cursor_pos),
-            );
-        }
-
-        response
-    }
-
-    fn bubble_event<App>(
-        &mut self,
-        tree: &mut UiTree<App>,
-        app: &mut App,
-        id: NodeId,
-        event: UiEvent,
-        mouse_pos: Option<Vec2>,
-    ) {
-        let response = self.send_to_node(tree, app, id, event.clone(), mouse_pos);
-
-        if matches!(response, EventResponse::Ignored) {
-            if let Some(parent_id) = tree.get_node_parent(id) {
-                self.bubble_event(tree, app, parent_id, event, mouse_pos);
-            }
+            start: Instant::now(),
         }
     }
 }
 
-impl Default for EventManager {
+impl Default for SystemClock {
     fn default() -> Self {
         Self::new()
     }
 }
 
-// ─── Winit Converters ────────────────────────────────────────────────────────
-
-pub fn winit_to_guikey(k: winit::keyboard::KeyCode) -> GuiKey {
-    match k {
-        winit::keyboard::KeyCode::Backspace => GuiKey::Backspace,
-        winit::keyboard::KeyCode::Delete => GuiKey::Delete,
-        winit::keyboard::KeyCode::ArrowLeft => GuiKey::ArrowLeft,
-        winit::keyboard::KeyCode::ArrowRight => GuiKey::ArrowRight,
-        winit::keyboard::KeyCode::ArrowUp => GuiKey::ArrowUp,
-        winit::keyboard::KeyCode::ArrowDown => GuiKey::ArrowDown,
-        winit::keyboard::KeyCode::Home => GuiKey::Home,
-        winit::keyboard::KeyCode::End => GuiKey::End,
-        winit::keyboard::KeyCode::Enter | winit::keyboard::KeyCode::NumpadEnter => GuiKey::Enter,
-        winit::keyboard::KeyCode::Escape => GuiKey::Escape,
-        winit::keyboard::KeyCode::Tab => GuiKey::Tab,
-        _ => GuiKey::Backspace,
+impl Clock for SystemClock {
+    fn now_ms(&self) -> TimeMs {
+        self.start.elapsed().as_secs_f64() * 1000.0
     }
 }
 
-pub fn winit_to_mousebutton(b: winit::event::MouseButton) -> ferrous_ui_core::MouseButton {
-    match b {
-        winit::event::MouseButton::Left => ferrous_ui_core::MouseButton::Left,
-        winit::event::MouseButton::Right => ferrous_ui_core::MouseButton::Right,
-        winit::event::MouseButton::Middle => ferrous_ui_core::MouseButton::Middle,
-        _ => ferrous_ui_core::MouseButton::Left,
+/// A clock a test moves by hand.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ManualClock {
+    now_ms: TimeMs,
+}
+
+impl ManualClock {
+    /// A clock at `now_ms`.
+    #[must_use]
+    pub fn at(now_ms: TimeMs) -> Self {
+        Self { now_ms }
+    }
+
+    /// Moves the clock forward by `delta_ms` and returns the new instant.
+    pub fn advance(&mut self, delta_ms: TimeMs) -> TimeMs {
+        self.now_ms += delta_ms.max(0.0);
+        self.now_ms
+    }
+
+    /// Sets the clock to an absolute instant.
+    pub fn set(&mut self, now_ms: TimeMs) {
+        self.now_ms = now_ms;
+    }
+}
+
+impl Clock for ManualClock {
+    fn now_ms(&self) -> TimeMs {
+        self.now_ms
+    }
+}
+
+/// The platform duration, as a [`Duration`], of a config value.
+#[must_use]
+pub fn millis(value: TimeMs) -> Duration {
+    Duration::from_secs_f64(value.max(0.0) / 1000.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_is_the_desktop_triplet() {
+        let config = InputConfig::default();
+        assert_eq!(config.double_click_time_ms, 500.0);
+        assert_eq!(config.double_click_distance, 4.0);
+        assert_eq!(config.drag_threshold, 3.0);
+        assert_eq!(config, InputConfig::platform_default());
+    }
+
+    #[test]
+    fn manual_clock_advances_only_forward() {
+        let mut clock = ManualClock::at(10.0);
+        assert_eq!(clock.now_ms(), 10.0);
+        assert_eq!(clock.advance(5.0), 15.0);
+        assert_eq!(clock.advance(-5.0), 15.0);
+        clock.set(2.0);
+        assert_eq!(clock.now_ms(), 2.0);
+    }
+
+    #[test]
+    fn system_clock_is_monotonic() {
+        let clock = SystemClock::new();
+        let first = clock.now_ms();
+        std::thread::sleep(Duration::from_millis(1));
+        assert!(clock.now_ms() >= first);
+    }
+
+    #[test]
+    fn events_expose_their_instant_and_modifiers() {
+        let event = RawInput::PointerButton {
+            position: Vec2::new(4.0, 5.0),
+            button: PointerButton::Primary,
+            state: ButtonState::Pressed,
+            modifiers: Modifiers {
+                shift: true,
+                ..Modifiers::none()
+            },
+            time_ms: 12.5,
+        };
+        assert_eq!(event.time_ms(), Some(12.5));
+        assert_eq!(event.position(), Some(Vec2::new(4.0, 5.0)));
+        assert_eq!(event.modifiers().map(|m| m.shift), Some(true));
+        assert_eq!(RawInput::PointerLeft.time_ms(), None);
+        assert!(!Modifiers::none().any());
+    }
+
+    #[test]
+    fn millis_never_goes_negative() {
+        assert_eq!(millis(-1.0), Duration::ZERO);
+        assert_eq!(millis(2.0), Duration::from_millis(2));
     }
 }

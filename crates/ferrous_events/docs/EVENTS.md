@@ -1,95 +1,71 @@
-# ⚡ Ferrous Events — Referencia Técnica
+# ferrous_events — reference
 
-`ferrous_events` es la abstracción pura de eventos de entrada para la interfaz de usuario de FerrousEngine.
+The crate stops at the platform boundary. It answers three questions for a
+consumer: *what happened*, *when*, and *what are the platform's timing rules*.
+Everything policy-shaped (what a click means, who gets the event, what is
+hovered) lives in `guimaker::input`.
 
----
+## Events
 
-## 🛡️ Estructuras de Eventos
-
-### `UiEvent`
-Define las señales comunes en cualquier interfaz gráfica:
-
-```rust
-pub enum UiEvent {
-    MouseDown { position: [f32; 2], button: MouseButton },
-    MouseUp   { position: [f32; 2], button: MouseButton },
-    MouseMove { position: [f32; 2] },
-    MouseEnter,
-    MouseLeave,
-    KeyDown { key: Option<GuiKey>, text: Option<String> },
-}
+```text
+RawInput
+├── PointerMoved      { position, time_ms }
+├── PointerButton     { position, button, state, modifiers, time_ms }
+├── PointerWheel      { position, delta, kind, modifiers, time_ms }
+├── PointerEntered    { position, time_ms }
+├── PointerLeft
+├── ModifiersChanged(Modifiers)
+├── Key               { code, state, repeat, modifiers, text, time_ms }
+├── Text(String)                     committed text (typing, paste, IME commit)
+├── Ime(Ime)                         Composition / Commit / Cancel
+├── Clipboard(Clipboard)             Copy / Cut / Paste(text)
+├── FileDrop(FileDrop)               Entered / Hovered / Dropped / Left
+└── FocusChanged(bool)
 ```
 
-### `EventResponse`
-Respuesta que los widgets devuelven al sistema de eventos tras procesar un `UiEvent`:
+- `position` is in **logical** pixels; the host applies DPI and canvas scaling
+  before feeding the event.
+- `PointerWheel.delta` follows the platform convention: positive `y` scrolls
+  up (the wheel moves away from the user). `ScrollKind::Line` is a wheel
+  notch (typically 1.0); `Pixel` is a precision touchpad or high-resolution
+  wheel.
+- `Key.text` is the text the platform produced for that key, when it produced
+  any; it is not a substitute for `Text` (IME and paste arrive there).
+- `RawInput::time_ms`, `position()` and `modifiers()` return `None` for the
+  variants that do not carry the field.
+
+## Platform parameters
+
+`InputConfig::default()` and `platform_default()` return 500 ms for the
+double-click window, 4 logical px for the double-click distance and 3 logical
+px for the drag threshold. A host that reads the real system values replaces
+them; a test can use anything.
+
+## The clock
+
+Nothing in this crate calls `Instant::now()` behind the caller's back.
 
 ```rust
-pub enum EventResponse {
-    /// No procesado; el sistema lo propagará al nodo padre.
-    Ignored,
-    /// Procesado; la propagación se detiene.
-    Consumed,
-    /// Procesado y el widget necesita repintarse; marca PaintDirty automáticamente.
-    Redraw,
-}
+use ferrous_events::{Clock, ManualClock, SystemClock};
+
+let mut manual = ManualClock::at(0.0);
+manual.advance(16.0);
+assert_eq!(manual.now_ms(), 16.0);
+
+let system = SystemClock::new();
+assert!(system.now_ms() >= 0.0);
 ```
 
-### `EventManager`
-Capa de lógica que enruta los eventos a los nodos correctos del `UiTree`:
-- **`hovered_node`**: ID del nodo bajo el puntero; se actualiza en cada `MouseMove`.
-- **`focused_node`**: ID del receptor exclusivo de eventos de teclado.
-- Envía automáticamente `MouseEnter` / `MouseLeave` al cambiar el nodo apuntado.
+A host passes its clock reading into the events (the `time_ms` field) and
+into `guimaker::Ui::set_time_ms`. A test uses `ManualClock` and advances it
+explicitly, which is what makes the gesture and text-editor tests
+deterministic.
 
----
+## What was removed in phase 4
 
-## 🚀 Hit-Testing y Propagación
-
-### Hit-Testing Progresivo
-
-El `EventManager` recorre el árbol de UI de atrás hacia adelante (mayor Z-order primero), comparando el punto del puntero con el `Rect` resuelto de cada nodo. Se detiene en el nodo más profundo y visible que contiene el punto.
-
-El método `Rect::contains([x, y])` implementa esta comprobación en O(1):
-```rust
-// Interno del EventManager
-if node.rect.contains(mouse_pos) && !found {
-    found = Some(node_id);
-}
-```
-
-### 💧 Event Bubbling (Propagación)
-Los eventos siguen un flujo de "burbujeo":
-1.  El evento se envía primero al nodo hijo más profundo (el objetivo del hit-test).
-2.  El widget procesa el evento y devuelve un `EventResponse`.
-3.  Si la respuesta es `Ignored`, el evento se propaga automáticamente a su padre jerárquico.
-4.  Si la respuesta es `Consumed` o `Redraw`, la propagación se detiene.
-
-### 🎨 Visual Feedback: `EventResponse::Redraw`
-Permite que un widget notifique que su representación visual ha cambiado (por ejemplo, al activarse un hover). Al recibir esta señal, el `EventManager` marca automáticamente el nodo como `PaintDirty` en el `UiTree`.
-
-```rust
-// Ejemplo en Button::on_event
-fn on_event(&mut self, _ctx: &mut EventContext, event: &UiEvent) -> EventResponse {
-    match event {
-        UiEvent::MouseEnter => { self.is_hovered = true; EventResponse::Redraw }
-        UiEvent::MouseLeave => { self.is_hovered = false; EventResponse::Redraw }
-        UiEvent::MouseDown { .. } => EventResponse::Consumed,
-        _ => EventResponse::Ignored,
-    }
-}
-```
-
----
-
-## 📦 Conversión de Winit
-
-Incluye implementaciones de `From` para mapear teclas físicas del backend de ventanas a los tipos abstractos del motor. La lógica de la UI **nunca** depende de `winit` directamente.
-
-```rust
-// Conversión automática al recibir eventos de winit
-let key: Option<GuiKey> = winit_keycode.into();
-
-// GuiKey cubre el conjunto mínimo de teclas de navegación UI:
-// Enter, Escape, Tab, Backspace, Delete
-// ArrowLeft, ArrowRight, ArrowUp, ArrowDown
-// Home, End
-```
+`EventManager` (hovered/focused/pressed state, hit testing and bubbling) is
+gone, together with the linear walk that was marked
+`TODO(prompt 15, phase 4)`. The retained UI system (`ferrous_gui::UiSystem`)
+now only lays out and paints; its widgets no longer receive pointer or key
+events. Routing, gestures, focus and shortcuts are GUIMaker's, fed by the
+raw events above.

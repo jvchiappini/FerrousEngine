@@ -1,8 +1,7 @@
 use crate::toaster::Toaster;
-use ferrous_events::EventManager;
 use ferrous_layout::LayoutEngine;
 use ferrous_ui_core::render_collector::{NodeVisit, RenderCollector};
-use ferrous_ui_core::{NodeId, Rect, UiEvent, UiTree, Widget};
+use ferrous_ui_core::{NodeId, Rect, UiTree, Widget};
 use ferrous_ui_render::GuiBatch;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -15,15 +14,14 @@ static NEXT_RENDER_EPOCH: AtomicU64 = AtomicU64::new(1);
 
 /// `UiSystem` is the master orchestrator of the UI system.
 ///
-/// Coordinates widget state (`UiTree`), the layout engine (`LayoutEngine`),
-/// event management (`EventManager`), and facilitates draw command generation.
+/// Coordinates widget state (`UiTree`), the layout engine (`LayoutEngine`) and
+/// draw command generation. Input routing lives in `guimaker::input`; this
+/// retained system keeps layout and paint only.
 pub struct UiSystem<App> {
     /// Widget tree containing hierarchy and reactive state.
     pub tree: UiTree<App>,
     /// Engine responsible for calculating positions and sizes using Taffy (Flexbox).
     pub layout_engine: LayoutEngine,
-    /// Manager for interactions, focus, and hover.
-    pub event_manager: EventManager,
     /// Stack of implicit parents for `spawn_with`.
     /// When not empty, `.spawn()` inserts the widget as a child of the top node.
     pub(crate) parent_stack: Vec<NodeId>,
@@ -41,7 +39,6 @@ impl<App: 'static> UiSystem<App> {
         Self {
             tree: UiTree::new(),
             layout_engine: LayoutEngine::new(),
-            event_manager: EventManager::new(),
             parent_stack: Vec::new(),
             toaster: Toaster::new(),
             render_epoch: NEXT_RENDER_EPOCH.fetch_add(1, Ordering::Relaxed),
@@ -105,13 +102,6 @@ impl<App: 'static> UiSystem<App> {
                 .compute_layout(&mut self.tree, viewport_width, viewport_height);
             self.last_viewport = Some(viewport);
         }
-    }
-
-    /// Dispatches an input event to the system.
-    /// Automatically handles Hit-Testing and event propagation (Bubbling).
-    pub fn dispatch_event(&mut self, app: &mut App, event: UiEvent) {
-        self.event_manager
-            .dispatch_event(&mut self.tree, app, event);
     }
 
     /// Generates a batch of quads ready to be sent to the rendering backend (WGPU).
@@ -178,7 +168,7 @@ impl<App: 'static> UiSystem<App> {
     pub fn clear_damage(&mut self) {}
 
     // =========================================================================
-    // Fluent API — convenience for creating widgets without touching UiTree directly
+    // Fluent API â€” convenience for creating widgets without touching UiTree directly
     // =========================================================================
 
     /// Starts building a button with text.

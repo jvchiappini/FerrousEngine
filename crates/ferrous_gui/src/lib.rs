@@ -1,15 +1,15 @@
-//! `ferrous_gui` — Orquestador maestro del sistema de UI de Ferrous Engine.
+//! `ferrous_gui` â€” Orquestador maestro del sistema de UI de Ferrous Engine.
 //!
-//! Este crate actúa como la fachada principal (Facade), coordinando los sub-sistemas
+//! Este crate actÃºa como la fachada principal (Facade), coordinando los sub-sistemas
 //! de widgets, layout, eventos y renderizado para proporcionar una experiencia de
 //! desarrollo fluida y de alto rendimiento.
 //!
-//! # API rápida
+//! # API rÃ¡pida
 //!
 //! ```rust,ignore
 //! use ferrous_gui::prelude::*;
 //!
-//! // El hit-testing y los eventos son automáticos: solo defines el callback.
+//! // El hit-testing y los eventos son automÃ¡ticos: solo defines el callback.
 //! ui.button("Guardar")
 //!     .size(120.0, 36.0)
 //!     .border_radius(8.0)
@@ -26,11 +26,10 @@ pub mod builder;
 pub mod system;
 pub mod toaster;
 
-
 pub use ferrous_ui_render::{
-    GuiBatch, GuiQuad, GuiRenderer, TextQuad, ToBatches,
-    MAX_TEXTURE_SLOTS, TEXTURED_BIT, GRADIENT_BIT, GRADIENT_V_BIT, GRADIENT_RADIAL_BIT,
-    GRADIENT_STRIP_BIT, BORDER_BIT, SHADOW_BIT,
+    GuiBatch, GuiQuad, GuiRenderer, TextQuad, ToBatches, BORDER_BIT, GRADIENT_BIT,
+    GRADIENT_RADIAL_BIT, GRADIENT_STRIP_BIT, GRADIENT_V_BIT, MAX_TEXTURE_SLOTS, SHADOW_BIT,
+    TEXTURED_BIT,
 };
 pub use system::UiSystem;
 
@@ -38,31 +37,62 @@ pub use system::UiSystem;
 pub use ferrous_ui_core::{
     theme,
     // Tipos de layout y estilo
-    Alignment, DisplayMode, Overflow, Position, Rect, RectOffset, Style, Units,
-    // Tipos de texto y alineación
-    TextAlign, HAlign, VAlign,
-    // Tipos de color y fondo
-    Color, Background, GradientStop, GradientAngle,
-    // Contextos del ciclo de vida
-    BuildContext, DrawContext, EventContext, LayoutContext, UpdateContext,
-    // Sistema de eventos
-    EventResponse, GuiKey, MouseButton, UiEvent,
-    // Árbol de UI
-    DirtyFlags, NodeId, UiTree,
-    // Trait y comando de render
-    RenderCommand, Widget,
-    // Widgets concretos
-    Button, Slider, ColorPicker,
-    // Tipos de picker
-    PaletteCategory, PickerShape,
-    // Sistema reactivo
-    ViewportWidget, WidgetCategory, WidgetKind, WIDGET_REGISTRY,
+    Alignment,
     // Animaciones (NUEVO)
-    Animated, Spring, Tween, Easing, Lerp,
+    Animated,
+    Background,
+    // Contextos del ciclo de vida
+    BuildContext,
+    // Widgets concretos
+    Button,
+    // Tipos de color y fondo
+    Color,
+    ColorPicker,
+    // Ãrbol de UI
+    DirtyFlags,
+    DisplayMode,
+    DrawContext,
+    Easing,
+    EventContext,
+    // Sistema de eventos
+    EventResponse,
+    GradientAngle,
+    GradientStop,
+    GuiKey,
+    HAlign,
+    LayoutContext,
+    Lerp,
+    MouseButton,
+    NodeId,
+    Overflow,
+    // Tipos de picker
+    PaletteCategory,
+    PickerShape,
+    Position,
+    Rect,
+    RectOffset,
+    // Trait y comando de render
+    RenderCommand,
+    Slider,
+    Spring,
+    Style,
+    // Tipos de texto y alineaciÃ³n
+    TextAlign,
+    Tween,
+    UiEvent,
+    UiTree,
+    Units,
+    UpdateContext,
+    VAlign,
+    // Sistema reactivo
+    ViewportWidget,
+    Widget,
+    WidgetCategory,
+    WidgetKind,
+    WIDGET_REGISTRY,
 };
 
 // Motores
-pub use ferrous_events::EventManager;
 pub use ferrous_layout::LayoutEngine;
 
 // Builders
@@ -71,7 +101,7 @@ pub use builder::{ButtonBuilder, LabelBuilder, PanelBuilder, WidgetBuilder};
 // Macros
 pub use ferrous_ui_core::ui;
 
-/// Módulo prelude: importa todo lo necesario para crear UIs con la API fluent.
+/// MÃ³dulo prelude: importa todo lo necesario para crear UIs con la API fluent.
 ///
 /// ```rust,ignore
 /// use ferrous_gui::prelude::*;
@@ -82,35 +112,34 @@ pub mod prelude {
         builder::{ButtonBuilder, LabelBuilder, PanelBuilder, WidgetBuilder},
         // Tipos de layout y estilo
         Alignment,
+        // Sistema de animaciones (NUEVO)
+        Animated,
         Background,
         Color,
         DisplayMode,
+        Easing,
+        // Contextos de eventos
+        EventContext,
+        EventResponse,
+        GuiKey,
+        // Motores
+        LayoutEngine,
+        Lerp,
+        MouseButton,
+        // Ãrbol
+        NodeId,
         Overflow,
         Position,
         Rect,
         RectOffset,
-        Style,
-        Units,
-        // Contextos de eventos
-        EventContext,
-        EventManager,
-        EventResponse,
-        GuiKey,
-        MouseButton,
-        // Sistema de animaciones (NUEVO)
-        Animated,
-        Easing,
-        Lerp,
-        Spring,
-        Tween,
-        // Motores
-        LayoutEngine,
-        // Árbol
-        NodeId,
         RenderCommand,
         Slider,
+        Spring,
+        Style,
+        Tween,
         UiEvent,
         UiSystem,
+        Units,
         Widget,
         // Shader flags (para widgets custom)
         BORDER_BIT,
