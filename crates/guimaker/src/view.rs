@@ -1,7 +1,7 @@
 //! The view tree: structure and intent, never coordinates.
 //!
 //! An app builds an [`Element`] tree from its state with the constructors in
-//! this module (`Element::column`, `Element::row`, [`text`], …) and the
+//! this module (`Element::column`, `Element::row`, [`text`], â€¦) and the
 //! chainable modifiers (`.pad(S4)`, `.gap(S3)`, `.width(SizeSpec::Fill)`).
 //! [`Tree::build`] flattens it into an arena of [`Node`]s; layout, input and the
 //! display list work on that arena. No element stores a pixel position or a
@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 use crate::hash::Fnv;
 use crate::style::{
-    Align, Columns, Direction, Edges, Fluid, FluidText, Justify, Responsive, ScrollAxes, SizeSpec,
-    Span, Style, TextSpec, Tone, Tooltip,
+    Align, Columns, Cursor, Direction, Edges, Fluid, FluidText, Justify, Responsive, ScrollAxes,
+    SizeSpec, Span, Style, TextSpec, Tone, Tooltip,
 };
 use crate::text::Ellipsis;
 use crate::theme::{
@@ -679,6 +679,20 @@ impl<Msg> Element<Msg> {
         self
     }
 
+    /// Overrides the tab order this node takes.
+    #[must_use]
+    pub fn tab_index(mut self, index: i32) -> Self {
+        self.style.tab_index = Some(index);
+        self
+    }
+
+    /// Sets the pointer cursor over this node.
+    #[must_use]
+    pub fn cursor(mut self, cursor: Cursor) -> Self {
+        self.style.cursor = cursor;
+        self
+    }
+
     /// Replaces the text content.
     #[must_use]
     pub fn text_spec(mut self, text: TextSpec) -> Self {
@@ -811,7 +825,10 @@ impl<Msg> Tree<Msg> {
             text: element.text.clone(),
             key: element.key.clone(),
             action: element.action.clone(),
-            interactive: element.style.interactive || element.action.is_some(),
+            interactive: element.style.interactive
+                || element.action.is_some()
+                || element.kind == NodeKind::Scroll
+                || element.style.scroll != Responsive::single(ScrollAxes::None),
             parent,
             children: Vec::with_capacity(element.children.len()),
             depth,
@@ -1125,6 +1142,14 @@ fn hash_style(style: &Style, hash: &mut Fnv) {
         }
         None => hash.write_u8(0),
     }
+    match style.tab_index {
+        Some(index) => {
+            hash.write_u8(1);
+            hash.write_i32(index);
+        }
+        None => hash.write_u8(0),
+    }
+    hash.write_u8(style.cursor as u8);
 }
 
 fn hash_responsive<T>(value: &Responsive<T>, hash: &mut Fnv, mut each: impl FnMut(&T, &mut Fnv)) {

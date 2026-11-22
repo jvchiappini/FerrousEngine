@@ -14,7 +14,9 @@ use crate::debug::{CacheState, FrameDebug, NodeDebug};
 use crate::display_list::{DisplayList, DrawCommand, ImageFit, TextRun, TextSpanStyle};
 use crate::geom::{Rect, Size};
 use crate::hash::Fnv;
-use crate::input::{route, InputEvent, InputState};
+use crate::input::focus::FocusOrder;
+use crate::input::shortcut::ShortcutRegistry;
+use crate::input::{route, InputEvent, InputState, RouteContext};
 use crate::layout::LayoutEngine;
 use crate::spatial::HitIndex;
 use crate::store::{RepaintReason, Store};
@@ -81,6 +83,8 @@ pub struct Ui<Msg> {
     index: HitIndex,
     store: Store,
     input: InputState,
+    focus: FocusOrder,
+    shortcuts: ShortcutRegistry<Msg>,
     tree: Tree<Msg>,
     view_hash: u64,
     index_structure: u64,
@@ -108,6 +112,8 @@ impl<Msg: Clone> Ui<Msg> {
             index: HitIndex::new(),
             store: Store::new(),
             input: InputState::new(),
+            focus: FocusOrder::new(),
+            shortcuts: ShortcutRegistry::default(),
             tree: Tree::build(&Element::column()),
             view_hash: 0,
             index_structure: 0,
@@ -143,6 +149,54 @@ impl<Msg: Clone> Ui<Msg> {
         self.scale = scale;
         self.engine.set_viewport(viewport, scale);
         self.layout_needed = true;
+    }
+
+    /// Sets the injected clock instant, in milliseconds.
+    ///
+    /// Every timed decision uses it: double and triple click, long press, hover
+    /// intent, scroll momentum and the caret blink. A host calls it once per
+    /// frame with its monotonic clock; the library never reads time itself.
+    /// Returns the elapsed milliseconds since the previous call.
+    #[allow(clippy::cast_possible_truncation)] // reason: a frame delta is far below f32's range
+    pub fn set_time_ms(&mut self, now_ms: f64) -> f64 {
+        let dt = self.input.set_time_ms(now_ms);
+        if let Some(gesture) = self.input.gesture.tick(now_ms) {
+            self.input.last_gesture = Some(gesture);
+        }
+        if self.input.scroll.advance((dt / 1000.0) as f32) {
+            if let Some(path) = self.input.scroll_target {
+                self.store.set_scroll(path, self.input.scroll.offset());
+            }
+        }
+        dt
+    }
+
+    /// The input state.
+    #[must_use]
+    pub fn input(&self) -> &InputState {
+        &self.input
+    }
+
+    /// The input state, mutably (an app may push a focus scope).
+    pub fn input_mut(&mut self) -> &mut InputState {
+        &mut self.input
+    }
+
+    /// The shortcut registry.
+    #[must_use]
+    pub fn shortcuts(&self) -> &ShortcutRegistry<Msg> {
+        &self.shortcuts
+    }
+
+    /// The shortcut registry, mutably (bind or clear a scope).
+    pub fn shortcuts_mut(&mut self) -> &mut ShortcutRegistry<Msg> {
+        &mut self.shortcuts
+    }
+
+    /// The precomputed focus order.
+    #[must_use]
+    pub fn focus_order(&self) -> &FocusOrder {
+        &self.focus
     }
 
     /// Queues an input event. A run of pointer moves coalesces to the latest.
@@ -234,22 +288,11 @@ impl<Msg: Clone> Ui<Msg> {
             self.index.rebuild(&self.tree, self.engine.rects());
             self.index_structure = self.tree.structure_hash;
             self.input.invalidate();
+            self.focus.rebuild(&self.tree, self.input.focus_scope());
+            self.input.rebind_focus(&self.tree, self.store.focus());
         }
 
-        if !self.pending.is_empty() {
-            let mut events = std::mem::take(&mut self.pending);
-            for event in events.drain(..) {
-                route(
-                    event,
-                    &self.tree,
-                    &mut self.index,
-                    &mut self.store,
-                    &mut self.input,
-                    &mut frame.messages,
-                );
-            }
-            self.pending = events;
-        }
+        self.dispatch_pending(&mut frame.messages);
 
         frame.display_list.damage.clear();
         frame
@@ -281,6 +324,32 @@ impl<Msg: Clone> Ui<Msg> {
         frame.stats.repainted = repaint;
         self.last_repainted = repaint;
         self.last_messages = frame.messages.len();
+    }
+
+    /// Routes the queued input events now, without painting.
+    ///
+    /// The frame calls this itself before painting. A host that measures or
+    /// batches input may call it directly once the layout is valid (after one
+    /// [`Self::paint`]), so routing cost is separable from paint cost.
+    pub fn dispatch_pending(&mut self, messages: &mut Vec<Msg>) {
+        if self.pending.is_empty() {
+            return;
+        }
+        let mut events = std::mem::take(&mut self.pending);
+        for event in events.drain(..) {
+            let mut context = RouteContext {
+                tree: &self.tree,
+                index: &mut self.index,
+                layout: &self.engine,
+                store: &mut self.store,
+                input: &mut self.input,
+                focus: &mut self.focus,
+                shortcuts: &self.shortcuts,
+                messages,
+            };
+            route(&mut context, event);
+        }
+        self.pending = events;
     }
 
     /// An indented dump of the laid-out tree.

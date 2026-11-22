@@ -45,6 +45,12 @@ impl Fnv {
         }
     }
 
+    /// Writes an `i32` by bit pattern, so a negative tab index is distinct.
+    #[allow(clippy::cast_sign_loss)] // reason: the bit pattern is the point
+    pub fn write_i32(&mut self, value: i32) {
+        self.write_u32(value as u32);
+    }
+
     /// Writes an `f32` by bit pattern, so `-0.0` and `0.0` differ.
     pub fn write_f32(&mut self, value: f32) {
         self.write_u32(value.to_bits());

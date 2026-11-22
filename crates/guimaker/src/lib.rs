@@ -1,7 +1,7 @@
 //! `GUIMaker`: a UI library that is beautiful by default.
 //!
-//! `GUIMaker` turns structure into a screen. A view is built from tokens —
-//! spacing, type roles, radii, elevation, colour roles, motion and density —
+//! `GUIMaker` turns structure into a screen. A view is built from tokens â€”
+//! spacing, type roles, radii, elevation, colour roles, motion and density â€”
 //! laid out by the library, routed by the library, and drawn by `FerrousEngine`.
 //! The app writes what the screen *is*; it never computes where anything goes.
 //!
@@ -111,7 +111,10 @@ pub mod prelude {
     pub use crate::display_list::{DisplayList, DrawCommand, ImageFit};
     pub use crate::frame::{Frame, FrameStats, Ui};
     pub use crate::geom::{Rect, Size};
-    pub use crate::input::{InputEvent, PointerButton};
+    pub use crate::input::focus::FocusScope;
+    pub use crate::input::shortcut::{Chord, Platform, Scope, ShortcutKey, ShortcutRegistry};
+    pub use crate::input::ScrollKind;
+    pub use crate::input::{InputEvent, Modifiers, PointerButton};
     pub use crate::layout::{AxisCause, Cause, LayoutStats};
     pub use crate::recipe::{start_screen, StartMsg};
     pub use crate::resp;

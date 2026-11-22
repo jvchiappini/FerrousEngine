@@ -140,6 +140,29 @@ or 2.
 
 On the start screen (1920x1080, scale 1.5, release) the warm full pass is
 0.187 ms, a hover does no layout (0.010 ms for the paint) and a one-label
-relayout is 0.036 ms, all under the 0.3 ms hover/typing budget. The cold frame
-is 0.497 ms because it pays the second pass: on the first frame the containers
-only exist after the first layout.
+relayout is 0.036 ms, all under the 0.3 ms hover/typing budget.
+
+### The cold frame's second pass (recorded, phase 4)
+
+The room-temperature numbers hide the worst case: the **first** frame of a
+responsive view costs more than every later one. Phase 3 measured the start
+screen at 0.300 ms in phase 2 (non-responsive) and 0.497 ms after the
+responsive pass landed (phase 3), with the same 0.26-0.48 ms spread across the
+40-case sweep. The cause is structural, not a regression:
+
+1. the first pass has no container rectangles yet, so it resolves every
+   responsive value against the viewport or the previous frame's (empty)
+   rectangles;
+2. the containers exist after that pass, so the engine re-resolves the styles
+   against their real widths and runs a second pass, but only when a value
+   moved (`LayoutStats::responsive_passes` reports 2);
+3. every later frame reuses the previous widths and stays at one pass.
+
+That extra pass is inside the phase 3 acceptance and is deliberate: paying it
+once per window/scale/theme change is cheaper than a constraint solver on
+every frame. Revisit it in phase 9B if the start screen's first-frame budget
+(the prompt 17 gate: first frame under ~0.5 s end to end) needs the 0.2 ms
+back; the candidates are caching the resolved widths across the first two
+passes and seeding the viewport-width rule per breakpoint class. Do not
+"optimise" it by dropping the second pass: a fluid value that only moves at a
+container width would then be wrong until the next resize.

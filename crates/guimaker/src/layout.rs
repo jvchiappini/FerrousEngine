@@ -121,6 +121,7 @@ pub struct LayoutEngine {
     shapes: Vec<Option<TextShape>>,
     shape_keys: Vec<u64>,
     rects: Vec<Rect>,
+    content_sizes: Vec<Size>,
     previous: Vec<Rect>,
     damage: Vec<Rect>,
     repaints: Vec<RepaintReason>,
@@ -158,6 +159,7 @@ impl LayoutEngine {
             shapes: Vec::new(),
             shape_keys: Vec::new(),
             rects: Vec::new(),
+            content_sizes: Vec::new(),
             previous: Vec::new(),
             damage: Vec::new(),
             repaints: Vec::new(),
@@ -194,6 +196,17 @@ impl LayoutEngine {
     #[must_use]
     pub fn rect(&self, id: NodeId) -> Rect {
         self.rects.get(id.index()).copied().unwrap_or(Rect::ZERO)
+    }
+
+    /// The content size of a node (the union of its children's rectangles,
+    /// measured from the content origin). A scroll container clamps its offset
+    /// with `content_size - rect.size`.
+    #[must_use]
+    pub fn content_size(&self, id: NodeId) -> Size {
+        self.content_sizes
+            .get(id.index())
+            .copied()
+            .unwrap_or(Size::ZERO)
     }
 
     /// This frame's damage.
@@ -719,9 +732,17 @@ impl LayoutEngine {
             Vec2::ZERO
         };
         let child_origin = Vec2::new(rect.x - scroll.x, rect.y - scroll.y);
+        let mut content = Size::ZERO;
         for &child in &node.children {
             self.collect(tree, child, child_origin, store, resolved);
+            let child_rect = self.rects.get(child.index()).copied().unwrap_or(Rect::ZERO);
+            content.width = content.width.max(child_rect.right() - child_origin.x);
+            content.height = content.height.max(child_rect.bottom() - child_origin.y);
         }
+        if self.content_sizes.len() <= id.index() {
+            self.content_sizes.resize(id.index() + 1, Size::ZERO);
+        }
+        self.content_sizes[id.index()] = content;
     }
 
     fn finish_frame<Msg>(&mut self, tree: &Tree<Msg>, structure_changed: bool, changed: &[bool]) {

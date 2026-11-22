@@ -298,9 +298,11 @@ mod tests {
         assert!(tree.find_key("recent").is_some());
         assert!(tree.find_key("new_project").is_some());
         assert!(tree.find_key("create").is_some());
+        // 5 actions + 2 nav items + 2 window buttons + the scroll container,
+        // which is a hit target so the wheel can reach it.
         assert_eq!(
             tree.nodes.iter().filter(|node| node.interactive).count(),
-            5 + 2 + 2
+            5 + 2 + 2 + 1
         );
     }
 

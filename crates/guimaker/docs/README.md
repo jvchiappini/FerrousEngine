@@ -1,7 +1,7 @@
-# GUIMaker — the UI library of the FerrousEngine ecosystem
+# GUIMaker â€” the UI library of the FerrousEngine ecosystem
 
-GUIMaker turns structure into a screen. A view is a tree built from tokens —
-spacing, type roles, radii, elevation, colour roles, motion, density — laid
+GUIMaker turns structure into a screen. A view is a tree built from tokens â€”
+spacing, type roles, radii, elevation, colour roles, motion, density â€” laid
 out by the library, routed by the library, and drawn by FerrousEngine. The
 app writes what the screen *is*; it does not compute where anything goes.
 
@@ -16,7 +16,10 @@ Start with G-0001 (`decisions/G-0001.md`): crate layout, the rebuild model,
 the text trait, the draw-command contract, the token boundary, the damage
 contract and the dependency rule. The theme is the first concrete module:
 `theme.md` is its reference, and G-0002 (`decisions/G-0002.md`) fixes the
-typefaces while G-0003 (`decisions/G-0003.md`) fixes the theme file format.
+typefaces while G-0003 (`decisions/G-0003.md`) fixes the theme file format and
+G-0004 (`decisions/G-0004.md`) records the grapheme-segmentation dependency.
+`input.md` is the reference for gestures, routing, focus, shortcuts, scrolling
+and the text editor.
 The documentation set (getting started,
 concepts, components, theming, backend contract, screenshots and lint, and
 the model-facing design guide) is written in phase 9; this file is the entry

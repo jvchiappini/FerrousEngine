@@ -12,6 +12,7 @@ serde = { workspace = true }
 ron = "0.8"
 glam = { workspace = true }
 taffy = "0.7.7"
+unicode-segmentation = "1.13"
 
 [dev-dependencies]
 divan = "0.1.21"
@@ -19,4 +20,12 @@ glam = { workspace = true }
 
 [[bench]]
 name = "layout"
+harness = false
+
+[[bench]]
+name = "input"
+harness = false
+
+[[bench]]
+name = "controllers"
 harness = false

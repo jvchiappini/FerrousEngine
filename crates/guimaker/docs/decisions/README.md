@@ -11,8 +11,9 @@ carry does not.
 | G-0001 | GUIMaker library architecture | accepted |
 | G-0002 | Typefaces and densities | accepted |
 | G-0003 | Theme file format | accepted |
+| G-0004 | Grapheme segmentation for the text editor | accepted |
 
-Next expected: G-0004 (view tree and layout), in phase 2.
+Next expected: G-0005 (draw-command mapping), in phase 5.
 
 Rules:
 

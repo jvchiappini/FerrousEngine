@@ -122,6 +122,49 @@ impl<T: Copy> Edges<T> {
     }
 }
 
+/// The pointer cursor a widget asks for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Cursor {
+    /// The platform arrow.
+    #[default]
+    Default,
+    /// A hand (a clickable control).
+    Pointer,
+    /// An I-beam (editable text).
+    Text,
+    /// An open hand (a draggable surface at rest).
+    Grab,
+    /// A closed hand (dragging).
+    Grabbing,
+    /// Horizontal resize.
+    ResizeHorizontal,
+    /// Vertical resize.
+    ResizeVertical,
+    /// Not allowed.
+    NotAllowed,
+    /// A crosshair (drawing, picking).
+    Crosshair,
+}
+
+impl Cursor {
+    /// A stable name for debug output.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Pointer => "pointer",
+            Self::Text => "text",
+            Self::Grab => "grab",
+            Self::Grabbing => "grabbing",
+            Self::ResizeHorizontal => "resize-h",
+            Self::ResizeVertical => "resize-v",
+            Self::NotAllowed => "not-allowed",
+            Self::Crosshair => "crosshair",
+        }
+    }
+}
+
 /// A width or height rule.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum SizeSpec {
@@ -522,6 +565,11 @@ pub struct Style {
     pub disabled: bool,
     /// An optional tooltip.
     pub tooltip: Option<Tooltip>,
+    /// Tab order override. Positive values are visited first (ascending),
+    /// negative values last (descending); `None` keeps the tree order.
+    pub tab_index: Option<i32>,
+    /// The pointer cursor while over the element.
+    pub cursor: Cursor,
 }
 
 impl Default for Style {
@@ -566,6 +614,8 @@ impl Default for Style {
             interactive: false,
             disabled: false,
             tooltip: None,
+            tab_index: None,
+            cursor: Cursor::Default,
         }
     }
 }
