@@ -106,6 +106,8 @@ pub enum DrawCommand {
         color: Color,
         /// Border width in logical pixels.
         width: f32,
+        /// Per-edge border widths in logical pixels: top, right, bottom, left.
+        sides: [f32; 4],
         /// Per-corner radii.
         radii: [f32; 4],
     },
@@ -168,6 +170,21 @@ pub enum DrawCommand {
         /// The path data, owned by the adapter's icon set.
         path: Arc<str>,
         /// The icon colour.
+        color: Color,
+    },
+    /// A stroked polyline in absolute pixels.
+    ///
+    /// The adapter draws it as connected round-capped line segments through
+    /// the engine path stroke (`GuiBatch::polyline`), so an arc stays smooth at
+    /// any support and both ends keep a half-disc cap.
+    Path {
+        /// The owning node.
+        node: NodeId,
+        /// The points, in paint order.
+        points: Arc<[Vec2]>,
+        /// The stroke width in physical pixels.
+        width: f32,
+        /// The stroke colour.
         color: Color,
     },
     /// Pushes a clip rectangle.
@@ -259,6 +276,7 @@ impl DrawCommand {
             | Self::Text { node, .. }
             | Self::Image { node, .. }
             | Self::Icon { node, .. }
+            | Self::Path { node, .. }
             | Self::ClipPush { node, .. }
             | Self::ClipPop { node }
             | Self::LayerPush { node, .. }

@@ -174,6 +174,11 @@ pub struct InputState {
     pub overlays: Vec<u64>,
     /// A pointer press that moved past the drag threshold.
     pub drag_button: Option<PointerButton>,
+    /// Whether the last focus change came from the keyboard.
+    ///
+    /// The focus ring is drawn only while this is true, so a pointer click
+    /// focuses a control without painting a keyboard ring.
+    pub keyboard_focus: bool,
 }
 
 impl Default for InputState {
@@ -207,6 +212,7 @@ impl InputState {
             focus_scopes: Vec::new(),
             overlays: Vec::new(),
             drag_button: None,
+            keyboard_focus: false,
         }
     }
 
@@ -455,6 +461,7 @@ pub fn route<Msg: Clone>(context: &mut RouteContext<'_, Msg>, event: InputEvent)
             context.set_hovered(hit);
         }
         InputEvent::PointerDown { position, button } => {
+            context.input.keyboard_focus = false;
             context.input.pointer = position;
             context.input.pointer_seen = true;
             let hit = context.pick(position);
@@ -540,6 +547,7 @@ pub fn route<Msg: Clone>(context: &mut RouteContext<'_, Msg>, event: InputEvent)
             context.scroll_at(position, delta, kind);
         }
         InputEvent::KeyDown { key, repeat } => {
+            context.input.keyboard_focus = true;
             let chord = chord_for(key, context.input.modifiers);
             let focused = context.store.focus().is_some();
             let overlay = context.input.overlay_open();

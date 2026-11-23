@@ -26,7 +26,9 @@ use taffy::Point;
 use crate::geom::{Rect, Size};
 use crate::hash::Fnv;
 use crate::store::{RepaintReason, Store};
-use crate::style::{Align, Columns, Direction, Justify, ResolvedStyle, ScrollAxes, SizeSpec};
+use crate::style::{
+    Align, ColumnTrack, Columns, Direction, Justify, ResolvedStyle, ScrollAxes, SizeSpec,
+};
 use crate::text::{TextShape, TextSystem};
 use crate::theme::{Spacing, Theme};
 use crate::view::{NodeId, NodeKind, Tree};
@@ -337,6 +339,7 @@ impl LayoutEngine {
             &mut changed,
             &mut restyled,
         );
+        Self::apply_inherited_tones(tree, theme, &mut resolved);
         self.stats.responsive_passes = 1;
         self.pass(
             tree,
@@ -365,6 +368,7 @@ impl LayoutEngine {
                 &mut changed,
                 &mut restyled,
             ) {
+                Self::apply_inherited_tones(tree, theme, &mut resolved);
                 self.stats.responsive_passes = 2;
                 self.pass(
                     tree,
@@ -420,8 +424,8 @@ impl LayoutEngine {
         let taffy_root = self.sync(
             tree,
             root,
-            None,
             Direction::Column,
+            false,
             resolved,
             restyled,
             parents,
@@ -614,13 +618,39 @@ impl LayoutEngine {
         moved
     }
 
+    /// Propagates a container's tone to descendants that did not set one.
+    ///
+    /// Icons and text draw in the resolved tone, so an icon inside a muted row
+    /// (or a label that never calls `.tone`) follows its context instead of
+    /// silently falling back to the primary text colour.
+    fn apply_inherited_tones<Msg>(tree: &Tree<Msg>, theme: &Theme, resolved: &mut [ResolvedStyle]) {
+        for node in &tree.nodes {
+            let index = node.id.index();
+            if index >= resolved.len() {
+                continue;
+            }
+            let parent_tone = node
+                .parent
+                .and_then(|parent| resolved.get(parent.index()))
+                .map_or(crate::style::Tone::Default, |style| style.tone);
+            if !node.style.tone_explicit {
+                let tone = parent_tone.paired_with(node.style.bg);
+                let style = &mut resolved[index];
+                if style.tone != tone {
+                    style.tone = tone;
+                    style.text.color = tone.color(theme);
+                }
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)] // reason: the counters and scratch buffers are explicit and local
     fn sync<Msg>(
         &mut self,
         tree: &Tree<Msg>,
         id: NodeId,
-        parent_kind: Option<NodeKind>,
         parent_direction: Direction,
+        absolute: bool,
         resolved: &[ResolvedStyle],
         restyled: &[bool],
         parents: &mut Vec<Option<Direction>>,
@@ -650,12 +680,14 @@ impl LayoutEngine {
         }
 
         let mut children = Vec::with_capacity(node.children.len());
-        for &child in &node.children {
+        for (child_index, &child) in node.children.iter().enumerate() {
+            let child_absolute =
+                node.kind == NodeKind::Stack || (node.kind == NodeKind::Overlay && child_index > 0);
             let child_id = self.sync(
                 tree,
                 child,
-                Some(node.kind),
                 resolved[index].direction,
+                child_absolute,
                 resolved,
                 restyled,
                 parents,
@@ -669,8 +701,8 @@ impl LayoutEngine {
         let style = taffy_style(
             node.kind,
             &resolved[index],
-            parent_kind,
             parent_direction,
+            absolute,
             node.parent.is_none(),
             hairline,
         );
@@ -714,13 +746,31 @@ impl LayoutEngine {
         };
         let layout = *layout;
         let node = &tree.nodes[id.index()];
-        let rect = Rect::new(
+        let mut rect = Rect::new(
             origin.x + layout.location.x,
             origin.y + layout.location.y,
             layout.size.width,
             layout.size.height,
-        )
-        .snap(self.scale);
+        );
+        if let Some(anchor) = resolved[id.index()].anchor {
+            // An anchored overlay never participates in the parent's layout;
+            // it is positioned against a sibling's rect after the normal pass.
+            if let Some(parent) = node.parent {
+                if let Some(sibling) = tree.nodes[parent.index()]
+                    .children
+                    .get(usize::from(anchor.sibling))
+                {
+                    let sibling_rect = self
+                        .rects
+                        .get(sibling.index())
+                        .copied()
+                        .unwrap_or(Rect::ZERO);
+                    rect.x = sibling_rect.right() + anchor.dx;
+                    rect.y = sibling_rect.y + anchor.dy;
+                }
+            }
+        }
+        let rect = rect.snap(self.scale);
         if self.rects.len() <= id.index() {
             self.rects.resize(id.index() + 1, Rect::ZERO);
         }
@@ -793,8 +843,8 @@ struct Counters {
 fn taffy_style(
     kind: NodeKind,
     style: &ResolvedStyle,
-    parent_kind: Option<NodeKind>,
     parent_direction: Direction,
+    absolute: bool,
     is_root: bool,
     hairline: f32,
 ) -> TaffyStyle {
@@ -898,18 +948,22 @@ fn taffy_style(
         x: overflow(style.clip, style.scroll),
         y: overflow(style.clip, style.scroll),
     };
-    if parent_kind == Some(NodeKind::Stack) {
+    if absolute {
         output.position = Position::Absolute;
-        output.inset = taffy::Rect {
-            left: LengthPercentageAuto::Length(0.0),
-            right: LengthPercentageAuto::Length(0.0),
-            top: LengthPercentageAuto::Length(0.0),
-            bottom: LengthPercentageAuto::Length(0.0),
-        };
+        if style.anchor.is_none() {
+            // A plain stack child fills the stack. An anchored overlay keeps
+            // auto insets and is sized by its content, then moved in `collect`.
+            output.inset = taffy::Rect {
+                left: LengthPercentageAuto::Length(0.0),
+                right: LengthPercentageAuto::Length(0.0),
+                top: LengthPercentageAuto::Length(0.0),
+                bottom: LengthPercentageAuto::Length(0.0),
+            };
+        }
     }
-    if let Some(columns) = style.columns {
+    if let Some(columns) = &style.columns {
         output.grid_template_columns = match columns {
-            Columns::Fixed(count) => taffy::style_helpers::evenly_sized_tracks(count.max(1)),
+            Columns::Fixed(count) => taffy::style_helpers::evenly_sized_tracks((*count).max(1)),
             Columns::AutoFill(width) => {
                 let track = NonRepeatedTrackSizingFunction {
                     min: MinTrackSizingFunction::Fixed(LengthPercentage::Length(width.px())),
@@ -920,6 +974,25 @@ fn taffy_style(
                     vec![track],
                 )]
             }
+            Columns::Tracks(tracks) => tracks
+                .iter()
+                .map(|track| {
+                    let (min, max) = match *track {
+                        ColumnTrack::Fixed(width) => (
+                            MinTrackSizingFunction::Fixed(LengthPercentage::Length(width.px())),
+                            MaxTrackSizingFunction::Fixed(LengthPercentage::Length(width.px())),
+                        ),
+                        ColumnTrack::Fraction(fraction) => (
+                            MinTrackSizingFunction::Auto,
+                            MaxTrackSizingFunction::Fraction(fraction.max(0.0)),
+                        ),
+                        ColumnTrack::Fit => {
+                            (MinTrackSizingFunction::Auto, MaxTrackSizingFunction::Auto)
+                        }
+                    };
+                    TrackSizingFunction::Single(NonRepeatedTrackSizingFunction { min, max })
+                })
+                .collect(),
         };
     }
     output

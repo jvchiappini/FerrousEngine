@@ -12,6 +12,7 @@ use guimaker::theme::Theme;
 use guimaker_gallery::golden::{compare_png, Tolerance};
 use guimaker_gallery::shot::render_story;
 use guimaker_gallery::story::Story;
+use guimaker_gallery::Component;
 
 fn golden_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -19,22 +20,45 @@ fn golden_path(name: &str) -> PathBuf {
         .join(format!("{name}.png"))
 }
 
-fn cases() -> Vec<(&'static str, Story, Theme)> {
-    vec![
-        ("start-light-1280x800-1.5", Story::Start, Theme::light()),
-        ("start-dark-1280x800-1.5", Story::Start, Theme::dark()),
+fn cases() -> Vec<(String, Story, Theme)> {
+    let mut cases = vec![
         (
-            "components-light-1280x800-1.5",
+            "start-light-1280x800-1.5".to_string(),
+            Story::Start,
+            Theme::light(),
+        ),
+        (
+            "start-dark-1280x800-1.5".to_string(),
+            Story::Start,
+            Theme::dark(),
+        ),
+        (
+            "components-light-1280x800-1.5".to_string(),
             Story::Components,
             Theme::light(),
         ),
-    ]
+        (
+            "components-dark-1280x800-1.5".to_string(),
+            Story::Components,
+            Theme::dark(),
+        ),
+    ];
+    for component in Component::ALL {
+        for (mode, theme) in [("light", Theme::light()), ("dark", Theme::dark())] {
+            cases.push((
+                format!("{}-{mode}-1280x800-1.5", component.name()),
+                Story::Component(component),
+                theme,
+            ));
+        }
+    }
+    cases
 }
 
 #[test]
 fn committed_goldens_match_the_current_render() {
     for (name, story, theme) in cases() {
-        let path = golden_path(name);
+        let path = golden_path(&name);
         assert!(
             path.is_file(),
             "missing golden {}; run `cargo run -p guimaker_gallery -- golden {} --size 1280x800 --scale 1.5 --theme {} --update --reason ...`",

@@ -169,11 +169,13 @@ impl GuiMakerRenderer {
                 rect,
                 color,
                 width,
+                sides,
                 radii,
             } => {
                 let spec = RectSpec::scaled(*rect, scale);
                 let radii = scale_radii(*radii, scale);
-                self.encode_border(gui, node.0, spec, *color, width * scale, radii);
+                let sides = sides.map(|side| side * scale);
+                self.encode_border(gui, node.0, spec, *color, width * scale, sides, radii);
             }
             DrawCommand::Shadow {
                 node,
@@ -227,6 +229,21 @@ impl GuiMakerRenderer {
                 let spec = RectSpec::scaled(*rect, scale);
                 self.encode_icon(gui, node.0, spec, path, *color);
             }
+            DrawCommand::Path {
+                node,
+                points,
+                width,
+                color,
+            } => {
+                let scaled: Vec<[f32; 2]> = points
+                    .iter()
+                    .map(|point| [point.x * scale, point.y * scale])
+                    .collect();
+                let color = self.color(*color);
+                emit(gui, node.0, |gui| {
+                    gui.polyline(&scaled, width * scale, color);
+                });
+            }
             DrawCommand::ClipPush { rect, .. } => {
                 Self::encode_clip_push(gui, RectSpec::scaled(*rect, scale));
             }
@@ -259,6 +276,7 @@ impl GuiMakerRenderer {
     }
 
     /// Emits a border stroke around a rounded rectangle.
+    #[allow(clippy::too_many_arguments)] // reason: the border carries geometry, colour, one width, per-edge widths and radii
     fn encode_border(
         &self,
         gui: &mut GuiBatch,
@@ -266,22 +284,21 @@ impl GuiMakerRenderer {
         rect: RectSpec,
         color: Color,
         width: f32,
+        sides: [f32; 4],
         radii: [f32; 4],
     ) {
-        if rect.is_empty() || width <= 0.0 {
+        let uniform = sides.iter().all(|side| (side - width).abs() < f32::EPSILON);
+        if rect.is_empty() || (uniform && width <= 0.0) {
             return;
         }
         let color = self.color(color);
         emit(gui, node, |gui| {
-            gui.border(BorderSpec::new(
-                rect.x,
-                rect.y,
-                rect.width,
-                rect.height,
-                color,
-                radii,
-                width,
-            ));
+            let mut spec =
+                BorderSpec::new(rect.x, rect.y, rect.width, rect.height, color, radii, width);
+            if !uniform {
+                spec = spec.with_sides(sides);
+            }
+            gui.border(spec);
         });
     }
 
@@ -878,6 +895,7 @@ mod tests {
                 rect: Rect::new(10.0, 20.0, 30.0, 40.0),
                 color: Color::BLACK,
                 width: 1.5,
+                sides: [1.5; 4],
                 radii: [2.0; 4],
             },
             DrawCommand::Shadow {

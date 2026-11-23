@@ -39,8 +39,10 @@ fn run(args: Vec<String>) -> Result<()> {
     match command.as_str() {
         "shot" => command_shot(rest),
         "golden" => command_golden(rest),
+        "shots" => command_shots(rest),
+        "goldens" => command_goldens(rest),
         "stories" | "list" => {
-            for story in Story::ALL {
+            for story in Story::all() {
                 println!("{}", story.name());
             }
             Ok(())
@@ -296,6 +298,116 @@ fn command_golden(args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Debug)]
+struct BatchOptions {
+    width: u32,
+    height: u32,
+    scale: f32,
+    out: PathBuf,
+    reason: Option<String>,
+}
+
+fn parse_batch(args: Vec<String>) -> Result<BatchOptions> {
+    let mut options = BatchOptions {
+        width: DEFAULT_WIDTH,
+        height: DEFAULT_HEIGHT,
+        scale: 1.5,
+        out: PathBuf::from("out/shots"),
+        reason: None,
+    };
+    let mut args = args.into_iter();
+    while let Some(flag) = args.next() {
+        match flag.as_str() {
+            "--size" => {
+                let value = value_after(&mut args, "--size")?;
+                let (width, height) = parse_size(&value)?;
+                options.width = width;
+                options.height = height;
+            }
+            "--scale" => {
+                let value = value_after(&mut args, "--scale")?;
+                options.scale = value
+                    .parse::<f32>()
+                    .map_err(|_| GalleryError::Usage(format!("invalid --scale {value:?}")))?;
+                if !(options.scale.is_finite() && options.scale > 0.0) {
+                    return Err(GalleryError::Usage(format!(
+                        "--scale must be finite and positive, got {}",
+                        options.scale
+                    )));
+                }
+            }
+            "--out" => {
+                options.out = PathBuf::from(value_after(&mut args, "--out")?);
+            }
+            "--reason" => {
+                options.reason = Some(value_after(&mut args, "--reason")?);
+            }
+            other => {
+                return Err(GalleryError::Usage(format!(
+                    "unknown option {other:?} for a batch command"
+                )));
+            }
+        }
+    }
+    Ok(options)
+}
+
+#[allow(clippy::cast_precision_loss)] // reason: window dimensions sit far below 2^24
+fn batch_logical(options: &BatchOptions) -> Size {
+    Size::new(options.width as f32, options.height as f32)
+}
+
+fn batch_name(story: Story, theme: &str, options: &BatchOptions) -> String {
+    format!(
+        "{}-{}-{}x{}-{}",
+        story.name(),
+        theme,
+        options.width,
+        options.height,
+        scale_label(options.scale)
+    )
+}
+
+fn command_shots(args: Vec<String>) -> Result<()> {
+    let options = parse_batch(args)?;
+    let logical = batch_logical(&options);
+    std::fs::create_dir_all(&options.out)?;
+    for story in Story::all() {
+        for (theme_name, theme) in [("light", Theme::light()), ("dark", Theme::dark())] {
+            let image = render_story(story, &theme, logical, options.scale)?;
+            let path = options
+                .out
+                .join(format!("{}.png", batch_name(story, theme_name, &options)));
+            write_png(&path, &image)?;
+            println!("{}", absolute(&path)?.display());
+        }
+    }
+    Ok(())
+}
+
+fn command_goldens(args: Vec<String>) -> Result<()> {
+    let options = parse_batch(args)?;
+    let reason = options.reason.as_deref().unwrap_or_default();
+    if reason.is_empty() {
+        return Err(GalleryError::Usage(
+            "`goldens` requires a non-empty --reason \"...\"".to_string(),
+        ));
+    }
+    let logical = batch_logical(&options);
+    let directory = goldens_directory();
+    std::fs::create_dir_all(&directory)?;
+    for story in Story::all() {
+        for (theme_name, theme) in [("light", Theme::light()), ("dark", Theme::dark())] {
+            let image = render_story(story, &theme, logical, options.scale)?;
+            let path = directory.join(format!("{}.png", batch_name(story, theme_name, &options)));
+            write_png(&path, &image)?;
+            append_update_log(&path, reason)?;
+            println!("{}", absolute(&path)?.display());
+        }
+    }
+    Ok(())
+}
+
 fn value_after(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<String> {
     args.next()
         .ok_or_else(|| GalleryError::Usage(format!("{flag} needs a value")))
@@ -336,7 +448,7 @@ fn scale_label(scale: f32) -> String {
 }
 
 fn story_names() -> String {
-    Story::ALL
+    Story::all()
         .iter()
         .map(|story| story.name())
         .collect::<Vec<_>>()
@@ -365,6 +477,8 @@ fn print_usage() {
          \x20     [--out out/x.png] [--check golden.png]\n\
          \x20 gallery golden <story> [--size ...] [--scale ...] [--theme ...]\n\
          \x20     [--update --reason \"...\"] [--out goldens/x.png]\n\
+         \x20 gallery shots [--size 1280x800] [--scale 1.5] [--out out/shots]\n\
+         \x20 gallery goldens [--reason \"...\"] [--size ...] [--scale ...]\n\
          \n\
          Defaults: --size 1280x800 --scale 1 --theme dark\n\
          The PNG is physical: round(logical * scale) per axis."

@@ -7,8 +7,8 @@
 
 use crate::text::{Ellipsis, TextStyle};
 use crate::theme::{
-    BorderWidth, Breakpoint, Color, ColorRole, ContentWidth, Elevation, ElevationLevel, Radius,
-    Spacing, Theme, TypeRole,
+    BorderWidth, Breakpoint, Color, ColorRole, ContentWidth, Duration, Elevation, ElevationLevel,
+    Radius, Spacing, Theme, TypeRole,
 };
 
 /// The resize axis of a spacing value.
@@ -396,12 +396,25 @@ macro_rules! resp {
 }
 
 /// A grid column rule.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Columns {
     /// A fixed number of equal columns.
     Fixed(u16),
     /// As many equal columns as fit, each at least this wide.
     AutoFill(Spacing),
+    /// One explicit track per column (a table's shared widths).
+    Tracks(Vec<ColumnTrack>),
+}
+
+/// One explicit grid track.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ColumnTrack {
+    /// A fixed spacing-token width.
+    Fixed(Spacing),
+    /// A fraction of the available width.
+    Fraction(f32),
+    /// The widest item in the track.
+    Fit,
 }
 
 /// Which axes a scroll container scrolls.
@@ -504,6 +517,81 @@ pub struct Tooltip {
     pub text: std::sync::Arc<str>,
 }
 
+/// Per-state colour roles for a surface (a background or a border).
+///
+/// A component sets the roles it changes; every unset state falls back to the
+/// element's rest role, so a quiet control only names hover and pressed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StateRoles {
+    /// The role while the pointer is over the component.
+    pub hover: Option<ColorRole>,
+    /// The role while the component is pressed.
+    pub pressed: Option<ColorRole>,
+    /// The role while the component is selected or checked.
+    pub selected: Option<ColorRole>,
+    /// The role while the component is disabled.
+    pub disabled: Option<ColorRole>,
+}
+
+/// Per-state text tones for a component label.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StateTones {
+    /// The tone while the pointer is over the component.
+    pub hover: Option<Tone>,
+    /// The tone while the component is pressed.
+    pub pressed: Option<Tone>,
+    /// The tone while the component is selected or checked.
+    pub selected: Option<Tone>,
+    /// The tone while the component is disabled.
+    pub disabled: Option<Tone>,
+}
+
+/// The state-dependent part of a component's visual style.
+///
+/// State colours are resolved at paint time from the keyed interaction state,
+/// so the component never reads hover, press or focus itself. The transition
+/// runs on the injected clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VisualStyle {
+    /// Background roles per state.
+    pub bg: StateRoles,
+    /// Border roles per state.
+    pub border: StateRoles,
+    /// Text tones per state.
+    pub tone: StateTones,
+    /// The elevation a card, button or row lifts to on hover.
+    pub elevation_hover: Option<ElevationLevel>,
+    /// How long a state colour change takes on the injected clock.
+    pub transition: Duration,
+}
+
+impl Default for VisualStyle {
+    fn default() -> Self {
+        Self {
+            bg: StateRoles::default(),
+            border: StateRoles::default(),
+            tone: StateTones::default(),
+            elevation_hover: None,
+            transition: Duration::Fast,
+        }
+    }
+}
+
+/// A direct offset from a sibling's rect, used by an overlay anchored to it.
+///
+/// The overlay is absolutely positioned in a [`NodeKind::Stack`](crate::view::NodeKind::Stack),
+/// so it never contributes to the parent's size. Layout places it at
+/// `sibling.right + dx`, `sibling.top + dy` after the normal pass.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Anchor {
+    /// The index of the sibling the overlay anchors to.
+    pub sibling: u16,
+    /// Horizontal offset from the sibling's right edge, in pixels.
+    pub dx: f32,
+    /// Vertical offset from the sibling's top edge, in pixels.
+    pub dy: f32,
+}
+
 /// Everything a view can say about one element.
 ///
 /// Defaults are the good ones: a column, no padding, body text, transparent
@@ -517,6 +605,12 @@ pub struct Style {
     pub padding: Edges<Responsive<Spacing>>,
     /// Gap between children.
     pub gap: Responsive<Spacing>,
+    /// A pixel gap that may be negative (overlapping children).
+    ///
+    /// When set it wins over [`Self::gap`]. A negative value is the
+    /// `avatar_group` overlap mechanism; layout writes it as a negative flex
+    /// gap and taffy places the children that many pixels closer.
+    pub gap_px: Option<Responsive<f32>>,
     /// Cross-axis alignment.
     pub align: Responsive<Align>,
     /// Main-axis distribution.
@@ -547,6 +641,11 @@ pub struct Style {
     pub border: Option<ColorRole>,
     /// Border width token.
     pub border_width: BorderWidth,
+    /// Per-edge border widths (top, right, bottom, left), when an edge differs.
+    ///
+    /// `None` draws [`Self::border_width`] on every edge. Any edge set to
+    /// [`BorderWidth::None`] is not stroked, which is the `callout` leading rule.
+    pub border_sides: Option<[BorderWidth; 4]>,
     /// Corner radius token.
     pub radius: Responsive<Radius>,
     /// Shadow level.
@@ -555,6 +654,22 @@ pub struct Style {
     pub opacity: f32,
     /// Whether the node clips its children.
     pub clip: bool,
+    /// An absolute overlay anchored to a sibling (see [`Anchor`]).
+    ///
+    /// A node with an anchor is placed by `LayoutEngine` after the normal pass
+    /// and never changes the parent's layout, which is how a submenu hangs off
+    /// its row.
+    pub anchor: Option<Anchor>,
+    /// The stroke width of a [`NodeKind::Path`](crate::view::NodeKind::Path).
+    pub stroke_width: Option<Responsive<Spacing>>,
+    /// The caret byte offset of a text node, drawn from the shaped glyphs.
+    pub caret: Option<usize>,
+    /// The selection byte range of a text node, drawn as real rects.
+    pub selection: Option<(usize, usize)>,
+    /// Whether [`Self::tone`] was set explicitly (otherwise it is inherited).
+    pub tone_explicit: bool,
+    /// A backdrop blur radius, in spacing tokens, behind the node.
+    pub backdrop_blur: Option<Spacing>,
     /// Whether the node (and subtree) is laid out at all.
     pub hidden: bool,
     /// Hides the node below a breakpoint, like a CSS container query.
@@ -594,6 +709,10 @@ pub struct Style {
     pub tab_index: Option<i32>,
     /// The pointer cursor while over the element.
     pub cursor: Cursor,
+    /// Whether the component is selected or checked.
+    pub selected: bool,
+    /// State-dependent roles and the transition duration.
+    pub visual: VisualStyle,
 }
 
 impl Default for Style {
@@ -602,6 +721,7 @@ impl Default for Style {
             direction: Responsive::single(Direction::Row),
             padding: Edges::all(Responsive::single(Spacing::S0)),
             gap: Responsive::single(Spacing::S0),
+            gap_px: None,
             align: Responsive::single(Align::Start),
             justify: Responsive::single(Justify::Start),
             align_self: None,
@@ -617,10 +737,17 @@ impl Default for Style {
             bg: None,
             border: None,
             border_width: BorderWidth::Hairline,
+            border_sides: None,
             radius: Responsive::single(Radius::None),
             elevation: ElevationLevel::E0,
             opacity: 1.0,
             clip: false,
+            anchor: None,
+            stroke_width: None,
+            caret: None,
+            selection: None,
+            tone_explicit: false,
+            backdrop_blur: None,
             hidden: false,
             hidden_below: None,
             hidden_above: None,
@@ -640,6 +767,8 @@ impl Default for Style {
             tooltip: None,
             tab_index: None,
             cursor: Cursor::Default,
+            selected: false,
+            visual: VisualStyle::default(),
         }
     }
 }
@@ -665,7 +794,10 @@ impl Style {
             || self.min_height.is_some_and(|value| !value.is_constant())
             || self.max_width.is_some_and(|value| !value.is_constant())
             || self.max_height.is_some_and(|value| !value.is_constant())
-            || self.columns.is_some_and(|value| !value.is_constant())
+            || self
+                .columns
+                .as_ref()
+                .is_some_and(|value| !value.is_constant())
             || !self.scroll.is_constant()
             || !self.radius.is_constant()
             || self.hidden_below.is_some()
@@ -695,6 +827,14 @@ pub struct ResolvedStyle {
     pub padding: Edges<f32>,
     /// Gap in pixels.
     pub gap: f32,
+    /// Absolute overlay anchor, when the node is one.
+    pub anchor: Option<Anchor>,
+    /// Stroke width for a path node, in pixels.
+    pub stroke_width: Option<f32>,
+    /// Caret byte offset for a text node.
+    pub caret: Option<usize>,
+    /// Selection byte range for a text node.
+    pub selection: Option<(usize, usize)>,
     /// Cross-axis alignment.
     pub align: Align,
     /// Main-axis distribution.
@@ -729,6 +869,8 @@ pub struct ResolvedStyle {
     pub border: Option<Color>,
     /// Border width in pixels.
     pub border_width: f32,
+    /// Per-edge border widths in pixels: top, right, bottom, left.
+    pub border_sides: [f32; 4],
     /// The radius token (resolved after layout, from the node's short side).
     pub radius: Radius,
     /// The shadow level token.
@@ -773,6 +915,7 @@ impl Style {
     /// which is what a CSS container query measures. Fluid sizes and
     /// breakpoints both use it.
     #[must_use]
+    #[allow(clippy::too_many_lines)] // reason: one linear token-resolution pass is easier to audit than fragments
     pub fn resolve(&self, theme: &Theme, container_width: f32) -> ResolvedStyle {
         let spacing = |value: Spacing| theme.spacing(value);
         let breakpoints = &theme.breakpoints;
@@ -816,7 +959,16 @@ impl Style {
                 bottom: spacing(*self.padding.bottom.resolve(container_width, breakpoints)),
                 left: spacing(*self.padding.left.resolve(container_width, breakpoints)),
             },
-            gap: spacing(*self.gap.resolve(container_width, breakpoints)),
+            gap: self.gap_px.map_or_else(
+                || spacing(*self.gap.resolve(container_width, breakpoints)),
+                |rule| *rule.resolve(container_width, breakpoints),
+            ),
+            anchor: self.anchor,
+            stroke_width: self
+                .stroke_width
+                .map(|value| spacing(*value.resolve(container_width, breakpoints))),
+            caret: self.caret,
+            selection: self.selection,
             align: *self.align.resolve(container_width, breakpoints),
             justify: *self.justify.resolve(container_width, breakpoints),
             align_self: self.align_self,
@@ -847,6 +999,26 @@ impl Style {
             } else {
                 0.0
             },
+            border_sides: self.border_sides.map_or_else(
+                || {
+                    [self.border_width; 4].map(|width| {
+                        if self.border.is_some() {
+                            theme.borders.resolve(width)
+                        } else {
+                            0.0
+                        }
+                    })
+                },
+                |sides| {
+                    sides.map(|width| {
+                        if self.border.is_some() {
+                            theme.borders.resolve(width)
+                        } else {
+                            0.0
+                        }
+                    })
+                },
+            ),
             radius: *self.radius.resolve(container_width, breakpoints),
             elevation_level: self.elevation,
             elevation: theme.elevation_at(self.elevation),
@@ -864,7 +1036,8 @@ impl Style {
             aspect: self.aspect,
             columns: self
                 .columns
-                .map(|value| *value.resolve(container_width, breakpoints)),
+                .as_ref()
+                .map(|value| value.resolve(container_width, breakpoints).clone()),
             wrap: self.wrap,
             scroll: *self.scroll.resolve(container_width, breakpoints),
             interactive: self.interactive,

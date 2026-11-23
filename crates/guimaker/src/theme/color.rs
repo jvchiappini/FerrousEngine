@@ -181,6 +181,27 @@ impl Color {
         ]
     }
 
+    /// Blends this colour to `other` in linear light by `t` in `0.0..=1.0`.
+    ///
+    /// ```
+    /// use guimaker::theme::Color;
+    /// let black = Color::linear(0.0, 0.0, 0.0);
+    /// let white = Color::linear(1.0, 1.0, 1.0);
+    /// assert_eq!(black.lerp(white, 1.0), white);
+    /// ```
+    #[must_use]
+    pub fn lerp(self, other: Self, t: f32) -> Self {
+        let from = self.to_linear();
+        let to = other.to_linear();
+        let mix = |a: f32, b: f32| a + (b - a) * t;
+        Self::lineara(
+            mix(from[0], to[0]),
+            mix(from[1], to[1]),
+            mix(from[2], to[2]),
+            mix(from[3], to[3]),
+        )
+    }
+
     /// Returns the stored linear channels as `[red, green, blue, alpha]`.
     ///
     /// The values are returned exactly as stored; no transfer function is applied.

@@ -34,11 +34,13 @@
 
 #![forbid(unsafe_code)]
 
+pub mod components;
 pub mod golden;
 pub mod host;
 pub mod shot;
 pub mod story;
 
+pub use components::Component;
 pub use golden::{compare, compare_png, load_png, Tolerance};
 pub use host::{GuiApp, GuiHost};
 pub use shot::{render_story, write_png, RenderedImage};

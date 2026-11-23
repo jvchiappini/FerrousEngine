@@ -15,6 +15,8 @@ use guimaker::view::{text, Element};
 use guimaker::{Frame, Ui};
 use guimaker_ferrous::FerrousTextSystem;
 
+use crate::components::Component;
+
 /// The deterministic instant the start story injects: 11:42.
 ///
 /// A golden run at any wall-clock hour paints the same time text because the
@@ -30,11 +32,22 @@ pub enum Story {
     /// A components/actions board: the primitive vocabulary a screen is built
     /// from, with every action, tone, surface and divider in one place.
     Components,
+    /// One Phase 6 component, in every variant and state.
+    Component(Component),
 }
 
 impl Story {
-    /// Every story, in registry order.
+    /// The two hand-built board stories.
     pub const ALL: [Self; 2] = [Self::Start, Self::Components];
+
+    /// Every story, in registry order: the boards, then every component.
+    #[must_use]
+    pub fn all() -> Vec<Self> {
+        let mut stories = Vec::with_capacity(Self::ALL.len() + Component::ALL.len());
+        stories.extend(Self::ALL);
+        stories.extend(Component::ALL.into_iter().map(Self::Component));
+        stories
+    }
 
     /// The stable CLI name.
     #[must_use]
@@ -42,6 +55,7 @@ impl Story {
         match self {
             Self::Start => "start",
             Self::Components => "components",
+            Self::Component(component) => component.name(),
         }
     }
 
@@ -51,7 +65,7 @@ impl Story {
         match name {
             "start" => Some(Self::Start),
             "components" => Some(Self::Components),
-            _ => None,
+            other => Component::parse(other).map(Self::Component),
         }
     }
 
@@ -65,6 +79,7 @@ impl Story {
         match self {
             Self::Start => paint(&start_screen(START_TIME_MS), theme, viewport, scale),
             Self::Components => paint(&components_screen(), theme, viewport, scale),
+            Self::Component(component) => paint(&component.view(), theme, viewport, scale),
         }
     }
 }
@@ -379,7 +394,7 @@ mod tests {
 
     #[test]
     fn every_story_paints_a_non_empty_list() {
-        for story in Story::ALL {
+        for story in Story::all() {
             let list = story.display_list(&Theme::dark(), Size::new(1280.0, 800.0), 1.5);
             assert!(
                 !list.commands.is_empty(),
@@ -407,7 +422,7 @@ mod tests {
 
     #[test]
     fn names_round_trip() {
-        for story in Story::ALL {
+        for story in Story::all() {
             assert_eq!(Story::parse(story.name()), Some(story));
         }
         assert_eq!(Story::parse("nope"), None);

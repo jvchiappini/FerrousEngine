@@ -81,10 +81,38 @@ pub fn render_story(
         )));
     }
 
+    let display_list = story.display_list(theme, logical, scale);
+    render_display_list(&display_list, theme, logical, scale)
+}
+
+/// Renders an already painted [`DisplayList`](guimaker::display_list::DisplayList)
+/// at `logical` size and `scale`.
+///
+/// [`render_story`] calls this; the pixel guards use it too, so a mechanical
+/// check renders through the same path as a golden.
+///
+/// # Errors
+///
+/// Returns [`GalleryError::Usage`] for a degenerate viewport or scale and
+/// [`GalleryError::Gpu`] when the adapter, the render or the readback fails.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+// reason: the viewport and scale are validated positive and finite, then rounded
+// and floored at one pixel, so the physical dimensions fit `u32`.
+pub fn render_display_list(
+    display_list: &guimaker::display_list::DisplayList,
+    theme: &Theme,
+    logical: Size,
+    scale: f32,
+) -> Result<RenderedImage> {
+    if !(logical.width > 0.0 && logical.height > 0.0 && scale.is_finite() && scale > 0.0) {
+        return Err(GalleryError::Usage(format!(
+            "invalid render request: viewport {}x{} at scale {scale}",
+            logical.width, logical.height
+        )));
+    }
+
     let width = (logical.width * scale).round().max(1.0) as u32;
     let height = (logical.height * scale).round().max(1.0) as u32;
-
-    let display_list = story.display_list(theme, logical, scale);
 
     let harness = Pure2dHarness::new(width, height, DEFAULT_FORMAT).map_err(|error| {
         GalleryError::Gpu(format!("could not create the headless device: {error}"))
@@ -104,15 +132,48 @@ pub fn render_story(
     renderer.set_font_atlas(&font.atlas.view, &font.atlas.sampler);
 
     let mut batch = GuiBatch::new();
-    guimaker_ferrous::encode(&display_list, logical, scale, &mut batch, &font);
+    guimaker_ferrous::encode(display_list, logical, scale, &mut batch, &font);
     // The batch's damage union only covers emitted primitives. A screenshot is
     // a full-frame render, so drop it and let the pass use the whole target.
     batch.damage_union = None;
-    renderer.prepare(queue.as_ref(), &batch);
 
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("guimaker_gallery screenshot encoder"),
     });
+
+    // A backdrop blur must sample the layers **below** the overlay, never the
+    // target it is drawing into (which already holds the overlay's own shadow).
+    // Clear the target first, then hand that snapshot to the renderer: the
+    // blur passes read the clear colour / 2D scene, and the GUI pass draws the
+    // overlay on top of it. Without this the dialog blurred its own shadow and
+    // produced the grey smears the reviewer saw.
+    if display_list.commands.iter().any(|command| {
+        matches!(
+            command,
+            guimaker::display_list::DrawCommand::BackdropBlur { .. }
+        )
+    }) {
+        {
+            let _clear = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("guimaker_gallery backdrop snapshot clear"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &harness.target().view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(clear_color(theme)),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+            });
+        }
+        renderer.set_backdrop_source(&harness.target().view, width, height);
+    }
+
+    renderer.prepare(queue.as_ref(), &batch);
+
     renderer.render(
         &mut encoder,
         &harness.target().view,

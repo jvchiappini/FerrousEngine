@@ -15,6 +15,7 @@ use guimaker::theme::{Color, ColorRole, Theme};
 use guimaker::view::{Element, NodeId};
 use guimaker::{Frame, Ui};
 use guimaker_gallery::story::Story;
+use guimaker_gallery::Component;
 
 const EPSILON: f32 = 1e-3;
 
@@ -99,7 +100,13 @@ fn check_labels(name: &str, list: &DisplayList, theme: &Theme, backdrop: Color) 
             fill
         };
         let color = run.spans.first().map_or(Color::WHITE, |span| span.color);
-        let role = role_of(theme, color);
+        // Text and TextOnAccentFill share a colour in the dark palette; the
+        // filled-action pairing is the role that owns the label there.
+        let role = if color == theme.role(ColorRole::TextOnAccentFill) {
+            ColorRole::TextOnAccentFill
+        } else {
+            role_of(theme, color)
+        };
         let ratio = color.contrast_ratio(surface);
         let needed = min_contrast(role);
         assert!(
@@ -144,4 +151,58 @@ fn component_chips_fit_and_meet_their_role_threshold() {
     let list = Story::Components.display_list(&theme, Size::new(1280.0, 800.0), 1.5);
     let checked = check_labels("components-light", &list, &theme, theme.role(ColorRole::Bg));
     assert!(checked >= 7, "checked only {checked} filled labels");
+}
+
+/// Composites every fill that contains a text run, in paint order, then checks
+/// the run's role threshold against that actual surface.
+fn check_story_labels(name: &str, list: &DisplayList, theme: &Theme) -> usize {
+    let mut checked = 0;
+    for (index, command) in list.commands.iter().enumerate() {
+        let DrawCommand::Text {
+            node: _, rect, run, ..
+        } = command
+        else {
+            continue;
+        };
+        let mut surface = theme.role(ColorRole::Bg);
+        for earlier in &list.commands[..index] {
+            if let DrawCommand::Rect {
+                rect: fill_rect,
+                color,
+                ..
+            } = earlier
+            {
+                if inside(*rect, *fill_rect) {
+                    surface = over(*color, surface);
+                }
+            }
+        }
+        let color = run.spans.first().map_or(Color::WHITE, |span| span.color);
+        let role = if color == theme.role(ColorRole::TextOnAccentFill) {
+            ColorRole::TextOnAccentFill
+        } else {
+            role_of(theme, color)
+        };
+        let ratio = color.contrast_ratio(surface);
+        let needed = min_contrast(role);
+        assert!(
+            ratio >= needed,
+            "{name}: {} text {ratio:.2}:1 is below {needed:.1}:1 on its composited fill",
+            role.name()
+        );
+        checked += 1;
+    }
+    assert!(checked > 0, "{name} painted no text to check");
+    checked
+}
+
+#[test]
+fn every_component_story_keeps_its_filled_labels_readable() {
+    for component in Component::ALL {
+        for theme in [Theme::light(), Theme::dark()] {
+            let view = component.view();
+            let list = paint(&view, &theme);
+            let _ = check_story_labels(component.name(), &list, &theme);
+        }
+    }
 }

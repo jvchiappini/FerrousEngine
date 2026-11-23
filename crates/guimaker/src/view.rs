@@ -10,14 +10,17 @@
 #![allow(clippy::cast_possible_truncation, clippy::too_many_lines)] // reason: arena indices are u32 and the builder/hash are one linear pass each
 use std::sync::Arc;
 
+use glam::Vec2;
+
 use crate::hash::Fnv;
 use crate::style::{
-    Align, Columns, Cursor, Direction, Edges, Fluid, FluidText, Justify, Responsive, ScrollAxes,
-    SizeSpec, Span, Style, TextSpec, Tone, Tooltip,
+    Align, Anchor, ColumnTrack, Columns, Cursor, Direction, Edges, Fluid, FluidText, Justify,
+    Responsive, ScrollAxes, SizeSpec, Span, Style, TextSpec, Tone, Tooltip,
 };
 use crate::text::Ellipsis;
 use crate::theme::{
-    BorderWidth, Breakpoint, ColorRole, ContentWidth, ElevationLevel, Radius, Spacing, TypeRole,
+    BorderWidth, Breakpoint, ColorRole, ContentWidth, Duration, ElevationLevel, Radius, Spacing,
+    TypeRole,
 };
 
 /// A stable identifier for a node inside one built tree.
@@ -44,6 +47,8 @@ pub enum NodeKind {
     Row,
     /// Overlaid children (`stack`).
     Stack,
+    /// A normal first child with absolutely positioned overlays after it.
+    Overlay,
     /// A grid (`grid`).
     Grid,
     /// A centring container.
@@ -66,6 +71,10 @@ pub enum NodeKind {
     Image,
     /// An application-defined canvas rect.
     Canvas,
+    /// A vector icon drawn from path data.
+    Icon,
+    /// A stroked polyline (an arc, a ring or a measured curve).
+    Path,
 }
 
 impl NodeKind {
@@ -76,6 +85,7 @@ impl NodeKind {
             Self::Column => "column",
             Self::Row => "row",
             Self::Stack => "stack",
+            Self::Overlay => "overlay",
             Self::Grid => "grid",
             Self::Center => "center",
             Self::Spacer => "spacer",
@@ -87,6 +97,8 @@ impl NodeKind {
             Self::Text => "text",
             Self::Image => "image",
             Self::Canvas => "canvas",
+            Self::Icon => "icon",
+            Self::Path => "path",
         }
     }
 
@@ -139,6 +151,8 @@ pub struct Node<Msg> {
     pub kind: NodeKind,
     /// The unresolved style tokens.
     pub style: Style,
+    /// Whether the node has per-state roles or an accent fill.
+    pub has_visual: bool,
     /// Text content for a text node.
     pub text: Option<TextSpec>,
     /// The stable key, when the view supplied one.
@@ -161,6 +175,10 @@ pub struct Node<Msg> {
     pub sibling_index: u32,
     /// An adapter-defined image source id.
     pub image: Option<u64>,
+    /// Vector icon path data, when the node is an icon.
+    pub icon_path: Option<Arc<str>>,
+    /// Polyline points, when the node is a path.
+    pub path_points: Option<Arc<[Vec2]>>,
 }
 
 impl<Msg> Node<Msg> {
@@ -188,6 +206,10 @@ pub struct Element<Msg> {
     pub action: Option<Msg>,
     /// An adapter-defined image source id.
     pub image: Option<u64>,
+    /// Vector icon path data, when the node is an icon.
+    pub icon_path: Option<Arc<str>>,
+    /// Polyline points (normalised `0.0..=1.0` inside the node rect).
+    pub path_points: Option<Arc<[Vec2]>>,
 }
 
 impl<Msg> Element<Msg> {
@@ -202,6 +224,8 @@ impl<Msg> Element<Msg> {
             key: None,
             action: None,
             image: None,
+            icon_path: None,
+            path_points: None,
         }
     }
 
@@ -209,6 +233,16 @@ impl<Msg> Element<Msg> {
     #[must_use]
     pub fn column() -> Self {
         Self::new(NodeKind::Column).flex(Direction::Column)
+    }
+
+    /// A box whose first child is laid out normally and whose later children
+    /// are absolutely positioned overlays (anchored to a sibling).
+    ///
+    /// The overlays never contribute to the box's size, which is how a menu
+    /// row carries an anchored submenu without changing the menu's height.
+    #[must_use]
+    pub fn overlay() -> Self {
+        Self::new(NodeKind::Overlay).flex(Direction::Column)
     }
 
     /// A horizontal stack.
@@ -308,6 +342,33 @@ impl<Msg> Element<Msg> {
         element
     }
 
+    /// A vector icon drawn from SVG path data, scaled into the element box.
+    ///
+    /// `
+    /// use guimaker::prelude::*;
+    /// use guimaker::icons::Icon;
+    /// let icon: Element<()> = Element::icon(Icon::Search.path()).width(Spacing::S4);
+    /// assert_eq!(icon.kind, NodeKind::Icon);
+    /// `
+    #[must_use]
+    pub fn icon(path: impl Into<Arc<str>>) -> Self {
+        let mut element = Self::new(NodeKind::Icon);
+        element.icon_path = Some(path.into());
+        element
+    }
+
+    /// A stroked polyline over points normalised inside the element rect.
+    ///
+    /// The adapter maps it onto the engine path stroke, which draws every
+    /// segment with a round cap. Use it for an arc, a ring sweep or a measured
+    /// curve. `points` shorter than two draws nothing.
+    #[must_use]
+    pub fn path(points: impl Into<Arc<[Vec2]>>) -> Self {
+        let mut element = Self::new(NodeKind::Path);
+        element.path_points = Some(points.into());
+        element
+    }
+
     fn flex(mut self, direction: Direction) -> Self {
         self.style.direction = Responsive::single(direction);
         self
@@ -370,6 +431,13 @@ impl<Msg> Element<Msg> {
     #[must_use]
     pub fn gap(mut self, gap: impl Into<Responsive<Spacing>>) -> Self {
         self.style.gap = gap.into();
+        self
+    }
+
+    /// Sets a pixel gap that may be negative (children overlap).
+    #[must_use]
+    pub fn gap_px(mut self, gap: impl Into<Responsive<f32>>) -> Self {
+        self.style.gap_px = Some(gap.into());
         self
     }
 
@@ -566,6 +634,61 @@ impl<Msg> Element<Msg> {
         self
     }
 
+    /// Sets an independent border width per edge (`top`, `right`, `bottom`,
+    /// `left`). A [`BorderWidth::None`] edge is not stroked.
+    #[must_use]
+    pub fn border_sides(mut self, sides: [BorderWidth; 4]) -> Self {
+        self.style.border_sides = Some(sides);
+        self
+    }
+
+    /// Strokes only the left edge at `width` (a callout rule).
+    #[must_use]
+    pub fn border_left(mut self, width: BorderWidth) -> Self {
+        self.style.border_sides = Some([
+            BorderWidth::None,
+            BorderWidth::None,
+            BorderWidth::None,
+            width,
+        ]);
+        self
+    }
+
+    /// Sets the stroke width of a [`NodeKind::Path`].
+    #[must_use]
+    pub fn stroke_width(mut self, width: impl Into<Responsive<Spacing>>) -> Self {
+        self.style.stroke_width = Some(width.into());
+        self
+    }
+
+    /// Draws a caret at `byte` from the shaped glyph positions.
+    #[must_use]
+    pub fn caret(mut self, byte: usize) -> Self {
+        self.style.caret = Some(byte);
+        self
+    }
+
+    /// Draws real selection rects for the `start..end` byte range.
+    #[must_use]
+    pub fn selection(mut self, start: usize, end: usize) -> Self {
+        self.style.selection = Some((start, end));
+        self
+    }
+
+    /// Anchors this node to sibling `index` as an absolute overlay.
+    ///
+    /// The overlay is placed at the sibling's right edge plus `offset` and
+    /// never changes the parent's layout.
+    #[must_use]
+    pub fn overlay_to(mut self, index: usize, offset: Vec2) -> Self {
+        self.style.anchor = Some(Anchor {
+            sibling: u16::try_from(index).unwrap_or(u16::MAX),
+            dx: offset.x,
+            dy: offset.y,
+        });
+        self
+    }
+
     /// Sets the corner radius token.
     #[must_use]
     pub fn radius(mut self, radius: impl Into<Responsive<Radius>>) -> Self {
@@ -594,10 +717,18 @@ impl<Msg> Element<Msg> {
         self
     }
 
+    /// Requests a backdrop blur behind the node, with a spacing-token radius.
+    #[must_use]
+    pub fn backdrop_blur(mut self, radius: Spacing) -> Self {
+        self.style.backdrop_blur = Some(radius);
+        self
+    }
+
     /// Sets the default text tone.
     #[must_use]
     pub fn tone(mut self, tone: Tone) -> Self {
         self.style.tone = tone;
+        self.style.tone_explicit = true;
         self
     }
 
@@ -705,6 +836,111 @@ impl<Msg> Element<Msg> {
     #[must_use]
     pub fn cursor(mut self, cursor: Cursor) -> Self {
         self.style.cursor = cursor;
+        self
+    }
+
+    /// Marks the element as selected or checked.
+    #[must_use]
+    pub fn selected(mut self, selected: bool) -> Self {
+        self.style.selected = selected;
+        self
+    }
+
+    /// Sets the hover background role.
+    #[must_use]
+    pub fn hover_bg(mut self, role: ColorRole) -> Self {
+        self.style.visual.bg.hover = Some(role);
+        self
+    }
+
+    /// Sets the pressed background role.
+    #[must_use]
+    pub fn pressed_bg(mut self, role: ColorRole) -> Self {
+        self.style.visual.bg.pressed = Some(role);
+        self
+    }
+
+    /// Sets the selected background role.
+    #[must_use]
+    pub fn selected_bg(mut self, role: ColorRole) -> Self {
+        self.style.visual.bg.selected = Some(role);
+        self
+    }
+
+    /// Sets the disabled background role.
+    #[must_use]
+    pub fn disabled_bg(mut self, role: ColorRole) -> Self {
+        self.style.visual.bg.disabled = Some(role);
+        self
+    }
+
+    /// Sets the hover border role.
+    #[must_use]
+    pub fn hover_border(mut self, role: ColorRole) -> Self {
+        self.style.visual.border.hover = Some(role);
+        self
+    }
+
+    /// Sets the pressed border role.
+    #[must_use]
+    pub fn pressed_border(mut self, role: ColorRole) -> Self {
+        self.style.visual.border.pressed = Some(role);
+        self
+    }
+
+    /// Sets the selected border role.
+    #[must_use]
+    pub fn selected_border(mut self, role: ColorRole) -> Self {
+        self.style.visual.border.selected = Some(role);
+        self
+    }
+
+    /// Sets the disabled border role.
+    #[must_use]
+    pub fn disabled_border(mut self, role: ColorRole) -> Self {
+        self.style.visual.border.disabled = Some(role);
+        self
+    }
+
+    /// Sets the hover text tone.
+    #[must_use]
+    pub fn hover_tone(mut self, tone: Tone) -> Self {
+        self.style.visual.tone.hover = Some(tone);
+        self
+    }
+
+    /// Sets the pressed text tone.
+    #[must_use]
+    pub fn pressed_tone(mut self, tone: Tone) -> Self {
+        self.style.visual.tone.pressed = Some(tone);
+        self
+    }
+
+    /// Sets the selected text tone.
+    #[must_use]
+    pub fn selected_tone(mut self, tone: Tone) -> Self {
+        self.style.visual.tone.selected = Some(tone);
+        self
+    }
+
+    /// Sets the disabled text tone.
+    #[must_use]
+    pub fn disabled_tone(mut self, tone: Tone) -> Self {
+        self.style.visual.tone.disabled = Some(tone);
+        self
+    }
+
+    /// Sets the elevation a surface lifts to on hover.
+    #[must_use]
+    pub fn hover_elevation(mut self, level: ElevationLevel) -> Self {
+        self.style.visual.elevation_hover = Some(level);
+        self
+    }
+
+    /// Sets how long a state colour change animates on the injected clock.
+    #[must_use]
+    pub fn transition(mut self, duration: Duration) -> Self {
+        self.style.visual.transition = duration;
         self
     }
 
@@ -833,10 +1069,16 @@ impl<Msg> Tree<Msg> {
             path.write_u32(sibling_index);
         }
         let path_hash = path.finish();
+        let has_visual = element.style.visual.bg != crate::style::StateRoles::default()
+            || element.style.visual.border != crate::style::StateRoles::default()
+            || element.style.visual.tone != crate::style::StateTones::default()
+            || element.style.visual.elevation_hover.is_some()
+            || element.style.bg == Some(ColorRole::AccentFill);
         self.nodes.push(Node {
             id,
             kind: element.kind,
             style: element.style.clone(),
+            has_visual,
             text: element.text.clone(),
             key: element.key.clone(),
             action: element.action.clone(),
@@ -851,6 +1093,8 @@ impl<Msg> Tree<Msg> {
             content_hash: 0,
             sibling_index,
             image: element.image,
+            icon_path: element.icon_path.clone(),
+            path_points: element.path_points.clone(),
         });
 
         let mut children = Vec::with_capacity(element.children.len());
@@ -877,6 +1121,24 @@ impl<Msg> Tree<Msg> {
             Some(image) => {
                 hash.write_u8(1);
                 hash.write_u64(image);
+            }
+            None => hash.write_u8(0),
+        }
+        match &element.icon_path {
+            Some(path) => {
+                hash.write_u8(1);
+                hash.write_str(path);
+            }
+            None => hash.write_u8(0),
+        }
+        match &element.path_points {
+            Some(points) => {
+                hash.write_u8(1);
+                hash.write_u32(points.len() as u32);
+                for point in points.iter() {
+                    hash.write_f32(point.x);
+                    hash.write_f32(point.y);
+                }
             }
             None => hash.write_u8(0),
         }
@@ -978,6 +1240,24 @@ pub fn hash_element<Msg>(element: &Element<Msg>) -> u64 {
         }
         None => hash.write_u8(0),
     }
+    match &element.icon_path {
+        Some(path) => {
+            hash.write_u8(1);
+            hash.write_str(path);
+        }
+        None => hash.write_u8(0),
+    }
+    match &element.path_points {
+        Some(points) => {
+            hash.write_u8(1);
+            hash.write_u32(points.len() as u32);
+            for point in points.iter() {
+                hash.write_f32(point.x);
+                hash.write_f32(point.y);
+            }
+        }
+        None => hash.write_u8(0),
+    }
     hash.write_u32(element.children.len() as u32);
     for child in &element.children {
         hash.write_u64(hash_element(child));
@@ -990,6 +1270,7 @@ fn kind_discriminant(kind: NodeKind) -> u8 {
         NodeKind::Column => 0,
         NodeKind::Row => 1,
         NodeKind::Stack => 2,
+        NodeKind::Overlay => 16,
         NodeKind::Grid => 3,
         NodeKind::Center => 4,
         NodeKind::Spacer => 5,
@@ -1001,6 +1282,8 @@ fn kind_discriminant(kind: NodeKind) -> u8 {
         NodeKind::Text => 11,
         NodeKind::Image => 12,
         NodeKind::Canvas => 13,
+        NodeKind::Icon => 14,
+        NodeKind::Path => 15,
     }
 }
 
@@ -1021,6 +1304,15 @@ fn hash_style(style: &Style, hash: &mut Fnv) {
     hash_responsive(&style.gap, hash, |value, hash| {
         hash.write_u32(*value as u32);
     });
+    match &style.gap_px {
+        Some(gap) => {
+            hash.write_u8(1);
+            hash_responsive(gap, hash, |value, hash| {
+                hash.write_f32(*value);
+            });
+        }
+        None => hash.write_u8(0),
+    }
     hash_responsive(&style.align, hash, |value, hash| {
         hash.write_u8(align_discriminant(*value));
     });
@@ -1076,12 +1368,62 @@ fn hash_style(style: &Style, hash: &mut Fnv) {
         }
     }
     hash.write_u32(border_width_discriminant(style.border_width));
+    match style.border_sides {
+        Some(sides) => {
+            hash.write_u8(1);
+            for width in sides {
+                hash.write_u32(border_width_discriminant(width));
+            }
+        }
+        None => hash.write_u8(0),
+    }
+    match style.anchor {
+        Some(anchor) => {
+            hash.write_u8(1);
+            hash.write_u32(u32::from(anchor.sibling));
+            hash.write_f32(anchor.dx);
+            hash.write_f32(anchor.dy);
+        }
+        None => hash.write_u8(0),
+    }
+    match &style.stroke_width {
+        Some(width) => {
+            hash.write_u8(1);
+            hash_responsive(width, hash, |value, hash| {
+                hash.write_u32(*value as u32);
+            });
+        }
+        None => hash.write_u8(0),
+    }
+    match style.caret {
+        Some(caret) => {
+            hash.write_u8(1);
+            hash.write_u64(caret as u64);
+        }
+        None => hash.write_u8(0),
+    }
+    match style.selection {
+        Some((start, end)) => {
+            hash.write_u8(1);
+            hash.write_u64(start as u64);
+            hash.write_u64(end as u64);
+        }
+        None => hash.write_u8(0),
+    }
+    hash.write_bool(style.tone_explicit);
     hash_responsive(&style.radius, hash, |value, hash| {
         hash.write_u32(radius_discriminant(*value));
     });
     hash.write_u8(style.elevation.level());
     hash.write_f32(style.opacity);
     hash.write_bool(style.clip);
+    match style.backdrop_blur {
+        Some(radius) => {
+            hash.write_u8(1);
+            hash.write_u32(radius as u32);
+        }
+        None => hash.write_u8(0),
+    }
     hash.write_bool(style.hidden);
     match style.hidden_below {
         Some(breakpoint) => {
@@ -1128,10 +1470,10 @@ fn hash_style(style: &Style, hash: &mut Fnv) {
         }
         None => hash.write_u8(0),
     }
-    match style.columns {
+    match &style.columns {
         Some(columns) => {
             hash.write_u8(1);
-            hash_responsive(&columns, hash, |columns, hash| match columns {
+            hash_responsive(columns, hash, |columns, hash| match columns {
                 Columns::Fixed(count) => {
                     hash.write_u8(0);
                     hash.write_u32(u32::from(*count));
@@ -1139,6 +1481,23 @@ fn hash_style(style: &Style, hash: &mut Fnv) {
                 Columns::AutoFill(spacing) => {
                     hash.write_u8(1);
                     hash.write_u32(*spacing as u32);
+                }
+                Columns::Tracks(tracks) => {
+                    hash.write_u8(2);
+                    hash.write_u32(tracks.len() as u32);
+                    for track in tracks {
+                        match *track {
+                            ColumnTrack::Fixed(width) => {
+                                hash.write_u8(0);
+                                hash.write_u32(width as u32);
+                            }
+                            ColumnTrack::Fraction(fraction) => {
+                                hash.write_u8(1);
+                                hash.write_f32(fraction);
+                            }
+                            ColumnTrack::Fit => hash.write_u8(2),
+                        }
+                    }
                 }
             });
         }
@@ -1165,6 +1524,47 @@ fn hash_style(style: &Style, hash: &mut Fnv) {
         None => hash.write_u8(0),
     }
     hash.write_u8(style.cursor as u8);
+    hash.write_bool(style.selected);
+    hash_state_roles(style.visual.bg, hash);
+    hash_state_roles(style.visual.border, hash);
+    hash_state_tones(style.visual.tone, hash);
+    match style.visual.elevation_hover {
+        Some(level) => {
+            hash.write_u8(1);
+            hash.write_u8(level.level());
+        }
+        None => hash.write_u8(0),
+    }
+    hash.write_u8(match style.visual.transition {
+        Duration::Instant => 0,
+        Duration::Fast => 1,
+        Duration::Base => 2,
+        Duration::Slow => 3,
+    });
+}
+
+fn hash_state_roles(roles: crate::style::StateRoles, hash: &mut Fnv) {
+    for role in [roles.hover, roles.pressed, roles.selected, roles.disabled] {
+        match role {
+            Some(role) => {
+                hash.write_u8(1);
+                hash.write_u32(role_discriminant(role));
+            }
+            None => hash.write_u8(0),
+        }
+    }
+}
+
+fn hash_state_tones(tones: crate::style::StateTones, hash: &mut Fnv) {
+    for tone in [tones.hover, tones.pressed, tones.selected, tones.disabled] {
+        match tone {
+            Some(tone) => {
+                hash.write_u8(1);
+                hash.write_u32(tone_discriminant(tone));
+            }
+            None => hash.write_u8(0),
+        }
+    }
 }
 
 fn hash_responsive<T>(value: &Responsive<T>, hash: &mut Fnv, mut each: impl FnMut(&T, &mut Fnv)) {

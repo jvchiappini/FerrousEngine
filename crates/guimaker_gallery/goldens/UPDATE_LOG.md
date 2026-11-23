@@ -8,3 +8,315 @@ Every rewrite records its reason here.
 - 1795372847 `start-light-1280x800-1.5.png`: text content box, on-accent pairing, chip fit, injected clock
 - 1795372855 `start-dark-1280x800-1.5.png`: text content box, on-accent pairing, chip fit, injected clock
 - 1795372857 `components-light-1280x800-1.5.png`: text content box, on-accent pairing, chip fit, injected clock
+- 1795383446 `start-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383447 `start-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383448 `components-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383450 `components-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383451 `button-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383452 `button-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383453 `icon-button-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383455 `icon-button-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383456 `toggle-button-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383457 `toggle-button-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383458 `button-group-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383460 `button-group-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383461 `split-button-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383462 `split-button-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383463 `text-field-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383464 `text-field-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383466 `number-field-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383467 `number-field-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383468 `textarea-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383469 `textarea-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383470 `checkbox-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383472 `checkbox-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383473 `radio-group-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383474 `radio-group-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383476 `switch-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383477 `switch-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383478 `slider-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383479 `slider-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383481 `range-slider-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383482 `range-slider-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383483 `select-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383484 `select-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383486 `combobox-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383487 `combobox-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383488 `color-swatch-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383489 `color-swatch-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383490 `path-field-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383491 `path-field-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383493 `form-row-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383494 `form-row-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383495 `text-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383496 `text-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383497 `heading-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383499 `heading-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383500 `badge-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383501 `badge-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383502 `tag-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383504 `tag-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383505 `kbd-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383506 `kbd-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383507 `avatar-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383509 `avatar-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383510 `thumbnail-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383511 `thumbnail-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383513 `progress-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383514 `progress-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383515 `progress-ring-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383516 `progress-ring-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383517 `spinner-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383518 `spinner-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383520 `skeleton-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383521 `skeleton-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383522 `empty-state-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383523 `empty-state-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383524 `callout-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383526 `callout-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383527 `card-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383528 `card-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383529 `list-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383530 `list-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383531 `list-item-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383533 `list-item-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383534 `table-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383535 `table-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383536 `tabs-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383537 `tabs-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383539 `accordion-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383540 `accordion-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383541 `section-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383543 `section-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383544 `sidebar-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383545 `sidebar-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383546 `toolbar-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383547 `toolbar-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383548 `status-bar-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383550 `status-bar-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383551 `app-shell-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383552 `app-shell-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383553 `layer-stack-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383554 `layer-stack-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383556 `tooltip-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383557 `tooltip-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383558 `popover-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383559 `popover-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383560 `menu-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383562 `menu-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383563 `dialog-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383564 `dialog-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383565 `command-palette-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383566 `command-palette-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383568 `toast-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383569 `toast-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383570 `icons-light-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795383571 `icons-dark-1280x800-1.5.png`: Phase 6: every component story, all states, 1280x800 at 1.5, light and dark
+- 1795392736 `start-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392737 `start-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392738 `components-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392738 `components-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392739 `button-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392740 `button-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392740 `icon-button-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392741 `icon-button-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392741 `toggle-button-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392742 `toggle-button-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392742 `button-group-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392743 `button-group-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392744 `split-button-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392744 `split-button-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392745 `text-field-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392745 `text-field-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392746 `number-field-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392746 `number-field-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392747 `textarea-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392747 `textarea-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392748 `checkbox-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392748 `checkbox-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392749 `radio-group-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392750 `radio-group-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392750 `switch-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392751 `switch-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392751 `slider-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392752 `slider-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392752 `range-slider-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392753 `range-slider-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392753 `select-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392754 `select-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392754 `combobox-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392755 `combobox-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392755 `color-swatch-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392756 `color-swatch-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392757 `path-field-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392757 `path-field-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392758 `form-row-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392758 `form-row-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392759 `text-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392759 `text-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392760 `heading-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392760 `heading-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392761 `badge-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392761 `badge-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392762 `tag-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392762 `tag-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392763 `kbd-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392763 `kbd-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392764 `avatar-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392764 `avatar-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392765 `thumbnail-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392766 `thumbnail-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392766 `progress-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392767 `progress-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392767 `progress-ring-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392768 `progress-ring-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392768 `spinner-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392769 `spinner-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392769 `skeleton-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392770 `skeleton-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392770 `empty-state-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392771 `empty-state-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392771 `callout-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392772 `callout-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392772 `card-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392773 `card-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392773 `list-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392774 `list-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392774 `list-item-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392775 `list-item-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392775 `table-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392776 `table-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392776 `tabs-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392777 `tabs-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392777 `accordion-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392778 `accordion-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392778 `section-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392779 `section-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392780 `sidebar-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392780 `sidebar-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392781 `toolbar-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392781 `toolbar-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392782 `status-bar-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392782 `status-bar-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392783 `app-shell-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392783 `app-shell-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392784 `layer-stack-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392784 `layer-stack-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392785 `tooltip-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392785 `tooltip-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392786 `popover-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392786 `popover-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392787 `menu-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392787 `menu-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392788 `dialog-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392788 `dialog-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392789 `command-palette-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392789 `command-palette-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392790 `toast-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392790 `toast-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392791 `icons-light-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795392792 `icons-dark-1280x800-1.5.png`: phase 6 mechanics: shadows behind surfaces, dithered ramps, per-side borders, anchored submenus, shared table columns, real caret/selection, icon tone/size, arc ring, callout rule
+- 1795393314 `start-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393315 `start-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393315 `components-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393316 `components-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393316 `button-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393317 `button-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393318 `icon-button-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393318 `icon-button-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393319 `toggle-button-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393319 `toggle-button-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393320 `button-group-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393321 `button-group-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393321 `split-button-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393322 `split-button-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393322 `text-field-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393323 `text-field-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393323 `number-field-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393324 `number-field-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393324 `textarea-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393325 `textarea-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393325 `checkbox-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393326 `checkbox-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393326 `radio-group-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393327 `radio-group-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393328 `switch-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393328 `switch-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393329 `slider-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393329 `slider-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393330 `range-slider-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393330 `range-slider-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393331 `select-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393331 `select-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393332 `combobox-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393332 `combobox-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393333 `color-swatch-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393333 `color-swatch-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393334 `path-field-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393335 `path-field-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393336 `form-row-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393336 `form-row-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393337 `text-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393338 `text-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393338 `heading-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393339 `heading-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393340 `badge-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393340 `badge-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393341 `tag-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393341 `tag-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393342 `kbd-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393342 `kbd-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393343 `avatar-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393343 `avatar-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393344 `thumbnail-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393345 `thumbnail-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393345 `progress-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393346 `progress-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393346 `progress-ring-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393347 `progress-ring-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393347 `spinner-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393348 `spinner-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393348 `skeleton-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393349 `skeleton-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393349 `empty-state-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393350 `empty-state-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393350 `callout-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393351 `callout-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393352 `card-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393352 `card-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393353 `list-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393353 `list-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393354 `list-item-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393354 `list-item-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393355 `table-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393355 `table-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393355 `tabs-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393356 `tabs-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393357 `accordion-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393357 `accordion-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393358 `section-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393358 `section-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393359 `sidebar-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393359 `sidebar-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393360 `toolbar-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393360 `toolbar-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393361 `status-bar-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393361 `status-bar-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393362 `app-shell-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393362 `app-shell-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393363 `layer-stack-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393363 `layer-stack-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393364 `tooltip-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393364 `tooltip-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393365 `popover-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393365 `popover-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393366 `menu-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393366 `menu-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393367 `dialog-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393367 `dialog-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393368 `command-palette-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393368 `command-palette-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393369 `toast-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393369 `toast-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393370 `icons-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795393370 `icons-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped

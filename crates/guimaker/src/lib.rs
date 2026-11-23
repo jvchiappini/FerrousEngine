@@ -87,11 +87,13 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod components;
 pub mod debug;
 pub mod display_list;
 pub mod frame;
 pub mod geom;
 pub mod hash;
+pub mod icons;
 pub mod input;
 pub mod inspect;
 pub mod layout;
@@ -104,13 +106,16 @@ pub mod sweep;
 pub mod text;
 pub mod theme;
 pub mod view;
+pub mod visual;
 
 /// The types an app needs to build a screen.
 pub mod prelude {
+    pub use crate::components::*;
     pub use crate::debug::{CacheState, FrameDebug, NodeDebug};
     pub use crate::display_list::{DisplayList, DrawCommand, ImageFit};
     pub use crate::frame::{Frame, FrameStats, Ui};
     pub use crate::geom::{Rect, Size};
+    pub use crate::icons::Icon;
     pub use crate::input::focus::FocusScope;
     pub use crate::input::shortcut::{Chord, Platform, Scope, ShortcutKey, ShortcutRegistry};
     pub use crate::input::ScrollKind;

@@ -383,6 +383,22 @@ pub enum TypeRole {
 }
 
 impl TypeRole {
+    /// The icon box token paired with this type role.
+    ///
+    /// An icon must match the text it sits next to, so the size comes from the
+    /// type role (a caption icon is 12 px, a body icon 16, a heading 20), not
+    /// from an ad-hoc pixel value at the call site.
+    #[must_use]
+    pub const fn icon_size(self) -> Spacing {
+        match self {
+            Self::Display => Spacing::S8,
+            Self::Title => Spacing::S6,
+            Self::Heading | Self::Subheading => Spacing::S5,
+            Self::Body | Self::BodyStrong | Self::Label | Self::Mono | Self::Code => Spacing::S4,
+            Self::Caption | Self::Overline => Spacing::S3,
+        }
+    }
+
     /// Every type role, in scale order.
     pub const ALL: [Self; Self::COUNT] = [
         Self::Display,
