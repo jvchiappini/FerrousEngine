@@ -1,4 +1,4 @@
-﻿# ferrous_gui
+# ferrous_gui
 
 > **Draw-only since prompt 15 phase 4.** `UiSystem` lays out and paints; the
 > runner no longer feeds it pointer or keyboard events and

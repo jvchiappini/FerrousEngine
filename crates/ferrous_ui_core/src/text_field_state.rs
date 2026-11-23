@@ -1,4 +1,4 @@
-﻿//! [`TextFieldState`] — estado reutilizable para cualquier campo de texto de una línea.
+//! [`TextFieldState`] — estado reutilizable para cualquier campo de texto de una línea.
 //!
 //! Encapsula de forma **independiente del backend**:
 //! - Parpadeo del cursor (configurable).

@@ -1,4 +1,4 @@
-﻿# `AppContext` Reference
+# `AppContext` Reference
 
 `AppContext<'_>` is the handle passed to every [`FerrousApp`](ferrous-app-trait.md)
 callback. It bundles all per-frame access an application needs.

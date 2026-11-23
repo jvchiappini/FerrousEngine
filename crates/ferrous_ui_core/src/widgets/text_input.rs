@@ -1,4 +1,4 @@
-﻿use crate::{
+use crate::{
     text_field_state::{FieldKey, FieldKeyResult, TextFieldState},
     DrawContext, EventContext, EventResponse, GuiKey, LayoutContext, Rect, RenderCommand, UiEvent,
     Vec2, Widget,

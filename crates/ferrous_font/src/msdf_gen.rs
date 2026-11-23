@@ -1,10 +1,10 @@
 //! Simplified MSDF/SDF generator used by the atlas packer.
 //!
 //! Implements the essential parts of Chlumsky's multi-channel signed distance
-//! field algorithm (https://github.com/Chlumsky/msdfgen):
+//! field algorithm (<https://github.com/Chlumsky/msdfgen>):
 //!
 //! * Bézier outlines are flattened into line segments for distance evaluation.
-//! * Each original outline edge is assigned an [`EdgeColor`] that enables **two**
+//! * Each original outline edge is assigned an `EdgeColor` that enables **two**
 //!   of the three channels (`CYAN`, `MAGENTA`, `YELLOW`) and switches at sharp
 //!   corners, so adjacent corner edges never share both channels.
 //! * Each channel stores the signed distance to the nearest edge that enables

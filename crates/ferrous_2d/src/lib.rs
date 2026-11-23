@@ -1,4 +1,4 @@
-﻿//! 2D subsystem for FerrousEngine.
+//! 2D subsystem for FerrousEngine.
 //!
 //! This crate provides the data types and GPU pipelines for the engine's 2D
 //! render path:

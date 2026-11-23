@@ -1,4 +1,4 @@
-﻿//! `IntoSystem` trait and `FnSystem` adapter.
+//! `IntoSystem` trait and `FnSystem` adapter.
 //!
 //! # Design
 //!

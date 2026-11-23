@@ -1,4 +1,4 @@
-﻿//! # ferrous_core
+//! # ferrous_core
 //!
 //! Foundational types shared by every layer of FerrousEngine.  This crate
 //! has **zero renderer dependencies** — it is safe to use in headless tests,

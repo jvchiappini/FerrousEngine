@@ -34,6 +34,11 @@ jobs:
           python scripts/check_guimaker_literals.py
           python -m unittest discover -s scripts/tests -p "test_check_guimaker_literals.py"
 
+      - name: encoding guard (no BOM, no cp1252 mojibake, LF in new files)
+        run: |
+          python scripts/check_encoding.py
+          python -m unittest discover -s scripts/tests -p "test_check_encoding.py"
+
       # GUIMaker crates are new, so they are held to a stricter bar than the
       # rest of the workspace: fully fmt-clean, pedantic-clippy-clean and
       # rustdoc-clean. The rest of the repository keeps its known debt.

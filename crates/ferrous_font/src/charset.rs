@@ -15,7 +15,7 @@
 //!
 //! ## Adding extra characters
 //!
-//! Use [`merge`] or [`from_str`] to combine sets:
+//! Use `merge` or `from_str` to combine sets:
 //!
 //! ```rust
 //! use ferrous_font::charset;

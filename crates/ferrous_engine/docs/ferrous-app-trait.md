@@ -1,4 +1,4 @@
-﻿# `FerrousApp` Trait
+# `FerrousApp` Trait
 
 `FerrousApp` is the trait your application struct implements. Every method has
 an empty default implementation — override only the ones you need.

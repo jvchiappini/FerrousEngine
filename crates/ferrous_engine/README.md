@@ -1,4 +1,4 @@
-﻿# ferrous_engine
+# ferrous_engine
 
 The application shell: window, GPU renderer, assets, ECS scheduler and the
 `FerrousApp` trait in one frame loop. See [docs/README.md](docs/README.md) for

@@ -1,4 +1,4 @@
-﻿//! `SystemParam` — types that can be injected into plain-function systems.
+//! `SystemParam` — types that can be injected into plain-function systems.
 //!
 //! Any type implementing [`SystemParam`] can appear as a function argument
 //! when that function is registered via [`IntoSystem`].  The scheduler calls

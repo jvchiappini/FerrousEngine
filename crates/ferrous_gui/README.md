@@ -1,4 +1,4 @@
-﻿# Ferrous GUI
+# Ferrous GUI
 
 > **Status: draw-only.** Since prompt 15 phase 4 the runner no longer
 > dispatches pointer or keyboard input to UiSystem, and
