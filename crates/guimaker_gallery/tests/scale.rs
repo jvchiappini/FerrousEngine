@@ -2,7 +2,6 @@
 
 #![allow(clippy::float_cmp)] // reason: layout token arithmetic is exact here
 
-use ferrous_font::ScaledAtlases;
 use guimaker::components::{icon_box, text as display_text, ControlSize, StateSpec};
 use guimaker::geom::Size;
 use guimaker::icons::Icon;
@@ -75,10 +74,9 @@ fn one_host_switches_1_0_1_5_2_0_and_keeps_its_state() {
     ui.input_mut().focused = Some(label_node);
     ui.open_overlay(label_path);
 
-    let mut atlas = ScaledAtlases::new();
-    let chars = ferrous_font::charset::latin_western();
-    let roboto = include_bytes!("../../../assets/fonts/Roboto-Regular.ttf");
-
+    // The raster cell does not grow with the DPI scale: at 2.0 a Caption/Body
+    // em is far below the 128 px threshold, and G-0006 measured no visible gain
+    // from a 128 cell. The icon cache uses the same policy.
     let mut physical_icon = Vec::new();
     for scale in [1.0_f32, 1.5, 2.0] {
         ui.set_viewport(viewport, scale);
@@ -114,21 +112,10 @@ fn one_host_switches_1_0_1_5_2_0_and_keeps_its_state() {
             "selection kept"
         );
 
-        // The raster atlas grows with the scale and never keeps two.
-        let baked_glyph = atlas
-            .select(scale, roboto, &chars)
-            .expect("bake")
-            .glyph_size;
-        let cell = atlas.cell_size().expect("cell");
-        let fresh = ScaledAtlases::fresh_bytes(scale, roboto, &chars).expect("fresh");
-        assert_eq!(baked_glyph, cell);
-        assert!(
-            atlas.gpu_bytes() <= fresh,
-            "scale {scale}: atlas {} > fresh {fresh}",
-            atlas.gpu_bytes()
-        );
+        // The cell policy does not grow with the scale.
+        assert_eq!(ferrous_font::cell_for_em(12.0 * scale), 64, "caption");
+        assert_eq!(ferrous_font::cell_for_em(14.0 * scale), 64, "body");
     }
-    // Physical icon size is token * scale for each step.
     assert!((physical_icon[0] - token).abs() < 0.01);
     assert!((physical_icon[1] - token * 1.5).abs() < 0.01);
     assert!((physical_icon[2] - token * 2.0).abs() < 0.01);

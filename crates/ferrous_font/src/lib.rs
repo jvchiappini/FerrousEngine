@@ -43,7 +43,7 @@ pub use layout::{
 };
 pub use layout_data::LayoutData;
 pub use parser::{FontMetrics, FontParser, GlyphBounds, GposKerning, GposPair, ParseError};
-pub use scaled::ScaledAtlases;
+pub use scaled::{cell_for_em, GROW_MULTIPLE};
 
 /// Errors returned by the typed font loading entry points.
 #[derive(Debug, Clone, PartialEq, Eq)]

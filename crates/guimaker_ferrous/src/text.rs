@@ -680,6 +680,22 @@ mod tests {
     }
 
     #[test]
+    fn arabic_is_drawn_in_isolated_visual_order() {
+        // G-0008: no bidi and no GSUB joining yet. This test pins the gap so it
+        // fails the day the shaper learns to join and reorder.
+        let mut system = FerrousTextSystem::new();
+        let text = "\u{0629}\u{0628}\u{0631}\u{062C}\u{062A}";
+        let shape = system.shape(text, style(16.0), None);
+        assert_eq!(
+            shape.glyphs.len(),
+            text.chars().count(),
+            "one glyph per character means no joined forms"
+        );
+        let shaped: String = shape.glyphs.iter().map(|glyph| glyph.ch).collect();
+        assert_eq!(shaped, text, "the string is drawn in the given order");
+    }
+
+    #[test]
     fn a_mixed_script_string_has_no_notdef() {
         // Intro (Latin) + film emoji + Japanese + Arabic + a check mark. The
         // primary Roboto face covers only the first word; the rest resolve
