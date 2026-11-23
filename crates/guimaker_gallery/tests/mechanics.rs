@@ -19,7 +19,10 @@ use guimaker::theme::tokens::BACKDROP_TINT_ALPHA;
 use guimaker::theme::ColorRole;
 use guimaker::view::Key;
 use guimaker_gallery::golden::Tolerance;
-use guimaker_gallery::shot::{backdrop_split, render_display_list, render_story, RenderedImage};
+use guimaker_gallery::shot::{
+    backdrop_split, render_display_list, render_display_list_with_solid_atlas, render_story,
+    RenderedImage,
+};
 use guimaker_gallery::story::Story;
 use guimaker_gallery::Component;
 
@@ -485,13 +488,101 @@ fn cpu_backdrop_blur(source: &RenderedImage, radius: f32) -> (Vec<[f32; 3]>, usi
     (vertical, quarter_width, quarter_height)
 }
 
+/// Whether `(x, y)` lies inside any rect, expanded by `margin`.
+fn inside_any(rects: &[guimaker::geom::Rect], x: f32, y: f32, margin: f32) -> bool {
+    rects.iter().any(|rect| {
+        x >= rect.x - margin
+            && x <= rect.right() + margin
+            && y >= rect.y - margin
+            && y <= rect.bottom() + margin
+    })
+}
+
+/// The rects of every painted descendant of `root`.
+///
+/// Container nodes that paint nothing are skipped, so the returned rects are
+/// the actual title/body/field/button/helper areas, not the whole card.
+fn painted_descendant_rects<Msg: Clone>(
+    ui: &Ui<Msg>,
+    frame: &Frame<Msg>,
+    root: NodeId,
+) -> Vec<guimaker::geom::Rect> {
+    let mut rects = Vec::new();
+    for node in &ui.tree().nodes {
+        if node.id == root {
+            continue;
+        }
+        let mut ancestor = node.parent;
+        let mut below = false;
+        while let Some(parent) = ancestor {
+            if parent == root {
+                below = true;
+                break;
+            }
+            ancestor = ui.tree().nodes[parent.index()].parent;
+        }
+        if !below {
+            continue;
+        }
+        let paints = frame
+            .display_list
+            .commands_for(node.id)
+            .iter()
+            .any(|command| {
+                matches!(
+                    command,
+                    DrawCommand::Rect { .. }
+                        | DrawCommand::Border { .. }
+                        | DrawCommand::Shadow { .. }
+                        | DrawCommand::Gradient { .. }
+                        | DrawCommand::Text { .. }
+                        | DrawCommand::Image { .. }
+                        | DrawCommand::Icon { .. }
+                        | DrawCommand::Path { .. }
+                )
+            });
+        let rect = ui.layout().rect(node.id);
+        if paints && rect.width > 0.0 && rect.height > 0.0 {
+            rects.push(rect);
+        }
+    }
+    rects
+}
+
+/// Every pixel of the dialog card interior not covered by a painted child.
+///
+/// The card itself is inset to avoid its rounded border, and each child rect is
+/// expanded by `MARGIN` so glyph overshoot and border anti-aliasing stay out.
+fn dialog_interior_points<Msg: Clone>(
+    ui: &Ui<Msg>,
+    frame: &Frame<Msg>,
+    card: NodeId,
+) -> Vec<(i32, i32)> {
+    const INSET: f32 = 3.0;
+    const MARGIN: f32 = 8.0;
+    let card_rect = ui.layout().rect(card);
+    let children = painted_descendant_rects(ui, frame, card);
+    let x_start = (card_rect.x + INSET).ceil() as i32;
+    let y_start = (card_rect.y + INSET).ceil() as i32;
+    let x_end = (card_rect.right() - INSET).floor() as i32;
+    let y_end = (card_rect.bottom() - INSET).floor() as i32;
+    let mut points = Vec::new();
+    for y in y_start..y_end {
+        for x in x_start..x_end {
+            if !inside_any(&children, x as f32, y as f32, MARGIN) {
+                points.push((x, y));
+            }
+        }
+    }
+    points
+}
+
 #[test]
 fn the_dialog_card_blurs_the_content_below() {
     let theme = Theme::dark();
     let logical = Size::new(1280.0, 800.0);
     let (ui, frame) = paint(&Component::Dialog.view());
     let card = ui.tree().find_key("dialog_card").expect("dialog card");
-    let card_rect = ui.layout().rect(card);
     let Some(split) = backdrop_split(&frame.display_list.commands) else {
         panic!("the dialog story has no backdrop blur");
     };
@@ -502,6 +593,12 @@ fn the_dialog_card_blurs_the_content_below() {
     assert!(
         prefix.commands.iter().all(|command| command.node() != card),
         "the dialog card must not paint into the backdrop source"
+    );
+    let points = dialog_interior_points(&ui, &frame, card);
+    assert!(
+        points.len() > 10_000,
+        "the card interior guard sampled only {} pixels",
+        points.len()
     );
 
     let start = Instant::now();
@@ -522,49 +619,100 @@ fn the_dialog_card_blurs_the_content_below() {
         }
     };
     let prefix_duration = start.elapsed();
-    eprintln!("dialog backdrop render: full {full_duration:?}, prefix {prefix_duration:?}");
+    eprintln!(
+        "dialog backdrop render: full {full_duration:?} for {} interior pixels, prefix {prefix_duration:?}",
+        points.len()
+    );
 
     let radius = Spacing::S6.px() / 4.0;
     let (blurred, quarter_width, quarter_height) = cpu_backdrop_blur(&source, radius);
     let tint = theme.role(ColorRole::SurfaceRaised).to_linear();
-    let x_start = (card_rect.x + 6.0) as i32;
-    let x_end = (card_rect.x + 20.0) as i32;
-    let y_start = (card_rect.y + 8.0) as i32;
-    let y_end = (card_rect.bottom() - 8.0) as i32;
-    let pixel_count = ((x_end - x_start).max(0) * (y_end - y_start).max(0)) as usize;
-    let tolerance = Tolerance::gallery(pixel_count);
+    let point_count = points.len();
+    let tolerance = Tolerance::gallery(point_count);
+    let blur_weight = 1.0 - BACKDROP_TINT_ALPHA;
     let mut diff_pixels = 0usize;
     let mut distinct = HashSet::new();
-    for y in y_start..y_end {
-        for x in x_start..x_end {
-            let actual = px(&full, x, y);
-            distinct.extend(actual);
-            let u = (x as f32 + 0.5) / full.width as f32;
-            let v = (y as f32 + 0.5) / full.height as f32;
-            let sample = sample_bilinear(&blurred, quarter_width, quarter_height, u, v);
-            let blur_weight = 1.0 - BACKDROP_TINT_ALPHA;
-            let expected = [
-                linear_to_srgb(sample[0] * blur_weight + tint[0] * BACKDROP_TINT_ALPHA),
-                linear_to_srgb(sample[1] * blur_weight + tint[1] * BACKDROP_TINT_ALPHA),
-                linear_to_srgb(sample[2] * blur_weight + tint[2] * BACKDROP_TINT_ALPHA),
-            ];
-            let delta = (0..3)
-                .map(|channel| actual[channel].abs_diff(expected[channel]))
-                .max()
-                .unwrap_or(0);
-            if delta > tolerance.max_channel_delta {
-                diff_pixels += 1;
-            }
+    for (x, y) in points {
+        let actual = px(&full, x, y);
+        distinct.extend(actual);
+        let u = (x as f32 + 0.5) / full.width as f32;
+        let v = (y as f32 + 0.5) / full.height as f32;
+        let sample = sample_bilinear(&blurred, quarter_width, quarter_height, u, v);
+        let expected = [
+            linear_to_srgb(sample[0] * blur_weight + tint[0] * BACKDROP_TINT_ALPHA),
+            linear_to_srgb(sample[1] * blur_weight + tint[1] * BACKDROP_TINT_ALPHA),
+            linear_to_srgb(sample[2] * blur_weight + tint[2] * BACKDROP_TINT_ALPHA),
+        ];
+        let delta = (0..3)
+            .map(|channel| actual[channel].abs_diff(expected[channel]))
+            .max()
+            .unwrap_or(0);
+        if delta > tolerance.max_channel_delta {
+            diff_pixels += 1;
         }
     }
     assert!(
         distinct.len() >= 3,
-        "the card strip must not be flat: {distinct:?}"
+        "the card interior must not be flat: {distinct:?}"
     );
     assert!(
         diff_pixels <= tolerance.max_diff_pixels,
-        "backdrop differs in {diff_pixels} pixels (budget {})",
+        "backdrop differs in {diff_pixels} of {point_count} interior pixels (budget {})",
         tolerance.max_diff_pixels
+    );
+}
+
+#[test]
+fn the_dialog_backdrop_does_not_sample_the_font_atlas() {
+    // Negative control: the same display list rendered with a solid colour in
+    // place of the glyph atlas must leave every uncovered card pixel intact.
+    // If these diverge, the blur is reading the atlas (or the prefix text).
+    let theme = Theme::dark();
+    let logical = Size::new(1280.0, 800.0);
+    let (ui, frame) = paint(&Component::Dialog.view());
+    let card = ui.tree().find_key("dialog_card").expect("dialog card");
+    let points = dialog_interior_points(&ui, &frame, card);
+
+    let start = Instant::now();
+    let normal = match render_display_list(&frame.display_list, &theme, logical, 1.0) {
+        Ok(image) => image,
+        Err(error) => {
+            eprintln!("skipping atlas negative control: no headless GPU ({error})");
+            return;
+        }
+    };
+    let normal_duration = start.elapsed();
+    let start = Instant::now();
+    let solid = match render_display_list_with_solid_atlas(
+        &frame.display_list,
+        &theme,
+        logical,
+        1.0,
+        [128, 128, 128, 255],
+    ) {
+        Ok(image) => image,
+        Err(error) => {
+            eprintln!("skipping atlas negative control: no headless GPU ({error})");
+            return;
+        }
+    };
+    let solid_duration = start.elapsed();
+    eprintln!(
+        "dialog atlas control: normal {normal_duration:?}, solid atlas {solid_duration:?} over {} pixels",
+        points.len()
+    );
+
+    let mut mismatched = 0usize;
+    for (x, y) in &points {
+        if px(&normal, *x, *y) != px(&solid, *x, *y) {
+            mismatched += 1;
+        }
+    }
+    assert_eq!(
+        mismatched,
+        0,
+        "the backdrop samples the font atlas in {mismatched} of {} interior pixels",
+        points.len()
     );
 }
 

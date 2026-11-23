@@ -174,11 +174,11 @@ pub fn tag<Msg: Clone>(
         .bg(ColorRole::SurfaceRaised)
         .border(ColorRole::Border)
         .radius(Radius::Full)
-        .child(label_text::<Msg>(
-            label,
-            TypeRole::Caption,
-            StateSpec::tone(Tone::Default),
-        ));
+        .child(
+            label_text::<Msg>(label, TypeRole::Caption, StateSpec::tone(Tone::Default))
+                .lines(1)
+                .ellipsis(crate::text::Ellipsis::End),
+        );
     if let (true, Some(message)) = (removable, remove) {
         let spec = inline_action_spec();
         row = row.child(
@@ -188,6 +188,8 @@ pub fn tag<Msg: Clone>(
                     .justify(Justify::Center)
                     .width(SizeSpec::Token(size.icon()))
                     .height(SizeSpec::Token(size.icon()))
+                    .min_width(Spacing::S6)
+                    .min_height(Spacing::S6)
                     .radius(Radius::Full)
                     .cursor(Cursor::Pointer)
                     .tooltip("Remove")
@@ -334,7 +336,8 @@ pub fn avatar_group<Msg: Clone>(
         row = row.child(
             avatar::<Msg>(name, None, size, None)
                 .border(ColorRole::Border)
-                .border_width(BorderWidth::Regular),
+                .border_width(BorderWidth::Regular)
+                .overlap_layer(true),
         );
     }
     row
@@ -620,11 +623,26 @@ pub fn callout<Msg: Clone>(
             TypeRole::Label,
             StateSpec::tone(Tone::Default),
         ));
+    let actions: Vec<Element<Msg>> = actions.into_iter().collect();
+    let has_actions = !actions.is_empty();
     let actions_row = Element::row()
         .align(Align::Center)
         .gap(Spacing::S2)
         .flow_wrap()
         .children(actions);
+    let mut content = Element::column()
+        .width(SizeSpec::Fill)
+        .max_width(ContentWidth::Md)
+        .gap(Spacing::S1)
+        .child(header)
+        .child(label_text::<Msg>(
+            body,
+            TypeRole::Body,
+            StateSpec::tone(Tone::Default),
+        ));
+    if has_actions {
+        content = content.child(actions_row);
+    }
     Element::row()
         .key("callout")
         .align(Align::Stretch)
@@ -635,20 +653,7 @@ pub fn callout<Msg: Clone>(
         .border_left(BorderWidth::Regular)
         .radius(Radius::Md)
         .clip()
-        .child(
-            Element::column()
-                .width(SizeSpec::Fill)
-                .max_width(ContentWidth::Md)
-                .width(SizeSpec::Fill)
-                .gap(Spacing::S1)
-                .child(header)
-                .child(label_text::<Msg>(
-                    body,
-                    TypeRole::Body,
-                    StateSpec::tone(Tone::Default),
-                ))
-                .child(actions_row),
-        )
+        .child(content)
 }
 
 #[cfg(test)]

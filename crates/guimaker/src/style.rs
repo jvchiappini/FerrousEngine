@@ -723,6 +723,12 @@ pub struct Style {
     /// behind (a table row surface spans its cells), which is intentional
     /// overlap, not a layout mistake.
     pub overlap_layer: bool,
+    /// Whether the children form one composite primary action.
+    ///
+    /// A split button is one action with a menu affordance; the lint treats
+    /// its filled-accent children as one primary group, not two competing
+    /// primaries.
+    pub primary_group: bool,
     /// State-dependent roles and the transition duration.
     pub visual: VisualStyle,
 }
@@ -784,6 +790,7 @@ impl Default for Style {
             cursor: Cursor::Default,
             selected: false,
             overlap_layer: false,
+            primary_group: false,
             visual: VisualStyle::default(),
         }
     }

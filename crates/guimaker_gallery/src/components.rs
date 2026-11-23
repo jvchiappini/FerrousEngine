@@ -346,29 +346,38 @@ fn button_story() -> Element<()> {
             ]),
             label("Sizes"),
             row(vec![
-                button_with(
+                labelled(
                     "Small",
-                    ButtonVariant::Primary,
-                    None,
-                    ControlSize::Sm,
-                    false,
-                    (),
+                    button_with(
+                        "Small",
+                        ButtonVariant::Primary,
+                        None,
+                        ControlSize::Sm,
+                        false,
+                        (),
+                    ),
                 ),
-                button_with(
+                labelled(
                     "Medium",
-                    ButtonVariant::Primary,
-                    None,
-                    ControlSize::Md,
-                    false,
-                    (),
+                    button_with(
+                        "Medium",
+                        ButtonVariant::Primary,
+                        None,
+                        ControlSize::Md,
+                        false,
+                        (),
+                    ),
                 ),
-                button_with(
+                labelled(
                     "Large",
-                    ButtonVariant::Primary,
-                    None,
-                    ControlSize::Lg,
-                    false,
-                    (),
+                    button_with(
+                        "Large",
+                        ButtonVariant::Primary,
+                        None,
+                        ControlSize::Lg,
+                        false,
+                        (),
+                    ),
                 ),
             ]),
             label("Icons and loading"),
@@ -1375,31 +1384,27 @@ fn menu_story() -> Element<()> {
 }
 
 fn dialog_story() -> Element<()> {
+    // The panels are deliberately plain: any text below the card lands in the
+    // prefix target, and the sparse nine-tap blur echoes sharp glyphs across
+    // the card interior. Coloured panels keep the backdrop a pure colour wash.
     let panels = [
-        (ColorRole::SurfaceRaised, "Composition"),
-        (ColorRole::SurfaceSunken, "Timeline"),
-        (ColorRole::AccentSubtle, "Layers"),
-        (ColorRole::SuccessSubtle, "Assets"),
-        (ColorRole::WarningSubtle, "Renders"),
-        (ColorRole::InfoSubtle, "Presets"),
+        ColorRole::SurfaceRaised,
+        ColorRole::SurfaceSunken,
+        ColorRole::AccentSubtle,
+        ColorRole::SuccessSubtle,
+        ColorRole::WarningSubtle,
+        ColorRole::InfoSubtle,
     ];
     let mut cards = Vec::with_capacity(panels.len());
-    for (role, title) in panels {
+    for role in panels {
         cards.push(
             Element::column()
                 .grow(1.0)
                 .height(SizeSpec::Fill)
                 .align(Align::Stretch)
-                .gap(Spacing::S2)
                 .pad(Spacing::S4)
                 .bg(role)
-                .radius(Radius::Md)
-                .child(display_text::<()>(title, TypeRole::Label, Tone::Default))
-                .child(display_text::<()>(
-                    "Backdrop content",
-                    TypeRole::Caption,
-                    Tone::Default,
-                )),
+                .radius(Radius::Md),
         );
     }
     let mut rows = Vec::new();

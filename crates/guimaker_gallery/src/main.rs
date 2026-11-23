@@ -5,13 +5,20 @@
 //!     [--theme light|dark|high-contrast] [--out out/x.png] [--check golden.png]
 //! cargo run -p guimaker_gallery -- golden <story> [--size ...] [--scale ...]
 //!     [--theme ...] [--update --reason "..."] [--out goldens/x.png]
+//! cargo run -p guimaker_gallery -- lint <story> [--sweep] [--size ...]
+//!     [--scale ...] [--theme ...] [--json]
 //! cargo run -p guimaker_gallery -- stories
 //! ```
 
 use std::path::{Path, PathBuf};
 
 use guimaker::geom::Size;
+use guimaker::lint::{Finding, Severity};
+use guimaker::sweep::{sweep, Sweep};
+use guimaker::text::MetricsTextSystem;
 use guimaker::theme::Theme;
+use guimaker::view::Element;
+use guimaker::{Frame, Ui};
 use guimaker_gallery::golden::{append_update_log, compare_png, Tolerance};
 use guimaker_gallery::shot::{render_story, write_png};
 use guimaker_gallery::story::Story;
@@ -39,6 +46,7 @@ fn run(args: Vec<String>) -> Result<()> {
     match command.as_str() {
         "shot" => command_shot(rest),
         "golden" => command_golden(rest),
+        "lint" => command_lint(rest),
         "shots" => command_shots(rest),
         "goldens" => command_goldens(rest),
         "stories" | "list" => {
@@ -52,7 +60,7 @@ fn run(args: Vec<String>) -> Result<()> {
             Ok(())
         }
         other => Err(GalleryError::Usage(format!(
-            "unknown command {other:?}; try `shot`, `golden`, `stories` or `help`"
+            "unknown command {other:?}; try `shot`, `golden`, `lint`, `stories` or `help`"
         ))),
     }
 }
@@ -104,6 +112,8 @@ struct Options {
     check: Option<PathBuf>,
     update: bool,
     reason: Option<String>,
+    sweep: bool,
+    json: bool,
 }
 
 impl Options {
@@ -156,6 +166,8 @@ fn parse_options(args: Vec<String>) -> Result<Options> {
         check: None,
         update: false,
         reason: None,
+        sweep: false,
+        json: false,
     };
 
     while let Some(flag) = args.next() {
@@ -192,6 +204,8 @@ fn parse_options(args: Vec<String>) -> Result<Options> {
                 options.out = Some(PathBuf::from(value_after(&mut args, "--golden")?));
             }
             "--update" => options.update = true,
+            "--sweep" => options.sweep = true,
+            "--json" => options.json = true,
             "--reason" => {
                 options.reason = Some(value_after(&mut args, "--reason")?);
             }
@@ -296,6 +310,204 @@ fn command_golden(args: Vec<String>) -> Result<()> {
     }
     println!("golden OK");
     Ok(())
+}
+
+/// Paints `view` into a fresh `Ui` with the GPU-free metrics.
+fn paint_view(view: &Element<()>, theme: &Theme, viewport: Size, scale: f32) -> Ui<()> {
+    let mut ui: Ui<()> = Ui::new(theme.clone());
+    ui.set_viewport(viewport, scale);
+    let _ = ui.set_time_ms(0.0);
+    let mut frame = Frame::new();
+    let mut text = MetricsTextSystem::new();
+    ui.paint(view, &mut frame, &mut text);
+    ui
+}
+
+/// `gallery lint <story> [--sweep] [--size ...] [--scale ...] [--theme ...] [--json]`.
+fn command_lint(args: Vec<String>) -> Result<()> {
+    let options = parse_options(args)?;
+    let theme = options.theme.theme();
+    let view = options.story.view();
+    if options.sweep {
+        return lint_sweep(&view, &theme, &options);
+    }
+    let logical = options.logical_size();
+    let ui = paint_view(&view, &theme, logical, options.scale);
+    let findings = guimaker::lint::lint(&ui);
+    if options.json {
+        for finding in &findings {
+            print_json_line(options.story, logical.width, options.scale, finding);
+        }
+    } else {
+        print_report(options.story, &options, &findings);
+    }
+    let blocking = blocking_count(&findings);
+    if blocking > 0 {
+        return Err(GalleryError::Lint(format!(
+            "{blocking} blocking finding(s) in `{}`",
+            options.story.name()
+        )));
+    }
+    Ok(())
+}
+
+/// Runs the responsive sweep and reports the lint's per-case findings.
+fn lint_sweep(view: &Element<()>, theme: &Theme, options: &Options) -> Result<()> {
+    let report = sweep(view, theme);
+    if options.json {
+        for case in &report.cases {
+            for finding in &case.lint {
+                print_json_line(options.story, case.width, case.scale, finding);
+            }
+        }
+    } else {
+        print_sweep_report(options.story, options, &report);
+    }
+    let blocking = report
+        .lint_findings()
+        .iter()
+        .filter(|finding| finding.severity.is_blocking())
+        .count();
+    if blocking > 0 {
+        return Err(GalleryError::Lint(format!(
+            "{blocking} blocking finding(s) in the sweep of `{}`",
+            options.story.name()
+        )));
+    }
+    Ok(())
+}
+
+/// Prints a single-view lint report grouped by severity.
+fn print_report(story: Story, options: &Options, findings: &[Finding]) {
+    println!(
+        "lint: {} ({}, {}x{} @ {}x)",
+        story.name(),
+        options.theme.name(),
+        options.width,
+        options.height,
+        scale_label(options.scale)
+    );
+    if findings.is_empty() {
+        println!("no findings");
+        return;
+    }
+    let mut ordered: Vec<&Finding> = findings.iter().collect();
+    ordered.sort_by_key(|finding| severity_rank(&finding.severity));
+    let mut shown: Option<u8> = None;
+    for finding in ordered {
+        let rank = severity_rank(&finding.severity);
+        if shown != Some(rank) {
+            let count = findings
+                .iter()
+                .filter(|candidate| severity_rank(&candidate.severity) == rank)
+                .count();
+            println!("{} ({count}):", severity_label(&finding.severity));
+            shown = Some(rank);
+        }
+        println!("  - {}", finding.sentence());
+    }
+    println!(
+        "{} finding(s), {} blocking",
+        findings.len(),
+        blocking_count(findings)
+    );
+}
+
+/// Prints the per-case findings and the first width of each rule/path.
+fn print_sweep_report(story: Story, options: &Options, report: &Sweep) {
+    println!(
+        "sweep: {} ({}, {} case(s))",
+        story.name(),
+        options.theme.name(),
+        report.cases.len()
+    );
+    for case in &report.cases {
+        if case.lint.is_empty() {
+            continue;
+        }
+        println!("{} @ {}x:", case.width, scale_label(case.scale));
+        for finding in &case.lint {
+            println!(
+                "  [{}] {}",
+                severity_label(&finding.severity),
+                finding.sentence()
+            );
+        }
+    }
+    println!("first widths:");
+    let first = report.first_widths();
+    if first.is_empty() {
+        println!("  none");
+    }
+    for entry in first {
+        println!(
+            "  {} `{}`: first at {} px",
+            entry.rule, entry.path, entry.width
+        );
+    }
+    println!(
+        "{} finding(s) in {} case(s); {} blocking",
+        report.lint_count(),
+        report.cases.len(),
+        report
+            .lint_findings()
+            .iter()
+            .filter(|finding| finding.severity.is_blocking())
+            .count()
+    );
+    println!("{}", report.summary());
+}
+
+fn blocking_count(findings: &[Finding]) -> usize {
+    findings
+        .iter()
+        .filter(|finding| finding.severity.is_blocking())
+        .count()
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // reason: severities are read from finding fields behind a shared reference
+fn severity_rank(severity: &Severity) -> u8 {
+    match severity {
+        Severity::Error => 0,
+        Severity::Warning => 1,
+        Severity::Info => 2,
+    }
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // reason: severities are read from finding fields behind a shared reference
+fn severity_label(severity: &Severity) -> &'static str {
+    match severity {
+        Severity::Error => "error",
+        Severity::Warning => "warning",
+        Severity::Info => "info",
+    }
+}
+
+fn print_json_line(story: Story, width: f32, scale: f32, finding: &Finding) {
+    let rule = format!("{:?}", finding.rule);
+    println!(
+        "{{\"story\":\"{}\",\"width\":{width},\"scale\":{scale},\"severity\":\"{}\",\"rule\":\"{}\",\"path\":\"{}\",\"sentence\":\"{}\"}}",
+        json_escape(story.name()),
+        severity_label(&finding.severity),
+        json_escape(&rule),
+        json_escape(&finding.path),
+        json_escape(&finding.sentence())
+    );
+}
+
+fn json_escape(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            other => escaped.push(other),
+        }
+    }
+    escaped
 }
 
 #[derive(Clone, Debug)]
@@ -477,6 +689,7 @@ fn print_usage() {
          \x20     [--out out/x.png] [--check golden.png]\n\
          \x20 gallery golden <story> [--size ...] [--scale ...] [--theme ...]\n\
          \x20     [--update --reason \"...\"] [--out goldens/x.png]\n\
+         \x20 gallery lint <story> [--sweep] [--size ...] [--scale ...] [--theme ...] [--json]\n\
          \x20 gallery shots [--size 1280x800] [--scale 1.5] [--out out/shots]\n\
          \x20 gallery goldens [--reason \"...\"] [--size ...] [--scale ...]\n\
          \n\

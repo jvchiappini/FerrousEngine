@@ -37,12 +37,14 @@
 pub mod components;
 pub mod golden;
 pub mod host;
+pub mod overlay;
 pub mod shot;
 pub mod story;
 
 pub use components::Component;
 pub use golden::{compare, compare_png, load_png, Tolerance};
 pub use host::{GuiApp, GuiHost};
+pub use overlay::DebugOverlay;
 pub use shot::{render_story, write_png, RenderedImage};
 pub use story::Story;
 
@@ -59,6 +61,8 @@ pub enum GalleryError {
     Image(String),
     /// A golden is missing, has the wrong size or failed the tolerance.
     Golden(String),
+    /// A story has a blocking design-lint finding.
+    Lint(String),
 }
 
 impl std::fmt::Display for GalleryError {
@@ -69,6 +73,7 @@ impl std::fmt::Display for GalleryError {
             Self::Io(error) => write!(formatter, "I/O: {error}"),
             Self::Image(message) => write!(formatter, "PNG: {message}"),
             Self::Golden(message) => write!(formatter, "golden: {message}"),
+            Self::Lint(message) => write!(formatter, "lint: {message}"),
         }
     }
 }

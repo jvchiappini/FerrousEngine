@@ -660,6 +660,7 @@ pub fn slider<Msg: Clone>(
         .justify(Justify::End)
         .bg(fill_role)
         .radius(Radius::Full)
+        .clip()
         .child(thumb);
     let mut track = track_spec
         .apply(
@@ -667,7 +668,9 @@ pub fn slider<Msg: Clone>(
                 .align(Align::Center)
                 .width(SizeSpec::Fill)
                 .height(SizeSpec::Token(size.icon()))
+                .min_height(Spacing::S6)
                 .radius(Radius::Full)
+                .clip()
                 .cursor(Cursor::Pointer)
                 .transition(Duration::Fast)
                 .on_click(message),
@@ -681,7 +684,11 @@ pub fn slider<Msg: Clone>(
         .align(Align::Center)
         .justify(Justify::SpaceBetween)
         .width(SizeSpec::Fill)
-        .child(label_text(label, size.label_role(), label_spec))
+        .child(
+            label_text(label, size.label_role(), label_spec)
+                .lines(1)
+                .ellipsis(crate::text::Ellipsis::End),
+        )
         .child(
             text::<Msg>(slider_value(value, unit))
                 .text_role(TypeRole::Caption)
@@ -733,6 +740,7 @@ pub fn range_slider<Msg: Clone>(
         .justify(Justify::End)
         .bg(fill_role)
         .radius(Radius::Full)
+        .clip()
         .child(thumb);
     let mut track = track_spec
         .apply(
@@ -740,7 +748,9 @@ pub fn range_slider<Msg: Clone>(
                 .align(Align::Center)
                 .width(SizeSpec::Fill)
                 .height(SizeSpec::Token(size.height()))
+                .min_height(Spacing::S6)
                 .radius(Radius::Full)
+                .clip()
                 .cursor(Cursor::Pointer)
                 .transition(Duration::Fast)
                 .selected(start > 0.0)

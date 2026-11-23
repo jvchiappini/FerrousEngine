@@ -76,11 +76,38 @@ impl Story {
     /// responsive values and the display list agree with the eventual target.
     #[must_use]
     pub fn display_list(self, theme: &Theme, viewport: Size, scale: f32) -> DisplayList {
+        paint(&self.view(), theme, viewport, scale)
+    }
+
+    /// The story's view with its message type erased.
+    ///
+    /// A story paints and lints the same way whatever its actions are, so the
+    /// gallery exposes one `Element<()>` for tools that do not route input
+    /// (the lint, the overlay and every headless command). Erasing an action
+    /// changes no style, text or rectangle, so the display list stays
+    /// byte-identical.
+    #[must_use]
+    pub fn view(self) -> Element<()> {
         match self {
-            Self::Start => paint(&start_screen(START_TIME_MS), theme, viewport, scale),
-            Self::Components => paint(&components_screen(), theme, viewport, scale),
-            Self::Component(component) => paint(&component.view(), theme, viewport, scale),
+            Self::Start => erase_actions(start_screen(START_TIME_MS)),
+            Self::Components => erase_actions(components_screen()),
+            Self::Component(component) => component.view(),
         }
+    }
+}
+
+/// Rebuilds an element tree with no action messages.
+fn erase_actions<Msg>(element: Element<Msg>) -> Element<()> {
+    Element {
+        kind: element.kind,
+        style: element.style,
+        text: element.text,
+        children: element.children.into_iter().map(erase_actions).collect(),
+        key: element.key,
+        action: None,
+        image: element.image,
+        icon_path: element.icon_path,
+        path_points: element.path_points,
     }
 }
 
@@ -259,6 +286,7 @@ fn chip(label: &'static str, fill: ColorRole) -> Element<ComponentsMsg> {
         .tone(tone)
         .pad_x(Spacing::S3)
         .pad_y(Spacing::S1)
+        .min_height(Spacing::S6)
         .bg(fill)
         .radius(Radius::Full)
 }

@@ -71,6 +71,8 @@ use guimaker::view::Element;
 use guimaker::{Frame, Ui};
 use guimaker_ferrous::FerrousTextSystem;
 
+use crate::overlay::DebugOverlay;
+
 /// An application model `GUIMaker` can drive.
 ///
 /// Implement this on the struct that owns the app's state. `view` must be a
@@ -111,6 +113,7 @@ pub struct GuiHost<A: GuiApp> {
     viewport: Size,
     scale: f32,
     pointer: Vec2,
+    overlay: DebugOverlay,
 }
 
 impl<A: GuiApp> GuiHost<A> {
@@ -128,6 +131,7 @@ impl<A: GuiApp> GuiHost<A> {
             viewport: Size::ZERO,
             scale: 1.0,
             pointer: Vec2::ZERO,
+            overlay: DebugOverlay::new(),
         }
     }
 
@@ -164,6 +168,17 @@ impl<A: GuiApp> GuiHost<A> {
     #[must_use]
     pub fn frame(&self) -> &Frame<A::Msg> {
         &self.frame
+    }
+
+    /// The debug overlay state (F12 toggles it in a window).
+    #[must_use]
+    pub fn overlay(&self) -> &DebugOverlay {
+        &self.overlay
+    }
+
+    /// The debug overlay state, mutably (a test or a menu may toggle it).
+    pub fn overlay_mut(&mut self) -> &mut DebugOverlay {
+        &mut self.overlay
     }
 
     fn apply_grid(&mut self, viewport: Size, scale: f32) {
@@ -208,6 +223,7 @@ impl<A: GuiApp> GuiHost<A> {
             WindowEvent::CursorMoved { position, .. } => {
                 let point = self.logical(position.x, position.y);
                 self.pointer = point;
+                self.overlay.cursor = point;
                 events.push(InputEvent::PointerMoved { position: point });
             }
             WindowEvent::CursorLeft { .. } => {
@@ -308,6 +324,16 @@ impl<A: GuiApp> FerrousApp for GuiHost<A> {
     }
 
     fn draw_ui(&mut self, dc: &mut DrawContext<'_, '_>) {
+        // The overlay is a debug pass: lint runs only while it is enabled and
+        // the extra commands live for this submission only. The next `update`
+        // repaints the normal list from scratch.
+        let mut base = 0;
+        if self.overlay.enabled {
+            let findings = guimaker::lint::lint(&self.ui);
+            let extra = self.overlay.commands(&self.ui, &findings);
+            base = self.frame.display_list.commands.len();
+            self.frame.display_list.commands.extend(extra);
+        }
         guimaker_ferrous::encode(
             &self.frame.display_list,
             self.viewport,
@@ -315,6 +341,9 @@ impl<A: GuiApp> FerrousApp for GuiHost<A> {
             dc.gui,
             dc.font,
         );
+        if self.overlay.enabled {
+            self.frame.display_list.commands.truncate(base);
+        }
     }
 
     #[allow(clippy::cast_precision_loss)] // reason: window dimensions sit far below 2^24
@@ -324,7 +353,13 @@ impl<A: GuiApp> FerrousApp for GuiHost<A> {
         self.apply_grid(viewport, scale);
     }
 
-    fn on_window_event(&mut self, event: &WindowEvent, _ctx: &mut AppContext<'_>) {
+    fn on_window_event(&mut self, event: &WindowEvent, ctx: &mut AppContext<'_>) {
+        if let WindowEvent::KeyboardInput { event: key, .. } = event {
+            if is_overlay_toggle(key.state, &key.logical_key) {
+                self.overlay.enabled = !self.overlay.enabled;
+                ctx.request_redraw();
+            }
+        }
         let events = self.translate_event(event);
         for event in events {
             self.ui.push_event(event);
@@ -368,6 +403,11 @@ fn map_modifiers(state: ModifiersState) -> Modifiers {
     }
 }
 
+/// Whether a key event toggles the debug overlay (F12 on press).
+fn is_overlay_toggle(state: ElementState, key: &Key) -> bool {
+    state == ElementState::Pressed && matches!(key, Key::Named(NamedKey::F12))
+}
+
 fn map_key(key: &Key) -> Option<ShortcutKey> {
     match key {
         Key::Named(named) => Some(match named {
@@ -407,7 +447,8 @@ fn map_key(key: &Key) -> Option<ShortcutKey> {
 
 #[cfg(test)]
 mod tests {
-    use super::{map_key, map_modifiers, GuiApp, GuiHost};
+    use super::{is_overlay_toggle, map_key, map_modifiers, GuiApp, GuiHost};
+    use ferrous_engine::winit::event::ElementState;
     use ferrous_engine::winit::keyboard::{Key, ModifiersState, NamedKey};
     use guimaker::theme::Theme;
     use guimaker::view::{text, Element};
@@ -458,5 +499,20 @@ mod tests {
         assert!(mapped.control);
         assert!(!mapped.alt);
         assert!(!mapped.super_key);
+    }
+
+    #[test]
+    fn f12_pressed_toggles_the_overlay_and_nothing_else_does() {
+        let f12 = Key::Named(NamedKey::F12);
+        assert!(is_overlay_toggle(ElementState::Pressed, &f12));
+        assert!(!is_overlay_toggle(ElementState::Released, &f12));
+        assert!(!is_overlay_toggle(
+            ElementState::Pressed,
+            &Key::Named(NamedKey::F11)
+        ));
+        assert!(!is_overlay_toggle(
+            ElementState::Pressed,
+            &Key::Character("f".into())
+        ));
     }
 }

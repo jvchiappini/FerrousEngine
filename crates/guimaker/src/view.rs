@@ -877,6 +877,13 @@ impl<Msg> Element<Msg> {
         self
     }
 
+    /// Marks the children as one composite primary action (a split button).
+    #[must_use]
+    pub fn primary_group(mut self, primary_group: bool) -> Self {
+        self.style.primary_group = primary_group;
+        self
+    }
+
     /// Sets the hover background role.
     #[must_use]
     pub fn hover_bg(mut self, role: ColorRole) -> Self {

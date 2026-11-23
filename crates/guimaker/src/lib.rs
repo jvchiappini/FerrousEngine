@@ -97,6 +97,7 @@ pub mod icons;
 pub mod input;
 pub mod inspect;
 pub mod layout;
+pub mod lint;
 pub mod motion;
 pub mod patterns;
 pub mod recipe;
@@ -122,6 +123,7 @@ pub mod prelude {
     pub use crate::input::ScrollKind;
     pub use crate::input::{InputEvent, Modifiers, PointerButton};
     pub use crate::layout::{AxisCause, Cause, LayoutStats};
+    pub use crate::lint::{Finding, Rule, Severity};
     pub use crate::motion::{caret_visible, next_caret_wake_ms, EnterExit};
     pub use crate::recipe::{start_screen, StartMsg};
     pub use crate::resp;

@@ -7,6 +7,7 @@ use std::fmt::Write as _;
 use crate::frame::{Frame, Ui};
 use crate::geom::{Rect, Size};
 use crate::layout::LayoutEngine;
+use crate::lint::Finding;
 use crate::style::ScrollAxes;
 use crate::text::MetricsTextSystem;
 use crate::theme::Theme;
@@ -82,8 +83,25 @@ pub struct Case {
     pub scale: f32,
     /// The findings at this case, in discovery order.
     pub issues: Vec<Issue>,
+    /// The design-lint findings at this case.
+    ///
+    /// The lint is a diagnostic: it never runs on the frame path and its
+    /// severity is separate from [`Case::passes`], which keeps the geometry
+    /// sweep's existing meaning.
+    pub lint: Vec<Finding>,
     /// Nodes laid out at this case (0 when the view failed to build).
     pub nodes: usize,
+}
+
+/// The smallest viewport width at which one lint problem appears.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FirstWidth {
+    /// The rule's debug name (`Overlap`, `Overflow`, ...).
+    pub rule: String,
+    /// The stable path of the offending node.
+    pub path: String,
+    /// The smallest width, in logical pixels, where the problem was seen.
+    pub width: f32,
 }
 
 impl Case {
@@ -124,6 +142,37 @@ impl Sweep {
     #[must_use]
     pub fn issue_count(&self) -> usize {
         self.cases.iter().map(|case| case.issues.len()).sum()
+    }
+
+    /// Every lint finding, across all cases, in case order.
+    #[must_use]
+    pub fn lint_findings(&self) -> Vec<&Finding> {
+        self.cases
+            .iter()
+            .flat_map(|case| case.lint.iter())
+            .collect()
+    }
+
+    /// Total lint findings.
+    #[must_use]
+    pub fn lint_count(&self) -> usize {
+        self.cases.iter().map(|case| case.lint.len()).sum()
+    }
+
+    /// The smallest width at which each rule/path pair appears.
+    ///
+    /// A problem that only shows up below a breakpoint is a responsive
+    /// finding; naming its first width is what makes it actionable. Entries
+    /// keep the order the problems were first seen.
+    #[must_use]
+    pub fn first_widths(&self) -> Vec<FirstWidth> {
+        let mut rows: Vec<(String, String, f32)> = Vec::new();
+        for case in &self.cases {
+            for finding in &case.lint {
+                rows.push((rule_name(finding), finding.path.clone(), case.width));
+            }
+        }
+        merge_first_widths(&rows)
     }
 
     /// How many cases failed at each width, in the order the widths were given.
@@ -202,11 +251,13 @@ pub fn sweep_with<Msg: Clone>(
             // The case already knows its metrics, so it uses the shared checker
             // directly instead of rebuilding the UI's per-node debug snapshot.
             let issues = check_at(&ui, width, scale);
+            let lint = crate::lint::lint(&ui);
             let nodes = ui.tree().len();
             sweep.cases.push(Case {
                 width,
                 scale,
                 issues,
+                lint,
                 nodes,
             });
         }
@@ -478,6 +529,35 @@ fn tolerance_for(scale: f32) -> f32 {
     }
 }
 
+/// The stable debug name of a lint rule.
+fn rule_name(finding: &Finding) -> String {
+    format!("{:?}", finding.rule)
+}
+
+/// Merges `(rule, path, width)` rows into one entry per rule/path pair,
+/// keeping the smallest width and the first-seen order.
+fn merge_first_widths(rows: &[(String, String, f32)]) -> Vec<FirstWidth> {
+    let mut merged: Vec<FirstWidth> = Vec::new();
+    for (rule, path, width) in rows {
+        match merged
+            .iter_mut()
+            .find(|entry| entry.rule == *rule && entry.path == *path)
+        {
+            Some(entry) => {
+                if *width < entry.width {
+                    entry.width = *width;
+                }
+            }
+            None => merged.push(FirstWidth {
+                rule: rule.clone(),
+                path: path.clone(),
+                width: *width,
+            }),
+        }
+    }
+    merged
+}
+
 fn tidy(value: f32) -> f32 {
     (value * 100.0).round() / 100.0
 }
@@ -500,6 +580,7 @@ mod tests {
             width,
             scale,
             issues,
+            lint: Vec::new(),
             nodes: 1,
         }
     }
@@ -533,5 +614,21 @@ mod tests {
             ],
         };
         assert_eq!(sweep.failures_by_width(), vec![(360.0, 1), (1024.0, 1)]);
+    }
+
+    #[test]
+    fn first_widths_keep_the_smallest_width_per_rule_and_path() {
+        let rows = vec![
+            ("Overlap".to_string(), "root/a".to_string(), 640.0),
+            ("Overlap".to_string(), "root/a".to_string(), 360.0),
+            ("Overflow".to_string(), "root/b".to_string(), 1024.0),
+        ];
+        let merged = super::merge_first_widths(&rows);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].rule, "Overlap");
+        assert_eq!(merged[0].path, "root/a");
+        assert!((merged[0].width - 360.0).abs() < f32::EPSILON);
+        assert_eq!(merged[1].rule, "Overflow");
+        assert!((merged[1].width - 1024.0).abs() < f32::EPSILON);
     }
 }

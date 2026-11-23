@@ -191,6 +191,7 @@ pub fn split_button<Msg: Clone>(label: &str, message: Msg, menu: Msg) -> Element
     Element::row()
         .gap(Spacing::S1)
         .align(Align::Center)
+        .primary_group(true)
         .child(button(label, ButtonVariant::Primary, message))
         .child(icon_button(
             Icon::ChevronDown,

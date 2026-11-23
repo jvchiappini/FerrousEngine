@@ -324,3 +324,17 @@ Every rewrite records its reason here.
 - 1795399987 `dialog-light-1280x800-1.5.png`: Phase 6 fix: real backdrop blur over content (dialog); one row background rect removes the table seams
 - 1795399988 `table-dark-1280x800-1.5.png`: Phase 6 fix: real backdrop blur over content (dialog); one row background rect removes the table seams
 - 1795399989 `table-light-1280x800-1.5.png`: Phase 6 fix: real backdrop blur over content (dialog); one row background rect removes the table seams
+- 1795432015 `dialog-dark-1280x800-1.5.png`: P7b: dialog background panels are plain colours (no text), so the backdrop blur has no glyph echoes
+- 1795432022 `dialog-light-1280x800-1.5.png`: P7b: dialog background panels are plain colours (no text), so the backdrop blur has no glyph echoes
+- 1795434926 `components-dark-1280x800-1.5.png`: Phase 8: design-lint mechanics fixes (24 px hit targets, explicit ellipsis, clipped slider fill, no empty callout action row, grouped button sizes)
+- 1795434927 `components-light-1280x800-1.5.png`: Phase 8: design-lint mechanics fixes (24 px hit targets, explicit ellipsis, clipped slider fill, no empty callout action row, grouped button sizes)
+- 1795434928 `button-dark-1280x800-1.5.png`: Phase 8: design-lint mechanics fixes (24 px hit targets, explicit ellipsis, clipped slider fill, no empty callout action row, grouped button sizes)
+- 1795434930 `button-light-1280x800-1.5.png`: Phase 8: design-lint mechanics fixes (24 px hit targets, explicit ellipsis, clipped slider fill, no empty callout action row, grouped button sizes)
+- 1795434931 `tag-dark-1280x800-1.5.png`: Phase 8: design-lint mechanics fixes (24 px hit targets, explicit ellipsis, clipped slider fill, no empty callout action row, grouped button sizes)
+- 1795434932 `tag-light-1280x800-1.5.png`: Phase 8: design-lint mechanics fixes (24 px hit targets, explicit ellipsis, clipped slider fill, no empty callout action row, grouped button sizes)
+- 1795434933 `slider-dark-1280x800-1.5.png`: Phase 8: design-lint mechanics fixes (24 px hit targets, explicit ellipsis, clipped slider fill, no empty callout action row, grouped button sizes)
+- 1795434934 `slider-light-1280x800-1.5.png`: Phase 8: design-lint mechanics fixes (24 px hit targets, explicit ellipsis, clipped slider fill, no empty callout action row, grouped button sizes)
+- 1795434935 `range-slider-dark-1280x800-1.5.png`: Phase 8: design-lint mechanics fixes (24 px hit targets, explicit ellipsis, clipped slider fill, no empty callout action row, grouped button sizes)
+- 1795434937 `range-slider-light-1280x800-1.5.png`: Phase 8: design-lint mechanics fixes (24 px hit targets, explicit ellipsis, clipped slider fill, no empty callout action row, grouped button sizes)
+- 1795434938 `callout-dark-1280x800-1.5.png`: Phase 8: design-lint mechanics fixes (24 px hit targets, explicit ellipsis, clipped slider fill, no empty callout action row, grouped button sizes)
+- 1795434939 `callout-light-1280x800-1.5.png`: Phase 8: design-lint mechanics fixes (24 px hit targets, explicit ellipsis, clipped slider fill, no empty callout action row, grouped button sizes)

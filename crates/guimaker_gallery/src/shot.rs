@@ -20,6 +20,7 @@ use ferrous_ui_render::{Font, GuiBatch, GuiRenderer};
 use guimaker::display_list::{DisplayList, DrawCommand};
 use guimaker::geom::Size;
 use guimaker::theme::{ColorRole, Theme};
+use wgpu::{Device, Queue};
 
 use crate::story::Story;
 use crate::{GalleryError, Result};
@@ -105,6 +106,46 @@ pub fn render_display_list(
     logical: Size,
     scale: f32,
 ) -> Result<RenderedImage> {
+    render_display_list_with_atlas(display_list, theme, logical, scale, None)
+}
+
+/// Renders the same display list with a solid colour bound where the font
+/// atlas normally sits.
+///
+/// This is the negative control for the backdrop-blur guards: the display list,
+/// the geometry, the tint and the blur are untouched, only the glyph texture
+/// changes. If two renders agree pixel for pixel in the card interior, the
+/// backdrop never samples the atlas.
+///
+/// # Errors
+///
+/// Same as [`render_display_list`], plus a GPU error if the solid atlas cannot
+/// be created.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+// reason: the viewport and scale are validated positive and finite, then rounded
+// and floored at one pixel, so the physical dimensions fit `u32`.
+pub fn render_display_list_with_solid_atlas(
+    display_list: &guimaker::display_list::DisplayList,
+    theme: &Theme,
+    logical: Size,
+    scale: f32,
+    colour: [u8; 4],
+) -> Result<RenderedImage> {
+    render_display_list_with_atlas(display_list, theme, logical, scale, Some(colour))
+}
+
+/// Shared implementation for [`render_display_list`] and its solid-atlas
+/// negative control.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+// reason: the viewport and scale are validated positive and finite, then rounded
+// and floored at one pixel, so the physical dimensions fit `u32`.
+fn render_display_list_with_atlas(
+    display_list: &guimaker::display_list::DisplayList,
+    theme: &Theme,
+    logical: Size,
+    scale: f32,
+    solid_atlas: Option<[u8; 4]>,
+) -> Result<RenderedImage> {
     if !(logical.width > 0.0 && logical.height > 0.0 && scale.is_finite() && scale > 0.0) {
         return Err(GalleryError::Usage(format!(
             "invalid render request: viewport {}x{} at scale {scale}",
@@ -130,7 +171,12 @@ pub fn render_display_list(
 
     let mut renderer =
         GuiRenderer::new(device.clone(), DEFAULT_FORMAT, 4096, width, height, 1, None);
-    renderer.set_font_atlas(&font.atlas.view, &font.atlas.sampler);
+    let solid_atlas =
+        solid_atlas.map(|colour| solid_atlas_texture(device.as_ref(), queue.as_ref(), colour));
+    match &solid_atlas {
+        Some((_texture, view, sampler)) => renderer.set_font_atlas(view, sampler),
+        None => renderer.set_font_atlas(&font.atlas.view, &font.atlas.sampler),
+    }
     let target = &harness.target().view;
 
     if let Some(split) = backdrop_split(&display_list.commands) {
@@ -187,6 +233,55 @@ pub fn render_display_list(
         height,
         rgba,
     })
+}
+
+/// A one-texel atlas filled with `colour`, used as the glyph negative control.
+fn solid_atlas_texture(
+    device: &Device,
+    queue: &Queue,
+    colour: [u8; 4],
+) -> (wgpu::Texture, wgpu::TextureView, wgpu::Sampler) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("guimaker_gallery solid atlas"),
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::ImageCopyTexture {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &colour,
+        wgpu::ImageDataLayout {
+            offset: 0,
+            bytes_per_row: Some(4),
+            rows_per_image: Some(1),
+        },
+        wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("guimaker_gallery solid atlas sampler"),
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
+    (texture, view, sampler)
 }
 
 /// The index of the first command owned by the first backdrop-blur node.
