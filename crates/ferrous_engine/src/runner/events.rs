@@ -69,6 +69,53 @@ impl<A: FerrousApp> Runner<A> {
 }
 
 impl<A: FerrousApp + 'static> Runner<A> {
+    /// Forwards a popup's raw event to the app.
+    fn deliver_popup_event(&mut self, popup: crate::windows::PopupId, event: &WindowEvent) {
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        let Some(gfx) = self.graphics.as_mut() else {
+            return;
+        };
+        let waker = self.waker.clone();
+        let size = self.window_size;
+        let (redraw, redraw_at) = {
+            let backend = gfx.renderer.context.backend;
+            let time = self.clock.peek();
+            let mut ctx = AppContext {
+                input: &self.input,
+                time,
+                window_size: size,
+                scale_factor: self.scale_factor,
+                window: &window,
+                viewport: self.viewport,
+                render_stats: ferrous_core::RenderStats::default(),
+                camera_eye: ferrous_core::glam::Vec3::ZERO,
+                camera_target: ferrous_core::glam::Vec3::ZERO,
+                gizmos: Vec::new(),
+                world: &mut self.world,
+                render: RenderContext::new(&mut gfx.renderer),
+                asset_server: &mut self.asset_server,
+                exit_requested: false,
+                requested_resolution_scale: None,
+                keep_awake_requested: false,
+                screenshot_requested: false,
+                redraw_requested: false,
+                redraw_at: None,
+                waker: &waker,
+                _gpu_backend: backend,
+            };
+            self.app.on_popup_event(popup, event, &mut ctx);
+            (ctx.redraw_requested, ctx.redraw_at)
+        };
+        if redraw {
+            self.redraw.request();
+        }
+        if let Some(when) = redraw_at {
+            self.redraw.request_at(when);
+        }
+    }
+
     /// Forwards one scale change to the app.
     ///
     /// The app gets the new scale and the suggested physical size once; the
@@ -259,6 +306,18 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        // Route by window id before anything else: a popup's input goes to
+        // `on_popup_event` and never reaches the main window's path.
+        let target = self
+            .windows
+            .as_ref()
+            .map_or(crate::windows::WindowTarget::Main, |windows| {
+                windows.route(id)
+            });
+        if let crate::windows::WindowTarget::Popup(popup) = target {
+            self.deliver_popup_event(popup, &event);
+            return;
+        }
         // Prompt 18 P1: measure only real event callbacks. `RedrawRequested`
         // carries the whole frame, so bracketing it made the previous frame's
         // render time appear as the next frame's "event handling".

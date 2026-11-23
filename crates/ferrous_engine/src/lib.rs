@@ -37,6 +37,7 @@ mod runner;
 pub mod screenshot;
 pub mod traits;
 mod window_style;
+pub mod windows;
 
 // --- Re-exports Principales (SDK Facade) ---
 /// The GPU startup policy types, so an application can name them.

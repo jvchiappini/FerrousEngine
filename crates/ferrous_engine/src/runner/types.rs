@@ -40,6 +40,8 @@ pub(crate) struct Runner<A: FerrousApp + 'static> {
     pub(super) window_size: (u32, u32),
     /// The window's current DPI scale factor.
     pub(super) scale_factor: f64,
+    /// The main window plus owned popups (popup-capable hosts only).
+    pub(super) windows: Option<crate::windows::WindowMap>,
     pub(super) viewport: Viewport,
     pub(super) clock: TimeClock,
     pub(super) world: World,
@@ -116,6 +118,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
             },
             window_size: (0, 0),
             scale_factor: 1.0,
+            windows: None,
             clock: TimeClock::new(),
             world: World::new(),
             font: None,

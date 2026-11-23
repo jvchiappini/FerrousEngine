@@ -1,4 +1,4 @@
-﻿use std::path::PathBuf;
+use std::path::PathBuf;
 
 use crate::context::AppContext;
 use crate::screenshot::Screenshot;
@@ -245,6 +245,20 @@ pub trait FerrousApp {
         &mut self,
         _scale_factor: f64,
         _new_size: (u32, u32),
+        _ctx: &mut AppContext<'_>,
+    ) {
+    }
+
+    /// Receives raw input for a popup window, tagged with its id.
+    ///
+    /// The runner routes a `WindowEvent` by `WindowId`: the main window keeps
+    /// the existing `on_window_event` path, and a popup reaches this method.
+    /// Coordinates are the popup's own. The default does nothing, so an app
+    /// that never opens a popup is unaffected.
+    fn on_popup_event(
+        &mut self,
+        _popup: crate::windows::PopupId,
+        _event: &winit::event::WindowEvent,
         _ctx: &mut AppContext<'_>,
     ) {
     }
