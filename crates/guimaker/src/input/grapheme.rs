@@ -1,4 +1,4 @@
-﻿//! Grapheme, word and line boundaries over a `&str`.
+//! Grapheme, word and line boundaries over a `&str`.
 //!
 //! Everything the text editor moves or deletes is a grapheme cluster, never a
 //! `char`: deleting once must remove a whole emoji (including a ZWJ family or a

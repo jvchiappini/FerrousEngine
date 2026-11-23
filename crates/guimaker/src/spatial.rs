@@ -1,4 +1,4 @@
-﻿//! Hit testing: a uniform grid over the laid-out interactive rectangles.
+//! Hit testing: a uniform grid over the laid-out interactive rectangles.
 //!
 //! The grid itself is [`ferrous_core::spatial::SpatialIndex`], the one spatial
 //! implementation the engine and `GUIMaker` share (prompt 15 phase 4B). This

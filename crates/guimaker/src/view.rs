@@ -724,6 +724,27 @@ impl<Msg> Element<Msg> {
         self
     }
 
+    /// Places the element on an explicit one-based grid row.
+    #[must_use]
+    pub fn grid_row(mut self, row: u16) -> Self {
+        self.style.grid_row = Some(row);
+        self
+    }
+
+    /// Places the element on an explicit one-based grid column.
+    #[must_use]
+    pub fn grid_column(mut self, column: u16) -> Self {
+        self.style.grid_column = Some(column);
+        self
+    }
+
+    /// Spans the element over `span` grid columns from its start column.
+    #[must_use]
+    pub fn grid_column_span(mut self, span: u16) -> Self {
+        self.style.grid_column_span = Some(span);
+        self
+    }
+
     /// Sets the default text tone.
     #[must_use]
     pub fn tone(mut self, tone: Tone) -> Self {
@@ -843,6 +864,16 @@ impl<Msg> Element<Msg> {
     #[must_use]
     pub fn selected(mut self, selected: bool) -> Self {
         self.style.selected = selected;
+        self
+    }
+
+    /// Marks the element as a background layer behind its siblings.
+    ///
+    /// The design sweep does not report the intentional overlap between such
+    /// a layer and the siblings it is painted behind.
+    #[must_use]
+    pub fn overlap_layer(mut self, overlap_layer: bool) -> Self {
+        self.style.overlap_layer = overlap_layer;
         self
     }
 
@@ -1502,6 +1533,15 @@ fn hash_style(style: &Style, hash: &mut Fnv) {
             });
         }
         None => hash.write_u8(0),
+    }
+    for placement in [style.grid_row, style.grid_column, style.grid_column_span] {
+        match placement {
+            Some(value) => {
+                hash.write_u8(1);
+                hash.write_u32(u32::from(value));
+            }
+            None => hash.write_u8(0),
+        }
     }
     hash.write_bool(style.wrap);
     hash_responsive(&style.scroll, hash, |value, hash| {

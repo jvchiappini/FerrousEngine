@@ -29,20 +29,24 @@ pub enum ScrollKind {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ScrollController {
     offset: Vec2,
+    target: Vec2,
     velocity: Vec2,
     max: Vec2,
     line_height: f32,
     friction: f32,
+    smooth: bool,
 }
 
 impl Default for ScrollController {
     fn default() -> Self {
         Self {
             offset: Vec2::ZERO,
+            target: Vec2::ZERO,
             velocity: Vec2::ZERO,
             max: Vec2::ZERO,
             line_height: 32.0,
             friction: 6.0,
+            smooth: false,
         }
     }
 }
@@ -64,6 +68,31 @@ impl ScrollController {
         self.friction = friction.max(0.0);
     }
 
+    /// Enables or disables smooth wheel scrolling.
+    ///
+    /// With smooth scrolling a wheel sets a target and [`Self::advance`] eases
+    /// the real offset toward it, so a notch never jumps in one frame.
+    /// Disabling it snaps the target to the current offset and restores the
+    /// immediate-wheel behaviour. The default is `false`.
+    pub fn set_smooth(&mut self, smooth: bool) {
+        self.smooth = smooth;
+        self.target = self.offset;
+    }
+
+    /// Whether smooth wheel scrolling is enabled.
+    #[must_use]
+    pub fn smooth(&self) -> bool {
+        self.smooth
+    }
+
+    /// The offset the smooth easing is heading toward.
+    ///
+    /// It always equals [`Self::offset`] when smooth scrolling is disabled.
+    #[must_use]
+    pub fn target(&self) -> Vec2 {
+        self.target
+    }
+
     /// The current offset.
     #[must_use]
     pub fn offset(&self) -> Vec2 {
@@ -82,15 +111,20 @@ impl ScrollController {
         self.max
     }
 
-    /// Whether momentum is still moving the content.
+    /// Whether momentum or smooth easing is still moving the content.
     #[must_use]
     pub fn is_moving(&self) -> bool {
         self.velocity.length_squared() > 0.0
+            || (self.smooth && (self.target - self.offset).length_squared() > 0.0625)
     }
 
     /// Sets the offset, clamped to the bounds; returns whether it changed.
+    ///
+    /// The smooth target follows the offset so a programmatic jump is not
+    /// immediately undone by an in-flight wheel ease.
     pub fn set_offset(&mut self, offset: Vec2) -> bool {
         let clamped = clamp(offset, self.max);
+        self.target = clamped;
         if clamped == self.offset {
             return false;
         }
@@ -100,22 +134,25 @@ impl ScrollController {
 
     /// Sets the scrollable range from the viewport and content sizes.
     ///
-    /// A negative or non-finite difference clamps to zero, and the offset is
-    /// pulled back inside the new range.
+    /// A negative or non-finite difference clamps to zero, and the offset and
+    /// smooth target are pulled back inside the new range.
     pub fn set_bounds(&mut self, viewport: Vec2, content: Vec2) {
         self.max = Vec2::new(
             (content.x - viewport.x).max(0.0),
             (content.y - viewport.y).max(0.0),
         );
         self.offset = clamp(self.offset, self.max);
+        self.target = clamp(self.target, self.max);
     }
 
     /// Applies a wheel or touchpad delta.
     ///
     /// A line delta travels `line_height` pixels per line. With `Shift` held a
-    /// vertical wheel becomes horizontal (the desktop convention). A wheel
-    /// notch moves the offset immediately; a pixel delta (touchpad) moves it
-    /// and also seeds the momentum velocity. Returns whether the offset moved.
+    /// vertical wheel becomes horizontal (the desktop convention). With smooth
+    /// scrolling enabled the delta moves the target and [`Self::advance`] eases
+    /// the offset; otherwise the offset moves immediately. A pixel delta also
+    /// seeds the momentum velocity. Returns whether the applied delta changed
+    /// the target or offset.
     pub fn wheel(&mut self, delta: Vec2, kind: ScrollKind, shift: bool) -> bool {
         let (dx, dy) = if shift && delta.x.abs() < f32::EPSILON {
             (delta.y, 0.0)
@@ -129,6 +166,15 @@ impl ScrollController {
         if scaled == Vec2::ZERO {
             return false;
         }
+        if self.smooth {
+            let next = clamp(self.target - scaled, self.max);
+            let moved = next != self.target;
+            self.target = next;
+            if kind == ScrollKind::Pixel {
+                self.velocity = -scaled * 60.0;
+            }
+            return moved;
+        }
         let moved = self.set_offset(self.offset - scaled);
         if kind == ScrollKind::Pixel {
             self.velocity = -scaled * 60.0;
@@ -136,13 +182,25 @@ impl ScrollController {
         moved
     }
 
-    /// Advances momentum by `dt_s` seconds; returns whether the offset moved.
+    /// Advances momentum or smooth easing by `dt_s` seconds.
     ///
-    /// Exponential decay keeps the result independent of the frame rate:
-    /// `velocity *= exp(-friction * dt)`. Below one logical pixel per second
-    /// the motion stops. Hitting a bound zeroes that axis' velocity.
+    /// In the default mode, exponential decay keeps momentum independent of the
+    /// frame rate (`velocity *= exp(-friction * dt)`); below one logical pixel
+    /// per second the motion stops, and hitting a bound zeroes that axis'
+    /// velocity.
+    ///
+    /// With smooth scrolling enabled the offset eases toward the target with
+    /// `alpha = 1 - exp(-12 * dt)` and snaps once it is within 0.25 logical
+    /// pixels; any seeded velocity is decayed so [`Self::is_moving`] settles.
+    /// Returns whether the offset moved.
     pub fn advance(&mut self, dt_s: f32) -> bool {
-        if !self.is_moving() || dt_s <= 0.0 {
+        if dt_s <= 0.0 {
+            return false;
+        }
+        if self.smooth {
+            return self.advance_smooth(dt_s);
+        }
+        if !self.is_moving() {
             return false;
         }
         let decay = (-self.friction * dt_s).exp();
@@ -162,6 +220,34 @@ impl ScrollController {
             || (next.y >= self.max.y && self.velocity.y > 0.0)
         {
             self.velocity.y = 0.0;
+        }
+        self.offset = next;
+        self.target = next;
+        self.offset != before
+    }
+
+    fn advance_smooth(&mut self, dt_s: f32) -> bool {
+        let decay = (-self.friction * dt_s).exp();
+        self.velocity *= decay;
+        if self.velocity.length_squared() < 1.0 {
+            self.velocity = Vec2::ZERO;
+        }
+        let before = self.offset;
+        let diff = self.target - self.offset;
+        if diff.length_squared() <= 0.0625 {
+            if self.offset == self.target {
+                self.velocity = Vec2::ZERO;
+                return false;
+            }
+            self.offset = self.target;
+            self.velocity = Vec2::ZERO;
+            return true;
+        }
+        let alpha = 1.0 - (-12.0 * dt_s).exp();
+        let mut next = self.offset + diff * alpha;
+        if (self.target - next).length_squared() <= 0.0625 {
+            next = self.target;
+            self.velocity = Vec2::ZERO;
         }
         self.offset = next;
         self.offset != before
@@ -195,9 +281,10 @@ impl ScrollController {
         self.set_offset(Vec2::new(self.offset.x, y))
     }
 
-    /// Stops momentum immediately.
+    /// Stops momentum and smooth easing immediately.
     pub fn stop(&mut self) {
         self.velocity = Vec2::ZERO;
+        self.target = self.offset;
     }
 }
 
@@ -268,6 +355,35 @@ mod tests {
             controller.advance(1.0 / 60.0);
         }
         assert_eq!(controller.offset().y, 1000.0);
+        assert!(!controller.is_moving());
+    }
+
+    #[test]
+    fn smooth_wheel_eases_to_the_target_over_several_frames() {
+        let mut controller = controller();
+        controller.set_smooth(true);
+        assert!(controller.wheel(Vec2::new(0.0, -1.0), ScrollKind::Line, false));
+        assert_eq!(controller.offset().y, 0.0, "a notch does not jump");
+        assert_eq!(controller.target().y, 32.0);
+        assert!(controller.is_moving());
+        let mut steps = 0;
+        while controller.advance(1.0 / 60.0) {
+            steps += 1;
+            assert!(controller.offset().y <= 32.0, "still approaching");
+        }
+        assert!(steps > 1, "converged in {steps} steps");
+        assert_eq!(controller.offset().y, 32.0);
+        assert!(!controller.is_moving());
+    }
+
+    #[test]
+    fn smooth_disabled_keeps_the_immediate_wheel() {
+        let mut controller = controller();
+        controller.set_smooth(true);
+        controller.set_smooth(false);
+        assert!(controller.wheel(Vec2::new(0.0, -1.0), ScrollKind::Line, false));
+        assert_eq!(controller.offset().y, 32.0);
+        assert_eq!(controller.target(), controller.offset());
         assert!(!controller.is_moving());
     }
 

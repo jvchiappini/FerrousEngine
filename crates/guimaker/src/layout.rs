@@ -12,15 +12,17 @@
 use std::sync::Arc;
 
 use glam::Vec2;
+use taffy::geometry::Line;
 use taffy::prelude::{
     AlignItems, AlignSelf, AvailableSpace, Dimension, Display, FlexDirection, FlexWrap,
     JustifyContent, LengthPercentage, LengthPercentageAuto, Position, Size as TSize,
     Style as TaffyStyle, TaffyTree,
 };
 use taffy::style::{
-    GridTrackRepetition, MaxTrackSizingFunction, MinTrackSizingFunction,
+    GridPlacement, GridTrackRepetition, MaxTrackSizingFunction, MinTrackSizingFunction,
     NonRepeatedTrackSizingFunction, Overflow, TrackSizingFunction,
 };
+use taffy::style_helpers::TaffyGridLine;
 use taffy::Point;
 
 use crate::geom::{Rect, Size};
@@ -995,7 +997,22 @@ fn taffy_style(
                 .collect(),
         };
     }
+    output.grid_row = grid_axis(style.grid_row, None);
+    output.grid_column = grid_axis(style.grid_column, style.grid_column_span);
     output
+}
+
+/// Builds one taffy grid axis from a one-based start line and an optional span.
+///
+/// A line that does not fit `i16` falls back to `Auto`, so an out-of-range
+/// placement never panics; taffy places the item with its auto-placement
+/// algorithm instead.
+fn grid_axis(line: Option<u16>, span: Option<u16>) -> Line<GridPlacement> {
+    let start = line
+        .and_then(|value| i16::try_from(value).ok())
+        .map_or(GridPlacement::Auto, GridPlacement::from_line_index);
+    let end = span.map_or(GridPlacement::Auto, GridPlacement::Span);
+    Line { start, end }
 }
 
 fn dimension(spec: SizeSpec, fill: bool) -> Dimension {

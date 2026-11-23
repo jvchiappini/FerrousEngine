@@ -8,6 +8,14 @@ use serde::{Deserialize, Serialize};
 
 use super::color::Color;
 
+/// The alpha a backdrop-blur card gives its tint.
+///
+/// A card that requests a backdrop blur keeps its background role's colour but
+/// becomes translucent so the blurred content below shows through. The renderer
+/// multiplies the role's alpha by this value; the gallery's CPU reference test
+/// uses the same constant so both sides agree on the result.
+pub const BACKDROP_TINT_ALPHA: f32 = 0.80;
+
 /// The current theme mode, which selects mode-dependent tokens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ThemeMode {

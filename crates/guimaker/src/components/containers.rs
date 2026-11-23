@@ -28,6 +28,15 @@ use crate::view::{text, Element};
 /// The uniform row height used by the virtualised table, in spacing tokens.
 const TABLE_ROW_HEIGHT: f32 = Spacing::S6.px();
 
+/// The stable key id of the table's single header background element.
+///
+/// The one-row-per-rect scheme starts here: body-row backgrounds use
+/// `TABLE_HEADER_BACKGROUND_ID - 1 - row`, where `row` is the built row's
+/// offset from `visible.start`. Both ids sit far above the cell key formula
+/// (`columns + row * columns + column`), so a scan can tell a background from
+/// a cell and the test can locate one by id.
+const TABLE_HEADER_BACKGROUND_ID: u64 = u64::MAX;
+
 /// A card surface with an optional interactive state.
 ///
 /// The card is a `Surface` with a `Border`, `Radius::Lg`, `S4` padding and
@@ -359,6 +368,11 @@ pub fn table<Msg: Clone>(
 /// alternate `Surface` and `SurfaceSunken`, a selected row uses `AccentSubtle`,
 /// and every row emits `row_message(index)` with its own tab index.
 ///
+/// The header and each body row paint a single background rect behind their
+/// cells (one background keyed by id, one per row), so a highlighted row never
+/// shows a seam at a column boundary. Cells themselves carry no background;
+/// they only own their text, tone and interaction.
+///
 /// ```
 /// use guimaker::prelude::*;
 /// let mut model = TableModel::new([TableColumn { title: "Name", width: ColumnWidth::Fit, sortable: true }], 20);
@@ -396,13 +410,26 @@ pub fn table_view<Msg: Clone>(
         .key("table")
         .align(Align::Stretch)
         .width(SizeSpec::Fill);
+    let column_span = u16::try_from(columns).unwrap_or(u16::MAX);
+    table = table.child(
+        Element::row()
+            .key_id(TABLE_HEADER_BACKGROUND_ID)
+            .grid_row(1)
+            .grid_column(1)
+            .grid_column_span(column_span)
+            .width(SizeSpec::Fill)
+            .height(SizeSpec::Fill)
+            .bg(ColorRole::SurfaceRaised)
+            .radius(Radius::Sm)
+            .overlap_layer(true),
+    );
     for (column_index, column) in model.columns.iter().enumerate() {
         let sorted = sort.is_some_and(|(index, _)| index == column_index);
         let ascending = sort.is_some_and(|(index, ascending)| index == column_index && ascending);
         let spec = StateSpec {
-            bg: Some(ColorRole::SurfaceRaised),
-            hover_bg: Some(ColorRole::Surface),
-            pressed_bg: Some(ColorRole::SurfaceSunken),
+            bg: None,
+            hover_bg: None,
+            pressed_bg: None,
             selected_bg: None,
             disabled_bg: None,
             border: None,
@@ -418,6 +445,12 @@ pub fn table_view<Msg: Clone>(
             .apply(
                 Element::row()
                     .key_id(u64::try_from(column_index).unwrap_or(u64::MAX))
+                    .grid_row(1)
+                    .grid_column(
+                        u16::try_from(column_index)
+                            .unwrap_or(u16::MAX)
+                            .saturating_add(1),
+                    )
                     .align(Align::Center)
                     .gap(Spacing::S1)
                     .pad_x(Spacing::S3)
@@ -447,22 +480,40 @@ pub fn table_view<Msg: Clone>(
         table = table.child(cell);
     }
     for index in start..end {
+        let row_offset = index - start;
+        let row = 2u16.saturating_add(u16::try_from(row_offset).unwrap_or(u16::MAX));
         let background = if index % 2 == 0 {
             ColorRole::Surface
         } else {
             ColorRole::SurfaceSunken
         };
         let row_selected = selected == Some(index);
+        let row_role = if row_selected {
+            ColorRole::AccentSubtle
+        } else {
+            background
+        };
+        let row_background = TABLE_HEADER_BACKGROUND_ID
+            .saturating_sub(1)
+            .saturating_sub(u64::try_from(row_offset).unwrap_or(u64::MAX));
+        table = table.child(
+            Element::row()
+                .key_id(row_background)
+                .grid_row(row)
+                .grid_column(1)
+                .grid_column_span(column_span)
+                .width(SizeSpec::Fill)
+                .height(SizeSpec::Fill)
+                .bg(row_role)
+                .radius(Radius::Sm)
+                .overlap_layer(true),
+        );
         let spec = StateSpec {
-            bg: Some(if row_selected {
-                ColorRole::AccentSubtle
-            } else {
-                background
-            }),
-            hover_bg: Some(ColorRole::SurfaceRaised),
-            pressed_bg: Some(ColorRole::SurfaceSunken),
-            selected_bg: Some(ColorRole::AccentSubtle),
-            disabled_bg: Some(ColorRole::SurfaceSunken),
+            bg: None,
+            hover_bg: None,
+            pressed_bg: None,
+            selected_bg: None,
+            disabled_bg: None,
             border: None,
             hover_border: None,
             tone: Tone::Default,
@@ -499,6 +550,12 @@ pub fn table_view<Msg: Clone>(
                 .apply(
                     Element::row()
                         .key_id(key)
+                        .grid_row(row)
+                        .grid_column(
+                            u16::try_from(column_index)
+                                .unwrap_or(u16::MAX)
+                                .saturating_add(1),
+                        )
                         .align(Align::Center)
                         .pad_x(Spacing::S3)
                         .min_height(size.height())
@@ -1096,10 +1153,15 @@ mod tests {
         let window = model.visible_range(0.0, 240.0);
         assert!(window.len() < 30, "window is {window:?}");
         let view: Element<()> = table_view(&mut model, window.clone(), |_| (), |_| ());
-        assert!(
-            view.children.len() < 30,
-            "built {} rows",
-            view.children.len()
+        // One header background plus one background per built row, plus the
+        // header and body cells; no off-window row is built.
+        let columns = sample_columns().len();
+        assert_eq!(
+            view.children.len(),
+            3 + window.len() * (columns + 1),
+            "built {} children for {} rows",
+            view.children.len(),
+            window.len()
         );
         assert!(view.children.len() > 1);
         let alias: Element<()> = table(&mut model, window, |_| (), |_| ());

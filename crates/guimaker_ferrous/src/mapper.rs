@@ -7,13 +7,15 @@
 use ferrous_svg::{SvgMesh, SvgRect};
 use ferrous_ui_render::text_utils::BaselineGlyphs;
 use ferrous_ui_render::{
-    BorderSpec, Font, GuiBatch, GuiQuad, Rect as EngineRect, ShadowSpec as BatchShadowSpec,
-    SvgCommand, TextQuad, GRADIENT_BIT, GRADIENT_RADIAL_BIT, GRADIENT_V_BIT, TEXTURED_BIT,
+    BackdropBlurSpec, BorderSpec, Font, GuiBatch, GuiQuad, Rect as EngineRect,
+    ShadowSpec as BatchShadowSpec, SvgCommand, TextQuad, GRADIENT_BIT, GRADIENT_RADIAL_BIT,
+    GRADIENT_V_BIT, TEXTURED_BIT,
 };
 use guimaker::display_list::{
     DisplayList, DrawCommand, Gradient, ImageFit, TextRun, TextSpanStyle,
 };
 use guimaker::geom::{Rect, Size};
+use guimaker::theme::tokens::BACKDROP_TINT_ALPHA;
 use guimaker::theme::Color;
 
 use crate::texture::TextureMap;
@@ -63,6 +65,20 @@ struct ShadowSpec {
     offset: [f32; 2],
 }
 
+/// A backdrop blur that waits for the owning node's background rect.
+///
+/// The display list emits `BackdropBlur` before the card's shadows and its
+/// background `Rect`. Deferring the blur until that `Rect` paints it through
+/// `GuiBatch::backdrop_blur` with the rect's colour as a translucent tint, so
+/// the shadow keeps painting below it.
+#[derive(Clone, Copy, Debug)]
+struct PendingBackdrop {
+    node: u32,
+    rect: RectSpec,
+    radii: [f32; 4],
+    radius: f32,
+}
+
 /// Maps a [`DisplayList`] onto [`GuiBatch`] with a reusable image registry.
 ///
 /// The renderer owns the [`TextureMap`] and the temporary layer-opacity stack.
@@ -72,6 +88,7 @@ pub struct GuiMakerRenderer {
     textures: TextureMap,
     opacity: f32,
     opacity_stack: Vec<f32>,
+    pending_backdrop: Option<PendingBackdrop>,
 }
 
 impl Default for GuiMakerRenderer {
@@ -88,6 +105,7 @@ impl GuiMakerRenderer {
             textures: TextureMap::new(),
             opacity: 1.0,
             opacity_stack: Vec::new(),
+            pending_backdrop: None,
         }
     }
 
@@ -134,6 +152,7 @@ impl GuiMakerRenderer {
         gui: &mut GuiBatch,
         font: Option<&F>,
     ) {
+        self.pending_backdrop = None;
         if !(viewport.width > 0.0 && viewport.height > 0.0 && scale.is_finite() && scale > 0.0) {
             return;
         }
@@ -142,6 +161,9 @@ impl GuiMakerRenderer {
 
         for command in &display_list.commands {
             self.encode_command(command, scale, gui, font);
+        }
+        if let Some(pending) = self.pending_backdrop.take() {
+            Self::emit_backdrop(gui, pending, Color::TRANSPARENT.to_linear());
         }
     }
 
@@ -162,7 +184,7 @@ impl GuiMakerRenderer {
             } => {
                 let spec = RectSpec::scaled(*rect, scale);
                 let radii = scale_radii(*radii, scale);
-                self.encode_shape(gui, node.0, spec, *color, radii);
+                self.encode_rect(gui, node.0, spec, *color, radii);
             }
             DrawCommand::Border {
                 node,
@@ -172,10 +194,9 @@ impl GuiMakerRenderer {
                 sides,
                 radii,
             } => {
-                let spec = RectSpec::scaled(*rect, scale);
-                let radii = scale_radii(*radii, scale);
-                let sides = sides.map(|side| side * scale);
-                self.encode_border(gui, node.0, spec, *color, width * scale, sides, radii);
+                self.encode_border_command(
+                    gui, node.0, *rect, *color, *width, *sides, *radii, scale,
+                );
             }
             DrawCommand::Shadow {
                 node,
@@ -186,15 +207,9 @@ impl GuiMakerRenderer {
                 spread,
                 radii,
             } => {
-                let spec = RectSpec::scaled(*rect, scale);
-                let radii = scale_radii(*radii, scale);
-                let shadow = ShadowSpec {
-                    color: self.color(*color),
-                    blur: blur * scale,
-                    spread: spread * scale,
-                    offset: [offset.x * scale, offset.y * scale],
-                };
-                Self::encode_shadow(gui, node.0, spec, shadow, radii);
+                self.encode_shadow_command(
+                    gui, node.0, *rect, *color, *offset, *blur, *spread, *radii, scale,
+                );
             }
             DrawCommand::Gradient {
                 node,
@@ -216,9 +231,7 @@ impl GuiMakerRenderer {
                 fit,
                 radii,
             } => {
-                let spec = RectSpec::scaled(*rect, scale);
-                let radii = scale_radii(*radii, scale);
-                self.encode_image(gui, node.0, spec, radii, *source, *fit);
+                self.encode_image_command(gui, node.0, *rect, *source, *fit, *radii, scale);
             }
             DrawCommand::Icon {
                 node,
@@ -226,8 +239,7 @@ impl GuiMakerRenderer {
                 path,
                 color,
             } => {
-                let spec = RectSpec::scaled(*rect, scale);
-                self.encode_icon(gui, node.0, spec, path, *color);
+                self.encode_icon_command(gui, node.0, *rect, path, *color, scale);
             }
             DrawCommand::Path {
                 node,
@@ -235,14 +247,7 @@ impl GuiMakerRenderer {
                 width,
                 color,
             } => {
-                let scaled: Vec<[f32; 2]> = points
-                    .iter()
-                    .map(|point| [point.x * scale, point.y * scale])
-                    .collect();
-                let color = self.color(*color);
-                emit(gui, node.0, |gui| {
-                    gui.polyline(&scaled, width * scale, color);
-                });
+                self.encode_path(gui, node.0, points, *width, *color, scale);
             }
             DrawCommand::ClipPush { rect, .. } => {
                 Self::encode_clip_push(gui, RectSpec::scaled(*rect, scale));
@@ -250,11 +255,155 @@ impl GuiMakerRenderer {
             DrawCommand::ClipPop { .. } => gui.pop_clip(),
             DrawCommand::LayerPush { opacity, .. } => self.encode_layer_push(gui, *opacity),
             DrawCommand::LayerPop { .. } => self.encode_layer_pop(gui),
-            DrawCommand::BackdropBlur { .. } => {
-                // The pinned engine has no backdrop-blur pass and the
-                // command carries no tint. Skip; see docs/backend.md.
+            DrawCommand::BackdropBlur {
+                node,
+                rect,
+                radius,
+                radii,
+            } => {
+                self.pending_backdrop = Some(PendingBackdrop {
+                    node: node.0,
+                    rect: RectSpec::scaled(*rect, scale),
+                    radii: scale_radii(*radii, scale),
+                    radius: radius * scale,
+                });
             }
         }
+    }
+
+    /// Scales and emits an image quad.
+    #[allow(clippy::too_many_arguments)] // reason: the command carries its rect, source, fit, radii and the scale
+    fn encode_image_command(
+        &self,
+        gui: &mut GuiBatch,
+        node: u32,
+        rect: Rect,
+        source: u64,
+        fit: ImageFit,
+        radii: [f32; 4],
+        scale: f32,
+    ) {
+        let spec = RectSpec::scaled(rect, scale);
+        let radii = scale_radii(radii, scale);
+        self.encode_image(gui, node, spec, radii, source, fit);
+    }
+
+    /// Scales and emits an icon.
+    fn encode_icon_command(
+        &self,
+        gui: &mut GuiBatch,
+        node: u32,
+        rect: Rect,
+        path: &str,
+        color: Color,
+        scale: f32,
+    ) {
+        let spec = RectSpec::scaled(rect, scale);
+        self.encode_icon(gui, node, spec, path, color);
+    }
+
+    /// Scales and emits a border stroke.
+    #[allow(clippy::too_many_arguments)] // reason: the command carries geometry, colour, one width, per-edge widths and radii
+    fn encode_border_command(
+        &self,
+        gui: &mut GuiBatch,
+        node: u32,
+        rect: Rect,
+        color: Color,
+        width: f32,
+        sides: [f32; 4],
+        radii: [f32; 4],
+        scale: f32,
+    ) {
+        let spec = RectSpec::scaled(rect, scale);
+        let radii = scale_radii(radii, scale);
+        let sides = sides.map(|side| side * scale);
+        self.encode_border(gui, node, spec, color, width * scale, sides, radii);
+    }
+
+    /// Scales and emits a shadow quad.
+    #[allow(clippy::too_many_arguments)] // reason: a shadow command carries its rect, colour, offset, blur, spread and radii
+    fn encode_shadow_command(
+        &self,
+        gui: &mut GuiBatch,
+        node: u32,
+        rect: Rect,
+        color: Color,
+        offset: glam::Vec2,
+        blur: f32,
+        spread: f32,
+        radii: [f32; 4],
+        scale: f32,
+    ) {
+        let spec = RectSpec::scaled(rect, scale);
+        let radii = scale_radii(radii, scale);
+        let shadow = ShadowSpec {
+            color: self.color(color),
+            blur: blur * scale,
+            spread: spread * scale,
+            offset: [offset.x * scale, offset.y * scale],
+        };
+        Self::encode_shadow(gui, node, spec, shadow, radii);
+    }
+
+    /// Scales and emits a stroked polyline.
+    fn encode_path(
+        &self,
+        gui: &mut GuiBatch,
+        node: u32,
+        points: &[glam::Vec2],
+        width: f32,
+        color: Color,
+        scale: f32,
+    ) {
+        let scaled: Vec<[f32; 2]> = points
+            .iter()
+            .map(|point| [point.x * scale, point.y * scale])
+            .collect();
+        let color = self.color(color);
+        emit(gui, node, |gui| {
+            gui.polyline(&scaled, width * scale, color);
+        });
+    }
+
+    /// Emits a rect, or its node's deferred backdrop blur when one is pending.
+    fn encode_rect(
+        &mut self,
+        gui: &mut GuiBatch,
+        node: u32,
+        rect: RectSpec,
+        color: Color,
+        radii: [f32; 4],
+    ) {
+        let pending = match self.pending_backdrop {
+            Some(pending) if pending.node == node => {
+                self.pending_backdrop = None;
+                Some(pending)
+            }
+            _ => None,
+        };
+        if let Some(pending) = pending {
+            let mut tint = self.color(color);
+            tint[3] *= BACKDROP_TINT_ALPHA;
+            Self::emit_backdrop(gui, pending, tint);
+            return;
+        }
+        self.encode_shape(gui, node, rect, color, radii);
+    }
+
+    /// Emits one deferred backdrop-blur quad and stamps its node id.
+    fn emit_backdrop(gui: &mut GuiBatch, pending: PendingBackdrop, tint: [f32; 4]) {
+        if pending.rect.is_empty() {
+            return;
+        }
+        emit(gui, pending.node, |gui| {
+            gui.backdrop_blur(BackdropBlurSpec {
+                rect: pending.rect.to_engine(),
+                radii: pending.radii,
+                tint,
+                blur_radius: pending.radius,
+            });
+        });
     }
 
     /// Emits a filled rounded rectangle.
@@ -784,7 +933,8 @@ mod tests {
     use super::{GuiMakerRenderer, PaintFont, RectSpec, TextureMap};
     use ferrous_ui_render::text_utils::BaselineGlyphs;
     use ferrous_ui_render::{
-        GuiBatch, TextQuad, GRADIENT_BIT, GRADIENT_RADIAL_BIT, GRADIENT_V_BIT, SHADOW_BIT,
+        GuiBatch, TextQuad, BACKDROP_BLUR_BIT, GRADIENT_BIT, GRADIENT_RADIAL_BIT, GRADIENT_V_BIT,
+        SHADOW_BIT,
     };
     use glam::Vec2;
     use guimaker::display_list::{
@@ -948,6 +1098,59 @@ mod tests {
             .segments
             .iter()
             .any(|segment| segment.scissor.is_some()));
+    }
+
+    #[test]
+    fn defers_a_backdrop_blur_to_the_owning_rect() {
+        let list = display(vec![
+            DrawCommand::BackdropBlur {
+                node: NodeId(1),
+                rect: Rect::new(10.0, 20.0, 300.0, 200.0),
+                radius: 24.0,
+                radii: [8.0; 4],
+            },
+            DrawCommand::Shadow {
+                node: NodeId(1),
+                rect: Rect::new(10.0, 20.0, 300.0, 200.0),
+                color: Color::BLACK,
+                offset: Vec2::new(0.0, 4.0),
+                blur: 8.0,
+                spread: 0.0,
+                radii: [8.0; 4],
+            },
+            DrawCommand::Rect {
+                node: NodeId(1),
+                rect: Rect::new(10.0, 20.0, 300.0, 200.0),
+                color: Color::WHITE,
+                radii: [8.0; 4],
+            },
+        ]);
+        let batch = encode_to_batch(&list, 2.0);
+        assert_eq!(batch.quads.len(), 2, "ambient key shadow plus the blur");
+        assert_eq!(batch.quads[0].flags & SHADOW_BIT, SHADOW_BIT);
+        let blur = &batch.quads[1];
+        assert_eq!(blur.flags, BACKDROP_BLUR_BIT);
+        close(blur.uv0[0], 48.0);
+        close_slice(&blur.pos, &[20.0, 40.0]);
+        close_slice(&blur.size, &[600.0, 400.0]);
+        close(blur.color[3], 0.80);
+        close_slice(&blur.color[..3], &Color::WHITE.to_linear()[..3]);
+        assert_eq!(blur.node_id, 1);
+    }
+
+    #[test]
+    fn flushes_an_unmatched_backdrop_with_a_transparent_tint() {
+        let list = display(vec![DrawCommand::BackdropBlur {
+            node: NodeId(7),
+            rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+            radius: 4.0,
+            radii: [0.0; 4],
+        }]);
+        let batch = encode_to_batch(&list, 1.0);
+        assert_eq!(batch.quads.len(), 1);
+        assert_eq!(batch.quads[0].flags, BACKDROP_BLUR_BIT);
+        close_slice(&batch.quads[0].color, &[0.0; 4]);
+        assert_eq!(batch.quads[0].node_id, 7);
     }
 
     #[test]

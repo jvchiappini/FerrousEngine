@@ -150,6 +150,8 @@ pub struct InputState {
     pub now_ms: f64,
     /// The last instant the pointer moved.
     pub pointer_moved_at: f64,
+    /// The last instant a wheel actually moved a scroll target or offset.
+    pub last_scroll_ms: f64,
     /// The modifier state.
     pub modifiers: Modifiers,
     /// The gesture recognizer.
@@ -200,6 +202,7 @@ impl InputState {
             pointer_seen: false,
             now_ms: 0.0,
             pointer_moved_at: 0.0,
+            last_scroll_ms: 0.0,
             modifiers: Modifiers::none(),
             gesture: GestureRecognizer::new(GestureConfig::default()),
             click_count: 0,
@@ -272,6 +275,26 @@ impl InputState {
         self.hovered
             .and_then(|id| tree.node(id))
             .map_or(Cursor::Default, |node| node.style.cursor)
+    }
+
+    /// Whether the overlay scrollbar of `id` should be visible right now.
+    ///
+    /// A scrollbar is active while the pointer is over the container or one of
+    /// its descendants, or for 600 ms after a wheel last changed this
+    /// container's scroll target or offset.
+    #[must_use]
+    pub fn scrollbar_active<Msg>(&self, tree: &Tree<Msg>, id: NodeId, path: u64) -> bool {
+        if self.scroll_target == Some(path) && self.now_ms - self.last_scroll_ms < 600.0 {
+            return true;
+        }
+        let mut current = self.hovered;
+        while let Some(node_id) = current {
+            if node_id == id {
+                return true;
+            }
+            current = tree.node(node_id).and_then(|node| node.parent);
+        }
+        false
     }
 
     /// Re-resolves the focused node id after a tree rebuild (one scan, only
@@ -419,6 +442,7 @@ impl<Msg: Clone> RouteContext<'_, Msg> {
             .scroll
             .wheel(delta, kind, self.input.modifiers.shift);
         if moved {
+            self.input.last_scroll_ms = self.input.now_ms;
             self.store.set_scroll(path, self.input.scroll.offset());
         }
         moved

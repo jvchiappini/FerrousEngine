@@ -17,6 +17,7 @@ use std::path::Path;
 
 use ferrous_renderer::headless::{Pure2dHarness, DEFAULT_FORMAT};
 use ferrous_ui_render::{Font, GuiBatch, GuiRenderer};
+use guimaker::display_list::{DisplayList, DrawCommand};
 use guimaker::geom::Size;
 use guimaker::theme::{ColorRole, Theme};
 
@@ -85,7 +86,7 @@ pub fn render_story(
     render_display_list(&display_list, theme, logical, scale)
 }
 
-/// Renders an already painted [`DisplayList`](guimaker::display_list::DisplayList)
+/// Renders an already painted [`DisplayList`]
 /// at `logical` size and `scale`.
 ///
 /// [`render_story`] calls this; the pixel guards use it too, so a mechanical
@@ -130,58 +131,51 @@ pub fn render_display_list(
     let mut renderer =
         GuiRenderer::new(device.clone(), DEFAULT_FORMAT, 4096, width, height, 1, None);
     renderer.set_font_atlas(&font.atlas.view, &font.atlas.sampler);
+    let target = &harness.target().view;
 
-    let mut batch = GuiBatch::new();
-    guimaker_ferrous::encode(display_list, logical, scale, &mut batch, &font);
-    // The batch's damage union only covers emitted primitives. A screenshot is
-    // a full-frame render, so drop it and let the pass use the whole target.
-    batch.damage_union = None;
+    if let Some(split) = backdrop_split(&display_list.commands) {
+        // Pass 1: paint everything below the overlay, then submit so the
+        // target holds a complete scene the blur can sample.
+        let mut first = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("guimaker_gallery backdrop source encoder"),
+        });
+        let lower = encode_commands(&display_list.commands[..split], logical, scale, &font);
+        renderer.prepare(queue.as_ref(), &lower);
+        renderer.render(
+            &mut first,
+            target,
+            None,
+            &lower,
+            wgpu::LoadOp::Clear(clear_color(theme)),
+        );
+        queue.submit(Some(first.finish()));
 
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("guimaker_gallery screenshot encoder"),
-    });
-
-    // A backdrop blur must sample the layers **below** the overlay, never the
-    // target it is drawing into (which already holds the overlay's own shadow).
-    // Clear the target first, then hand that snapshot to the renderer: the
-    // blur passes read the clear colour / 2D scene, and the GUI pass draws the
-    // overlay on top of it. Without this the dialog blurred its own shadow and
-    // produced the grey smears the reviewer saw.
-    if display_list.commands.iter().any(|command| {
-        matches!(
-            command,
-            guimaker::display_list::DrawCommand::BackdropBlur { .. }
-        )
-    }) {
-        {
-            let _clear = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("guimaker_gallery backdrop snapshot clear"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &harness.target().view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(clear_color(theme)),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
-            });
-        }
-        renderer.set_backdrop_source(&harness.target().view, width, height);
+        // The blur must read the layers already painted, never the overlay's
+        // own shadow: hand it the target we just filled, then draw the suffix
+        // on top with `Load`.
+        renderer.set_backdrop_source(target, width, height);
+        let mut second = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("guimaker_gallery overlay encoder"),
+        });
+        let overlay = encode_commands(&display_list.commands[split..], logical, scale, &font);
+        renderer.prepare(queue.as_ref(), &overlay);
+        renderer.render(&mut second, target, None, &overlay, wgpu::LoadOp::Load);
+        queue.submit(Some(second.finish()));
+    } else {
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("guimaker_gallery screenshot encoder"),
+        });
+        let batch = encode_commands(&display_list.commands, logical, scale, &font);
+        renderer.prepare(queue.as_ref(), &batch);
+        renderer.render(
+            &mut encoder,
+            target,
+            None,
+            &batch,
+            wgpu::LoadOp::Clear(clear_color(theme)),
+        );
+        queue.submit(Some(encoder.finish()));
     }
-
-    renderer.prepare(queue.as_ref(), &batch);
-
-    renderer.render(
-        &mut encoder,
-        &harness.target().view,
-        None,
-        &batch,
-        wgpu::LoadOp::Clear(clear_color(theme)),
-    );
-    queue.submit(Some(encoder.finish()));
 
     let mut rgba = Vec::new();
     harness
@@ -193,6 +187,33 @@ pub fn render_display_list(
         height,
         rgba,
     })
+}
+
+/// The index of the first command owned by the first backdrop-blur node.
+///
+/// The display list emits a card's `BackdropBlur` before its shadows and its
+/// background `Rect`, so the first command of that node starts the overlay.
+/// The commands before it are the layers the blur must sample; the commands
+/// from it onward are the overlay drawn over the blurred snapshot.
+#[must_use]
+pub fn backdrop_split(commands: &[DrawCommand]) -> Option<usize> {
+    let node = commands.iter().find_map(|command| match command {
+        DrawCommand::BackdropBlur { node, .. } => Some(*node),
+        _ => None,
+    })?;
+    commands.iter().position(|command| command.node() == node)
+}
+
+/// Encodes one slice of the display list into its own full-frame batch.
+fn encode_commands(commands: &[DrawCommand], logical: Size, scale: f32, font: &Font) -> GuiBatch {
+    let mut list = DisplayList::new();
+    list.commands.extend_from_slice(commands);
+    let mut batch = GuiBatch::new();
+    guimaker_ferrous::encode(&list, logical, scale, &mut batch, font);
+    // The batch's damage union only covers emitted primitives. A screenshot is
+    // a full-frame render, so drop it and let the pass use the whole target.
+    batch.damage_union = None;
+    batch
 }
 
 /// Writes `image` as an 8-bit RGBA PNG, creating parent directories.
@@ -233,5 +254,52 @@ fn clear_color(theme: &Theme) -> wgpu::Color {
         g: f64::from(linear[1]),
         b: f64::from(linear[2]),
         a: f64::from(linear[3]),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::backdrop_split;
+    use guimaker::display_list::DrawCommand;
+    use guimaker::geom::Rect;
+    use guimaker::theme::Color;
+    use guimaker::view::NodeId;
+
+    fn rect(node: u32) -> DrawCommand {
+        DrawCommand::Rect {
+            node: NodeId(node),
+            rect: Rect::new(0.0, 0.0, 1.0, 1.0),
+            color: Color::WHITE,
+            radii: [0.0; 4],
+        }
+    }
+
+    fn blur(node: u32) -> DrawCommand {
+        DrawCommand::BackdropBlur {
+            node: NodeId(node),
+            rect: Rect::new(0.0, 0.0, 1.0, 1.0),
+            radius: 24.0,
+            radii: [0.0; 4],
+        }
+    }
+
+    #[test]
+    fn splits_at_the_first_backdrop_node_command() {
+        let commands = vec![rect(1), rect(2), blur(3), rect(3), rect(4)];
+        assert_eq!(backdrop_split(&commands), Some(2));
+    }
+
+    #[test]
+    fn splits_at_the_first_command_of_the_backdrop_node() {
+        // A parent may emit a command before the blur; the split is still the
+        // node's first command, so the whole overlay stays in the suffix.
+        let commands = vec![rect(1), rect(3), blur(3), rect(3)];
+        assert_eq!(backdrop_split(&commands), Some(1));
+    }
+
+    #[test]
+    fn leaves_a_list_without_a_backdrop_whole() {
+        let commands = vec![rect(1), rect(2), rect(3)];
+        assert_eq!(backdrop_split(&commands), None);
     }
 }

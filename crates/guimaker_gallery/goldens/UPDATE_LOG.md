@@ -320,3 +320,7 @@ Every rewrite records its reason here.
 - 1795393369 `toast-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
 - 1795393370 `icons-light-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
 - 1795393370 `icons-dark-1280x800-1.5.png`: phase 6 mechanics v2: menu in a column so the anchored submenu has room; wider fixed table columns so a cell is not clipped
+- 1795399985 `dialog-dark-1280x800-1.5.png`: Phase 6 fix: real backdrop blur over content (dialog); one row background rect removes the table seams
+- 1795399987 `dialog-light-1280x800-1.5.png`: Phase 6 fix: real backdrop blur over content (dialog); one row background rect removes the table seams
+- 1795399988 `table-dark-1280x800-1.5.png`: Phase 6 fix: real backdrop blur over content (dialog); one row background rect removes the table seams
+- 1795399989 `table-light-1280x800-1.5.png`: Phase 6 fix: real backdrop blur over content (dialog); one row background rect removes the table seams

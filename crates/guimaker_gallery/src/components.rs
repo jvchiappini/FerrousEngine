@@ -1375,9 +1375,57 @@ fn menu_story() -> Element<()> {
 }
 
 fn dialog_story() -> Element<()> {
-    board(
-        "Dialog",
-        dialog(
+    let panels = [
+        (ColorRole::SurfaceRaised, "Composition"),
+        (ColorRole::SurfaceSunken, "Timeline"),
+        (ColorRole::AccentSubtle, "Layers"),
+        (ColorRole::SuccessSubtle, "Assets"),
+        (ColorRole::WarningSubtle, "Renders"),
+        (ColorRole::InfoSubtle, "Presets"),
+    ];
+    let mut cards = Vec::with_capacity(panels.len());
+    for (role, title) in panels {
+        cards.push(
+            Element::column()
+                .grow(1.0)
+                .height(SizeSpec::Fill)
+                .align(Align::Stretch)
+                .gap(Spacing::S2)
+                .pad(Spacing::S4)
+                .bg(role)
+                .radius(Radius::Md)
+                .child(display_text::<()>(title, TypeRole::Label, Tone::Default))
+                .child(display_text::<()>(
+                    "Backdrop content",
+                    TypeRole::Caption,
+                    Tone::Default,
+                )),
+        );
+    }
+    let mut rows = Vec::new();
+    for chunk in cards.chunks(3) {
+        rows.push(
+            Element::row()
+                .width(SizeSpec::Fill)
+                .height(SizeSpec::Fill)
+                .align(Align::Stretch)
+                .gap(Spacing::S4)
+                .children(chunk.iter().cloned()),
+        );
+    }
+    let background = Element::column()
+        .key("dialog_background")
+        .width(SizeSpec::Fill)
+        .height(SizeSpec::Fill)
+        .gap(Spacing::S4)
+        .pad(Spacing::S6)
+        .children(rows);
+    Element::stack()
+        .key("dialog_story")
+        .width(SizeSpec::Fill)
+        .height(SizeSpec::Fill)
+        .child(background)
+        .child(dialog(
             "Rename project",
             text_field(
                 Some("Name"),
@@ -1397,8 +1445,7 @@ fn dialog_story() -> Element<()> {
                 button("Rename", ButtonVariant::Primary, ()),
             ],
             DialogSize::Sm,
-        ),
-    )
+        ))
 }
 
 fn command_palette_story() -> Element<()> {

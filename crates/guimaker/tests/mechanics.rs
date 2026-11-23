@@ -145,7 +145,9 @@ fn a_table_column_shares_one_x_and_width_in_every_row() {
     let mut cells = vec![Vec::new(); usize::try_from(column_count).expect("column count")];
     for node in &ui.tree().nodes {
         if let Some(Key::Id(id)) = &node.key {
-            if *id >= column_count {
+            // The row-background elements use ids near u64::MAX; only the
+            // cell formula ids belong in this scan.
+            if *id >= column_count && *id < u64::MAX - 1_000 {
                 let column =
                     usize::try_from((id - column_count) % column_count).expect("column index");
                 cells[column].push(ui.layout().rect(node.id));

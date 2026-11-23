@@ -14,7 +14,17 @@
 //! - [`roles`]: the 29 colour roles, generated from a [`ColorSeed`] through a
 //!   monotonic `OKLCH` neutral ramp.
 //! - [`Theme`]: the assembled data (`mode`, `density`, `colors`, `typography`,
-//!   `radii`, `borders`, `elevation`, `motion`), serialisable to RON.
+//!   `radii`, `borders`, `elevation`, `motion`, `prefers_reduced_motion`),
+//!   serialisable to RON.
+//!
+//! # Reduced motion
+//!
+//! [`Theme::prefers_reduced_motion`] is the media-query equivalent of CSS
+//! `prefers-reduced-motion`. When it is set, [`Theme::duration`] maps every
+//! transition duration to [`Duration::Instant`]: colour, opacity, transform,
+//! elevation and overlay transitions snap to their end state instead of
+//! animating. The caret blink is not a transition, so it keeps blinking; see
+//! [`crate::motion`].
 //!
 //! # Built-ins and guarantees
 //!
@@ -90,6 +100,17 @@ pub struct Theme {
     pub elevation: ElevationSet,
     /// The resolved motion tokens.
     pub motion: Motion,
+    /// Whether transitions snap to their end state.
+    ///
+    /// This is the equivalent of the `prefers-reduced-motion` media query.
+    /// When set, [`Theme::duration`] returns [`Duration::Instant`] so colour,
+    /// opacity, transform, elevation and overlay transitions do not animate.
+    /// It is not a transition itself, so a caret still blinks.
+    ///
+    /// Added in phase 7, so a theme file written before the field existed still
+    /// loads: a missing value takes `false`.
+    #[serde(default)]
+    pub prefers_reduced_motion: bool,
     /// The container breakpoints responsive values resolve against.
     ///
     /// Added in phase 3, so a theme file written before the field existed still
@@ -160,6 +181,7 @@ impl Theme {
             borders: Borders::default(),
             elevation: ElevationSet::for_mode(mode),
             motion: Motion::default(),
+            prefers_reduced_motion: false,
             breakpoints: Breakpoints::default(),
         }
     }
@@ -177,6 +199,7 @@ impl Theme {
             borders: Borders::default(),
             elevation: ElevationSet::for_mode(ThemeMode::Dark),
             motion: Motion::default(),
+            prefers_reduced_motion: false,
             breakpoints: Breakpoints::default(),
         }
     }
@@ -190,6 +213,32 @@ impl Theme {
         self.density = density;
         self.typography = Typography::for_density(density);
         self
+    }
+
+    /// Returns this theme with the reduced-motion preference set.
+    ///
+    /// This is the `prefers-reduced-motion` media-query equivalent. When
+    /// `reduced` is true, [`Theme::duration`] maps every transition duration to
+    /// [`Duration::Instant`].
+    #[must_use]
+    pub fn with_reduced_motion(mut self, reduced: bool) -> Self {
+        self.prefers_reduced_motion = reduced;
+        self
+    }
+
+    /// Resolves a motion duration against the reduced-motion preference.
+    ///
+    /// Returns [`Duration::Instant`] when [`Theme::prefers_reduced_motion`] is
+    /// set, so colour, opacity, transform, elevation and overlay transitions
+    /// snap to their end state. Otherwise `duration` passes through unchanged.
+    /// The caret blink is not a transition and is unaffected.
+    #[must_use]
+    pub fn duration(&self, duration: Duration) -> Duration {
+        if self.prefers_reduced_motion {
+            Duration::Instant
+        } else {
+            duration
+        }
     }
 
     /// Reads a colour role.
@@ -262,7 +311,9 @@ impl Default for Theme {
 
 #[cfg(test)]
 mod tests {
-    use super::{AccentState, Color, ColorRole, ContentWidth, Density, Spacing, Theme, TypeRole};
+    use super::{
+        AccentState, Color, ColorRole, ContentWidth, Density, Duration, Spacing, Theme, TypeRole,
+    };
 
     /// The surfaces a text role may sit on.
     const SURFACES: [ColorRole; 4] = [
@@ -454,6 +505,33 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn reduced_motion_maps_durations_to_instant() {
+        let normal = Theme::dark();
+        for duration in [Duration::Fast, Duration::Base, Duration::Slow] {
+            assert_eq!(normal.duration(duration), duration);
+        }
+        let reduced = normal.clone().with_reduced_motion(true);
+        for duration in [Duration::Fast, Duration::Base, Duration::Slow] {
+            assert_eq!(reduced.duration(duration), Duration::Instant);
+        }
+        assert_eq!(reduced.duration(Duration::Instant), Duration::Instant);
+        assert!(!normal.prefers_reduced_motion);
+        assert!(reduced.prefers_reduced_motion);
+    }
+
+    #[test]
+    fn reduced_motion_flag_round_trips_through_ron() {
+        let theme = Theme::dark().with_reduced_motion(true);
+        let text = theme.to_ron().expect("serialise a reduced-motion theme");
+        let decoded = Theme::from_ron(&text).expect("deserialise a reduced-motion theme");
+        assert!(decoded.prefers_reduced_motion);
+        // Colours travel as 8-bit hex, so the canonical file text is the
+        // contract rather than exact float equality.
+        let reencoded = decoded.to_ron().expect("serialise the loaded theme");
+        assert_eq!(reencoded, text);
     }
 
     #[test]

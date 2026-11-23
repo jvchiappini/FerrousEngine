@@ -298,6 +298,13 @@ impl<A: GuiApp> FerrousApp for GuiHost<A> {
         let view = self.app.view();
         self.ui.paint(&view, &mut self.frame, &mut self.text);
         self.push_frame_messages();
+
+        if self.ui.animating() {
+            ctx.request_redraw();
+        } else if let Some(next_ms) = self.ui.next_wake_ms(now_ms) {
+            let delay = std::time::Duration::from_secs_f64((next_ms - now_ms).max(1.0) / 1000.0);
+            ctx.redraw_at(std::time::Instant::now() + delay);
+        }
     }
 
     fn draw_ui(&mut self, dc: &mut DrawContext<'_, '_>) {

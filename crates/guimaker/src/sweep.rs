@@ -343,8 +343,12 @@ fn check_overlap<Msg>(
             if first_rect.is_empty() {
                 continue;
             }
+            let first_is_layer = tree.nodes[first.index()].style.overlap_layer;
             for &second in &children[index + 1..] {
                 if layout.resolved(second).is_some_and(|style| style.hidden) {
+                    continue;
+                }
+                if first_is_layer || tree.nodes[second.index()].style.overlap_layer {
                     continue;
                 }
                 let second_rect = layout.rect(second);

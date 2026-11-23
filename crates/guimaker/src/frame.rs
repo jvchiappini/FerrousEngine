@@ -20,11 +20,11 @@ use crate::input::{route, InputEvent, InputState, RouteContext};
 use crate::layout::LayoutEngine;
 use crate::spatial::HitIndex;
 use crate::store::{RepaintReason, Store};
-use crate::style::Tone;
+use crate::style::{ScrollAxes, Tone};
 use crate::text::TextSystem;
-use crate::theme::{ColorRole, Theme};
+use crate::theme::{ColorRole, Duration, Radius, Spacing, Theme};
 use crate::view::{Element, NodeId, NodeKind, Tree};
-use crate::visual::{VisualAnimator, BACKGROUND, BORDER, FOREGROUND};
+use crate::visual::{VisualAnimator, BACKGROUND, BORDER, FOCUS_RING, FOREGROUND};
 
 /// The counters for one frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -77,6 +77,7 @@ impl<Msg> Frame<Msg> {
 }
 
 /// The library instance: theme, persistent layout and interaction state.
+#[allow(clippy::struct_excessive_bools)] // reason: the flags are independent frame-level states
 pub struct Ui<Msg> {
     theme: Theme,
     viewport: Size,
@@ -102,12 +103,18 @@ pub struct Ui<Msg> {
     last_damage: Vec<Rect>,
     visuals: VisualAnimator,
     animation_damage: Vec<Rect>,
+    ring_animating: bool,
+    last_blink_phase: Option<bool>,
+    frames_painted: u64,
+    frames_repainted: u64,
 }
 
 impl<Msg: Clone> Ui<Msg> {
     /// Builds a UI with a theme.
     #[must_use]
     pub fn new(theme: Theme) -> Self {
+        let mut input = InputState::new();
+        input.scroll.set_smooth(!theme.prefers_reduced_motion);
         Self {
             theme,
             viewport: Size::ZERO,
@@ -115,7 +122,7 @@ impl<Msg: Clone> Ui<Msg> {
             engine: LayoutEngine::new(),
             index: HitIndex::new(),
             store: Store::new(),
-            input: InputState::new(),
+            input,
             focus: FocusOrder::new(),
             shortcuts: ShortcutRegistry::default(),
             tree: Tree::build(&Element::column()),
@@ -133,6 +140,10 @@ impl<Msg: Clone> Ui<Msg> {
             last_damage: Vec::new(),
             visuals: VisualAnimator::new(),
             animation_damage: Vec::new(),
+            ring_animating: false,
+            last_blink_phase: None,
+            frames_painted: 0,
+            frames_repainted: 0,
         }
     }
 
@@ -144,6 +155,9 @@ impl<Msg: Clone> Ui<Msg> {
 
     /// Replaces the theme; the next frame repaints everything.
     pub fn set_theme(&mut self, theme: Theme) {
+        if theme.prefers_reduced_motion != self.theme.prefers_reduced_motion {
+            self.input.scroll.set_smooth(!theme.prefers_reduced_motion);
+        }
         self.theme = theme;
         self.view_hash = 0;
         self.layout_needed = true;
@@ -316,11 +330,18 @@ impl<Msg: Clone> Ui<Msg> {
         });
         frame.display_list.damage.dedup();
 
+        let now = self.input.now_ms;
+        let has_caret = self.has_caret();
+        let blink_visible = crate::motion::caret_visible(now);
+        let blink_toggle = has_caret && self.last_blink_phase != Some(blink_visible);
         let repaint = !self.painted
             || !frame.display_list.damage.is_empty()
             || !frame.messages.is_empty()
             || layout_damage
-            || self.visuals.any_animating(self.input.now_ms);
+            || self.visuals.any_animating(now)
+            || self.input.scroll.is_moving()
+            || self.ring_animating
+            || blink_toggle;
 
         if repaint {
             self.paint_display_list(frame);
@@ -333,6 +354,11 @@ impl<Msg: Clone> Ui<Msg> {
         frame.stats.repainted = repaint;
         self.last_repainted = repaint;
         self.last_messages = frame.messages.len();
+        self.last_blink_phase = has_caret.then_some(blink_visible);
+        self.frames_painted += 1;
+        if repaint {
+            self.frames_repainted += 1;
+        }
     }
 
     /// Routes the queued input events now, without painting.
@@ -428,13 +454,58 @@ impl<Msg: Clone> Ui<Msg> {
         self.last_repainted
     }
 
-    /// Whether a state colour transition is still running.
+    /// Whether any animation is still running at the injected instant.
     ///
-    /// A host that renders on demand asks this after `paint` and keeps
-    /// requesting frames until it is false, so a hover fade completes.
+    /// This covers colour transitions, smooth scroll easing, and the animated
+    /// focus ring. A host that renders on demand asks this after `paint` and
+    /// keeps requesting frames until it is false, so a hover fade, a wheel
+    /// glide or a focus ring completes.
     #[must_use]
     pub fn animating(&self) -> bool {
         self.visuals.any_animating(self.input.now_ms)
+            || self.input.scroll.is_moving()
+            || self.ring_animating
+    }
+
+    /// Whether the tree contains a text caret.
+    ///
+    /// A caret blinks on the injected clock, so an otherwise idle host still
+    /// needs one wake per blink phase while this is true.
+    #[must_use]
+    pub fn has_caret(&self) -> bool {
+        self.tree
+            .nodes
+            .iter()
+            .any(|node| node.style.caret.is_some())
+    }
+
+    /// The next instant the host should paint if no input arrives.
+    ///
+    /// While an animation runs this asks for another frame on the next tick;
+    /// otherwise a caret asks for the next blink boundary; otherwise the UI is
+    /// idle and `None` lets the host sleep. The returned instant is on the
+    /// same injected millisecond clock passed to [`Self::set_time_ms`].
+    #[must_use]
+    pub fn next_wake_ms(&self, now_ms: f64) -> Option<f64> {
+        if self.animating() {
+            Some(now_ms + 16.0)
+        } else if self.has_caret() {
+            Some(crate::motion::next_caret_wake_ms(now_ms))
+        } else {
+            None
+        }
+    }
+
+    /// The number of `paint` calls since construction (the redraw counter).
+    #[must_use]
+    pub fn frames_painted(&self) -> u64 {
+        self.frames_painted
+    }
+
+    /// The number of those `paint` calls that rebuilt the display list.
+    #[must_use]
+    pub fn frames_repainted(&self) -> u64 {
+        self.frames_repainted
     }
 
     fn sync_store_rects(&mut self) {
@@ -454,6 +525,7 @@ impl<Msg: Clone> Ui<Msg> {
 
     fn paint_display_list(&mut self, frame: &mut Frame<Msg>) {
         frame.display_list.commands.clear();
+        self.ring_animating = false;
         if self.tree.root.is_none() {
             return;
         }
@@ -516,11 +588,91 @@ impl<Msg: Clone> Ui<Msg> {
             let child = self.tree.nodes[id.index()].children[index];
             self.paint_node(child, interaction, output);
         }
+        self.emit_scrollbar(id, rect, &resolved, path_hash, output);
         if opacity < 1.0 {
             output.push(DrawCommand::LayerPop { node: id });
         }
         if clip {
             output.push(DrawCommand::ClipPop { node: id });
+        }
+    }
+
+    /// Emits the overlay scrollbar thumb for a scroll container, if active.
+    ///
+    /// The thumb is painted after the children and before the clip pop, so it
+    /// sits on top of the content and stays inside the container's clip. A
+    /// vertical and a horizontal thumb are independent; when both axes overflow
+    /// they overlap at the bottom-right corner, which the rounded ends hide.
+    fn emit_scrollbar(
+        &self,
+        id: NodeId,
+        rect: Rect,
+        resolved: &crate::style::ResolvedStyle,
+        path_hash: u64,
+        output: &mut Vec<DrawCommand>,
+    ) {
+        if !resolved.scroll.clips() || !self.input.scrollbar_active(&self.tree, id, path_hash) {
+            return;
+        }
+        let offset = self.store.scroll(path_hash);
+        let content = self.engine.content_size(id);
+        let margin = self.theme.spacing(Spacing::S1);
+        let thickness = self.theme.spacing(Spacing::S1);
+        let min_length = self.theme.spacing(Spacing::S4);
+        let color = self.theme.role(ColorRole::TextMuted);
+        if matches!(resolved.scroll, ScrollAxes::Vertical | ScrollAxes::Both)
+            && content.height > rect.height + 0.5
+        {
+            let track = (rect.height - margin * 2.0).max(0.0);
+            let length = (track * (rect.height / content.height))
+                .max(min_length)
+                .min(track);
+            let travel = (track - length).max(0.0);
+            let range = content.height - rect.height;
+            let progress = if range > 0.0 {
+                (offset.y / range).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let thumb = Rect::new(
+                rect.right() - margin - thickness,
+                rect.y + margin + travel * progress,
+                thickness,
+                length,
+            );
+            output.push(DrawCommand::Rect {
+                node: id,
+                rect: thumb,
+                color,
+                radii: corners(thumb, Radius::Full, &self.theme),
+            });
+        }
+        if matches!(resolved.scroll, ScrollAxes::Horizontal | ScrollAxes::Both)
+            && content.width > rect.width + 0.5
+        {
+            let track = (rect.width - margin * 2.0).max(0.0);
+            let length = (track * (rect.width / content.width))
+                .max(min_length)
+                .min(track);
+            let travel = (track - length).max(0.0);
+            let range = content.width - rect.width;
+            let progress = if range > 0.0 {
+                (offset.x / range).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let thumb = Rect::new(
+                rect.x + margin + travel * progress,
+                rect.bottom() - margin - thickness,
+                length,
+                thickness,
+            );
+            output.push(DrawCommand::Rect {
+                node: id,
+                rect: thumb,
+                color,
+                radii: corners(thumb, Radius::Full, &self.theme),
+            });
         }
     }
 
@@ -577,7 +729,7 @@ impl<Msg: Clone> Ui<Msg> {
         } else {
             resolved.elevation_level
         };
-        let focus_ring = self_focused && self.input.keyboard_focus;
+        let keyboard_ring = self_focused && self.input.keyboard_focus;
 
         let now = self.input.now_ms;
         let transition = visual.transition;
@@ -615,9 +767,36 @@ impl<Msg: Clone> Ui<Msg> {
             )
         };
 
+        // The focus ring fades in and out as one scalar. Priming the scalar at
+        // zero on every visual node means a node that gains keyboard focus
+        // eases from 0 instead of snapping on.
+        let ring_target = if keyboard_ring { 1.0 } else { 0.0 };
+        let ring_alpha = if has_visual || keyboard_ring {
+            self.visuals.scalar(
+                path_hash,
+                FOCUS_RING,
+                ring_target,
+                now,
+                self.theme.duration(Duration::Fast),
+            )
+        } else {
+            0.0
+        };
+        // Only keyboard focus may show a ring, so a pointer click still paints
+        // none. A visual node that just lost focus keeps its fading ring while
+        // the keyboard flag remains set.
+        let ring_drawn = self.input.keyboard_focus && ring_alpha > 0.01;
+        let ring_changing = self.input.keyboard_focus && (ring_alpha - ring_target).abs() > 0.001;
+        if has_visual || keyboard_ring {
+            self.ring_animating = self.ring_animating || ring_changing;
+        }
+        let animating = animating || ring_changing;
+        let caret = self.tree.nodes[id.index()].style.caret;
+        let caret_visible = caret.is_some() && crate::motion::caret_visible(now);
+
         let mut hash = Fnv::new();
         hash.write_u64(content_hash);
-        let state_sensitive = has_visual || focus_ring || style_bg == Some(ColorRole::AccentFill);
+        let state_sensitive = has_visual || ring_drawn || style_bg == Some(ColorRole::AccentFill);
         if state_sensitive {
             hash.write_bool(interaction.hovered);
             hash.write_bool(interaction.pressed);
@@ -629,7 +808,9 @@ impl<Msg: Clone> Ui<Msg> {
                 hash.write_bool(false);
             }
         }
-        hash.write_bool(focus_ring);
+        hash.write_f32(ring_alpha);
+        hash.write_bool(ring_drawn);
+        hash.write_bool(caret_visible);
         hash.write_u8(base_tone as u8);
         hash.write_u8(match self.theme.mode {
             crate::theme::ThemeMode::Dark => 0,
@@ -752,7 +933,7 @@ impl<Msg: Clone> Ui<Msg> {
                 color: foreground,
             });
         }
-        if focus_ring {
+        if ring_drawn {
             let width = self
                 .theme
                 .borders
@@ -763,10 +944,11 @@ impl<Msg: Clone> Ui<Msg> {
                 rect.width + width * 2.0,
                 rect.height + width * 2.0,
             );
+            let base = self.theme.role(ColorRole::FocusRing);
             commands.push(DrawCommand::Border {
                 node: id,
                 rect: ring,
-                color: self.theme.role(ColorRole::FocusRing),
+                color: base.with_alpha(base.alpha() * ring_alpha),
                 width,
                 sides: [width; 4],
                 radii: corners(ring, resolved.radius, &self.theme),
@@ -837,26 +1019,28 @@ impl<Msg: Clone> Ui<Msg> {
                     },
                 });
                 // A real caret rect at the shaped glyph position, drawn over
-                // the glyphs. Blinking is a phase 7 concern.
-                if let Some(caret) = self.tree.nodes[id.index()].style.caret {
-                    let caret = caret.min(text_len);
-                    let line_index = shape
-                        .lines
-                        .iter()
-                        .position(|line| caret >= line.start && caret <= line.end)
-                        .unwrap_or(shape.lines.len().saturating_sub(1));
-                    let x = caret_x(shape, line_index, caret);
-                    commands.push(DrawCommand::Rect {
-                        node: id,
-                        rect: Rect::new(
-                            text_rect.x + x - 0.75,
-                            text_rect.y + line_offset(line_index, line_height),
-                            1.5,
-                            line_height,
-                        ),
-                        color: self.theme.role(ColorRole::Accent),
-                        radii: [0.0; 4],
-                    });
+                // the glyphs. It blinks on the injected clock.
+                if caret_visible {
+                    if let Some(caret) = caret {
+                        let caret = caret.min(text_len);
+                        let line_index = shape
+                            .lines
+                            .iter()
+                            .position(|line| caret >= line.start && caret <= line.end)
+                            .unwrap_or(shape.lines.len().saturating_sub(1));
+                        let x = caret_x(shape, line_index, caret);
+                        commands.push(DrawCommand::Rect {
+                            node: id,
+                            rect: Rect::new(
+                                text_rect.x + x - 0.75,
+                                text_rect.y + line_offset(line_index, line_height),
+                                1.5,
+                                line_height,
+                            ),
+                            color: self.theme.role(ColorRole::Accent),
+                            radii: [0.0; 4],
+                        });
+                    }
                 }
             }
         }
@@ -1067,6 +1251,8 @@ mod state_tests {
             key: ShortcutKey::Tab,
             repeat: false,
         });
+        ui.set_time_ms(16.0);
+        ui.paint(&view, &mut frame, &mut text);
         ui.set_time_ms(200.0);
         ui.paint(&view, &mut frame, &mut text);
         assert!(

@@ -692,6 +692,12 @@ pub struct Style {
     pub aspect: Option<f32>,
     /// Grid columns, when the element is a grid.
     pub columns: Option<Responsive<Columns>>,
+    /// The explicit one-based grid row, when the element is a grid item.
+    pub grid_row: Option<u16>,
+    /// The explicit one-based grid column, when the element is a grid item.
+    pub grid_column: Option<u16>,
+    /// How many columns the grid item spans from [`Self::grid_column`].
+    pub grid_column_span: Option<u16>,
     /// Flow wrapping.
     pub wrap: bool,
     /// Scroll axes, when the element is a scroll container.
@@ -711,6 +717,12 @@ pub struct Style {
     pub cursor: Cursor,
     /// Whether the component is selected or checked.
     pub selected: bool,
+    /// Whether the element is a background layer painted behind its siblings.
+    ///
+    /// The design sweep allows such a layer to overlap the siblings it sits
+    /// behind (a table row surface spans its cells), which is intentional
+    /// overlap, not a layout mistake.
+    pub overlap_layer: bool,
     /// State-dependent roles and the transition duration.
     pub visual: VisualStyle,
 }
@@ -759,6 +771,9 @@ impl Default for Style {
             ellipsis: Ellipsis::None,
             aspect: None,
             columns: None,
+            grid_row: None,
+            grid_column: None,
+            grid_column_span: None,
             wrap: false,
             scroll: Responsive::single(ScrollAxes::None),
             priority: 0,
@@ -768,6 +783,7 @@ impl Default for Style {
             tab_index: None,
             cursor: Cursor::Default,
             selected: false,
+            overlap_layer: false,
             visual: VisualStyle::default(),
         }
     }
@@ -897,6 +913,12 @@ pub struct ResolvedStyle {
     pub aspect: Option<f32>,
     /// Grid columns.
     pub columns: Option<Columns>,
+    /// The explicit one-based grid row, when the element is a grid item.
+    pub grid_row: Option<u16>,
+    /// The explicit one-based grid column, when the element is a grid item.
+    pub grid_column: Option<u16>,
+    /// How many columns the grid item spans.
+    pub grid_column_span: Option<u16>,
     /// Wrap.
     pub wrap: bool,
     /// Scroll axes.
@@ -1038,6 +1060,9 @@ impl Style {
                 .columns
                 .as_ref()
                 .map(|value| value.resolve(container_width, breakpoints).clone()),
+            grid_row: self.grid_row,
+            grid_column: self.grid_column,
+            grid_column_span: self.grid_column_span,
             wrap: self.wrap,
             scroll: *self.scroll.resolve(container_width, breakpoints),
             interactive: self.interactive,
