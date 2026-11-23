@@ -626,7 +626,9 @@ fn dialog_interior_points<Msg: Clone>(
     card: NodeId,
 ) -> Vec<(i32, i32)> {
     const INSET: f32 = 3.0;
-    const MARGIN: f32 = 8.0;
+    // 24 px covers a glyph's em-cell overhang: the solid-atlas control fills
+    // whole cells, which extend beyond a line box by up to 0.3 em.
+    const MARGIN: f32 = 24.0;
     let card_rect = ui.layout().rect(card);
     let children = painted_descendant_rects(ui, frame, card);
     let x_start = (card_rect.x + INSET).ceil() as i32;

@@ -162,12 +162,7 @@ fn render_display_list_with_atlas(
     let device = harness.renderer().context.device.clone();
     let queue = harness.renderer().context.queue.clone();
 
-    let font = Font::load_bytes(
-        ROBOTO,
-        device.as_ref(),
-        queue.as_ref(),
-        ferrous_font::charset::latin_western(),
-    );
+    let font = story_font(device.as_ref(), queue.as_ref(), display_list);
 
     let mut renderer =
         GuiRenderer::new(device.clone(), DEFAULT_FORMAT, 4096, width, height, 1, None);
@@ -233,6 +228,70 @@ fn render_display_list_with_atlas(
         height,
         rgba,
     })
+}
+
+/// Builds the font atlas for a display list, with fallback faces for glyphs the
+/// bundled Roboto does not cover.
+///
+/// The GUI text pipeline binds one font atlas, so every face's glyphs are baked
+/// into **one** texture (`BakedAtlas::build_multi`): the Latin text uses Roboto,
+/// CJK/Arabic/symbols come from the first system face that covers them. Only
+/// the characters the list actually draws are baked, so a story with Latin text
+/// pays nothing for a fallback.
+fn story_font(device: &Device, queue: &Queue, display_list: &DisplayList) -> Font {
+    let mut chars: Vec<char> = Vec::new();
+    for command in &display_list.commands {
+        if let DrawCommand::Text { run, .. } = command {
+            for ch in run.text.chars() {
+                if !ch.is_whitespace() && !chars.contains(&ch) {
+                    chars.push(ch);
+                }
+            }
+        }
+    }
+    if chars.is_empty() {
+        return Font::load_bytes(
+            ROBOTO,
+            device,
+            queue,
+            ferrous_font::charset::latin_western(),
+        );
+    }
+    let Ok(primary) = ferrous_font::FontParser::new(ROBOTO.to_vec()) else {
+        return Font::load_bytes(ROBOTO, device, queue, chars);
+    };
+    let missing: Vec<char> = chars
+        .iter()
+        .copied()
+        .filter(|ch| primary.get_glyph_index(*ch) == 0)
+        .collect();
+    // Keep the historical `latin_western` cells first so a Latin-only story
+    // draws byte-identical glyphs (same UVs) as before fallback drawing; append
+    // only the used characters outside that set.
+    let mut primary_chars = ferrous_font::charset::latin_western();
+    for ch in &chars {
+        if primary.get_glyph_index(*ch) != 0 && !primary_chars.contains(ch) {
+            primary_chars.push(*ch);
+        }
+    }
+    let mut owned: Vec<(Vec<u8>, Vec<char>)> = vec![(ROBOTO.to_vec(), primary_chars)];
+    for (bytes, covered) in ferrous_font::system::find_for(&missing) {
+        owned.push((bytes, covered));
+    }
+    // A character no face covers keeps the primary's `.notdef` cell, which is
+    // exactly what the single-face path drew before fallback existed.
+    let covered: Vec<char> = owned.iter().flat_map(|(_, chars)| chars.clone()).collect();
+    for ch in &chars {
+        if !covered.contains(ch) {
+            owned[0].1.push(*ch);
+        }
+    }
+    let faces: Vec<(&[u8], Vec<char>)> = owned
+        .iter()
+        .map(|(bytes, covered)| (bytes.as_slice(), covered.clone()))
+        .collect();
+    Font::load_multi(&faces, device, queue)
+        .unwrap_or_else(|_| Font::load_bytes(ROBOTO, device, queue, chars))
 }
 
 /// A one-texel atlas filled with `colour`, used as the glyph negative control.

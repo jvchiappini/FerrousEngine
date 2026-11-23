@@ -137,7 +137,50 @@ pub fn find_for(chars: &[char]) -> Vec<(Vec<u8>, Vec<char>)> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)] // reason: pixel offsets in a font test
     use super::{find_for, font_files, supports};
+    use crate::baked::BakedAtlas;
+    use crate::parser::FontParser;
+
+    #[test]
+    fn a_system_cjk_glyph_bakes_visible_ink() {
+        let chars = ['\u{52D5}'];
+        let found = find_for(&chars);
+        if found.is_empty() {
+            eprintln!("skipping: no system face covers CJK");
+            return;
+        }
+        let mut parsers = Vec::new();
+        for (bytes, _) in &found {
+            parsers.push(FontParser::new(bytes.clone()).expect("parse"));
+        }
+        let mut faces: Vec<(&FontParser, Vec<char>)> = Vec::new();
+        let mut seen = Vec::new();
+        for (parser, (_, covered)) in parsers.iter().zip(&found) {
+            let own: Vec<char> = covered
+                .iter()
+                .copied()
+                .filter(|c| !seen.contains(c))
+                .collect();
+            seen.extend(own.iter().copied());
+            faces.push((parser, own));
+        }
+        let atlas = BakedAtlas::build_multi(&faces, 64).expect("bake");
+        let metric = atlas.metrics.get(&'\u{52D5}').expect("metric");
+        let side = atlas.tex_size as f32;
+        let x0 = (metric.uv[0] * side) as u32;
+        let y0 = (metric.uv[1] * side) as u32;
+        let mut ink = 0;
+        for y in y0..y0 + 64 {
+            for x in x0..x0 + 64 {
+                let i = ((y * atlas.tex_size + x) * 4) as usize;
+                if atlas.pixels[i] < 250 || atlas.pixels[i + 1] < 250 || atlas.pixels[i + 2] < 250 {
+                    ink += 1;
+                }
+            }
+        }
+        assert!(ink > 20, "the CJK cell has {ink} ink texels");
+    }
 
     #[test]
     fn a_non_font_is_not_supported() {

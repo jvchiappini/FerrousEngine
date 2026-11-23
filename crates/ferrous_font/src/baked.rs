@@ -193,6 +193,12 @@ impl FontKey {
     /// change to any of them yields a different key.
     #[must_use]
     pub fn of(bytes: &[u8], chars: &[char]) -> Self {
+        Self::of_with_size(bytes, chars, DEFAULT_GLYPH_SIZE)
+    }
+
+    /// [`Self::of`] for an atlas rasterized at `glyph_size` texels per cell.
+    #[must_use]
+    pub fn of_with_size(bytes: &[u8], chars: &[char], glyph_size: u32) -> Self {
         // FNV-1a, 128-bit.  A cache key does not need a cryptographic hash; it
         // needs to be stable, dependency-free and cheap.  The version and cell
         // parameters are mixed in first, so they cannot collide with font data.
@@ -207,7 +213,7 @@ impl FontKey {
         };
         mix(&ATLAS_FORMAT_VERSION.to_le_bytes());
         mix(&ATLAS_GENERATOR_VERSION.to_le_bytes());
-        mix(&DEFAULT_GLYPH_SIZE.to_le_bytes());
+        mix(&glyph_size.to_le_bytes());
         mix(&PIXEL_RANGE.to_bits().to_le_bytes());
         mix(&(chars.len() as u32).to_le_bytes());
         for c in chars {
@@ -272,12 +278,159 @@ impl BakedAtlas {
     ///
     /// Returns [`FontError::Atlas`] when `chars` is empty.
     pub fn build(parser: &FontParser, chars: &[char]) -> Result<Self, FontError> {
+        Self::build_with_size(parser, chars, DEFAULT_GLYPH_SIZE)
+    }
+
+    /// Builds **one** atlas from several faces, for fallback drawing.
+    ///
+    /// Each character is baked from the first face that lists it; the metrics,
+    /// glyph index and UV come from that same face. The GUI text pipeline has
+    /// one font binding, so a multi-face glyph set in one texture is what lets
+    /// a mixed-script run draw without a second page. `.notdef` comes from the
+    /// first face. Kerning is the first face's, which is correct because a run
+    /// never kerns across a face boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FontError::Atlas`] when no face lists a character.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        clippy::too_many_lines
+    )] // reason: the atlas grid is a small square of whole cells
+    pub fn build_multi(
+        faces: &[(&FontParser, Vec<char>)],
+        glyph_size: u32,
+    ) -> Result<Self, FontError> {
+        let Some((first, first_chars)) = faces.first() else {
+            return Err(FontError::Atlas {
+                message: "no faces".to_owned(),
+            });
+        };
+        let glyph_size = glyph_size.clamp(8, 128);
+        let mut claimed: Vec<char> = Vec::new();
+        let mut jobs: Vec<(usize, Option<char>, usize, u16)> = Vec::new();
+        for (face_index, (parser, chars)) in faces.iter().enumerate() {
+            for &ch in chars {
+                if claimed.contains(&ch) {
+                    continue;
+                }
+                claimed.push(ch);
+                jobs.push((jobs.len(), Some(ch), face_index, parser.get_glyph_index(ch)));
+            }
+        }
+        if jobs.is_empty() {
+            return Err(FontError::Atlas {
+                message: "no characters".to_owned(),
+            });
+        }
+        let has_notdef = !first.get_glyph_outline_by_index(0).is_empty();
+        let count = jobs.len() as u32 + u32::from(has_notdef);
+        if has_notdef {
+            jobs.push((jobs.len(), None, 0, 0));
+        }
+        let atlas_dim = ((count as f32).sqrt().ceil() as u32).max(1);
+        let tex_size = atlas_dim * glyph_size;
+        let cell_bounds = [CELL_MIN, CELL_MIN, CELL_MAX, CELL_MAX];
+
+        let (mut metrics, mut notdef, mut glyph_indices, kerning, gpos, font_metrics) =
+            LayoutData::from_parser(first, first_chars.clone()).into_parts();
+        for (parser, chars) in &faces[1..] {
+            let (m, n, gi, _, _, _) = LayoutData::from_parser(parser, chars.clone()).into_parts();
+            for (ch, metric) in m {
+                metrics.entry(ch).or_insert(metric);
+            }
+            for (ch, index) in gi {
+                glyph_indices.entry(ch).or_insert(index);
+            }
+            if notdef.is_none() {
+                notdef = n;
+            }
+        }
+
+        let mut pixels = vec![255u8; (tex_size * tex_size * 4) as usize];
+        #[cfg(not(target_arch = "wasm32"))]
+        let glyph_results: Vec<(usize, Option<char>, Vec<u8>)> = {
+            use rayon::prelude::*;
+            jobs.par_iter()
+                .map(|&(i, c, face, gid)| {
+                    let outline = faces[face].0.get_glyph_outline_by_index(gid);
+                    (i, c, generate_msdf(&outline, glyph_size))
+                })
+                .collect()
+        };
+        #[cfg(target_arch = "wasm32")]
+        let glyph_results: Vec<(usize, Option<char>, Vec<u8>)> = jobs
+            .iter()
+            .map(|&(i, c, face, gid)| {
+                let outline = faces[face].0.get_glyph_outline_by_index(gid);
+                (i, c, generate_msdf(&outline, glyph_size))
+            })
+            .collect();
+
+        for (i, c, bmp) in glyph_results {
+            let x = (i as u32 % atlas_dim) * glyph_size;
+            let y = (i as u32 / atlas_dim) * glyph_size;
+            for row in 0..glyph_size {
+                let dst = (((y + row) * tex_size + x) * 4) as usize;
+                let src = (row * glyph_size * 4) as usize;
+                pixels[dst..dst + (glyph_size * 4) as usize]
+                    .copy_from_slice(&bmp[src..src + (glyph_size * 4) as usize]);
+            }
+            let glyph = match c {
+                Some(c) => metrics.get_mut(&c),
+                None => notdef.as_mut(),
+            };
+            let Some(glyph) = glyph else {
+                continue;
+            };
+            glyph.uv = [
+                x as f32 / tex_size as f32,
+                y as f32 / tex_size as f32,
+                (x + glyph_size) as f32 / tex_size as f32,
+                (y + glyph_size) as f32 / tex_size as f32,
+            ];
+            glyph.size = [glyph_size as f32, glyph_size as f32];
+        }
+
+        let mut all_bytes = Vec::new();
+        for (parser, _) in faces {
+            all_bytes.extend_from_slice(parser.data());
+        }
+        Ok(Self {
+            key: FontKey::of_with_size(&all_bytes, &claimed, glyph_size),
+            glyph_size,
+            tex_size,
+            px_range: PIXEL_RANGE,
+            cell_bounds,
+            metrics,
+            notdef,
+            glyph_indices,
+            kerning,
+            gpos,
+            font_metrics,
+            pixels,
+        })
+    }
+
+    /// [`Self::build`] at a chosen cell size, for re-rasterizing at a new DPI
+    /// scale.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FontError::Atlas`] when `chars` is empty.
+    pub fn build_with_size(
+        parser: &FontParser,
+        chars: &[char],
+        glyph_size: u32,
+    ) -> Result<Self, FontError> {
         if chars.is_empty() {
             return Err(FontError::Atlas {
                 message: "no characters".to_owned(),
             });
         }
-        let glyph_size = DEFAULT_GLYPH_SIZE;
+        let glyph_size = glyph_size.clamp(8, 128);
 
         // `.notdef` (glyph 0) gets its own cell after the requested characters
         // when the font provides an outline for it.
@@ -471,12 +624,26 @@ impl BakedAtlas {
         bytes: &[u8],
         chars: &[char],
     ) -> Result<Self, FontError> {
+        Self::build_cached_with_size(cache, bytes, chars, DEFAULT_GLYPH_SIZE)
+    }
+
+    /// [`Self::build_cached`] at a chosen cell size.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::build_cached`].
+    pub fn build_cached_with_size(
+        cache: Option<&AtlasCache>,
+        bytes: &[u8],
+        chars: &[char],
+        glyph_size: u32,
+    ) -> Result<Self, FontError> {
         let chars = if chars.is_empty() {
             crate::charset::latin_western()
         } else {
             chars.to_vec()
         };
-        let key = FontKey::of(bytes, &chars);
+        let key = FontKey::of_with_size(bytes, &chars, glyph_size);
         if let Some(cached) = cache.and_then(|cache| cache.load(key)) {
             return Ok(cached);
         }
@@ -484,7 +651,7 @@ impl BakedAtlas {
             ParseError::Parse(message) => FontError::Parse { message },
             ParseError::Unsupported(reason) => FontError::Unsupported { reason },
         })?;
-        let atlas = Self::build(&parser, &chars)?;
+        let atlas = Self::build_with_size(&parser, &chars, glyph_size)?;
         if let Some(cache) = cache {
             cache.store(key, &atlas);
         }

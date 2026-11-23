@@ -25,6 +25,7 @@ pub mod layout_data;
 pub mod msdf_gen;
 pub mod parser;
 pub mod path;
+pub mod scaled;
 pub mod system;
 pub mod tables;
 
@@ -42,6 +43,7 @@ pub use layout::{
 };
 pub use layout_data::LayoutData;
 pub use parser::{FontMetrics, FontParser, GlyphBounds, GposKerning, GposPair, ParseError};
+pub use scaled::ScaledAtlases;
 
 /// Errors returned by the typed font loading entry points.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,8 +156,68 @@ impl Font {
         chars: impl IntoIterator<Item = char>,
         cache: Option<&crate::AtlasCache>,
     ) -> Result<Self, FontError> {
+        Self::try_load_bytes_cached_at(
+            bytes,
+            device,
+            queue,
+            chars,
+            cache,
+            crate::atlas::DEFAULT_GLYPH_SIZE,
+        )
+    }
+
+    /// Loads one atlas that draws several faces, for fallback runs.
+    ///
+    /// Each entry is `(bytes, characters)`; a character is baked from the first
+    /// entry that lists it. The GUI text pipeline binds one font atlas, so this
+    /// is how a mixed-script line draws CJK, Arabic and symbols next to Latin.
+    ///
+    /// # Errors
+    ///
+    /// [`FontError::Parse`] / [`FontError::Unsupported`] for bad bytes and
+    /// [`FontError::Atlas`] when no character is listed.
+    pub fn load_multi(
+        faces: &[(&[u8], Vec<char>)],
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Result<Self, FontError> {
+        let mut parsers = Vec::with_capacity(faces.len());
+        for (bytes, chars) in faces {
+            let parser =
+                crate::FontParser::new((*bytes).to_vec()).map_err(|error| match error {
+                    crate::ParseError::Parse(message) => FontError::Parse { message },
+                    crate::ParseError::Unsupported(reason) => FontError::Unsupported { reason },
+                })?;
+            parsers.push((parser, chars.clone()));
+        }
+        let refs: Vec<(&crate::FontParser, Vec<char>)> = parsers
+            .iter()
+            .map(|(parser, chars)| (parser, chars.clone()))
+            .collect();
+        let baked = crate::BakedAtlas::build_multi(&refs, crate::atlas::DEFAULT_GLYPH_SIZE)?;
+        Ok(Self {
+            atlas: baked.upload(device, queue),
+            icons: None,
+        })
+    }
+
+    /// [`Self::try_load_bytes_cached`] with a chosen raster cell size, for a
+    /// new DPI scale.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::try_load_bytes_cached`].
+    pub fn try_load_bytes_cached_at(
+        bytes: &[u8],
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        chars: impl IntoIterator<Item = char>,
+        cache: Option<&crate::AtlasCache>,
+        glyph_size: u32,
+    ) -> Result<Self, FontError> {
         let char_list: Vec<char> = chars.into_iter().collect();
-        let baked = crate::BakedAtlas::build_cached(cache, bytes, &char_list)?;
+        let baked =
+            crate::BakedAtlas::build_cached_with_size(cache, bytes, &char_list, glyph_size)?;
         Ok(Self {
             atlas: baked.upload(device, queue),
             icons: None,
