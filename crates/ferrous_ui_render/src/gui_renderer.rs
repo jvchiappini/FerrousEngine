@@ -13,7 +13,6 @@ use crate::pipelines::{
     quad::create_quad_pipeline,
     text::create_text_pipeline,
 };
-use crate::MAX_TEXTURE_SLOTS;
 use ferrous_core::memory::{self, Subsystem};
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -350,10 +349,12 @@ impl GuiRenderer {
             min_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
+        #[cfg(not(target_arch = "wasm32"))]
         let dummy_views: Vec<&wgpu::TextureView> =
-            std::iter::repeat_n(&dummy_view, MAX_TEXTURE_SLOTS as usize).collect();
+            std::iter::repeat_n(&dummy_view, crate::MAX_TEXTURE_SLOTS as usize).collect();
+        #[cfg(not(target_arch = "wasm32"))]
         let dummy_samplers: Vec<&wgpu::Sampler> =
-            std::iter::repeat_n(&dummy_sampler, MAX_TEXTURE_SLOTS as usize).collect();
+            std::iter::repeat_n(&dummy_sampler, crate::MAX_TEXTURE_SLOTS as usize).collect();
 
         #[cfg(not(target_arch = "wasm32"))]
         let image_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1257,7 +1258,7 @@ impl GuiRenderer {
                 views.push(&tex.view);
                 samplers.push(&tex.sampler);
             }
-            while views.len() < MAX_TEXTURE_SLOTS as usize {
+            while views.len() < crate::MAX_TEXTURE_SLOTS as usize {
                 views.push(views.last().unwrap());
                 samplers.push(samplers.last().unwrap());
             }

@@ -103,6 +103,24 @@ fn shadow_alpha(sdf_dist: f32, blur: f32) -> f32 {
     return clamp(exp(-sdf_dist / blur) * 0.5, 0.0, 1.0);
 }
 
+/// Ordered 4x4 Bayer value in `0.0..1.0` for a pixel coordinate.
+///
+/// Added to a smooth alpha ramp at 1/255 amplitude, it turns the 8-bit
+/// quantisation steps of a shadow into an ordered dither. The neighbouring
+/// pixel delta stays at or below 2/255 while the band disappears.
+fn bayer4(pixel: vec2<f32>) -> f32 {
+    let p = vec2<u32>(pixel);
+    let x = p.x % 4u;
+    let y = p.y % 4u;
+    let matrix = array<f32, 16>(
+        0.0, 8.0, 2.0, 10.0,
+        12.0, 4.0, 14.0, 6.0,
+        3.0, 11.0, 1.0, 9.0,
+        15.0, 7.0, 13.0, 5.0,
+    );
+    return matrix[y * 4u + x] / 16.0;
+}
+
 // ─── Vertex Stage ─────────────────────────────────────────────────────────────
 
 @vertex
@@ -156,9 +174,27 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Calculamos todos los valores SDF y sus derivadas aquí para que el
     // compilador los vea siempre alcanzables, sin importar el valor de flags.
     let border_w_early  = in.uv0.x;
-    let inner_b_early   = half_size - vec2<f32>(border_w_early);
+    let per_side_border = (in.flags & 0x800u) != 0u;
+    // top, right, bottom, left
+    let side_w = select(
+        vec4<f32>(border_w_early, border_w_early, border_w_early, border_w_early),
+        vec4<f32>(in.uv0.y, in.uv1.x, in.uv1.y, in.uv0.x),
+        per_side_border,
+    );
+    let inner_half_early = vec2<f32>(
+        half_size.x - (side_w.w + side_w.y) * 0.5,
+        half_size.y - (side_w.x + side_w.z) * 0.5,
+    );
+    let inner_shift_early = vec2<f32>(
+        (side_w.w - side_w.y) * 0.5,
+        (side_w.x - side_w.z) * 0.5,
+    );
     let outer_sdf_early = sdf_rounded_rect(p_center, half_size, in.radii);
-    let inner_sdf_early = sdf_rounded_rect(p_center, max(inner_b_early, vec2<f32>(0.0)), in.radii);
+    let inner_sdf_early = sdf_rounded_rect(
+        p_center - inner_shift_early,
+        max(inner_half_early, vec2<f32>(0.0)),
+        in.radii,
+    );
     let aa_border       = fwidth(outer_sdf_early);   // uniforme: calculado antes de cualquier branch
     let sdf_main        = sdf_rounded_rect(p_center, half_size, in.radii);
     let aa_main         = max(fwidth(sdf_main), 0.5); // uniforme: calculado antes de cualquier branch
@@ -198,7 +234,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // color_b.xy encodes original rect size for SDF computation
         let orig_size = in.color_b.xy;
         let sdf = sdf_rounded_rect(p_center, orig_size * 0.5, in.radii);
-        let a   = shadow_alpha(sdf, blur) * in.color.a * clip_a;
+        let dither = (bayer4(frag_px) - 0.5) / 255.0;
+        let a   = clamp(shadow_alpha(sdf, blur) * in.color.a + dither, 0.0, 1.0) * clip_a;
         return vec4<f32>(in.color.rgb, a);
     }
 

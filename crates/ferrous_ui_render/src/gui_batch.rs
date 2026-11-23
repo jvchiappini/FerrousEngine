@@ -19,8 +19,12 @@ pub struct BorderSpec {
     pub color: [f32; 4],
     /// Per-corner radii (top-left, top-right, bottom-left, bottom-right).
     pub radii: [f32; 4],
-    /// Stroke width in physical pixels.
+    /// Stroke width in physical pixels, applied to every edge unless
+    /// [`Self::sides`] overrides an edge.
     pub width: f32,
+    /// Per-edge stroke widths in physical pixels: top, right, bottom, left.
+    /// `None` uses [`Self::width`] on every edge.
+    pub sides: Option<[f32; 4]>,
 }
 
 impl BorderSpec {
@@ -45,7 +49,15 @@ impl BorderSpec {
             color,
             radii,
             width: stroke_width,
+            sides: None,
         }
+    }
+
+    /// Sets an independent width per edge (`top`, `right`, `bottom`, `left`).
+    #[must_use]
+    pub const fn with_sides(mut self, sides: [f32; 4]) -> Self {
+        self.sides = Some(sides);
+        self
     }
 }
 
@@ -1097,20 +1109,29 @@ impl GuiBatch {
     /// Pushes an outline quad: the rounded-rect border is drawn inside `w`×`h`
     /// with `width` physical pixels of stroke.
     ///
-    /// Packing follows `assets/shaders/gui.wgsl`, which reads the border width
-    /// from `uv0.x`; `uv1` is unused by the border path (it is set to
-    /// `[0, 0]` so the interpolated `uv` cannot leak gradient data).
+    /// Packing follows `assets/shaders/gui.wgsl`. The legacy packing reads the
+    /// one border width from `uv0.x`; [`BorderSpec::with_sides`] switches to
+    /// [`crate::PER_SIDE_BORDER_BIT`], which packs `uv0 = [left, top]` and
+    /// `uv1 = [right, bottom]`.
     pub fn border(&mut self, spec: BorderSpec) {
+        let (uv0, uv1, flags) = match spec.sides {
+            Some([top, right, bottom, left]) => (
+                [left, top],
+                [right, bottom],
+                crate::BORDER_BIT | crate::PER_SIDE_BORDER_BIT,
+            ),
+            None => ([spec.width, 0.0], [0.0, 0.0], crate::BORDER_BIT),
+        };
         self.push_quad(GuiQuad {
             pos: [spec.rect.x, spec.rect.y],
             size: [spec.rect.width, spec.rect.height],
-            uv0: [spec.width, 0.0], // gui.wgsl: border width (uv0.x)
-            uv1: [0.0, 0.0],
+            uv0,
+            uv1,
             color: spec.color,
             color_b: [0.0; 4],
             radii: spec.radii,
             tex_index: 0,
-            flags: crate::BORDER_BIT,
+            flags,
             z_order: 0.0,
             node_id: 0,
         });
@@ -1577,6 +1598,54 @@ mod tests {
         assert_eq!(quad.flags, crate::BORDER_BIT);
         assert_eq!(quad.pos, [10.0, 20.0]);
         assert_eq!(quad.size, [100.0, 40.0]);
+    }
+
+    #[test]
+    fn per_side_border_packs_each_edge_and_sets_the_bit() {
+        // top, right, bottom, left
+        let quad = quad_of(|b| {
+            b.border(
+                BorderSpec::new(10.0, 20.0, 100.0, 40.0, [1.0; 4], [4.0; 4], 1.0)
+                    .with_sides([1.0, 2.0, 3.0, 4.0]),
+            );
+        });
+        assert_eq!(quad.uv0, [4.0, 1.0], "uv0 = [left, top]");
+        assert_eq!(quad.uv1, [2.0, 3.0], "uv1 = [right, bottom]");
+        assert_eq!(quad.flags, crate::BORDER_BIT | crate::PER_SIDE_BORDER_BIT);
+    }
+
+    #[test]
+    fn shadow_dither_ramp_step_stays_within_two_pixel_levels() {
+        // CPU mirror of the shadow branch: same exponential SDF ramp and the
+        // same 4x4 Bayer offset the shader adds. A horizontal sweep across a
+        // 32 px ramp must not step more than 2/255 between neighbouring pixels.
+        fn bayer(x: u32, y: u32) -> f32 {
+            const M: [f32; 16] = [
+                0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0,
+                5.0,
+            ];
+            M[(y * 4 + x) as usize % 16] / 16.0
+        }
+        let blur = 32.0_f32;
+        let shadow_alpha = 0.28_f32;
+        let backdrop = 0.08_f32;
+        let mut previous: Option<f32> = None;
+        for x in 0..256_i32 {
+            let distance = x as f32 - 128.0; // past the shadow edge
+            let base = 0.5 * (-distance / blur).exp() * shadow_alpha;
+            let dither = (bayer(x as u32, 0) - 0.5) / 255.0;
+            let alpha = (base + dither).clamp(0.0, 1.0);
+            let pixel = backdrop * (1.0 - alpha); // black shadow over the backdrop
+            let level = (pixel * 255.0).round();
+            if let Some(previous) = previous {
+                assert!(
+                    (level - previous).abs() <= 2.0,
+                    "ramp step {} at x={x}",
+                    (level - previous).abs()
+                );
+            }
+            previous = Some(level);
+        }
     }
 
     #[test]

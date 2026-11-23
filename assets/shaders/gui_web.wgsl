@@ -64,6 +64,19 @@ fn shadow_alpha(sdf_dist: f32, blur: f32) -> f32 {
     return clamp(exp(-sdf_dist / blur) * 0.5, 0.0, 1.0);
 }
 
+fn bayer4(pixel: vec2<f32>) -> f32 {
+    let p = vec2<u32>(pixel);
+    let x = p.x % 4u;
+    let y = p.y % 4u;
+    let matrix = array<f32, 16>(
+        0.0, 8.0, 2.0, 10.0,
+        12.0, 4.0, 14.0, 6.0,
+        3.0, 11.0, 1.0, 9.0,
+        15.0, 7.0, 13.0, 5.0,
+    );
+    return matrix[y * 4u + x] / 16.0;
+}
+
 @vertex
 fn vs_main(
     @location(0)  uv:          vec2<f32>,
@@ -109,12 +122,33 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // We eagerly compute all SDF values and their derivatives here so the
     // compiler sees them as uniformly reachable, regardless of flag values.
     let border_w_early  = in.uv0.x;
-    let inner_b_early   = half_size - vec2<f32>(border_w_early);
+    let per_side_border = (in.flags & 0x800u) != 0u;
+    let side_w = select(
+        vec4<f32>(border_w_early, border_w_early, border_w_early, border_w_early),
+        vec4<f32>(in.uv0.y, in.uv1.x, in.uv1.y, in.uv0.x),
+        per_side_border,
+    );
+    let inner_half_early = vec2<f32>(
+        half_size.x - (side_w.w + side_w.y) * 0.5,
+        half_size.y - (side_w.x + side_w.z) * 0.5,
+    );
+    let inner_shift_early = vec2<f32>(
+        (side_w.w - side_w.y) * 0.5,
+        (side_w.x - side_w.z) * 0.5,
+    );
     let outer_sdf_early = sdf_rounded_rect(p_center, half_size, in.radii);
-    let inner_sdf_early = sdf_rounded_rect(p_center, max(inner_b_early, vec2<f32>(0.0)), in.radii);
+    let inner_sdf_early = sdf_rounded_rect(
+        p_center - inner_shift_early,
+        max(inner_half_early, vec2<f32>(0.0)),
+        in.radii,
+    );
     let aa_border       = fwidth(outer_sdf_early);   // uniform: computed before any branch
     let sdf_main        = sdf_rounded_rect(p_center, half_size, in.radii);
     let aa_main         = max(fwidth(sdf_main), 0.5); // uniform: computed before any branch
+
+    // The rounded clip is a per-segment mask shared with native and with the
+    // text/SVG pipelines; sampling it here cuts every branch identically.
+    let clip_a = clip_coverage(in.clip_pos.xy);
 
     // ── COLOR WHEEL (flag 0x01) ────────────────────────────────────────────────
     if (in.flags & 0x01u) != 0u {
@@ -125,7 +159,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let rgb  = hsv2rgb(hue, sat, 1.0);
         let d    = dist - r;
         let alpha = 1.0 - smoothstep(0.0, 1.0, d);
-        return vec4<f32>(rgb, alpha);
+        return vec4<f32>(rgb, alpha * clip_a);
     }
 
     // ── LINE (flag 0x200) ──────────────────────────────────────────────────────
@@ -140,7 +174,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let t = clamp(dot(point - a, segment) / length_sq, 0.0, 1.0);
         let distance = length(point - (a + segment * t));
         let alpha = 1.0 - smoothstep(in.radii.x - 0.5, in.radii.x + 0.5, distance);
-        return vec4<f32>(in.color.rgb, in.color.a * alpha);
+        return vec4<f32>(in.color.rgb, in.color.a * alpha * clip_a);
     }
 
     // ── SHADOW (flag 0x80) ─────────────────────────────────────────────────────
@@ -148,8 +182,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let blur      = in.uv0.x;
         let orig_size = in.color_b.xy;
         let sdf = sdf_rounded_rect(p_center, orig_size * 0.5, in.radii);
-        let a   = shadow_alpha(sdf, blur) * in.color.a;
-        return vec4<f32>(in.color.rgb, a);
+        let dither = (bayer4(in.clip_pos.xy) - 0.5) / 255.0;
+        let a   = clamp(shadow_alpha(sdf, blur) * in.color.a + dither, 0.0, 1.0);
+        return vec4<f32>(in.color.rgb, a * clip_a);
     }
 
     // ── COLOR BASE (solid o gradiente) ─────────────────────────────────────────
@@ -172,12 +207,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let outer_alpha  = 1.0 - smoothstep(-aa_border, aa_border, outer_sdf_early);
         let inner_alpha  = 1.0 - smoothstep(-aa_border, aa_border, inner_sdf_early);
         let border_alpha = outer_alpha * (1.0 - inner_alpha);
-        return vec4<f32>(base_color.rgb, base_color.a * border_alpha);
+        return vec4<f32>(base_color.rgb, base_color.a * border_alpha * clip_a);
     }
 
     // ── SDF rounded corners (all other paths) ──────────────────────────────────
     // Uses pre-computed sdf_main and aa_main from uniform control flow above.
-    var alpha = base_color.a * (1.0 - smoothstep(-aa_main, aa_main, sdf_main));
+    var alpha = base_color.a * (1.0 - smoothstep(-aa_main, aa_main, sdf_main)) * clip_a;
 
     // ── TEXTURED (flag 0x02) ───────────────────────────────────────────────────
     if ((in.flags & 0x02u) != 0u) {

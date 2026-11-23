@@ -92,6 +92,15 @@ pub const LINE_BIT: u32 = 1 << 9;
 /// tint masked by the rounded-rect SDF (the documented degraded path).
 pub const BACKDROP_BLUR_BIT: u32 = 1 << 10;
 
+/// Flag: the border quad carries an independent width per edge.
+///
+/// Packing follows `assets/shaders/gui.wgsl`: `uv0 = [left, top]` and
+/// `uv1 = [right, bottom]`, in physical pixels. Without this bit the border
+/// keeps the legacy packing (`uv0.x` is one width for every edge). Gradient
+/// borders use the legacy packing, so the bit is never combined with
+/// [`GRADIENT_BIT`].
+pub const PER_SIDE_BORDER_BIT: u32 = 1 << 11;
+
 /// Convenience mask for a gradient border: [`BORDER_BIT`] | [`GRADIENT_BIT`].
 ///
 /// `gui.wgsl` resolves the base colour from the two-stop gradient before it

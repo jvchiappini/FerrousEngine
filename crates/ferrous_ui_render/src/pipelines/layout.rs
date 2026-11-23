@@ -1,3 +1,4 @@
+#[cfg(not(target_arch = "wasm32"))]
 use crate::MAX_TEXTURE_SLOTS;
 use std::num::NonZeroU64;
 use wgpu::{
@@ -20,6 +21,8 @@ pub struct Layouts {
 }
 
 impl Layouts {
+    #[must_use]
+    #[allow(clippy::too_many_lines)] // reason: one binding-group table per pipeline
     pub fn new(device: &wgpu::Device) -> Self {
         let uniform_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("GUI Uniform Bind Group Layout"),

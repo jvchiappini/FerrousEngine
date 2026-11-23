@@ -1,5 +1,5 @@
 use crate::gpu_types::GuiQuad;
-use wgpu::RenderPipeline;
+use wgpu::{PipelineCompilationOptions, RenderPipeline};
 
 // `gui.wgsl` reads locations 1..=10, whose last attribute (`z_order`) ends at
 // byte 92. The instance stride stays at the full 96 bytes because the same
@@ -10,6 +10,42 @@ const _: () = {
     assert!(std::mem::offset_of!(GuiQuad, node_id) == 92);
 };
 
+/// The shared rounded-clip mask, prepended to both backend shader bodies.
+const CLIP: &str = include_str!("../../../../assets/shaders/gui_clip_common.wgsl");
+
+/// The native quad shader body (`binding_array` textures).
+#[cfg(not(target_arch = "wasm32"))]
+const QUAD_BODY: &str = include_str!("../../../../assets/shaders/gui.wgsl");
+
+/// The Web-compatible quad shader body (separate texture bindings).
+#[cfg(any(target_arch = "wasm32", test))]
+const QUAD_WEB_BODY: &str = include_str!("../../../../assets/shaders/gui_web.wgsl");
+
+/// Assembles a backend shader body with the shared rounded-clip mask.
+fn assemble(clip: &str, body: &str) -> String {
+    format!("{clip}\n{body}")
+}
+
+/// The quad shader source for the current backend.
+///
+/// Both backends receive the shared `gui_clip_common.wgsl` mask, so a rounded
+/// clip cuts quads, text and SVG identically on native and on the web.
+#[cfg(not(target_arch = "wasm32"))]
+fn quad_shader_source() -> String {
+    assemble(CLIP, QUAD_BODY)
+}
+
+/// The quad shader source for the current backend.
+///
+/// Both backends receive the shared `gui_clip_common.wgsl` mask, so a rounded
+/// clip cuts quads, text and SVG identically on native and on the web.
+#[cfg(target_arch = "wasm32")]
+fn quad_shader_source() -> String {
+    assemble(CLIP, QUAD_WEB_BODY)
+}
+
+#[must_use]
+#[allow(clippy::too_many_lines)] // reason: one flat pipeline descriptor table
 pub fn create_quad_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
@@ -19,17 +55,7 @@ pub fn create_quad_pipeline(
     depth_format: Option<wgpu::TextureFormat>,
     cache: Option<&wgpu::PipelineCache>,
 ) -> RenderPipeline {
-    // The rounded-clip mask is shared with the text and SVG pipelines.
-    const CLIP: &str = include_str!("../../../../assets/shaders/gui_clip_common.wgsl");
-    #[cfg(not(target_arch = "wasm32"))]
-    let source = format!(
-        "{CLIP}\n{}",
-        include_str!("../../../../assets/shaders/gui.wgsl")
-    );
-    // The WebGL fallback shader does not declare the clip binding; the
-    // pipeline layout still exposes group 2 but the shader leaves it unused.
-    #[cfg(target_arch = "wasm32")]
-    let source = include_str!("../../../../assets/shaders/gui_web.wgsl").to_string();
+    let source = quad_shader_source();
 
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("GUI Shader"),
@@ -121,7 +147,7 @@ pub fn create_quad_pipeline(
                     ],
                 },
             ],
-            compilation_options: Default::default(),
+            compilation_options: PipelineCompilationOptions::default(),
         },
         fragment: Some(wgpu::FragmentState {
             module: &shader,
@@ -131,7 +157,7 @@ pub fn create_quad_pipeline(
                 blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
-            compilation_options: Default::default(),
+            compilation_options: PipelineCompilationOptions::default(),
         }),
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: depth_format.map(|format| wgpu::DepthStencilState {
@@ -148,4 +174,24 @@ pub fn create_quad_pipeline(
         multiview: None,
         cache,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{assemble, CLIP, QUAD_WEB_BODY};
+
+    #[test]
+    fn the_web_quad_shader_applies_the_rounded_clip() {
+        // The web body must call the shared mask in every fragment path; the
+        // mask itself is prepended by `quad_shader_source` on wasm32.
+        assert!(CLIP.contains("fn clip_coverage("));
+        assert!(
+            QUAD_WEB_BODY.contains("clip_coverage(in.clip_pos.xy)"),
+            "the web quad shader must sample the rounded clip"
+        );
+        let assembled = assemble(CLIP, QUAD_WEB_BODY);
+        assert!(assembled.contains("@group(2) @binding(0)"));
+        assert!(assembled.contains("struct SegmentUniforms"));
+        assert!(assembled.contains("clip_coverage(in.clip_pos.xy)"));
+    }
 }
