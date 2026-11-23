@@ -1,4 +1,4 @@
-﻿# ferrous_app â€” Application Shell
+# ferrous_app — Application Shell
 
 `ferrous_app` is the top-level crate you depend on to build any FerrousEngine
 application. It wires together the window (winit), the GPU renderer, the GUI
@@ -28,7 +28,7 @@ Phase 11 backlog.
 | `App<T>` | Fluent builder that accepts your `FerrousApp` impl and starts the event loop |
 | `AppBuilder` | Plugin-based alternative builder (compose `Plugin` impls instead of a trait impl) |
 | `FerrousApp` | Trait your application struct implements; six optional frame callbacks |
-| `AppContext<'_>` | Per-frame handle passed to every callback â€” input, world, render, assets |
+| `AppContext<'_>` | Per-frame handle passed to every callback — input, world, render, assets |
 | `RenderContext<'_>` | User-facing renderer facade inside `AppContext::render` |
 | `FileDropEvent` | Queued OS file-drag events delivered to `FerrousApp::on_file_drop` |
 | `AppConfig` | Plain struct with all window / rendering configuration |

@@ -168,7 +168,7 @@ impl<App: 'static> UiSystem<App> {
     pub fn clear_damage(&mut self) {}
 
     // =========================================================================
-    // Fluent API â€” convenience for creating widgets without touching UiTree directly
+    // Fluent API — convenience for creating widgets without touching UiTree directly
     // =========================================================================
 
     /// Starts building a button with text.

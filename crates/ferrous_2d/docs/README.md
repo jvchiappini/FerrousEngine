@@ -1,4 +1,4 @@
-﻿# ferrous_2d â€” 2D Rendering Subsystem
+# ferrous_2d — 2D Rendering Subsystem
 
 `ferrous_2d` holds the data types and GPU pipelines for FerrousEngine's 2D
 render path: batched untextured SDF shapes (`ShapeInstance`), batched sprites
@@ -28,11 +28,11 @@ today:
 | Mode | Entry point | Status |
 |------|-------------|--------|
 | Immediate | `Renderer::draw_2d_shape` / `draw_sprite_2d` / `draw_2d_path`, called from `draw_ui` or `update` | Live |
-| ECS | `ferrous_2d::systems::{prepare_shapes_system, prepare_sprites_system, prepare_paths_system}` | **Deprecated / dead** â€” no scheduler calls these; will be removed |
+| ECS | `ferrous_2d::systems::{prepare_shapes_system, prepare_sprites_system, prepare_paths_system}` | **Deprecated / dead** — no scheduler calls these; will be removed |
 
 If you spawn `Shape2d` / `Sprite` / `Path2d` components on a `World`, nothing
 renders: the `ferrous_2d` systems are not part of the engine's
-`StagedScheduler`. Draw through the renderer faÃ§ade instead.
+`StagedScheduler`. Draw through the renderer façade instead.
 
 The immediate batchers are **append-only across frames**. Call
 `Renderer::clear_2d()` at the start of every frame (or the shapes accumulate
@@ -62,7 +62,7 @@ The ergonomic constructors are the intended API:
 
 The underlying shader implements a single rounded-rectangle SDF, so `circle` is
 just `corner_radius = radius`. **Arbitrary polygons are not supported by the
-shape shader** â€” see the audit report for the CAD polygon-fill gap.
+shape shader** — see the audit report for the CAD polygon-fill gap.
 
 ## Paths
 

@@ -968,7 +968,7 @@ fn half_max_width(profile: &[f32], peak: usize) -> f32 {
 /// a full width at half maximum within 20 % of the requested radius.
 ///
 /// `linear` drives the width (a Gaussian's FWHM is defined in linear light);
-/// `encoded` drives the monotonicity, whose tolerance is Â±1/255 as requested.
+/// `encoded` drives the monotonicity, whose tolerance is ±1/255 as requested.
 fn check_impulse_profile(linear: &[f32], encoded: &[f32], radius: f32, axis: &str) -> (f32, f32) {
     let (peak_index, peak) =
         linear

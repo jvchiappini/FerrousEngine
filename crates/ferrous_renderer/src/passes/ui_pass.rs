@@ -1,4 +1,4 @@
-/// UI overlay pass â€” composites GUI quads and text on top of the scene.
+/// UI overlay pass — composites GUI quads and text on top of the scene.
 ///
 /// Reads `ferrous_ui_render::GuiBatch` from the
 /// `FramePacket` extras map (inserted by the app layer).  If it is

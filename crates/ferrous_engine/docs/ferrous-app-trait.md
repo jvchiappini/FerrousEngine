@@ -1,7 +1,7 @@
 ﻿# `FerrousApp` Trait
 
 `FerrousApp` is the trait your application struct implements. Every method has
-an empty default implementation â€” override only the ones you need.
+an empty default implementation — override only the ones you need.
 
 ```rust
 pub trait FerrousApp {
@@ -53,7 +53,7 @@ fn draw_ui(&mut self, dc: &mut DrawContext<'_, '_>) {
 
 ## App modes
 
-Use `App::new(state).with_mode(AppMode::â€¦)` to tell the runner which
+Use `App::new(state).with_mode(AppMode::…)` to tell the runner which
 subsystems to activate.  Only override what you actually need.
 
 | Mode | ECS world sync | `draw_3d` called | Typical use |
@@ -66,7 +66,7 @@ All three modes have a live renderer so `draw_ui`, fonts, and GUI widgets
 work everywhere.
 
 ```rust
-// Desktop tool â€” no 3D overhead at all
+// Desktop tool — no 3D overhead at all
 App::new(MyTool)
     .with_mode(AppMode::Desktop2D)
     .run();
@@ -108,8 +108,8 @@ fn setup(&mut self, ctx: &mut AppContext) {}
 ```
 
 Called **once**, after the window and GPU are ready. Use it to:
-- Spawn initial ECS entities (`ctx.world.spawn_cube(â€¦)`)
-- Load assets (`ctx.asset_server.load(â€¦)`)
+- Spawn initial ECS entities (`ctx.world.spawn_cube(…)`)
+- Load assets (`ctx.asset_server.load(…)`)
 - Set the initial camera position
 
 ---
@@ -144,8 +144,8 @@ fn update(&mut self, ctx: &mut AppContext) {}
 ```
 
 Called every frame, **before** rendering. This is the main place for:
-- Reading input (`ctx.input.just_pressed(â€¦)`)
-- Mutating scene state (`ctx.world.set_position(â€¦)`)
+- Reading input (`ctx.input.just_pressed(…)`)
+- Mutating scene state (`ctx.world.set_position(…)`)
 - Reading widget state that was updated by input routing
 - Requesting exit (`ctx.request_exit()`)
 
@@ -166,7 +166,7 @@ provided batches via `DrawContext`. These are composited **on top** of the 3D sc
 pub struct DrawContext<'a, 'b> {
     pub gui:  &'a mut GuiBatch,
     pub text: &'a mut TextBatch,
-    pub font: &'a Font,          // always valid â€” no Option unwrap needed
+    pub font: &'a Font,          // always valid — no Option unwrap needed
     pub ctx:  &'a mut AppContext<'b>,
 }
 ```
@@ -176,7 +176,7 @@ fn draw_ui(&mut self, dc: &mut DrawContext<'_, '_>) {
     self.toolbar_bg.draw(dc.gui);
     self.color_btn.draw(dc.gui);
 
-    // font is always &Font â€” no Option check needed
+    // font is always &Font — no Option check needed
     dc.text.draw_text(dc.font, "FPS: 60", [10.0, 10.0], 16.0, [1.0; 4]);
 
     // shape helpers
@@ -193,7 +193,7 @@ fn draw_3d(&mut self, ctx: &mut AppContext) {}
 ```
 
 Called every frame before `draw_ui`. Use it to push gizmos or read camera
-state. The 3D scene is rendered automatically from the ECS world â€” you only
+state. The 3D scene is rendered automatically from the ECS world — you only
 need this callback for manual overlays or imperative rendering.
 
 ---

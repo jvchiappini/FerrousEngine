@@ -41,7 +41,7 @@ The source texture carries `COPY_SRC`; the destination must carry `COPY_DST`.
 
 1. The painter knows what it repainted. In the engine today the only damage
    source is `GuiBatch::damage_union` (`crates/ferrous_ui_render/src/gui_batch.rs:25`,
-   accumulated in `add_damage_rect` at `gui_batch.rs:569-585`) â€” **one**
+   accumulated in `add_damage_rect` at `gui_batch.rs:569-585`) — **one**
    union rectangle for the whole UI, not a list.
 2. Whoever owns the UI calls `invalidate` with that rectangle (or `invalidate_all`
    when it cannot bound the change).
@@ -72,7 +72,7 @@ meaningful part of the frame. It cannot win when:
   union across the panel, an animated background, a full-screen gradient): the
   union rectangle is the window again.
 - **There is no single-sample present target to copy into.** The engine's 3-D
-  path renders the GUI into the 4Ã— MSAA scene attachment
+  path renders the GUI into the 4× MSAA scene attachment
   (`renderer_core.rs:4158-4173`); `copy_texture_to_texture` cannot copy a
   single-sample texture into an MSAA one. Blitting into MSAA or resolving first
   would need an extra pass (see Risks).
@@ -82,9 +82,9 @@ meaningful part of the frame. It cannot win when:
   decide.
 
 The synthetic measurement bounds the win: it compares the same per-pixel
-fragment work at full resolution versus in a 320Ã—180 damage rect plus the copy.
+fragment work at full resolution versus in a 320×180 damage rect plus the copy.
 Real UI also pays CPU collection and vertex upload, which the persistent path
-does **not** reduce â€” it only reduces fragment/fill work and the number of
+does **not** reduce — it only reduces fragment/fill work and the number of
 pixels written. So the measured speedup is an **upper bound** for a real UI at
 that damage size.
 
@@ -95,12 +95,12 @@ cargo run --release -p ferrous_renderer --example partial_redraw
 cargo run --release -p ferrous_renderer --example partial_redraw -- --4k
 ```
 
-For each size (1600Ã—900, and 3840Ã—2160 when the device limit allows or `--4k`
+For each size (1600×900, and 3840×2160 when the device limit allows or `--4k`
 is passed) the example:
 
 - renders a clear + a heavy full-screen fragment pass into a full-size target
   (the full-redraw baseline, `W*H*4` bytes);
-- renders the same pass scissored to a 320Ã—180 rect into `PersistentUiTarget`
+- renders the same pass scissored to a 320×180 rect into `PersistentUiTarget`
   and `copy_damage`s that rect to the present target (`dw*dh*4` bytes written,
   the same amount copied);
 - reports median GPU ms per path (`TIMESTAMP_QUERY`), the bytes, the speedup and
@@ -124,9 +124,9 @@ partial_ms â‰ˆ A / r + (A * bpp) / c
 wins when  A / (W*H) < r / (r + bpp*c)        (= the printed break-even)
 ```
 
-For a 320Ã—180 rect: 1600Ã—900 is 4.0 % of the window, 3840Ã—2160 is 0.69 %. A
-fill-bound fragment loop should therefore show roughly a 25Ã— win at 1600Ã—900 and
-~145Ã— at 4K *before* the copy is subtracted; the copy is the term that decides
+For a 320×180 rect: 1600×900 is 4.0 % of the window, 3840×2160 is 0.69 %. A
+fill-bound fragment loop should therefore show roughly a 25× win at 1600×900 and
+~145× at 4K *before* the copy is subtracted; the copy is the term that decides
 whether the win survives on a given GPU.
 
 ## Wiring plan (not applied; `gui_renderer.rs` / `renderer_core.rs` are owned by other lanes)
@@ -177,7 +177,7 @@ Proposed wiring for the Flat2D path (single-sample surface target):
    must add it (or the copy must target an intermediate single-sample texture
    that is then blitted to the swapchain).
 6. **3-D path.** At `renderer_core.rs:4158-4173` the GUI pass uses
-   `scene_view`/`scene_rt` (4Ã— MSAA). A persistent single-sample texture cannot
+   `scene_view`/`scene_rt` (4× MSAA). A persistent single-sample texture cannot
    be copied into an MSAA attachment; the options are (a) keep the 3-D GUI on
    its current full redraw, or (b) add a full-screen composite pass that samples
    the persistent texture into the MSAA target, which gives up the copy win.

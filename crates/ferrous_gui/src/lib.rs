@@ -1,15 +1,15 @@
-//! `ferrous_gui` â€” Orquestador maestro del sistema de UI de Ferrous Engine.
+//! `ferrous_gui` — Orquestador maestro del sistema de UI de Ferrous Engine.
 //!
-//! Este crate actÃºa como la fachada principal (Facade), coordinando los sub-sistemas
+//! Este crate actúa como la fachada principal (Facade), coordinando los sub-sistemas
 //! de widgets, layout, eventos y renderizado para proporcionar una experiencia de
 //! desarrollo fluida y de alto rendimiento.
 //!
-//! # API rÃ¡pida
+//! # API rápida
 //!
 //! ```rust,ignore
 //! use ferrous_gui::prelude::*;
 //!
-//! // El hit-testing y los eventos son automÃ¡ticos: solo defines el callback.
+//! // El hit-testing y los eventos son automáticos: solo defines el callback.
 //! ui.button("Guardar")
 //!     .size(120.0, 36.0)
 //!     .border_radius(8.0)
@@ -49,7 +49,7 @@ pub use ferrous_ui_core::{
     // Tipos de color y fondo
     Color,
     ColorPicker,
-    // Ãrbol de UI
+    // Árbol de UI
     DirtyFlags,
     DisplayMode,
     DrawContext,
@@ -77,7 +77,7 @@ pub use ferrous_ui_core::{
     Slider,
     Spring,
     Style,
-    // Tipos de texto y alineaciÃ³n
+    // Tipos de texto y alineación
     TextAlign,
     Tween,
     UiEvent,
@@ -102,7 +102,7 @@ pub use builder::{ButtonBuilder, LabelBuilder, PanelBuilder, WidgetBuilder};
 // Macros
 pub use ferrous_ui_core::ui;
 
-/// MÃ³dulo prelude: importa todo lo necesario para crear UIs con la API fluent.
+/// Módulo prelude: importa todo lo necesario para crear UIs con la API fluent.
 ///
 /// ```rust,ignore
 /// use ferrous_gui::prelude::*;
@@ -127,7 +127,7 @@ pub mod prelude {
         LayoutEngine,
         Lerp,
         MouseButton,
-        // Ãrbol
+        // Árbol
         NodeId,
         Overflow,
         Position,

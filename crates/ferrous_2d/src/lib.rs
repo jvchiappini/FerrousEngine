@@ -3,17 +3,17 @@
 //! This crate provides the data types and GPU pipelines for the engine's 2D
 //! render path:
 //!
-//! - [`components`] â€” ECS components describing 2D entities: [`Transform2d`],
+//! - [`components`] — ECS components describing 2D entities: [`Transform2d`],
 //!   [`Sprite`], [`Shape2d`], [`Path2d`] and [`Camera2d`].
-//! - [`render`] â€” the GPU-facing layer: [`ShapeInstance`]/[`SpriteInstance`],
+//! - [`render`] — the GPU-facing layer: [`ShapeInstance`]/[`SpriteInstance`],
 //!   the instance batchers ([`ShapeBatcher`], [`SpriteBatcher`]), the wgpu
 //!   pipelines and [`Renderer2d`].
-//! - [`systems`] â€” **deprecated** ECSâ†’batcher preparation systems. The engine
+//! - [`systems`] — **deprecated** ECS→batcher preparation systems. The engine
 //!   does **not** register these in any scheduler, so they are dead code; the
 //!   live path is the immediate-mode API on `ferrous_renderer::Renderer`.
 //!
 //! Most applications never name these types directly. They draw through the
-//! user-facing faÃ§ade on `ferrous_engine::RenderContext`; see the crate
+//! user-facing façade on `ferrous_engine::RenderContext`; see the crate
 //! `README.md` for the immediate-mode/ECS distinction and known caveats.
 
 /// 2D ECS components (`Transform2d`, `Sprite`, `Shape2d`, `Path2d`, `Camera2d`).

@@ -1,7 +1,7 @@
 //! The view tree: structure and intent, never coordinates.
 //!
 //! An app builds an [`Element`] tree from its state with the constructors in
-//! this module (`Element::column`, `Element::row`, [`text`], Ã¢â‚¬Â¦) and the
+//! this module (`Element::column`, `Element::row`, [`text`], …) and the
 //! chainable modifiers (`.pad(S4)`, `.gap(S3)`, `.width(SizeSpec::Fill)`).
 //! [`Tree::build`] flattens it into an arena of [`Node`]s; layout, input and the
 //! display list work on that arena. No element stores a pixel position or a

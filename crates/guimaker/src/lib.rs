@@ -1,7 +1,7 @@
 //! `GUIMaker`: a UI library that is beautiful by default.
 //!
-//! `GUIMaker` turns structure into a screen. A view is built from tokens Ã¢â‚¬â€
-//! spacing, type roles, radii, elevation, colour roles, motion and density Ã¢â‚¬â€
+//! `GUIMaker` turns structure into a screen. A view is built from tokens —
+//! spacing, type roles, radii, elevation, colour roles, motion and density —
 //! laid out by the library, routed by the library, and drawn by `FerrousEngine`.
 //! The app writes what the screen *is*; it never computes where anything goes.
 //!

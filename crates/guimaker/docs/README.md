@@ -1,7 +1,7 @@
-# GUIMaker â€” the UI library of the FerrousEngine ecosystem
+# GUIMaker — the UI library of the FerrousEngine ecosystem
 
-GUIMaker turns structure into a screen. A view is a tree built from tokens â€”
-spacing, type roles, radii, elevation, colour roles, motion, density â€” laid
+GUIMaker turns structure into a screen. A view is a tree built from tokens —
+spacing, type roles, radii, elevation, colour roles, motion, density — laid
 out by the library, routed by the library, and drawn by FerrousEngine. The
 app writes what the screen *is*; it does not compute where anything goes.
 
