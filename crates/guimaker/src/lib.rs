@@ -1,7 +1,7 @@
 //! `GUIMaker`: a UI library that is beautiful by default.
 //!
-//! `GUIMaker` turns structure into a screen. A view is built from tokens â€”
-//! spacing, type roles, radii, elevation, colour roles, motion and density â€”
+//! `GUIMaker` turns structure into a screen. A view is built from tokens Ã¢â‚¬â€
+//! spacing, type roles, radii, elevation, colour roles, motion and density Ã¢â‚¬â€
 //! laid out by the library, routed by the library, and drawn by `FerrousEngine`.
 //! The app writes what the screen *is*; it never computes where anything goes.
 //!
@@ -99,6 +99,7 @@ pub mod inspect;
 pub mod layout;
 pub mod lint;
 pub mod motion;
+pub mod overlay;
 pub mod patterns;
 pub mod recipe;
 pub mod spatial;
@@ -141,4 +142,5 @@ pub mod prelude {
 }
 
 pub use frame::{Frame, Ui};
+pub use overlay::{HostCapabilities, OverlayHost, Placement, Side};
 pub use view::{Element, NodeId};

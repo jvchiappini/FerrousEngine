@@ -1,4 +1,4 @@
-﻿site_name: FerrousEngine Documentation
+site_name: FerrousEngine Documentation
 site_url: https://jvchiappini.github.io/FerrousEngine
 site_description: >
   Complete reference for FerrousEngine Ã¢â‚¬â€ a modular Rust application/game
@@ -151,6 +151,7 @@ nav:
     - ferrous_ui_render Ã¢â‚¬â€ Internals: ferrous_ui_render/RENDER.md
     - ferrous_ui_render - Partial redraw: ferrous_ui_render/PARTIAL.md
     - ferrous_ui_render - Drawing effects: ferrous_ui_render/EFFECTS.md
+    - ferrous_ui_render - Backdrop blur: ferrous_ui_render/backdrop-blur.md
     - ferrous_voxels: ferrous_voxels/README.md
     - ferrous_web: ferrous_web/README.md
 

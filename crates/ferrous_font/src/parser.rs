@@ -761,6 +761,13 @@ impl FontParser {
         self.gpos = gpos;
     }
 
+    /// Whether the face has `glyf` outlines (the only outline format the
+    /// rasterizer supports; CFF and bitmap-only faces are skipped).
+    #[must_use]
+    pub fn has_glyf(&self) -> bool {
+        self.tables.contains_key(b"glyf")
+    }
+
     pub fn get_glyph_index(&self, c: char) -> u16 {
         let rec = match self.tables.get(b"cmap") {
             Some(r) => r,

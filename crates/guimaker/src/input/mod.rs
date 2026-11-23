@@ -174,6 +174,8 @@ pub struct InputState {
     pub focus_scopes: Vec<FocusScope>,
     /// The overlay stack (path hashes), innermost last.
     pub overlays: Vec<u64>,
+    /// The focus path that opened each overlay, innermost last.
+    pub overlay_openers: Vec<Option<u64>>,
     /// A pointer press that moved past the drag threshold.
     pub drag_button: Option<PointerButton>,
     /// Whether the last focus change came from the keyboard.
@@ -214,6 +216,7 @@ impl InputState {
             drag_total: Vec2::ZERO,
             focus_scopes: Vec::new(),
             overlays: Vec::new(),
+            overlay_openers: Vec::new(),
             drag_button: None,
             keyboard_focus: false,
         }
@@ -249,12 +252,80 @@ impl InputState {
     /// Pushes an overlay path; shortcuts in the `Overlay` scope become active
     /// and `Escape` closes it.
     pub fn push_overlay(&mut self, path: u64) {
-        self.overlays.push(path);
+        self.push_overlay_from(path, None);
     }
 
-    /// Pops the topmost overlay.
+    /// Pushes an overlay path and remembers the focus path that opened it, so
+    /// dismissal can return the focus to the opener.
+    pub fn push_overlay_from(&mut self, path: u64, opener: Option<u64>) {
+        self.overlays.push(path);
+        self.overlay_openers.push(opener);
+    }
+
+    /// Pops the topmost overlay and the focus it opened from.
     pub fn pop_overlay(&mut self) -> Option<u64> {
+        self.overlay_openers.pop();
         self.overlays.pop()
+    }
+
+    /// Closes one overlay level: the path, the focus scope it trapped (when it
+    /// is the top scope) and restores focus to the opener.
+    ///
+    /// Returns whether an overlay was closed.
+    pub fn dismiss_overlay_level<Msg>(&mut self, tree: &Tree<Msg>) -> bool {
+        let Some(path) = self.overlays.pop() else {
+            return false;
+        };
+        let opener = self.overlay_openers.pop().flatten();
+        let root = tree
+            .nodes
+            .iter()
+            .find(|node| node.path_hash == path)
+            .map(|node| node.id);
+        if root.is_some() && self.focus_scopes.last().map(|scope| scope.root) == root {
+            self.focus_scopes.pop();
+        }
+        if opener.is_some() {
+            self.rebind_focus(tree, opener);
+        }
+        true
+    }
+
+    /// Closes the whole overlay chain (an outside click).
+    pub fn dismiss_overlay_chain<Msg>(&mut self, tree: &Tree<Msg>) -> bool {
+        let mut closed = false;
+        while self.dismiss_overlay_level(tree) {
+            closed = true;
+        }
+        closed
+    }
+
+    /// Whether `hit` is inside the topmost overlay's subtree; with no overlay
+    /// open every hit counts as inside.
+    #[must_use]
+    pub fn pointer_in_top_overlay<Msg>(&self, tree: &Tree<Msg>, hit: Option<NodeId>) -> bool {
+        let Some(path) = self.overlays.last() else {
+            return true;
+        };
+        let Some(root) = tree
+            .nodes
+            .iter()
+            .find(|node| node.path_hash == *path)
+            .map(|node| node.id)
+        else {
+            return false;
+        };
+        let Some(hit) = hit else {
+            return false;
+        };
+        let mut current = Some(hit);
+        while let Some(candidate) = current {
+            if candidate == root {
+                return true;
+            }
+            current = tree.node(candidate).and_then(|node| node.parent);
+        }
+        false
     }
 
     /// Whether an overlay is open.
@@ -341,7 +412,7 @@ impl<Msg: Clone> RouteContext<'_, Msg> {
         // The last-hit cache is keyed by the layout generation (the index
         // rebuild count), not by interaction state: a hover change must not
         // invalidate a hit that is still geometrically valid.
-        let generation = self.index.rebuilds();
+        let generation = self.index.generation();
         self.index.set_generation(generation);
         self.index
             .pick(position, generation)
@@ -489,6 +560,19 @@ pub fn route<Msg: Clone>(context: &mut RouteContext<'_, Msg>, event: InputEvent)
             context.input.pointer = position;
             context.input.pointer_seen = true;
             let hit = context.pick(position);
+            // A press outside the topmost overlay closes the whole chain; the
+            // press is swallowed so a menu never leaks a click to the control
+            // underneath it.
+            if context.input.overlay_open()
+                && !context.input.pointer_in_top_overlay(context.tree, hit)
+            {
+                context.input.dismiss_overlay_chain(context.tree);
+                context.index.invalidate();
+                context.input.pressed = None;
+                context.input.captured = None;
+                context.input.drag_button = None;
+                return;
+            }
             context.input.pressed = hit;
             context.input.captured = hit;
             context.input.drag_button = Some(button);
@@ -596,7 +680,8 @@ pub fn route<Msg: Clone>(context: &mut RouteContext<'_, Msg>, event: InputEvent)
                 }
                 ShortcutKey::Escape => {
                     if context.input.overlay_open() {
-                        context.input.pop_overlay();
+                        context.input.dismiss_overlay_level(context.tree);
+                        context.index.invalidate();
                     } else {
                         context.focus(None);
                     }
@@ -631,12 +716,15 @@ mod tests {
 
     use super::{route, InputEvent, InputState, Modifiers, PointerButton, RouteContext};
     use crate::input::focus::FocusOrder;
+    use crate::input::focus::FocusScope;
     use crate::input::scroll::ScrollKind;
     use crate::input::shortcut::{Chord, Scope, ShortcutKey, ShortcutRegistry};
     use crate::layout::LayoutEngine;
     use crate::prelude::*;
     use crate::spatial::HitIndex;
     use crate::store::Store;
+    use crate::theme::ColorRole;
+    use crate::view::NodeId;
 
     #[derive(Clone, Debug, PartialEq)]
     enum Msg {
@@ -904,5 +992,98 @@ mod tests {
         let before = harness.store.scroll(path.unwrap()).y;
         harness.tick(16.0);
         assert!(harness.store.scroll(path.unwrap()).y >= before);
+    }
+
+    fn overlay_view() -> Element<Msg> {
+        Element::<Msg>::stack()
+            .key("root")
+            .width(SizeSpec::Fill)
+            .height(SizeSpec::Fill)
+            .child(
+                Element::row()
+                    .key("opener")
+                    .width(SizeSpec::Fill)
+                    .height(SizeSpec::Fill)
+                    .bg(ColorRole::AccentFill)
+                    .on_click(Msg::Clicked("a")),
+            )
+            .child(
+                Element::column()
+                    .key("popup")
+                    .width(SizeSpec::Token(Spacing::S12))
+                    .height(SizeSpec::Token(Spacing::S12))
+                    .bg(ColorRole::SurfaceRaised)
+                    .on_click(Msg::Clicked("b")),
+            )
+    }
+
+    fn seed(harness: &mut Harness) -> (NodeId, NodeId) {
+        let opener = harness.tree.find_key("opener").expect("opener");
+        let popup = harness.tree.find_key("popup").expect("popup");
+        let opener_path = harness.tree.node(opener).expect("node").path_hash;
+        let popup_path = harness.tree.node(popup).expect("node").path_hash;
+        harness.store.set_focus(Some(opener_path));
+        harness.input.focused = Some(opener);
+        harness.input.push_focus_scope(FocusScope {
+            root: popup,
+            trap: true,
+        });
+        harness
+            .input
+            .push_overlay_from(popup_path, Some(opener_path));
+        (opener, popup)
+    }
+
+    #[test]
+    fn escape_closes_one_level_and_returns_the_focus() {
+        let mut harness = Harness::new(&overlay_view());
+        let (opener, _popup) = seed(&mut harness);
+        harness.send(InputEvent::KeyDown {
+            key: ShortcutKey::Escape,
+            repeat: false,
+        });
+
+        assert!(!harness.input.overlay_open(), "Escape closes one level");
+        assert!(harness.input.focus_scopes.is_empty());
+        assert_eq!(
+            harness.store.focus(),
+            harness.tree.node(opener).map(|node| node.path_hash),
+            "focus returns to the opener"
+        );
+    }
+
+    #[test]
+    fn a_click_outside_closes_the_chain_without_activating() {
+        let mut harness = Harness::new(&overlay_view());
+        let (opener, popup) = seed(&mut harness);
+        let popup_path = harness.tree.node(popup).expect("node").path_hash;
+
+        harness.send(InputEvent::PointerDown {
+            position: Vec2::new(200.0, 200.0),
+            button: PointerButton::Primary,
+        });
+        assert!(
+            !harness.input.overlay_open(),
+            "outside click closes the chain"
+        );
+        assert!(harness.input.focus_scopes.is_empty());
+        assert_eq!(
+            harness.store.focus(),
+            harness.tree.node(opener).map(|node| node.path_hash)
+        );
+        assert!(harness.messages.is_empty(), "the press is swallowed");
+
+        // A click inside the popup is routed normally.
+        harness.input.push_overlay(popup_path);
+        harness.send(InputEvent::PointerDown {
+            position: Vec2::new(4.0, 4.0),
+            button: PointerButton::Primary,
+        });
+        harness.send(InputEvent::PointerUp {
+            position: Vec2::new(4.0, 4.0),
+            button: PointerButton::Primary,
+        });
+        assert!(harness.input.overlay_open(), "a click inside keeps it open");
+        assert_eq!(harness.messages, vec![Msg::Clicked("b")]);
     }
 }

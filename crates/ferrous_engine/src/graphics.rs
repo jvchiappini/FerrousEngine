@@ -772,13 +772,21 @@ impl GraphicsState {
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
-        if width > 0 && height > 0 {
-            self.config.width = width;
-            self.config.height = height;
-            self.surface
-                .configure(&self.renderer.context.device, &self.config);
-            self.renderer.resize(width, height);
+        if width == 0 || height == 0 {
+            return;
         }
+        // Reconfiguring a swapchain that is already the right size leaves the
+        // new one without a presented image for an interval, which is exactly
+        // the black frame a DPI change must not show. Skip the no-op, and let
+        // the caller present the next frame normally.
+        if self.config.width == width && self.config.height == height {
+            return;
+        }
+        self.config.width = width;
+        self.config.height = height;
+        self.surface
+            .configure(&self.renderer.context.device, &self.config);
+        self.renderer.resize(width, height);
     }
 }
 

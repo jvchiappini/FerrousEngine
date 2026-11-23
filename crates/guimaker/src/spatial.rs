@@ -26,6 +26,7 @@ pub struct HitIndex {
     index: ferrous_core::spatial::SpatialIndex,
     entries: Vec<(u32, ferrous_core::spatial::Aabb)>,
     rebuilds: u64,
+    cache_epoch: u64,
 }
 
 impl HitIndex {
@@ -79,6 +80,18 @@ impl HitIndex {
         self.index.set_generation(generation);
     }
 
+    /// The generation a hit cache entry is valid within.
+    ///
+    /// It folds the layout rebuild count with an epoch that
+    /// [`Self::invalidate`] bumps when the z-order changes without a relayout
+    /// (an overlay opens or closes above a cached control). Without this the
+    /// last-hit cache would answer with the control underneath a new popup
+    /// because its bounds still contain the point.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.rebuilds ^ self.cache_epoch.rotate_left(17)
+    }
+
     /// The topmost interactive node containing `point`.
     pub fn pick(&mut self, point: Vec2, generation: u64) -> Option<NodeId> {
         self.index.pick(point, generation).map(NodeId)
@@ -108,8 +121,11 @@ impl HitIndex {
         self.index.cache_hits()
     }
 
-    /// Clears the last-hit cache (a layout change).
+    /// Clears the last-hit cache (a layout change or an overlay that changed
+    /// which node is topmost under a point).
     pub fn invalidate(&mut self) {
+        self.cache_epoch = self.cache_epoch.wrapping_add(1);
+        self.index.set_generation(self.generation());
         self.index.invalidate();
     }
 }

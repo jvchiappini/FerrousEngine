@@ -38,6 +38,8 @@ pub(crate) struct Runner<A: FerrousApp + 'static> {
     pub(super) ui: ferrous_gui::UiSystem<A>,
     pub(super) input: InputState,
     pub(super) window_size: (u32, u32),
+    /// The window's current DPI scale factor.
+    pub(super) scale_factor: f64,
     pub(super) viewport: Viewport,
     pub(super) clock: TimeClock,
     pub(super) world: World,
@@ -113,6 +115,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 height: 0,
             },
             window_size: (0, 0),
+            scale_factor: 1.0,
             clock: TimeClock::new(),
             world: World::new(),
             font: None,

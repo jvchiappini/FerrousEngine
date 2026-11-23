@@ -212,3 +212,113 @@ fn progress_ring_sweeps_a_quarter_circle_at_a_quarter_value() {
         "ends at three o'clock"
     );
 }
+
+/// A row whose anchored dropdown is `menu_width` wide, 20 px from the right of
+/// a 1000 px window.
+fn edge_menu(menu_width: f32, open: bool) -> Element<()> {
+    let anchor = Element::row()
+        .key("menu_anchor")
+        .width(SizeSpec::Px(80.0))
+        .height(SizeSpec::Px(32.0));
+    let mut overlay = Element::overlay();
+    overlay = overlay.child(anchor);
+    if open {
+        overlay = overlay.child(
+            Element::column()
+                .key("popup_menu")
+                .width(SizeSpec::Px(menu_width))
+                .height(SizeSpec::Px(160.0))
+                .bg(ColorRole::SurfaceRaised)
+                .overlay_on(0, gomaker_side_bottom(), 4.0),
+        );
+    }
+    Element::row()
+        .width(SizeSpec::Px(1000.0))
+        .height(SizeSpec::Px(300.0))
+        .justify(gomaker_justify_end())
+        .pad_x(Spacing::S5)
+        .child(overlay)
+}
+
+fn gomaker_side_bottom() -> guimaker::overlay::Side {
+    guimaker::overlay::Side::Bottom
+}
+
+fn gomaker_justify_end() -> guimaker::style::Justify {
+    guimaker::style::Justify::End
+}
+
+fn paint_sized<Msg: Clone>(view: &Element<Msg>, width: f32, height: f32) -> (Ui<Msg>, Frame<Msg>) {
+    let mut ui: Ui<Msg> = Ui::new(Theme::dark());
+    ui.set_host_capabilities(guimaker::overlay::HostCapabilities::desktop());
+    ui.set_viewport(Size::new(width, height), 1.0);
+    let mut text = MetricsTextSystem::new();
+    let mut frame = Frame::new();
+    ui.paint(view, &mut frame, &mut text);
+    (ui, frame)
+}
+
+#[test]
+fn the_default_host_keeps_an_overflowing_menu_visible_in_the_window() {
+    // Until the engine draws popup windows, the default must never hide an
+    // overlay: it clamps to the canvas and is painted here.
+    let mut ui: Ui<()> = Ui::new(Theme::dark());
+    ui.set_viewport(Size::new(1000.0, 300.0), 1.0);
+    let mut text = MetricsTextSystem::new();
+    let mut frame = Frame::new();
+    ui.paint(&edge_menu(990.0, true), &mut frame, &mut text);
+    let menu = ui.tree().find_key("popup_menu").expect("popup menu");
+    assert_eq!(
+        ui.overlay_host(menu),
+        Some(guimaker::overlay::OverlayHost::InWindow)
+    );
+    assert!(
+        !frame.display_list.commands_for(menu).is_empty(),
+        "the clamped overlay is painted in the main window"
+    );
+}
+
+#[test]
+fn a_menu_near_the_right_edge_is_hosted_in_a_popup_and_leaves_the_parent_alone() {
+    // The anchor ends 20 px from the right edge. A 990 px dropdown fits on
+    // neither side (right overflows, left starts at -10), so the solver keeps
+    // the preferred side and the host chooses a popup window.
+    let (open_ui, open_frame) = paint_sized(&edge_menu(990.0, true), 1000.0, 300.0);
+    let (closed_ui, _) = paint_sized(&edge_menu(990.0, false), 1000.0, 300.0);
+
+    let anchor_open = open_ui.tree().find_key("menu_anchor").expect("anchor");
+    let anchor_closed = closed_ui.tree().find_key("menu_anchor").expect("anchor");
+    assert_eq!(
+        open_ui.layout().rect(anchor_open),
+        closed_ui.layout().rect(anchor_closed),
+        "the popup decision must not move the parent"
+    );
+    let anchor = open_ui.layout().rect(anchor_open);
+    assert!(
+        (1000.0 - anchor.right() - 20.0).abs() < 0.01,
+        "the anchor must end 20 px from the right edge, got {}",
+        anchor.right()
+    );
+
+    let menu = open_ui.tree().find_key("popup_menu").expect("popup menu");
+    assert_eq!(
+        open_ui.overlay_host(menu),
+        Some(guimaker::overlay::OverlayHost::Popup),
+        "a dropdown that fits on neither side is hosted in a popup"
+    );
+    let popup = open_ui.overlay_popup_rect(menu).expect("popup rect");
+    assert!((popup.width - 990.0).abs() < 0.01);
+    assert!(
+        open_frame.display_list.commands_for(menu).is_empty(),
+        "a popup-hosted overlay is never painted in the main window"
+    );
+
+    // A dropdown that stays inside the window is painted here.
+    let (small_ui, small_frame) = paint_sized(&edge_menu(80.0, true), 1000.0, 300.0);
+    let small = small_ui.tree().find_key("popup_menu").expect("small menu");
+    assert_eq!(
+        small_ui.overlay_host(small),
+        Some(guimaker::overlay::OverlayHost::InWindow)
+    );
+    assert!(!small_frame.display_list.commands_for(small).is_empty());
+}

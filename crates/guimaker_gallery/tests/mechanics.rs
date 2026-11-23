@@ -361,7 +361,13 @@ fn node_id(ui: &Ui<()>, id: u64) -> NodeId {
         .expect("a node with the requested key id")
 }
 
-const BACKDROP_WEIGHTS: [f32; 5] = [0.227_027, 0.194_594_6, 0.121_621_6, 0.054_054, 0.016_216];
+/// The requested radius maps to `sigma = radius / 2.5` in physical pixels, so
+/// the full width at half maximum is `0.94 * radius`.
+const BLUR_SIGMA_DIVISOR: f32 = 2.5;
+/// Deepest level of the 2x prefilter chain, matching the renderer.
+const BLUR_MAX_LEVEL: u32 = 5;
+/// Widest half-kernel, matching the renderer.
+const BLUR_MAX_TAPS: usize = 13;
 
 fn srgb_to_linear(channel: u8) -> f32 {
     let value = f32::from(channel) / 255.0;
@@ -415,12 +421,62 @@ fn sample_bilinear(texture: &[[f32; 3]], width: usize, height: usize, u: f32, v:
     mix3(top, bottom, fy)
 }
 
+/// Gaussian weights for `sigma` destination texels, taps one texel apart.
+///
+/// Mirrors `BlurParams::gaussian_weights` in `ferrous_ui_render`.
+fn gaussian_weights(sigma: f32) -> Vec<f32> {
+    let sigma = sigma.max(0.05);
+    // Three sigma covers 99.7 % of the energy; never exceed the array.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    // reason: sigma is a small positive finite float in gallery tests.
+    let radius = (3.0 * sigma).ceil().clamp(0.0, (BLUR_MAX_TAPS - 1) as f32) as usize;
+    let mut weights = vec![0.0_f32; radius + 1];
+    let mut sum = 0.0_f32;
+    for (tap, weight) in weights.iter_mut().enumerate() {
+        let x = tap as f32;
+        *weight = (-0.5 * (x / sigma) * (x / sigma)).exp();
+        sum += if tap == 0 { *weight } else { *weight * 2.0 };
+    }
+    if sum > 0.0 {
+        for weight in &mut weights {
+            *weight /= sum;
+        }
+    }
+    weights
+}
+
+/// One 2x box-downsample pass, matching `fs_downsample`.
+fn cpu_downsample(
+    source: &[[f32; 3]],
+    width: usize,
+    height: usize,
+    target_width: usize,
+    target_height: usize,
+) -> Vec<[f32; 3]> {
+    let half_x = 0.5 / width as f32;
+    let half_y = 0.5 / height as f32;
+    let mut out = vec![[0.0; 3]; target_width * target_height];
+    for y in 0..target_height {
+        for x in 0..target_width {
+            let u = (x as f32 + 0.5) / target_width as f32;
+            let v = (y as f32 + 0.5) / target_height as f32;
+            let mut sum = [0.0_f32; 3];
+            for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                let sample =
+                    sample_bilinear(source, width, height, u + dx * half_x, v + dy * half_y);
+                sum = add_scaled(sum, sample, 0.25);
+            }
+            out[y * target_width + x] = sum;
+        }
+    }
+    out
+}
+
+/// The CPU reference for the engine's prefiltered separable Gaussian.
 fn cpu_backdrop_blur(source: &RenderedImage, radius: f32) -> (Vec<[f32; 3]>, usize, usize) {
-    let width = source.width as usize;
-    let height = source.height as usize;
-    let quarter_width = (width / 4).max(1);
-    let quarter_height = (height / 4).max(1);
-    let linear: Vec<[f32; 3]> = source
+    let mut width = source.width as usize;
+    let mut height = source.height as usize;
+    let mut level_image: Vec<[f32; 3]> = source
         .rgba
         .chunks_exact(4)
         .map(|pixel| {
@@ -431,61 +487,72 @@ fn cpu_backdrop_blur(source: &RenderedImage, radius: f32) -> (Vec<[f32; 3]>, usi
             ]
         })
         .collect();
-    let mut horizontal = vec![[0.0; 3]; quarter_width * quarter_height];
-    for y in 0..quarter_height {
-        for x in 0..quarter_width {
-            let u = (x as f32 + 0.5) / quarter_width as f32;
-            let v = (y as f32 + 0.5) / quarter_height as f32;
-            let mut sum = [0.0; 3];
-            let mut weight_sum = 0.0;
-            for (tap, weight) in BACKDROP_WEIGHTS.iter().enumerate() {
+
+    let sigma = radius / BLUR_SIGMA_DIVISOR;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    // reason: sigma is a small positive finite float in gallery tests.
+    let level = if sigma >= 2.0 {
+        sigma.log2().floor().clamp(0.0, BLUR_MAX_LEVEL as f32) as u32
+    } else {
+        1
+    };
+    for _ in 0..level {
+        let target_width = (width / 2).max(1);
+        let target_height = (height / 2).max(1);
+        level_image = cpu_downsample(&level_image, width, height, target_width, target_height);
+        width = target_width;
+        height = target_height;
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    // reason: level <= 5, so 2^level is exact in f32.
+    let level_scale = (1u32 << level) as f32;
+    let weights = gaussian_weights(sigma / level_scale);
+
+    let mut horizontal = vec![[0.0_f32; 3]; width * height];
+    for y in 0..height {
+        for x in 0..width {
+            let mut sum = [0.0_f32; 3];
+            let mut weight_sum = 0.0_f32;
+            for (tap, weight) in weights.iter().enumerate() {
                 if tap == 0 {
-                    let centre = sample_bilinear(&linear, width, height, u, v);
-                    sum = add_scaled(sum, centre, *weight);
+                    sum = add_scaled(sum, level_image[y * width + x], *weight);
                     weight_sum += *weight;
                 } else {
-                    let offset = tap as f32 * radius / quarter_width as f32;
-                    let left = sample_bilinear(&linear, width, height, u - offset, v);
-                    let right = sample_bilinear(&linear, width, height, u + offset, v);
-                    sum = add_scaled(sum, left, *weight);
-                    sum = add_scaled(sum, right, *weight);
+                    let left = x.saturating_sub(tap).min(width - 1);
+                    let right = (x + tap).min(width - 1);
+                    sum = add_scaled(sum, level_image[y * width + left], *weight);
+                    sum = add_scaled(sum, level_image[y * width + right], *weight);
                     weight_sum += *weight * 2.0;
                 }
             }
             let inverse = 1.0 / weight_sum;
-            horizontal[y * quarter_width + x] =
-                [sum[0] * inverse, sum[1] * inverse, sum[2] * inverse];
+            horizontal[y * width + x] = [sum[0] * inverse, sum[1] * inverse, sum[2] * inverse];
         }
     }
-    let mut vertical = vec![[0.0; 3]; quarter_width * quarter_height];
-    for y in 0..quarter_height {
-        for x in 0..quarter_width {
-            let u = (x as f32 + 0.5) / quarter_width as f32;
-            let v = (y as f32 + 0.5) / quarter_height as f32;
-            let mut sum = [0.0; 3];
-            let mut weight_sum = 0.0;
-            for (tap, weight) in BACKDROP_WEIGHTS.iter().enumerate() {
+
+    let mut vertical = vec![[0.0_f32; 3]; width * height];
+    for y in 0..height {
+        for x in 0..width {
+            let mut sum = [0.0_f32; 3];
+            let mut weight_sum = 0.0_f32;
+            for (tap, weight) in weights.iter().enumerate() {
                 if tap == 0 {
-                    let centre = sample_bilinear(&horizontal, quarter_width, quarter_height, u, v);
-                    sum = add_scaled(sum, centre, *weight);
+                    sum = add_scaled(sum, horizontal[y * width + x], *weight);
                     weight_sum += *weight;
                 } else {
-                    let offset = tap as f32 * radius / quarter_height as f32;
-                    let top =
-                        sample_bilinear(&horizontal, quarter_width, quarter_height, u, v - offset);
-                    let bottom =
-                        sample_bilinear(&horizontal, quarter_width, quarter_height, u, v + offset);
-                    sum = add_scaled(sum, top, *weight);
-                    sum = add_scaled(sum, bottom, *weight);
+                    let top = y.saturating_sub(tap).min(height - 1);
+                    let bottom = (y + tap).min(height - 1);
+                    sum = add_scaled(sum, horizontal[top * width + x], *weight);
+                    sum = add_scaled(sum, horizontal[bottom * width + x], *weight);
                     weight_sum += *weight * 2.0;
                 }
             }
             let inverse = 1.0 / weight_sum;
-            vertical[y * quarter_width + x] =
-                [sum[0] * inverse, sum[1] * inverse, sum[2] * inverse];
+            vertical[y * width + x] = [sum[0] * inverse, sum[1] * inverse, sum[2] * inverse];
         }
     }
-    (vertical, quarter_width, quarter_height)
+    (vertical, width, height)
 }
 
 /// Whether `(x, y)` lies inside any rect, expanded by `margin`.
@@ -624,7 +691,7 @@ fn the_dialog_card_blurs_the_content_below() {
         points.len()
     );
 
-    let radius = Spacing::S6.px() / 4.0;
+    let radius = Spacing::S6.px();
     let (blurred, quarter_width, quarter_height) = cpu_backdrop_blur(&source, radius);
     let tint = theme.role(ColorRole::SurfaceRaised).to_linear();
     let point_count = points.len();
@@ -664,55 +731,92 @@ fn the_dialog_card_blurs_the_content_below() {
 
 #[test]
 fn the_dialog_backdrop_does_not_sample_the_font_atlas() {
-    // Negative control: the same display list rendered with a solid colour in
-    // place of the glyph atlas must leave every uncovered card pixel intact.
-    // If these diverge, the blur is reading the atlas (or the prefix text).
+    // Negative control. Replacing the glyph atlas with a solid colour changes
+    // the *scene* behind the dialog (the story has real labels there), so the
+    // control cannot demand identical card pixels. What it does demand is that
+    // the card changes **only** by the amount the CPU blur of the changed
+    // scene predicts: an engine that sampled the atlas directly would move the
+    // card pixels far more than the scene did.
     let theme = Theme::dark();
     let logical = Size::new(1280.0, 800.0);
+    let radius = Spacing::S6.px();
     let (ui, frame) = paint(&Component::Dialog.view());
     let card = ui.tree().find_key("dialog_card").expect("dialog card");
     let points = dialog_interior_points(&ui, &frame, card);
-
-    let start = Instant::now();
-    let normal = match render_display_list(&frame.display_list, &theme, logical, 1.0) {
-        Ok(image) => image,
-        Err(error) => {
-            eprintln!("skipping atlas negative control: no headless GPU ({error})");
-            return;
-        }
+    let Some(split) = backdrop_split(&frame.display_list.commands) else {
+        panic!("the dialog story has no backdrop blur");
     };
-    let normal_duration = start.elapsed();
-    let start = Instant::now();
-    let solid = match render_display_list_with_solid_atlas(
-        &frame.display_list,
-        &theme,
-        logical,
-        1.0,
-        [128, 128, 128, 255],
-    ) {
-        Ok(image) => image,
-        Err(error) => {
-            eprintln!("skipping atlas negative control: no headless GPU ({error})");
-            return;
-        }
-    };
-    let solid_duration = start.elapsed();
-    eprintln!(
-        "dialog atlas control: normal {normal_duration:?}, solid atlas {solid_duration:?} over {} pixels",
-        points.len()
-    );
+    let mut prefix = DisplayList::new();
+    prefix
+        .commands
+        .extend_from_slice(&frame.display_list.commands[..split]);
 
-    let mut mismatched = 0usize;
+    let render = |list: &DisplayList, solid: Option<[u8; 4]>| match solid {
+        Some(colour) => render_display_list_with_solid_atlas(list, &theme, logical, 1.0, colour),
+        None => render_display_list(list, &theme, logical, 1.0),
+    };
+    let start = Instant::now();
+    let (Ok(normal), Ok(solid)) = (
+        render(&frame.display_list, None),
+        render(&frame.display_list, Some([128, 128, 128, 255])),
+    ) else {
+        eprintln!("skipping atlas negative control: no headless GPU");
+        return;
+    };
+    let (Ok(source_normal), Ok(source_solid)) = (
+        render(&prefix, None),
+        render(&prefix, Some([128, 128, 128, 255])),
+    ) else {
+        eprintln!("skipping atlas negative control: no headless GPU");
+        return;
+    };
+    let duration = start.elapsed();
+
+    let (blur_normal, wn, hn) = cpu_backdrop_blur(&source_normal, radius);
+    let (blur_solid, ws, hs) = cpu_backdrop_blur(&source_solid, radius);
+    let tint = theme.role(ColorRole::SurfaceRaised).to_linear();
+    let blur_weight = 1.0 - BACKDROP_TINT_ALPHA;
+    let expected = |blurred: &[[f32; 3]], w: usize, h: usize, u: f32, v: f32| {
+        let sample = sample_bilinear(blurred, w, h, u, v);
+        [
+            linear_to_srgb(sample[0] * blur_weight + tint[0] * BACKDROP_TINT_ALPHA),
+            linear_to_srgb(sample[1] * blur_weight + tint[1] * BACKDROP_TINT_ALPHA),
+            linear_to_srgb(sample[2] * blur_weight + tint[2] * BACKDROP_TINT_ALPHA),
+        ]
+    };
+
+    let mut worst = 0i16;
+    let mut scene_changed = 0usize;
     for (x, y) in &points {
-        if px(&normal, *x, *y) != px(&solid, *x, *y) {
-            mismatched += 1;
+        let u = (*x as f32 + 0.5) / normal.width as f32;
+        let v = (*y as f32 + 0.5) / normal.height as f32;
+        let predicted_normal = expected(&blur_normal, wn, hn, u, v);
+        let predicted_solid = expected(&blur_solid, ws, hs, u, v);
+        let actual_normal = px(&normal, *x, *y);
+        let actual_solid = px(&solid, *x, *y);
+        let mut point_changed = false;
+        for channel in 0..3 {
+            let predicted_delta =
+                i16::from(predicted_normal[channel]) - i16::from(predicted_solid[channel]);
+            let actual_delta = i16::from(actual_normal[channel]) - i16::from(actual_solid[channel]);
+            worst = worst.max((predicted_delta - actual_delta).abs());
+            point_changed |= predicted_delta != 0;
+        }
+        if point_changed {
+            scene_changed += 1;
         }
     }
-    assert_eq!(
-        mismatched,
-        0,
-        "the backdrop samples the font atlas in {mismatched} of {} interior pixels",
+    eprintln!(
+        "dialog atlas control: {duration:?}, {} interior pixels, {scene_changed} see the changed scene, worst delta {worst}",
         points.len()
+    );
+    assert!(
+        scene_changed > 0,
+        "the control is vacuous: no card pixel sees the glyphs behind it"
+    );
+    assert!(
+        worst <= 6,
+        "the backdrop changes by {worst}/255 more than the blurred scene explains; it reads the atlas"
     );
 }
 
@@ -793,5 +897,204 @@ fn a_selected_table_row_has_no_seams() {
             }
         }
         previous = Some(color);
+    }
+}
+
+/// Builds a scene with one 1 px impulse line and a backdrop card over it.
+///
+/// The card carries a fully transparent tint, so the pixels inside it are the
+/// pure blurred scene (no tint mixing), which is what an impulse response needs.
+fn impulse_list(horizontal: bool, width: f32, height: f32, radius: f32) -> DisplayList {
+    use guimaker::geom::Rect;
+    use guimaker::theme::Color;
+    use guimaker::view::NodeId;
+    let mut list = DisplayList::new();
+    list.commands.push(DrawCommand::Rect {
+        node: NodeId(1),
+        rect: Rect::new(0.0, 0.0, width, height),
+        color: Color::srgba(0.0, 0.0, 0.0, 1.0),
+        radii: [0.0; 4],
+    });
+    let line = if horizontal {
+        Rect::new(0.0, (height * 0.5).floor(), width, 1.0)
+    } else {
+        Rect::new((width * 0.5).floor(), 0.0, 1.0, height)
+    };
+    list.commands.push(DrawCommand::Rect {
+        node: NodeId(2),
+        rect: line,
+        color: Color::srgba(1.0, 1.0, 1.0, 1.0),
+        radii: [0.0; 4],
+    });
+    let card = Rect::new(16.0, 16.0, width - 32.0, height - 32.0);
+    list.commands.push(DrawCommand::BackdropBlur {
+        node: NodeId(3),
+        rect: card,
+        radius,
+        radii: [0.0; 4],
+    });
+    list.commands.push(DrawCommand::Rect {
+        node: NodeId(3),
+        rect: card,
+        color: Color::srgba(0.0, 0.0, 0.0, 0.0),
+        radii: [0.0; 4],
+    });
+    list
+}
+
+/// Full width at half maximum of a unimodal profile, in pixels.
+fn half_max_width(profile: &[f32], peak: usize) -> f32 {
+    let half = profile[peak] * 0.5;
+    let mut left = peak as f32;
+    for i in (0..peak).rev() {
+        if profile[i] <= half {
+            let span = (profile[i + 1] - profile[i]).max(1e-6);
+            left = i as f32 + (profile[i + 1] - half) / span;
+            break;
+        }
+    }
+    let mut right = peak as f32;
+    for i in peak + 1..profile.len() {
+        if profile[i] <= half {
+            let span = (profile[i - 1] - profile[i]).max(1e-6);
+            right = (i - 1) as f32 + (profile[i - 1] - half) / span;
+            break;
+        }
+    }
+    right - left
+}
+
+/// Checks one impulse profile: a single peak, a monotone fall to each side and
+/// a full width at half maximum within 20 % of the requested radius.
+///
+/// `linear` drives the width (a Gaussian's FWHM is defined in linear light);
+/// `encoded` drives the monotonicity, whose tolerance is Â±1/255 as requested.
+fn check_impulse_profile(linear: &[f32], encoded: &[f32], radius: f32, axis: &str) -> (f32, f32) {
+    let (peak_index, peak) =
+        linear
+            .iter()
+            .copied()
+            .enumerate()
+            .fold((0, 0.0_f32), |best, (index, value)| {
+                if value > best.1 {
+                    (index, value)
+                } else {
+                    best
+                }
+            });
+    assert!(
+        encoded[peak_index] > 20.0,
+        "{axis} impulse peak is only {}/255; the card does not cover the line",
+        encoded[peak_index]
+    );
+
+    // One peak: no sample outside the main lobe may rise above the lobe again.
+    let lobe = peak * 0.1;
+    let left_edge = (0..peak_index)
+        .rev()
+        .find(|index| linear[*index] < lobe)
+        .unwrap_or(0);
+    let right_edge = (peak_index + 1..linear.len())
+        .find(|index| linear[*index] < lobe)
+        .unwrap_or(linear.len() - 1);
+    for index in (1..=left_edge).rev() {
+        assert!(
+            encoded[index - 1] <= encoded[index] + 1.0,
+            "{axis} secondary peak at {index}: {:.1} -> {:.1}",
+            encoded[index],
+            encoded[index - 1]
+        );
+    }
+    for index in right_edge..encoded.len() - 1 {
+        assert!(
+            encoded[index + 1] <= encoded[index] + 1.0,
+            "{axis} secondary peak at {}: {:.1} -> {:.1}",
+            index + 1,
+            encoded[index],
+            encoded[index + 1]
+        );
+    }
+
+    let width = half_max_width(linear, peak_index);
+    let error = (width - radius).abs() / radius;
+    assert!(
+        error <= 0.2,
+        "{axis} impulse width {width:.2} px is {:.0} % off the requested radius {radius}",
+        error * 100.0
+    );
+    (encoded[peak_index], width)
+}
+
+/// The GPU impulse response and the CPU reference for one orientation.
+///
+/// Returns (linear GPU profile, encoded GPU profile, encoded CPU profile).
+fn impulse_response(horizontal: bool, radius: f32) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    let theme = Theme::dark();
+    let logical = Size::new(192.0, 192.0);
+    let list = impulse_list(horizontal, 192.0, 192.0, radius);
+    let image = match render_display_list(&list, &theme, logical, 1.0) {
+        Ok(image) => image,
+        Err(error) => {
+            eprintln!("skipping impulse guard: no headless GPU ({error})");
+            return (Vec::new(), Vec::new(), Vec::new());
+        }
+    };
+
+    // The prefix is the scene below the card: background plus the impulse line.
+    let split = backdrop_split(&list.commands).expect("the impulse list has a backdrop");
+    let mut prefix = DisplayList::new();
+    prefix.commands.extend_from_slice(&list.commands[..split]);
+    let source = match render_display_list(&prefix, &theme, logical, 1.0) {
+        Ok(image) => image,
+        Err(error) => {
+            eprintln!("skipping impulse guard: no headless GPU ({error})");
+            return (Vec::new(), Vec::new(), Vec::new());
+        }
+    };
+    let (blurred, level_width, level_height) = cpu_backdrop_blur(&source, radius);
+
+    let mut linear = Vec::new();
+    let mut encoded = Vec::new();
+    let mut cpu = Vec::new();
+    for step in 24..168 {
+        let (x, y) = if horizontal { (96, step) } else { (step, 96) };
+        let pixel = px(&image, x, y);
+        let peak_channel = pixel[0].max(pixel[1]).max(pixel[2]);
+        encoded.push(f32::from(peak_channel));
+        linear.push(srgb_to_linear(peak_channel));
+        let u = (x as f32 + 0.5) / image.width as f32;
+        let v = (y as f32 + 0.5) / image.height as f32;
+        let sample = sample_bilinear(&blurred, level_width, level_height, u, v);
+        cpu.push(f32::from(
+            linear_to_srgb(sample[0])
+                .max(linear_to_srgb(sample[1]))
+                .max(linear_to_srgb(sample[2])),
+        ));
+    }
+    (linear, encoded, cpu)
+}
+
+#[test]
+fn a_one_pixel_line_blurs_to_one_peak() {
+    let radius = 16.0;
+    for horizontal in [true, false] {
+        let axis = if horizontal { "horizontal" } else { "vertical" };
+        let (linear, encoded, cpu) = impulse_response(horizontal, radius);
+        if linear.is_empty() {
+            return;
+        }
+        let (peak, width) = check_impulse_profile(&linear, &encoded, radius, axis);
+        eprintln!("{axis} impulse: peak {peak:.0}/255, width {width:.2} px (radius {radius})");
+
+        // The GPU profile tracks the CPU reference kernel within a few levels.
+        let largest = encoded
+            .iter()
+            .zip(&cpu)
+            .map(|(gpu, cpu)| (gpu - cpu).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            largest <= 4.0,
+            "{axis} GPU profile differs from the CPU reference by {largest:.1}/255"
+        );
     }
 }

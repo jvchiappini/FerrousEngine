@@ -172,6 +172,31 @@ impl<Msg: Clone> Ui<Msg> {
         self.layout_needed = true;
     }
 
+    /// Declares what the host can do with overlays that do not fit.
+    ///
+    /// The default is [`crate::overlay::HostCapabilities::single_window`]: the
+    /// solver clamps the overlay to the canvas and it is painted here. A host
+    /// that really draws popup windows passes
+    /// [`crate::overlay::HostCapabilities::desktop`]; then an anchored overlay
+    /// that does not fit is hosted in a popup window and is **not** painted in
+    /// the main window.
+    pub fn set_host_capabilities(&mut self, capabilities: crate::overlay::HostCapabilities) {
+        self.engine.set_host_capabilities(capabilities);
+        self.layout_needed = true;
+    }
+
+    /// Where the layout decided to host the anchored overlay at `node`.
+    #[must_use]
+    pub fn overlay_host(&self, node: NodeId) -> Option<crate::overlay::OverlayHost> {
+        self.engine.overlay_host(node)
+    }
+
+    /// The unclamped popup rect for the anchored overlay at `node`.
+    #[must_use]
+    pub fn overlay_popup_rect(&self, node: NodeId) -> Option<Rect> {
+        self.engine.overlay_popup_rect(node)
+    }
+
     /// Sets the injected clock instant, in milliseconds.
     ///
     /// Every timed decision uses it: double and triple click, long press, hover
@@ -201,6 +226,23 @@ impl<Msg: Clone> Ui<Msg> {
     /// The input state, mutably (an app may push a focus scope).
     pub fn input_mut(&mut self) -> &mut InputState {
         &mut self.input
+    }
+
+    /// Opens an overlay and remembers the focused control as its opener.
+    ///
+    /// `Escape` (one level) and a click outside (the whole chain) close it and
+    /// return the focus to that control, across windows: the state lives here,
+    /// not in the window that hosts the overlay.
+    pub fn open_overlay(&mut self, path: u64) {
+        let opener = self
+            .input
+            .focused
+            .and_then(|id| self.tree.node(id))
+            .map(|node| node.path_hash);
+        self.input.push_overlay_from(path, opener);
+        // The new overlay is topmost under its own rect; a cached hit from the
+        // control underneath must not answer the next pointer query.
+        self.index.invalidate();
     }
 
     /// The shortcut registry.
@@ -546,6 +588,11 @@ impl<Msg: Clone> Ui<Msg> {
     }
 
     fn paint_node(&mut self, id: NodeId, parent: Interaction, output: &mut Vec<DrawCommand>) {
+        // An overlay that does not fit belongs to a popup window: the host
+        // draws it there, never in the main window (no duplicate pixels).
+        if self.engine.overlay_host(id) == Some(crate::overlay::OverlayHost::Popup) {
+            return;
+        }
         let resolved = self.engine.resolved(id).cloned().unwrap_or_else(|| {
             crate::style::Style::default().resolve(&self.theme, self.viewport.width)
         });

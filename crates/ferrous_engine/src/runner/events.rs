@@ -68,6 +68,59 @@ impl<A: FerrousApp> Runner<A> {
     }
 }
 
+impl<A: FerrousApp + 'static> Runner<A> {
+    /// Forwards one scale change to the app.
+    ///
+    /// The app gets the new scale and the suggested physical size once; the
+    /// surface resize is the runner's job (desktop `Resized` / wasm canvas), so
+    /// an app that ignores the callback still works.
+    fn deliver_scale_change(&mut self, scale_factor: f64, size: (u32, u32)) {
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        let Some(gfx) = self.graphics.as_mut() else {
+            return;
+        };
+        let waker = self.waker.clone();
+        let (redraw, redraw_at) = {
+            let backend = gfx.renderer.context.backend;
+            let time = self.clock.peek();
+            let mut ctx = AppContext {
+                input: &self.input,
+                time,
+                window_size: size,
+                window: &window,
+                viewport: self.viewport,
+                render_stats: ferrous_core::RenderStats::default(),
+                camera_eye: ferrous_core::glam::Vec3::ZERO,
+                camera_target: ferrous_core::glam::Vec3::ZERO,
+                gizmos: Vec::new(),
+                world: &mut self.world,
+                render: RenderContext::new(&mut gfx.renderer),
+                asset_server: &mut self.asset_server,
+                exit_requested: false,
+                requested_resolution_scale: None,
+                keep_awake_requested: false,
+                screenshot_requested: false,
+                redraw_requested: false,
+                redraw_at: None,
+                waker: &waker,
+                _gpu_backend: backend,
+                scale_factor,
+            };
+            self.app
+                .on_scale_factor_changed(scale_factor, size, &mut ctx);
+            (ctx.redraw_requested, ctx.redraw_at)
+        };
+        if redraw {
+            self.redraw.request();
+        }
+        if let Some(when) = redraw_at {
+            self.redraw.request_at(when);
+        }
+    }
+}
+
 impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         // Creating a second window would start a second GPU state; resumed is
@@ -336,6 +389,20 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
                     self.window_size = (phys_w, phys_h);
                     super::set_canvas_backing_size(window, phys_w, phys_h);
                 }
+                // One event, one callback. The desktop surface follows through
+                // the `Resized` the OS sends next; per-monitor DPI awareness is
+                // what winit requests at event-loop creation (per-monitor v2 on
+                // Windows), so the app only has to re-lay out in logical units.
+                let size = self
+                    .window
+                    .as_ref()
+                    .map(|window| {
+                        let physical = window.inner_size();
+                        (physical.width.max(1), physical.height.max(1))
+                    })
+                    .unwrap_or(self.window_size);
+                self.scale_factor = scale_factor;
+                self.deliver_scale_change(scale_factor, size);
             }
             WindowEvent::Resized(_size) => {
                 #[cfg(target_arch = "wasm32")]
@@ -427,6 +494,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 input: &self.input,
                 time,
                 window_size: self.window_size,
+
+                scale_factor: self.scale_factor,
                 window: &window,
                 viewport: self.viewport,
                 render_stats: ferrous_core::RenderStats::default(),
@@ -513,6 +582,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
                     input: &self.input,
                     time,
                     window_size: self.window_size,
+
+                    scale_factor: self.scale_factor,
                     window: &window,
                     render_stats: ferrous_core::RenderStats::default(),
                     camera_eye: ferrous_core::glam::Vec3::ZERO,

@@ -6,7 +6,7 @@
 use crate::gpu_types::{GuiQuad, TextQuad};
 use crate::gui_batch::GuiBatch;
 use crate::pipelines::{
-    blur::create_blur_pipeline,
+    blur::{create_blur_pipeline, create_downsample_pipeline},
     id::create_id_pipeline,
     layout::Layouts,
     overdraw::{create_overdraw_pipeline, create_overdraw_text_pipeline},
@@ -21,12 +21,18 @@ use wgpu::util::DeviceExt;
 
 /// Size of one per-segment uniform: clip rect, radii and params (three vec4s).
 const SEGMENT_UNIFORM_BYTES: u64 = 48;
-/// Size of the blur pass parameters (two floats plus radius and direction).
-const BLUR_UNIFORM_BYTES: u64 = 16;
+/// Size of the blur/downsample parameters: texel, sigma, direction, tap count,
+/// padding and the 16 padded Gaussian weights.
+const BLUR_UNIFORM_BYTES: u64 = 288;
 /// Initial number of per-segment uniform slots (grows on demand).
 const INITIAL_SEGMENT_CAPACITY: usize = 64;
-/// The backdrop blur runs at one quarter of the scene resolution per axis.
-const BACKDROP_DOWNSCALE: u32 = 4;
+/// Deepest level of the 2x prefilter chain (1/32 per axis).
+const BACKDROP_MAX_LEVEL: u32 = 5;
+/// Widest half-kernel used by the separable Gaussian.
+const BLUR_MAX_TAPS: usize = 13;
+/// The requested radius is mapped to `sigma = radius / BLUR_SIGMA_DIVISOR`, so
+/// the full width at half maximum is `2.355 * radius / 2.5 = 0.94 * radius`.
+const BLUR_SIGMA_DIVISOR: f32 = 2.5;
 
 /// GPU layout of the per-segment clip/backdrop uniform.
 #[repr(C)]
@@ -37,13 +43,61 @@ struct SegmentUniforms {
     params: [f32; 4],
 }
 
-/// GPU layout of the backdrop blur parameters.
+/// GPU layout of the backdrop blur/downsample parameters.
+///
+/// The shader declares `weights` as `array<vec4<f32>, 16>`: a uniform array of
+/// `f32` has a 16-byte element stride, so each weight sits in the first slot of
+/// its own `vec4`. `FLAT_BLUR_WEIGHTS` documents the packing; `pack` fills it.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct BlurParams {
     texel: [f32; 2],
-    radius: f32,
+    sigma: f32,
     horizontal: f32,
+    taps: u32,
+    pad: [u32; 3],
+    weights: [[f32; 4]; 16],
+}
+
+impl BlurParams {
+    /// Builds the parameters for one pass.
+    fn new(texel: [f32; 2], sigma: f32, horizontal: bool, weights: &[f32]) -> Self {
+        let mut packed = [[0.0_f32; 4]; 16];
+        for (slot, weight) in packed.iter_mut().zip(weights) {
+            slot[0] = *weight;
+        }
+        Self {
+            texel,
+            sigma,
+            horizontal: f32::from(u8::from(horizontal)),
+            taps: u32::try_from(weights.len()).unwrap_or(1),
+            pad: [0; 3],
+            weights: packed,
+        }
+    }
+
+    /// Gaussian weights for `sigma` destination texels, taps one texel apart.
+    ///
+    /// Returns centre-first weights normalised so the 1-D kernel sums to one
+    /// (the shader normalises by the actual sum as well).
+    fn gaussian_weights(sigma: f32) -> ([f32; BLUR_MAX_TAPS], usize) {
+        let sigma = sigma.max(0.05);
+        // Three sigma covers 99.7 % of the energy; never exceed the array.
+        let radius = (3.0 * sigma).ceil().clamp(0.0, (BLUR_MAX_TAPS - 1) as f32) as usize;
+        let mut weights = [0.0_f32; BLUR_MAX_TAPS];
+        let mut sum = 0.0_f32;
+        for (tap, weight) in weights.iter_mut().enumerate().take(radius + 1) {
+            let x = tap as f32;
+            *weight = (-0.5 * (x / sigma) * (x / sigma)).exp();
+            sum += if tap == 0 { *weight } else { *weight * 2.0 };
+        }
+        if sum > 0.0 {
+            for weight in weights.iter_mut().take(radius + 1) {
+                *weight /= sum;
+            }
+        }
+        (weights, radius + 1)
+    }
 }
 
 /// Forwards the `ferrous_font` / `ferrous_assets` cache inventory to
@@ -242,7 +296,16 @@ pub struct GuiRenderer {
     backdrop_size: [u32; 2],
     backdrop_format: wgpu::TextureFormat,
     blur_pipeline: wgpu::RenderPipeline,
-    /// Views keep their textures alive; the texture handles are not stored.
+    downsample_pipeline: wgpu::RenderPipeline,
+    /// Level 1..=BACKDROP_MAX_LEVEL of the 2x prefilter chain. Views keep their
+    /// textures alive; the texture handles are not stored.
+    downsample_views: Vec<wgpu::TextureView>,
+    /// Bind groups that read the scene (index 0) or level `index` (index > 0)
+    /// into level `index + 1`.
+    downsample_bind_groups: Vec<wgpu::BindGroup>,
+    downsample_params: Vec<wgpu::Buffer>,
+    /// The level the Gaussian runs at and its two scratch targets.
+    blur_level: u32,
     blur_h_view: Option<wgpu::TextureView>,
     blur_v_view: Option<wgpu::TextureView>,
     blur_h_bind_group: Option<wgpu::BindGroup>,
@@ -583,6 +646,15 @@ impl GuiRenderer {
             &layouts.blur_pipeline_layout,
             pipeline_cache.as_deref(),
         );
+        let downsample_pipeline = create_downsample_pipeline(
+            &device,
+            format,
+            &layouts.blur_pipeline_layout,
+            pipeline_cache.as_deref(),
+        );
+        let downsample_params = Self::create_downsample_params(&device);
+        let downsample_views = Vec::new();
+        let downsample_bind_groups = Vec::new();
         memory::register_gpu(
             "gui:segment uniforms",
             segment_buffer.size(),
@@ -652,6 +724,11 @@ impl GuiRenderer {
             backdrop_size: [0, 0],
             backdrop_format: format,
             blur_pipeline,
+            downsample_pipeline,
+            downsample_views,
+            downsample_bind_groups,
+            downsample_params,
+            blur_level: 0,
             blur_h_view: None,
             blur_v_view: None,
             blur_h_bind_group: None,
@@ -711,7 +788,7 @@ impl GuiRenderer {
         );
     }
 
-    /// Creates one quarter-resolution blur target.
+    /// Creates one backdrop-blur target texture.
     fn create_blur_target(
         device: &wgpu::Device,
         width: u32,
@@ -734,6 +811,20 @@ impl GuiRenderer {
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         (texture, view)
+    }
+
+    /// Creates the per-level downsample uniform buffers (one per chain level).
+    fn create_downsample_params(device: &wgpu::Device) -> Vec<wgpu::Buffer> {
+        (0..BACKDROP_MAX_LEVEL)
+            .map(|level| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(&format!("GUI Backdrop Downsample L{} Uniform", level + 1)),
+                    size: BLUR_UNIFORM_BYTES,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                })
+            })
+            .collect()
     }
 
     fn create_blur_bind_group(
@@ -765,42 +856,114 @@ impl GuiRenderer {
     ///
     /// `ferrous_ui_render` never depends on `ferrous_renderer`: the caller
     /// passes a `SceneTarget2d::view()` (or any sampled colour view of the
-    /// same size) before [`Self::prepare`]. The blur is downsampled by a
-    /// factor of four per axis and run as one horizontal plus one vertical
-    /// pass, so its cost is bounded by the quarter-resolution target and a
-    /// fixed nine-tap kernel. Positions and radii are in physical pixels.
+    /// same size) before [`Self::prepare`].
+    ///
+    /// The scene is box-downsampled through a 2x chain (up to 1/32 per axis)
+    /// and blurred at the level whose texel is closest to the requested
+    /// sigma, so a thin line integrates into one smooth peak instead of being
+    /// copied at each tap. Positions and radii are in physical pixels.
     ///
     /// Call this every frame with the scene view; a same-size call only
-    /// rebuilds the horizontal source bind group.
+    /// rebuilds the level-1 source bind group.
     pub fn set_backdrop_source(&mut self, source: &wgpu::TextureView, width: u32, height: u32) {
-        let width = (width / BACKDROP_DOWNSCALE).max(1);
-        let height = (height / BACKDROP_DOWNSCALE).max(1);
-        let recreate = self.blur_h_view.is_none()
-            || self.backdrop_size != [width, height]
-            || self.backdrop_format != self.format;
+        let width = width.max(1);
+        let height = height.max(1);
+        let recreate = self.backdrop_size != [width, height]
+            || self.backdrop_format != self.format
+            || self.downsample_views.is_empty();
 
         if recreate {
             self.backdrop_size = [width, height];
             self.backdrop_format = self.format;
-            let (_h_texture, h_view) =
-                Self::create_blur_target(&self.device, width, height, self.format);
-            let (v_texture, v_view) =
-                Self::create_blur_target(&self.device, width, height, self.format);
-            let backdrop_view = v_texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let h_bind_group = self.create_blur_bind_group(source, &self.horizontal_blur_uniform);
-            let v_bind_group = self.create_blur_bind_group(&h_view, &self.vertical_blur_uniform);
-            self.blur_h_view = Some(h_view);
-            self.blur_v_view = Some(v_view);
-            self.blur_h_bind_group = Some(h_bind_group);
-            self.blur_v_bind_group = Some(v_bind_group);
-            self.backdrop_view = backdrop_view;
-            self.rebuild_segment_bind_group();
+            let views = Self::create_downsample_views(&self.device, [width, height], self.format);
+            // Index 0 reads the caller's scene view and is rebuilt every frame;
+            // index `level` reads level `level` into level `level + 1`.
+            let mut groups = Vec::with_capacity(views.len());
+            groups.push(self.create_blur_bind_group(&views[0], &self.downsample_params[0]));
+            for level in 1..views.len() {
+                groups.push(
+                    self.create_blur_bind_group(&views[level - 1], &self.downsample_params[level]),
+                );
+            }
+            self.downsample_views = views;
+            self.downsample_bind_groups = groups;
+            self.clear_backdrop_targets();
+        }
+
+        // Level 1 always reads the caller's scene view, which cannot be stored.
+        let scene_group = self.create_blur_bind_group(source, &self.downsample_params[0]);
+        if let Some(slot) = self.downsample_bind_groups.first_mut() {
+            *slot = scene_group;
         } else {
-            self.blur_h_bind_group =
-                Some(self.create_blur_bind_group(source, &self.horizontal_blur_uniform));
+            self.downsample_bind_groups.push(scene_group);
         }
 
         self.backdrop.ready = true;
+    }
+
+    /// Creates level 1..=BACKDROP_MAX_LEVEL views from a scene of `size`.
+    fn create_downsample_views(
+        device: &wgpu::Device,
+        [width, height]: [u32; 2],
+        format: wgpu::TextureFormat,
+    ) -> Vec<wgpu::TextureView> {
+        (1..=BACKDROP_MAX_LEVEL)
+            .map(|level| {
+                let w = (width >> level).max(1);
+                let h = (height >> level).max(1);
+                Self::create_blur_target(device, w, h, format).1
+            })
+            .collect()
+    }
+
+    /// Writes each downsample pass's source texel size.
+    fn write_downsample_params(&self, queue: &wgpu::Queue) {
+        let mut source = [self.backdrop_size[0], self.backdrop_size[1]];
+        for (level, buffer) in self.downsample_params.iter().enumerate() {
+            let params = BlurParams::new(
+                [1.0 / source[0] as f32, 1.0 / source[1] as f32],
+                0.0,
+                true,
+                &[1.0],
+            );
+            queue.write_buffer(buffer, 0, bytemuck::bytes_of(&params));
+            let target = self.level_size(u32::try_from(level).unwrap_or(0) + 1);
+            source = [target[0], target[1]];
+        }
+    }
+
+    /// The size of chain level `level` for the current scene size.
+    fn level_size(&self, level: u32) -> [u32; 2] {
+        [
+            (self.backdrop_size[0] >> level).max(1),
+            (self.backdrop_size[1] >> level).max(1),
+        ]
+    }
+
+    /// Recreates the two Gaussian scratch targets at `level`.
+    ///
+    /// Returns `true` when the level or the target size changed, so the caller
+    /// can rebuild the segment bind group that samples the result.
+    fn set_blur_level(&mut self, level: u32) -> bool {
+        if self.blur_level == level && self.blur_h_view.is_some() {
+            return false;
+        }
+        let [width, height] = self.level_size(level);
+        let (_h_texture, h_view) =
+            Self::create_blur_target(&self.device, width, height, self.format);
+        let (v_texture, v_view) =
+            Self::create_blur_target(&self.device, width, height, self.format);
+        self.backdrop_view = v_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.blur_level = level;
+        self.blur_h_bind_group = Some(self.create_blur_bind_group(
+            &self.downsample_views[level as usize - 1],
+            &self.horizontal_blur_uniform,
+        ));
+        self.blur_v_bind_group =
+            Some(self.create_blur_bind_group(&h_view, &self.vertical_blur_uniform));
+        self.blur_h_view = Some(h_view);
+        self.blur_v_view = Some(v_view);
+        true
     }
 
     /// Drops the blur targets so the next `set_backdrop_source` recreates them
@@ -810,6 +973,7 @@ impl GuiRenderer {
         self.blur_v_view = None;
         self.blur_h_bind_group = None;
         self.blur_v_bind_group = None;
+        self.blur_level = 0;
         self.backdrop = BackdropState::default();
         self.backdrop_view = self
             .dummy_backdrop_texture
@@ -957,6 +1121,12 @@ impl GuiRenderer {
             cache,
         );
         self.blur_pipeline = create_blur_pipeline(
+            &self.device,
+            format,
+            &self.layouts.blur_pipeline_layout,
+            cache,
+        );
+        self.downsample_pipeline = create_downsample_pipeline(
             &self.device,
             format,
             &self.layouts.blur_pipeline_layout,
@@ -1473,28 +1643,39 @@ impl GuiRenderer {
         );
 
         if self.backdrop.this_frame {
-            let [width, height] = self.backdrop_size;
+            // Match the Gaussian to the level whose texel is closest to the
+            // requested sigma: `level = floor(log2(sigma))`, so the kernel at
+            // that level has sigma in [1, 2) texels and taps one texel apart.
+            let sigma = radius / BLUR_SIGMA_DIVISOR;
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            // reason: sigma is finite and >= 2 here, so the floor is a small
+            // positive integer clamped to the chain depth.
+            let level = if sigma >= 2.0 {
+                sigma.log2().floor().clamp(0.0, BACKDROP_MAX_LEVEL as f32) as u32
+            } else {
+                1
+            };
+            let changed = self.set_blur_level(level);
+            if changed {
+                self.rebuild_segment_bind_group();
+            }
+            let [width, height] = self.level_size(level);
             let texel = [1.0 / width as f32, 1.0 / height as f32];
-            let texels = radius / BACKDROP_DOWNSCALE as f32;
-            let horizontal = BlurParams {
-                texel,
-                radius: texels,
-                horizontal: 1.0,
-            };
-            let vertical = BlurParams {
-                texel,
-                radius: texels,
-                horizontal: 0.0,
-            };
+            #[allow(clippy::cast_precision_loss)]
+            // reason: level <= 5, so 2^level is exact in f32.
+            let level_scale = (1u32 << level) as f32;
+            let (weights, taps) = BlurParams::gaussian_weights(sigma / level_scale);
+            let weights = &weights[..taps];
+            self.write_downsample_params(queue);
             queue.write_buffer(
                 &self.horizontal_blur_uniform,
                 0,
-                bytemuck::bytes_of(&horizontal),
+                bytemuck::bytes_of(&BlurParams::new(texel, sigma / level_scale, true, weights)),
             );
             queue.write_buffer(
                 &self.vertical_blur_uniform,
                 0,
-                bytemuck::bytes_of(&vertical),
+                bytemuck::bytes_of(&BlurParams::new(texel, sigma / level_scale, false, weights)),
             );
         }
     }
@@ -1627,12 +1808,13 @@ impl GuiRenderer {
         }
     }
 
-    /// Encodes the horizontal and vertical backdrop blur passes.
+    /// Encodes the downsample chain and the two Gaussian passes.
     ///
-    /// Pass 1 samples the caller's scene view into the quarter-resolution
-    /// horizontal target; pass 2 samples that target into the vertical target
-    /// that the GUI quads sample. Both targets are cleared, so the result is
-    /// fully overwritten and no history leaks between frames.
+    /// Levels `1..=L` are box-downsampled in order (the scene is the input of
+    /// level 1), then the horizontal pass reads level `L` into `blur_h` and the
+    /// vertical pass reads `blur_h` into `blur_v`, which the GUI quads sample.
+    /// Every target is cleared, so the result is fully overwritten and no
+    /// history leaks between frames.
     fn encode_backdrop_blur(&self, encoder: &mut wgpu::CommandEncoder) {
         if !self.backdrop.this_frame {
             return;
@@ -1652,28 +1834,58 @@ impl GuiRenderer {
             b: 0.0,
             a: 0.0,
         };
+        let level_count = self.blur_level.min(BACKDROP_MAX_LEVEL) as usize;
+        for level in 0..level_count {
+            let (Some(view), Some(bind)) = (
+                self.downsample_views.get(level),
+                self.downsample_bind_groups.get(level),
+            ) else {
+                return;
+            };
+            self.run_fullscreen(
+                encoder,
+                "GUI Backdrop Downsample",
+                view,
+                &self.downsample_pipeline,
+                bind,
+                clear,
+            );
+        }
         for (label, view, bind) in [
             ("GUI Backdrop Blur Horizontal", h_view, h_bind),
             ("GUI Backdrop Blur Vertical", v_view, v_bind),
         ] {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some(label),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(clear),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&self.blur_pipeline);
-            pass.set_bind_group(0, bind, &[]);
-            pass.draw(0..3, 0..1);
+            self.run_fullscreen(encoder, label, view, &self.blur_pipeline, bind, clear);
         }
+    }
+
+    /// Runs one fullscreen triangle into `view`, clearing it first.
+    fn run_fullscreen(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        label: &str,
+        view: &wgpu::TextureView,
+        pipeline: &wgpu::RenderPipeline,
+        bind: &wgpu::BindGroup,
+        clear: wgpu::Color,
+    ) {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some(label),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(clear),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, bind, &[]);
+        pass.draw(0..3, 0..1);
     }
 
     /// Fase RENDER: Ejecuta los comandos de dibujo sobre la vista proporcionada.

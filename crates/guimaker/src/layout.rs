@@ -139,6 +139,8 @@ pub struct LayoutEngine {
     restyled: Vec<bool>,
     parent_directions: Vec<Option<Direction>>,
     has_responsive: bool,
+    host_capabilities: crate::overlay::HostCapabilities,
+    overlay_hosts: Vec<(NodeId, crate::overlay::OverlayHost, Rect)>,
     stats: LayoutStats,
 }
 
@@ -177,6 +179,8 @@ impl LayoutEngine {
             restyled: Vec::new(),
             parent_directions: Vec::new(),
             has_responsive: false,
+            host_capabilities: crate::overlay::HostCapabilities::default(),
+            overlay_hosts: Vec::new(),
             stats: LayoutStats::default(),
         }
     }
@@ -188,6 +192,31 @@ impl LayoutEngine {
             self.scale = scale;
             self.viewport_dirty = true;
         }
+    }
+
+    /// Sets what the host can do with overlays that do not fit.
+    pub fn set_host_capabilities(&mut self, capabilities: crate::overlay::HostCapabilities) {
+        self.host_capabilities = capabilities;
+    }
+
+    /// Where the layout decided to host the anchored overlay at `node`.
+    #[must_use]
+    pub fn overlay_host(&self, node: NodeId) -> Option<crate::overlay::OverlayHost> {
+        self.overlay_hosts
+            .iter()
+            .rev()
+            .find(|(id, _, _)| *id == node)
+            .map(|(_, host, _)| *host)
+    }
+
+    /// The unclamped popup rect for the anchored overlay at `node`.
+    #[must_use]
+    pub fn overlay_popup_rect(&self, node: NodeId) -> Option<Rect> {
+        self.overlay_hosts
+            .iter()
+            .rev()
+            .find(|(id, _, _)| *id == node)
+            .map(|(_, _, rect)| *rect)
     }
 
     /// The current rectangles, indexed by [`NodeId`].
@@ -491,6 +520,7 @@ impl LayoutEngine {
                 }
             },
         );
+        self.overlay_hosts.clear();
         self.collect(tree, root, Vec2::ZERO, store, resolved);
     }
 
@@ -767,8 +797,30 @@ impl LayoutEngine {
                         .get(sibling.index())
                         .copied()
                         .unwrap_or(Rect::ZERO);
-                    rect.x = sibling_rect.right() + anchor.dx;
-                    rect.y = sibling_rect.y + anchor.dy;
+                    // A pure solver decides the side, the flip, the shift and
+                    // the internal scroll. The gap is applied after the solve
+                    // so the flip anchors on the sibling's opposite edge.
+                    let work_area = Rect::new(0.0, 0.0, self.viewport.width, self.viewport.height);
+                    let placement = crate::overlay::place(
+                        sibling_rect,
+                        anchor.side,
+                        Size::new(rect.width, rect.height),
+                        work_area,
+                    );
+                    rect = placement.rect;
+                    let gap = if placement.side.is_horizontal() {
+                        anchor.dx
+                    } else {
+                        anchor.dy
+                    };
+                    match placement.side {
+                        crate::overlay::Side::Right => rect.x += gap,
+                        crate::overlay::Side::Left => rect.x -= gap,
+                        crate::overlay::Side::Bottom => rect.y += gap,
+                        crate::overlay::Side::Top => rect.y -= gap,
+                    }
+                    let host = placement.hosted_in(work_area, self.host_capabilities);
+                    self.overlay_hosts.push((id, host, placement.preferred));
                 }
             }
         }

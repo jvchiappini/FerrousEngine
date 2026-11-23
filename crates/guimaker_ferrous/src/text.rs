@@ -5,20 +5,33 @@
 //! kerning, letter tracking and line wrapping. It never creates a GPU atlas, so
 //! measurement works in headless tests and in a windowless gallery.
 //!
-//! # Faces
+//! # Faces and fallback
 //!
 //! A font face is selected by `(FontFamily, FontWeight)`. A [`GlyphSource`]
 //! supplies the bytes for a face; [`BundledGlyphs`] returns the engine's
 //! `Roboto-Regular` for every request, so a host that does not register Inter
 //! still gets deterministic metrics. Register your own source with
-//! [`FerrousTextSystem::with_source`] to supply the real D-0002 faces. The
-//! bundled font has one weight; a requested weight that the source cannot
-//! provide falls back to the source's `Sans` regular face.
+//! [`FerrousTextSystem::with_source`] to supply the real D-0002 faces.
+//!
+//! A face is a starting point, not a guarantee: CJK, Arabic, symbols and emoji
+//! are not in a Latin face. Shaping resolves a face **per character**:
+//!
+//! 1. the primary face for the run's family and weight;
+//! 2. each family in [`FerrousTextSystem::set_fallback_chain`], in order;
+//! 3. the operating system's fonts, as a last resort, loaded lazily by
+//!    `ferrous_font::system` the first time a character needs one.
+//!
+//! A line is split into runs wherever the resolved face changes; each run is
+//! laid out with its own metrics and the pen advances by the run's width.
+//! Kerning is applied inside a run, never across a face boundary. Nothing here
+//! runs until a character the primary face lacks appears, so cold start never
+//! opens a fallback font.
 
 use std::collections::HashMap;
+use std::ops::Range;
 
 use ferrous_font::layout::{layout_block, TextAlign, TextStyle as FontTextStyle};
-use ferrous_font::{charset, GlyphLayout, LayoutData};
+use ferrous_font::{charset, system, GlyphLayout, LayoutData};
 use guimaker::text::{Ellipsis, Glyph, Line, TextShape, TextStyle as UiTextStyle, TextSystem};
 use guimaker::theme::{FontFamily, FontWeight};
 
@@ -26,7 +39,7 @@ use guimaker::theme::{FontFamily, FontWeight};
 /// face. It is Roboto Regular, the engine's UI fallback font.
 const BUNDLED_BYTES: &[u8] = include_bytes!("../../../assets/fonts/Roboto-Regular.ttf");
 
-/// Advance used for a character the face has no glyph for, in em units.
+/// Advance used for a character no face has a glyph for, in em units.
 ///
 /// It matches the core's `MetricsTextSystem` fallback so a missing glyph is
 /// visible in layout rather than silently ignored.
@@ -63,6 +76,9 @@ impl GlyphSource for BundledGlyphs {
 pub struct FerrousTextSystem {
     source: Box<dyn GlyphSource>,
     faces: HashMap<(u8, u16), LayoutData>,
+    fallback: Vec<FontFamily>,
+    extras: Vec<LayoutData>,
+    lazy_loads: usize,
 }
 
 impl Default for FerrousTextSystem {
@@ -84,13 +100,46 @@ impl FerrousTextSystem {
         Self {
             source,
             faces: HashMap::new(),
+            fallback: Vec::new(),
+            extras: Vec::new(),
+            lazy_loads: 0,
         }
+    }
+
+    /// Sets the family chain tried after the primary face (theme tokens).
+    pub fn set_fallback_chain(&mut self, families: Vec<FontFamily>) {
+        if self.fallback != families {
+            self.fallback = families;
+            self.extras.clear();
+        }
+    }
+
+    /// The chain tried after the primary face.
+    #[must_use]
+    pub fn fallback_chain(&self) -> &[FontFamily] {
+        &self.fallback
     }
 
     /// The number of face tables built so far (diagnostics and tests).
     #[must_use]
     pub fn face_count(&self) -> usize {
-        self.faces.len()
+        self.faces.len() + self.extras.len()
+    }
+
+    /// Whether any loaded face has a real outline for `ch`.
+    #[must_use]
+    pub fn covers(&self, ch: char) -> bool {
+        self.faces.values().any(|face| face.supports(ch))
+            || self.extras.iter().any(|face| face.supports(ch))
+    }
+
+    /// How many faces were loaded lazily from the fallback chain or the OS.
+    ///
+    /// A UI whose text the primary face covers keeps this at 0, which is the
+    /// "no fallback font is opened at startup" contract.
+    #[must_use]
+    pub fn lazy_loads(&self) -> usize {
+        self.lazy_loads
     }
 
     fn key(family: FontFamily, weight: FontWeight) -> (u8, u16) {
@@ -117,17 +166,108 @@ impl FerrousTextSystem {
             Err(_) => false,
         }
     }
+
+    /// Loads faces for characters the primary does not cover.
+    ///
+    /// The theme chain is tried first, then the OS. Each loaded face is kept
+    /// for the life of the system; `lazy_loads` counts them.
+    fn load_fallbacks(&mut self, missing: &[char]) {
+        let mut missing: Vec<char> = missing.to_vec();
+        missing.sort_unstable();
+        missing.dedup();
+        let mut seen: Vec<FontFamily> = Vec::new();
+        for family in self.fallback.clone() {
+            if seen.contains(&family) {
+                continue;
+            }
+            seen.push(family);
+            let Some(bytes) = self.source.bytes(family, FontWeight::Regular) else {
+                continue;
+            };
+            let Ok(data) = LayoutData::from_bytes(
+                bytes,
+                charset::latin_western()
+                    .into_iter()
+                    .chain(missing.iter().copied()),
+            ) else {
+                continue;
+            };
+            if missing.iter().any(|ch| data.supports(*ch)) {
+                self.extras.push(data);
+                self.lazy_loads += 1;
+            }
+            missing.retain(|ch| {
+                !self
+                    .extras
+                    .last()
+                    .is_some_and(|face: &LayoutData| face.supports(*ch))
+            });
+            if missing.is_empty() {
+                return;
+            }
+        }
+        for (bytes, covered) in system::find_for(&missing) {
+            let Ok(data) =
+                LayoutData::from_bytes(&bytes, charset::latin_western().into_iter().chain(covered))
+            else {
+                continue;
+            };
+            self.extras.push(data);
+            self.lazy_loads += 1;
+            missing.retain(|ch| {
+                !self
+                    .extras
+                    .last()
+                    .is_some_and(|face: &LayoutData| face.supports(*ch))
+            });
+            if missing.is_empty() {
+                break;
+            }
+        }
+    }
+
+    /// Ensures the primary face exists and every character has a face.
+    fn prepare(&mut self, text: &str, style: UiTextStyle) -> Option<(u8, u16)> {
+        let weight = weight_enum(style.weight);
+        if !self.ensure_face(style.family, weight) {
+            return None;
+        }
+        let key = Self::key(style.family, weight);
+        let primary = &self.faces[&key];
+        let mut missing: Vec<char> = Vec::new();
+        for ch in text.chars() {
+            if ch.is_whitespace() {
+                continue;
+            }
+            if !primary.supports(ch)
+                && !self.extras.iter().any(|face| face.supports(ch))
+                && !missing.contains(&ch)
+            {
+                missing.push(ch);
+            }
+        }
+        if !missing.is_empty() {
+            self.load_fallbacks(&missing);
+        }
+        Some(key)
+    }
+
+    /// The primary face plus the lazily loaded extras, primary first.
+    fn all_faces(&self, key: (u8, u16)) -> Vec<&LayoutData> {
+        let mut faces = Vec::with_capacity(1 + self.extras.len());
+        faces.push(&self.faces[&key]);
+        faces.extend(self.extras.iter());
+        faces
+    }
 }
 
 impl TextSystem for FerrousTextSystem {
     fn shape(&mut self, text: &str, style: UiTextStyle, max_width: Option<f32>) -> TextShape {
-        let weight = weight_enum(style.weight);
-        if !self.ensure_face(style.family, weight) {
+        let Some(key) = self.prepare(text, style) else {
             return guimaker::text::MetricsTextSystem::new().shape(text, style, max_width);
-        }
-        let key = Self::key(style.family, weight);
-        let font = &self.faces[&key];
-        shape_wrapped(font, text, style, max_width)
+        };
+        let faces = self.all_faces(key);
+        shape_wrapped(&faces, text, style, max_width)
     }
 
     fn shape_clamped(
@@ -138,16 +278,14 @@ impl TextSystem for FerrousTextSystem {
         max_lines: Option<u16>,
         ellipsis: Ellipsis,
     ) -> TextShape {
-        let weight = weight_enum(style.weight);
-        if !self.ensure_face(style.family, weight) {
+        let Some(key) = self.prepare(text, style) else {
             return guimaker::text::MetricsTextSystem::new()
                 .shape_clamped(text, style, max_width, max_lines, ellipsis);
-        }
-        let key = Self::key(style.family, weight);
-        let font = &self.faces[&key];
-        let mut shape = shape_wrapped(font, text, style, max_width);
+        };
+        let faces = self.all_faces(key);
+        let mut shape = shape_wrapped(&faces, text, style, max_width);
         clamp_shape(
-            font, &mut shape, style, max_width, max_lines, ellipsis, text,
+            &faces, &mut shape, style, max_width, max_lines, ellipsis, text,
         );
         shape
     }
@@ -179,37 +317,78 @@ fn weight_enum(weight: u16) -> FontWeight {
     }
 }
 
-/// Width of `text` at `style`, including `kern`/`GPOS` and tracking, in logical
-/// pixels.
-///
-/// Tracking is inserted between characters, never after the last one, matching
-/// `ferrous_font::layout::layout_block`.
-fn line_width(font: &LayoutData, text: &str, style: UiTextStyle) -> f32 {
-    let layout = font.layout_font();
-    let mut width = 0.0;
-    let mut previous: Option<u16> = None;
-    for ch in text.chars() {
-        let glyph = layout.glyph_indices.get(&ch).copied().unwrap_or(0);
-        if let Some(left) = previous {
+/// The face index that covers `ch`, or 0 for whitespace/uncovered characters.
+fn char_face(faces: &[&LayoutData], ch: char) -> usize {
+    if ch.is_whitespace() {
+        return 0;
+    }
+    faces.iter().position(|face| face.supports(ch)).unwrap_or(0)
+}
+
+/// Splits `text` into runs of the same resolved face.
+fn resolve_runs(faces: &[&LayoutData], text: &str) -> Vec<(usize, Range<usize>)> {
+    let mut runs: Vec<(usize, Range<usize>)> = Vec::new();
+    for (start, ch) in text.char_indices() {
+        let end = start + ch.len_utf8();
+        let face = char_face(faces, ch);
+        match runs.last_mut() {
+            Some((last, range)) if *last == face => range.end = end,
+            _ => runs.push((face, start..end)),
+        }
+    }
+    runs
+}
+
+/// The glyph index and advance of `ch` in `face`, with kerning from `previous`
+/// when it is in the same face.
+fn advance(
+    faces: &[&LayoutData],
+    face_index: usize,
+    previous: Option<(usize, u16)>,
+    ch: char,
+    style: UiTextStyle,
+) -> (u16, f32) {
+    let layout = faces[face_index].layout_font();
+    let glyph = layout.glyph_indices.get(&ch).copied().unwrap_or(0);
+    let mut width = layout
+        .metrics
+        .get(&ch)
+        .map_or(MISSING_ADVANCE_EM, |metric| metric.advance);
+    if let Some((previous_face, left)) = previous {
+        if previous_face == face_index {
             let kerning = layout
                 .gpos
                 .pair(left, glyph)
                 .or_else(|| layout.kerning.get(&(left, glyph)).copied())
                 .unwrap_or(0.0);
             width += kerning + style.tracking;
+        } else {
+            width += style.tracking;
         }
-        width += layout
-            .metrics
-            .get(&ch)
-            .map_or(MISSING_ADVANCE_EM, |metric| metric.advance);
-        previous = Some(glyph);
     }
-    width * style.size
+    (glyph, width * style.size)
+}
+
+/// Width of `text` at `style`, including `kern`/`GPOS` and tracking, in logical
+/// pixels.
+///
+/// Tracking is inserted between characters, never after the last one, matching
+/// `ferrous_font::layout::layout_block`.
+fn line_width(faces: &[&LayoutData], text: &str, style: UiTextStyle) -> f32 {
+    let mut width = 0.0;
+    let mut previous: Option<(usize, u16)> = None;
+    for ch in text.chars() {
+        let face = char_face(faces, ch);
+        let (glyph, add) = advance(faces, face, previous, ch, style);
+        width += add;
+        previous = Some((face, glyph));
+    }
+    width
 }
 
 /// Wraps one paragraph (no newlines) and returns its `(start, end)` byte ranges.
 fn wrap_paragraph(
-    font: &LayoutData,
+    faces: &[&LayoutData],
     text: &str,
     style: UiTextStyle,
     limit: Option<f32>,
@@ -220,7 +399,6 @@ fn wrap_paragraph(
     let Some(limit) = limit else {
         return vec![(0, text.len())];
     };
-    let layout = font.layout_font();
     let mut lines = Vec::new();
     let mut start = 0usize;
     while start < text.len() {
@@ -228,39 +406,21 @@ fn wrap_paragraph(
         let mut end = start;
         let mut last_space_end = None;
         let mut width = 0.0f32;
-        let mut previous: Option<u16> = None;
+        let mut previous: Option<(usize, u16)> = None;
         let mut first = true;
         let mut overflowed = false;
         while cursor < text.len() {
             let ch = text[cursor..].chars().next().expect("char boundary");
             let next = cursor + ch.len_utf8();
-            let glyph = layout.glyph_indices.get(&ch).copied().unwrap_or(0);
-            let add = if let Some(left) = previous {
-                let kerning = layout
-                    .gpos
-                    .pair(left, glyph)
-                    .or_else(|| layout.kerning.get(&(left, glyph)).copied())
-                    .unwrap_or(0.0);
-                kerning
-                    + style.tracking
-                    + layout
-                        .metrics
-                        .get(&ch)
-                        .map_or(MISSING_ADVANCE_EM, |metric| metric.advance)
-            } else {
-                layout
-                    .metrics
-                    .get(&ch)
-                    .map_or(MISSING_ADVANCE_EM, |metric| metric.advance)
-            };
-            let add = add * style.size;
+            let face = char_face(faces, ch);
+            let (glyph, add) = advance(faces, face, previous, ch, style);
             if width + add > limit + 0.01 && !first {
                 overflowed = true;
                 break;
             }
             width += add;
             first = false;
-            previous = Some(glyph);
+            previous = Some((face, glyph));
             end = next;
             if ch == ' ' {
                 last_space_end = Some(next);
@@ -285,9 +445,9 @@ fn wrap_paragraph(
 }
 
 /// Shapes a whole run: wraps each newline-separated paragraph and lays every
-/// resulting line out with `ferrous_font`.
+/// resulting line out run by run with `ferrous_font`.
 fn shape_wrapped(
-    font: &LayoutData,
+    faces: &[&LayoutData],
     text: &str,
     style: UiTextStyle,
     max_width: Option<f32>,
@@ -307,23 +467,32 @@ fn shape_wrapped(
     let mut line_index = 0usize;
     let mut base = 0usize;
     for paragraph in text.split('\n') {
-        for (start, end) in wrap_paragraph(font, paragraph, style, limit) {
+        for (start, end) in wrap_paragraph(faces, paragraph, style, limit) {
             let line_text = &paragraph[start..end];
-            let metrics = layout_block(font.layout_font(), line_text, font_style, &mut scratch);
             let glyph_start = shape.glyphs.len();
-            for glyph in &scratch {
-                shape.glyphs.push(Glyph {
-                    ch: glyph.ch,
-                    x: glyph.x,
-                    advance: glyph.advance,
-                    byte_start: base + start + glyph.byte_range.start,
-                    byte_end: base + start + glyph.byte_range.end,
-                });
+            let mut pen = 0.0f32;
+            for (face, range) in resolve_runs(faces, line_text) {
+                let run = &line_text[range.clone()];
+                if run.is_empty() {
+                    continue;
+                }
+                let metrics =
+                    layout_block(faces[face].layout_font(), run, font_style, &mut scratch);
+                for glyph in &scratch {
+                    shape.glyphs.push(Glyph {
+                        ch: glyph.ch,
+                        x: pen + glyph.x,
+                        advance: glyph.advance,
+                        byte_start: base + start + range.start + glyph.byte_range.start,
+                        byte_end: base + start + range.start + glyph.byte_range.end,
+                    });
+                }
+                pen += metrics.width;
             }
             shape.lines.push(Line {
                 start: base + start,
                 end: base + end,
-                width: metrics.width,
+                width: pen,
                 baseline: count_f32(line_index) * style.line_height + style.ascent(),
                 glyph_start,
                 glyph_end: shape.glyphs.len(),
@@ -348,7 +517,7 @@ fn shape_wrapped(
 /// without new core data. The shaped width is still clamped so layout is
 /// correct.
 fn clamp_shape(
-    font: &LayoutData,
+    faces: &[&LayoutData],
     shape: &mut TextShape,
     style: UiTextStyle,
     max_width: Option<f32>,
@@ -363,7 +532,7 @@ fn clamp_shape(
         let last_glyph = shape.lines.last().map_or(0, |line| line.glyph_end);
         shape.glyphs.truncate(last_glyph);
         if ellipsis != Ellipsis::None {
-            append_ellipsis(font, shape, style, max_width, text);
+            append_ellipsis(faces, shape, style, max_width, text);
         }
         shape.height = count_f32(shape.lines.len()) * style.line_height;
         shape.width = shape
@@ -379,14 +548,14 @@ fn clamp_shape(
 /// Shortens the last line until the end ellipsis fits, then appends it to the
 /// shape's glyph list.
 fn append_ellipsis(
-    font: &LayoutData,
+    faces: &[&LayoutData],
     shape: &mut TextShape,
     style: UiTextStyle,
     max_width: Option<f32>,
     text: &str,
 ) {
     let ellipsis = '\u{2026}';
-    let ellipsis_width = line_width(font, "\u{2026}", style);
+    let ellipsis_width = line_width(faces, "\u{2026}", style);
     let Some(line) = shape.lines.last_mut() else {
         return;
     };
@@ -397,7 +566,7 @@ fn append_ellipsis(
             let kept = text
                 .get(line.start.min(text.len())..kept_end.min(text.len()))
                 .unwrap_or("");
-            line_width(font, kept, style) + ellipsis_width > limit + 0.01
+            line_width(faces, kept, style) + ellipsis_width > limit + 0.01
         });
         if !too_wide || shape.glyphs.len() <= line.glyph_start {
             break;
@@ -410,7 +579,7 @@ fn append_ellipsis(
         .unwrap_or("");
     line.end = kept_end;
     line.glyph_end = shape.glyphs.len();
-    line.width = line_width(font, kept, style) + ellipsis_width;
+    line.width = line_width(faces, kept, style) + ellipsis_width;
     shape.glyphs.push(Glyph {
         ch: ellipsis,
         x: line.width - ellipsis_width,
@@ -453,6 +622,7 @@ mod tests {
             separate
         );
         assert_eq!(system.face_count(), 1);
+        assert_eq!(system.lazy_loads(), 0, "ASCII opens no fallback face");
     }
 
     #[test]
@@ -507,5 +677,38 @@ mod tests {
         let shape = system.shape("Hello", bold, None);
         assert_eq!(shape.lines.len(), 1);
         assert!(!shape.glyphs.is_empty());
+    }
+
+    #[test]
+    fn a_mixed_script_string_has_no_notdef() {
+        // Intro (Latin) + film emoji + Japanese + Arabic + a check mark. The
+        // primary Roboto face covers only the first word; the rest resolve
+        // through the OS chain, one run per face.
+        let mut system = FerrousTextSystem::new();
+        let text =
+            "Intro \u{1F3AC} \u{52D5}\u{753B} \u{0629}\u{0628}\u{0631}\u{062C}\u{062A} \u{2713}";
+        let shape = system.shape(text, style(16.0), None);
+        assert!(!shape.glyphs.is_empty());
+        let uncovered: Vec<char> = text
+            .chars()
+            .filter(|ch| !ch.is_whitespace())
+            .filter(|ch| !system.covers(*ch))
+            .collect();
+        assert!(
+            uncovered.is_empty(),
+            "unresolved glyphs: {uncovered:?} (lazy loads: {})",
+            system.lazy_loads()
+        );
+        assert!(
+            system.lazy_loads() > 0,
+            "the mixed string needs at least one fallback face"
+        );
+        assert!(
+            shape.glyphs.len() >= text.chars().filter(|ch| *ch != ' ').count(),
+            "{} glyphs for {} characters",
+            shape.glyphs.len(),
+            text.chars().count()
+        );
+        assert_eq!(shape.lines.len(), 1);
     }
 }

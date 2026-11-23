@@ -174,7 +174,9 @@ impl Layouts {
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: NonZeroU64::new(16),
+                        // texel, sigma, direction, tap count, padding and the 16
+                        // padded Gaussian weights.
+                        min_binding_size: NonZeroU64::new(288),
                     },
                     count: None,
                 },

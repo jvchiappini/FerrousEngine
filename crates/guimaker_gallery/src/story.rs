@@ -122,6 +122,7 @@ fn paint<Msg: Clone>(
     ui.set_viewport(viewport, scale);
     let _ = ui.set_time_ms(0.0);
     let mut text_system = FerrousTextSystem::new();
+    text_system.set_fallback_chain(theme.font_fallbacks.clone());
     let mut frame = Frame::new();
     ui.paint(view, &mut frame, &mut text_system);
     frame.display_list

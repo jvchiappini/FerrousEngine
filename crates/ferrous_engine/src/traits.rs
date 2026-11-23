@@ -232,6 +232,23 @@ pub trait FerrousApp {
     /// that is only available after all systems have run but before GPU upload.
     fn on_sync_world(&mut self, world: &ferrous_core::World) {}
 
+    /// The window's scale factor changed, once, with the suggested physical
+    /// size.
+    ///
+    /// winit asks for per-monitor DPI awareness v2 on Windows, so this fires
+    /// when the window moves to a monitor with a different scale or the OS
+    /// zoom changes. Re-run layout in logical units; the runner has already
+    /// resized or will resize the surface, so do not touch the swapchain here.
+    /// The default does nothing, so an app that ignores DPI changes keeps
+    /// working (its logical size stays the same).
+    fn on_scale_factor_changed(
+        &mut self,
+        _scale_factor: f64,
+        _new_size: (u32, u32),
+        _ctx: &mut AppContext<'_>,
+    ) {
+    }
+
     /// Called whenever the window is resized.
     ///
     /// The new physical pixel dimensions are in `new_size`.  The runner

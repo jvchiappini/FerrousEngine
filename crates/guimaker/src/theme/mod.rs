@@ -111,6 +111,14 @@ pub struct Theme {
     /// loads: a missing value takes `false`.
     #[serde(default)]
     pub prefers_reduced_motion: bool,
+    /// The family chain text shaping tries after the style's own family.
+    ///
+    /// The chain is per theme; every type role inherits it. Glyphs the chain
+    /// still cannot cover fall through to the operating system's fonts, which
+    /// the text backend loads lazily. An empty chain is the default and only
+    /// costs a lookup when a character the primary face lacks appears.
+    #[serde(default)]
+    pub font_fallbacks: Vec<crate::theme::FontFamily>,
     /// The container breakpoints responsive values resolve against.
     ///
     /// Added in phase 3, so a theme file written before the field existed still
@@ -182,6 +190,7 @@ impl Theme {
             elevation: ElevationSet::for_mode(mode),
             motion: Motion::default(),
             prefers_reduced_motion: false,
+            font_fallbacks: Vec::new(),
             breakpoints: Breakpoints::default(),
         }
     }
@@ -200,6 +209,7 @@ impl Theme {
             elevation: ElevationSet::for_mode(ThemeMode::Dark),
             motion: Motion::default(),
             prefers_reduced_motion: false,
+            font_fallbacks: Vec::new(),
             breakpoints: Breakpoints::default(),
         }
     }

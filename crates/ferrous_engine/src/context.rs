@@ -37,6 +37,9 @@ pub struct AppContext<'a> {
     /// Current window size in physical pixels.
     pub window_size: (u32, u32),
 
+    /// The window's DPI scale factor (logical to physical).
+    pub scale_factor: f64,
+
     /// The native window handle (for creating surfaces, grabbing cursor, etc.)
     pub window: &'a Window,
 

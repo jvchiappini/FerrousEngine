@@ -1384,27 +1384,57 @@ fn menu_story() -> Element<()> {
 }
 
 fn dialog_story() -> Element<()> {
-    // The panels are deliberately plain: any text below the card lands in the
-    // prefix target, and the sparse nine-tap blur echoes sharp glyphs across
-    // the card interior. Coloured panels keep the backdrop a pure colour wash.
+    // Real content behind the scrim: six titled panels. The titles and body
+    // lines are what the backdrop blur has to integrate into one soft wash; a
+    // sparse tap kernel would echo them as sharp copies, which the impulse
+    // guard in `tests/mechanics.rs` catches.
     let panels = [
-        ColorRole::SurfaceRaised,
-        ColorRole::SurfaceSunken,
-        ColorRole::AccentSubtle,
-        ColorRole::SuccessSubtle,
-        ColorRole::WarningSubtle,
-        ColorRole::InfoSubtle,
+        (
+            ColorRole::SurfaceRaised,
+            "Recent projects",
+            "Three files edited today.",
+        ),
+        (
+            ColorRole::SurfaceSunken,
+            "Examples",
+            "Motion graphics starters.",
+        ),
+        (
+            ColorRole::AccentSubtle,
+            "Assets",
+            "Images, video and audio.",
+        ),
+        (
+            ColorRole::SuccessSubtle,
+            "Autosave",
+            "Every thirty seconds.",
+        ),
+        (
+            ColorRole::WarningSubtle,
+            "Storage",
+            "Two gigabytes remaining.",
+        ),
+        (ColorRole::InfoSubtle, "Sync", "Local workspace only."),
     ];
     let mut cards = Vec::with_capacity(panels.len());
-    for role in panels {
+    for (role, title, body) in panels {
         cards.push(
             Element::column()
                 .grow(1.0)
+                .min_width(Spacing::S0)
                 .height(SizeSpec::Fill)
                 .align(Align::Stretch)
+                .gap(Spacing::S2)
                 .pad(Spacing::S4)
                 .bg(role)
-                .radius(Radius::Md),
+                .radius(Radius::Md)
+                .child(
+                    display_text::<()>(title, TypeRole::Heading, Tone::Default)
+                        .width(SizeSpec::Fill),
+                )
+                .child(
+                    display_text::<()>(body, TypeRole::Body, Tone::Default).width(SizeSpec::Fill),
+                ),
         );
     }
     let mut rows = Vec::new();

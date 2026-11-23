@@ -101,6 +101,15 @@ pub trait GuiApp {
     fn time_ms(&self) -> Option<f64> {
         None
     }
+
+    /// What the host can do with overlays that do not fit the window.
+    ///
+    /// The gallery keeps the default
+    /// ([`guimaker::overlay::HostCapabilities::single_window`]): the engine has
+    /// no popup windows yet, so overlays clamp to the canvas and stay visible.
+    fn capabilities(&self) -> guimaker::overlay::HostCapabilities {
+        guimaker::overlay::HostCapabilities::default()
+    }
 }
 
 /// The `FerrousApp` adapter around one [`GuiApp`].
@@ -193,7 +202,8 @@ impl<A: GuiApp> GuiHost<A> {
         let theme = self.app.theme();
         if theme != self.theme {
             self.theme = theme.clone();
-            self.ui.set_theme(theme);
+            self.ui.set_theme(theme.clone());
+            self.text.set_fallback_chain(theme.font_fallbacks.clone());
         }
     }
 
@@ -299,6 +309,7 @@ impl<A: GuiApp> FerrousApp for GuiHost<A> {
         let scale = window_scale(ctx);
         let viewport = logical_size(ctx, scale);
         self.apply_grid(viewport, scale);
+        self.ui.set_host_capabilities(self.app.capabilities());
         self.apply_theme();
     }
 

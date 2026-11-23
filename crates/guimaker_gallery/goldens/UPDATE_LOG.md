@@ -338,3 +338,11 @@ Every rewrite records its reason here.
 - 1795434937 `range-slider-light-1280x800-1.5.png`: Phase 8: design-lint mechanics fixes (24 px hit targets, explicit ellipsis, clipped slider fill, no empty callout action row, grouped button sizes)
 - 1795434938 `callout-dark-1280x800-1.5.png`: Phase 8: design-lint mechanics fixes (24 px hit targets, explicit ellipsis, clipped slider fill, no empty callout action row, grouped button sizes)
 - 1795434939 `callout-light-1280x800-1.5.png`: Phase 8: design-lint mechanics fixes (24 px hit targets, explicit ellipsis, clipped slider fill, no empty callout action row, grouped button sizes)
+- 1795439669 `dialog-dark-1280x800-1.png`: P8 fix: prefiltered level-matched backdrop blur; the card again blurs real titles and body text behind it
+- 1795439670 `dialog-light-1280x800-1.png`: P8 fix: prefiltered level-matched backdrop blur; the card again blurs real titles and body text behind it
+- 1795439685 `dialog-dark-1280x800-1.5.png`: P8 fix: prefiltered level-matched backdrop blur; the card again blurs real titles and body text behind it
+- 1795439687 `dialog-light-1280x800-1.5.png`: P8 fix: prefiltered level-matched backdrop blur; the card again blurs real titles and body text behind it
+- 1795441700 `dialog-dark-1280x800-1.5.png`: P8 fix: prefiltered level-matched backdrop blur; real titles and body text behind the scrim, Default tone for contrast
+- 1795441701 `dialog-light-1280x800-1.5.png`: P8 fix: prefiltered level-matched backdrop blur; real titles and body text behind the scrim, Default tone for contrast
+- 1795441930 `dialog-dark-1280x800-1.5.png`: P8 fix: prefiltered backdrop blur with real text behind it; narrow-width cards wrap (min_width S0, text Fill)
+- 1795441931 `dialog-light-1280x800-1.5.png`: P8 fix: prefiltered backdrop blur with real text behind it; narrow-width cards wrap (min_width S0, text Fill)

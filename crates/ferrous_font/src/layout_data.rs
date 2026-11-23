@@ -108,6 +108,15 @@ impl LayoutData {
     ///
     /// The ASCII fast-path table is built lazily on the first call and reused
     /// by every later call.
+    /// Whether the face has a real outline for `ch`.
+    ///
+    /// The baked charset stores glyph 0 (`.notdef`) for characters the source
+    /// font does not cover, so a missing key and index 0 are both "unsupported".
+    #[must_use]
+    pub fn supports(&self, ch: char) -> bool {
+        self.glyph_indices.get(&ch).is_some_and(|index| *index != 0)
+    }
+
     #[must_use]
     pub fn layout_font(&self) -> LayoutFont<'_> {
         let ascii = self

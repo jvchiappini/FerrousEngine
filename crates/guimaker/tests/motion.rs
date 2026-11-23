@@ -273,3 +273,54 @@ fn an_animation_wakes_only_while_it_runs() {
     }
     assert_eq!(ui.frames_painted(), painted, "no frames after the fade");
 }
+
+#[test]
+fn an_open_popup_renders_zero_idle_frames() {
+    // An open menu is a static layer: opening it paints once, then the host has
+    // nothing to do until something changes. This is the popup's half of the
+    // "idle is zero frames" contract; the popup window uses the same frame loop.
+    let view: Element<()> = Element::stack()
+        .width(SizeSpec::Fill)
+        .height(SizeSpec::Fill)
+        .child(
+            Element::row()
+                .width(SizeSpec::Fill)
+                .height(SizeSpec::Fill)
+                .bg(ColorRole::Surface),
+        )
+        .child(
+            Element::overlay().child(
+                Element::column()
+                    .key("open_popup")
+                    .width(SizeSpec::Token(Spacing::S12))
+                    .height(SizeSpec::Token(Spacing::S12))
+                    .bg(ColorRole::SurfaceRaised),
+            ),
+        );
+    let mut ui: Ui<()> = Ui::new(Theme::dark());
+    ui.set_viewport(Size::new(320.0, 200.0), 1.0);
+    let mut text_system = MetricsTextSystem::new();
+    let mut frame = Frame::new();
+
+    paint(&mut ui, &view, &mut frame, &mut text_system);
+    let painted_once = ui.frames_painted();
+
+    let mut deadline = ui.next_wake_ms(0.0);
+    let mut now = 0.0;
+    for _ in 0..=312 {
+        ui.set_time_ms(now);
+        if let Some(due) = deadline {
+            if now >= due {
+                paint(&mut ui, &view, &mut frame, &mut text_system);
+                deadline = ui.next_wake_ms(now);
+            }
+        }
+        now += 16.0;
+    }
+    assert!(deadline.is_none(), "an open popup schedules no wake");
+    assert_eq!(
+        ui.frames_painted(),
+        painted_once,
+        "an idle open popup paints no extra frames"
+    );
+}

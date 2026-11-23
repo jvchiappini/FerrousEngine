@@ -25,6 +25,7 @@ pub mod layout_data;
 pub mod msdf_gen;
 pub mod parser;
 pub mod path;
+pub mod system;
 pub mod tables;
 
 pub use atlas::{FontAtlas, GlyphMetrics, DEFAULT_GLYPH_SIZE};

@@ -1,7 +1,7 @@
 //! The view tree: structure and intent, never coordinates.
 //!
 //! An app builds an [`Element`] tree from its state with the constructors in
-//! this module (`Element::column`, `Element::row`, [`text`], â€¦) and the
+//! this module (`Element::column`, `Element::row`, [`text`], Ã¢â‚¬Â¦) and the
 //! chainable modifiers (`.pad(S4)`, `.gap(S3)`, `.width(SizeSpec::Fill)`).
 //! [`Tree::build`] flattens it into an arena of [`Node`]s; layout, input and the
 //! display list work on that arena. No element stores a pixel position or a
@@ -685,6 +685,23 @@ impl<Msg> Element<Msg> {
             sibling: u16::try_from(index).unwrap_or(u16::MAX),
             dx: offset.x,
             dy: offset.y,
+            side: crate::overlay::Side::Right,
+        });
+        self
+    }
+
+    /// Anchors this node to sibling `index` on `side`, `gap` pixels away.
+    ///
+    /// The placement solver flips the overlay to the opposite side when the
+    /// preferred one does not fit (`crate::overlay::place`); the parent's
+    /// layout is never affected.
+    #[must_use]
+    pub fn overlay_on(mut self, index: usize, side: crate::overlay::Side, gap: f32) -> Self {
+        self.style.anchor = Some(Anchor {
+            sibling: u16::try_from(index).unwrap_or(u16::MAX),
+            dx: gap,
+            dy: gap,
+            side,
         });
         self
     }
@@ -1421,6 +1438,12 @@ fn hash_style(style: &Style, hash: &mut Fnv) {
             hash.write_u32(u32::from(anchor.sibling));
             hash.write_f32(anchor.dx);
             hash.write_f32(anchor.dy);
+            hash.write_u8(match anchor.side {
+                crate::overlay::Side::Top => 0,
+                crate::overlay::Side::Bottom => 1,
+                crate::overlay::Side::Left => 2,
+                crate::overlay::Side::Right => 3,
+            });
         }
         None => hash.write_u8(0),
     }

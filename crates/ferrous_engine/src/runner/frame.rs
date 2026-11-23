@@ -65,6 +65,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
                                 input: &self.input,
                                 time,
                                 window_size: self.window_size,
+
+                                scale_factor: self.scale_factor,
                                 window,
                                 viewport: self.viewport,
                                 render_stats: Default::default(),
@@ -235,6 +237,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 input: &self.input,
                 time,
                 window_size: self.window_size,
+
+                scale_factor: self.scale_factor,
                 window,
                 viewport: self.viewport,
                 render_stats: Default::default(),
@@ -336,6 +340,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 input: &self.input,
                 time,
                 window_size: self.window_size,
+
+                scale_factor: self.scale_factor,
                 window,
                 viewport: self.viewport,
                 render_stats,

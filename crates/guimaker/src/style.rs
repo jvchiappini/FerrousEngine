@@ -586,10 +586,12 @@ impl Default for VisualStyle {
 pub struct Anchor {
     /// The index of the sibling the overlay anchors to.
     pub sibling: u16,
-    /// Horizontal offset from the sibling's right edge, in pixels.
+    /// Horizontal offset from the sibling edge, in pixels (the gap).
     pub dx: f32,
-    /// Vertical offset from the sibling's top edge, in pixels.
+    /// Vertical offset from the sibling edge, in pixels (the gap).
     pub dy: f32,
+    /// The preferred side. `Right` keeps the submenu behaviour of phase 6.
+    pub side: crate::overlay::Side,
 }
 
 /// Everything a view can say about one element.
