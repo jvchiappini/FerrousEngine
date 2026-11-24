@@ -42,6 +42,10 @@ pub(crate) struct Runner<A: FerrousApp + 'static> {
     pub(super) scale_factor: f64,
     /// The main window plus owned popups (popup-capable hosts only).
     pub(super) windows: Option<crate::windows::WindowMap>,
+    /// The composite UI atlas, extendable when a frame needs a fallback glyph.
+    pub(super) runtime_font: Option<crate::runtime_font::RuntimeFont>,
+    /// Characters the last frame's text asked for and the atlas lacks.
+    pub(super) glyph_requests: Vec<char>,
     pub(super) viewport: Viewport,
     pub(super) clock: TimeClock,
     pub(super) world: World,
@@ -119,6 +123,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
             window_size: (0, 0),
             scale_factor: 1.0,
             windows: None,
+            runtime_font: None,
+            glyph_requests: Vec::new(),
             clock: TimeClock::new(),
             world: World::new(),
             font: None,

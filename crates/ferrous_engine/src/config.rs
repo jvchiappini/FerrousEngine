@@ -1,7 +1,7 @@
 //! `ferrous.toml` — project-level configuration for FerrousEngine.
 //!
 //! Drop a `ferrous.toml` next to your executable (or at the workspace root
-//! during development) and call [`AppBuilder::with_config_file`] to apply it
+//! during development) and call `AppBuilder::with_config_file` to apply it
 //! before the event loop starts.
 //!
 //! All sections and keys are optional — missing fields fall back to the

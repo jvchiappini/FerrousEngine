@@ -13,7 +13,7 @@ use crate::render_context::RenderContext;
 /// Re-exported from winit so callers don't need a direct winit dependency.
 pub use winit::window::ResizeDirection as WindowResizeDirection;
 
-/// Per-frame context passed to every [`FerrousApp`] callback.
+/// Per-frame context passed to every `FerrousApp` callback.
 ///
 /// `AppContext` bundles together all the read/write access a game or app
 /// typically needs in one place, so method signatures stay simple:
@@ -33,6 +33,15 @@ pub struct AppContext<'a> {
 
     /// Frame timing: delta, elapsed, FPS.
     pub time: Time,
+
+    /// The current UI glyph atlas, so an app can test whether a character is
+    /// drawable before requesting it.
+    pub font: Option<&'a ferrous_assets::Font>,
+
+    /// Characters the frame's text uses that the atlas lacks. The runner
+    /// drains this between `update` and `draw_ui`, re-bakes the composite atlas
+    /// and re-binds it for the same frame.
+    pub glyph_requests: &'a mut Vec<char>,
 
     /// Current window size in physical pixels.
     pub window_size: (u32, u32),
@@ -149,6 +158,24 @@ pub struct AppContext<'a> {
 }
 
 impl<'a> AppContext<'a> {
+    /// Asks the runner to make `text`'s missing characters drawable.
+    ///
+    /// Characters already in the atlas (and whitespace) are ignored, so an
+    /// ASCII-only app never triggers an OS font scan.
+    pub fn request_glyphs(&mut self, text: &str) {
+        let Some(font) = self.font else {
+            return;
+        };
+        for ch in text.chars() {
+            if !ch.is_whitespace()
+                && !font.atlas.metrics.contains_key(&ch)
+                && !self.glyph_requests.contains(&ch)
+            {
+                self.glyph_requests.push(ch);
+            }
+        }
+    }
+
     /// Signal the event loop to shut down after the current frame.
     pub fn request_exit(&mut self) {
         self.exit_requested = true;

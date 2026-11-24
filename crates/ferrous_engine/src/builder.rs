@@ -228,7 +228,7 @@ pub struct AppConfig {
     /// Render quality preset — controls which passes are active and at what
     /// resolution they run.  Defaults to [`RenderQuality::High`].
     ///
-    /// When loaded from `ferrous.toml` via [`AppBuilder::with_config_file`],
+    /// When loaded from `ferrous.toml` via `AppBuilder::with_config_file`,
     /// the quality preset also drives the default MSAA sample count unless
     /// `msaa` is explicitly set in the TOML.
     pub render_quality: RenderQuality,
@@ -576,7 +576,7 @@ impl<A: FerrousApp + 'static> App<A> {
     }
 
     /// Path to a font file to load at startup (optional).
-    /// On wasm32 this is ignored; use [`with_font_bytes`] instead.
+    /// On wasm32 this is ignored; use `with_font_bytes` instead.
     pub fn with_font(mut self, path: &str) -> Self {
         self.config.font_path = Some(path.to_string());
         self

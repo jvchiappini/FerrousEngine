@@ -63,6 +63,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
                             let waker = self.waker.clone();
                             let mut ctx = AppContext {
                                 input: &self.input,
+                                font: self.font.as_deref(),
+                                glyph_requests: &mut self.glyph_requests,
                                 time,
                                 window_size: self.window_size,
 
@@ -235,6 +237,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
             let waker = self.waker.clone();
             let mut ctx = AppContext {
                 input: &self.input,
+                font: self.font.as_deref(),
+                glyph_requests: &mut self.glyph_requests,
                 time,
                 window_size: self.window_size,
 
@@ -300,6 +304,26 @@ impl<A: FerrousApp + 'static> Runner<A> {
             );
         }
 
+        // Runtime lazy fallback: the text of this frame asked for characters the
+        // atlas lacks. Re-bake once, *before* `draw_ui` encodes UVs, so the frame
+        // that is painted matches the atlas it uses.
+        if !self.glyph_requests.is_empty() {
+            let requested = std::mem::take(&mut self.glyph_requests);
+            if let Some(runtime) = self.runtime_font.as_mut() {
+                if runtime.ensure(
+                    &requested,
+                    &gfx.renderer.context.device,
+                    &gfx.renderer.context.queue,
+                ) {
+                    let font = runtime.font().clone();
+                    gfx.renderer
+                        .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
+                    self.font = Some(font);
+                    redraw_request = true;
+                }
+            }
+        }
+
         // ECS → renderer sync and 3-D camera input are active in Game3D mode
         // OR if the renderer has been explicitly switched to Full3D (hybrid mode).
         let dt = time.delta;
@@ -338,6 +362,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
             let waker = self.waker.clone();
             let mut ctx = AppContext {
                 input: &self.input,
+                font: self.font.as_deref(),
+                glyph_requests: &mut self.glyph_requests,
                 time,
                 window_size: self.window_size,
 

@@ -3,10 +3,11 @@
 //! MSDF quality is about texels per em, not about device pixels: at 2x the
 //! glyph and its distance field are both 2x larger on screen, so a fixed 64-texel
 //! cell keeps the same relative edge quality. The measured numbers are in
-//! `docs/decisions/G-0006.md`: at 2.0 the mean coverage error of a 64-texel cell
-//! against an 8x supersampled reference is 0.00057 (Caption) and 0.00060 (Body),
-//! both below one 8-bit step (0.00392). A 128-texel cell costs 4x the GPU bytes
-//! (5.3 -> 21.2 MB) for a gain that the framebuffer cannot show.
+//! `docs/decisions/G-0006.md`: at 2.0 a 128-texel cell changes the mean
+//! coverage error against a true 8x supersampled reference by at most 2.6 %
+//! (and sometimes increases it); the residual is the MSDF reconstruction bias,
+//! common to both cells. A 128 cell costs 4x the GPU bytes (5.3 -> 21.2 MB) for
+//! a mean the framebuffer cannot show.
 //!
 //! The cell therefore stays at [`DEFAULT_GLYPH_SIZE`] unless the **drawn em** is
 //! larger than [`GROW_MULTIPLE`] cells; only then does the distance field lack

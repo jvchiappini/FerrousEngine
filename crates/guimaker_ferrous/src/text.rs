@@ -680,11 +680,14 @@ mod tests {
     }
 
     #[test]
-    fn arabic_is_drawn_in_isolated_visual_order() {
-        // G-0008: no bidi and no GSUB joining yet. This test pins the gap so it
-        // fails the day the shaper learns to join and reorder.
+    fn arabic_has_no_bidi_reordering_and_no_joined_forms() {
+        // G-0008: the logical string "?????" (ta, jeem, reh, beh, ta marbuta) is
+        // drawn in logical order, left to right, with one isolated glyph per
+        // character: no UAX #9 reordering and no GSUB init/medi/fina/isol.
+        // This pins the gap; the day bidi and joining land, the drawn order is
+        // the visual (reversed) order and there are fewer, joined glyphs.
         let mut system = FerrousTextSystem::new();
-        let text = "\u{0629}\u{0628}\u{0631}\u{062C}\u{062A}";
+        let text = "\u{062A}\u{062C}\u{0631}\u{0628}\u{0629}";
         let shape = system.shape(text, style(16.0), None);
         assert_eq!(
             shape.glyphs.len(),
@@ -692,7 +695,12 @@ mod tests {
             "one glyph per character means no joined forms"
         );
         let shaped: String = shape.glyphs.iter().map(|glyph| glyph.ch).collect();
-        assert_eq!(shaped, text, "the string is drawn in the given order");
+        assert_eq!(shaped, text, "the drawn order is the logical order");
+        assert_ne!(
+            shaped,
+            text.chars().rev().collect::<String>(),
+            "no visual (RTL) reordering yet"
+        );
     }
 
     #[test]

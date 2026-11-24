@@ -84,6 +84,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
             let time = self.clock.peek();
             let mut ctx = AppContext {
                 input: &self.input,
+                font: self.font.as_deref(),
+                glyph_requests: &mut self.glyph_requests,
                 time,
                 window_size: size,
                 scale_factor: self.scale_factor,
@@ -134,6 +136,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
             let time = self.clock.peek();
             let mut ctx = AppContext {
                 input: &self.input,
+                font: self.font.as_deref(),
+                glyph_requests: &mut self.glyph_requests,
                 time,
                 window_size: size,
                 window: &window,
@@ -551,6 +555,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
             let time = self.clock.peek();
             let mut ctx = AppContext {
                 input: &self.input,
+                font: self.font.as_deref(),
+                glyph_requests: &mut self.glyph_requests,
                 time,
                 window_size: self.window_size,
 
@@ -619,6 +625,10 @@ impl<A: FerrousApp + 'static> Runner<A> {
                         gfx.renderer
                             .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
                         ferrous_core::startup::mark("engine: fonts ready");
+                        self.runtime_font = Some(crate::runtime_font::RuntimeFont::from_font(
+                            bytes.to_vec(),
+                            font.clone(),
+                        ));
                         self.font = Some(font);
                     }
                 }
@@ -639,6 +649,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
             let (redraw, redraw_at) = {
                 let mut ctx = AppContext {
                     input: &self.input,
+                    font: self.font.as_deref(),
+                    glyph_requests: &mut self.glyph_requests,
                     time,
                     window_size: self.window_size,
 

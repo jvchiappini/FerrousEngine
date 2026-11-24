@@ -324,6 +324,11 @@ impl<A: GuiApp> FerrousApp for GuiHost<A> {
 
         let view = self.app.view();
         self.ui.paint(&view, &mut self.frame, &mut self.text);
+        for command in &self.frame.display_list.commands {
+            if let guimaker::display_list::DrawCommand::Text { run, .. } = command {
+                ctx.request_glyphs(&run.text);
+            }
+        }
         self.push_frame_messages();
 
         if self.ui.animating() {

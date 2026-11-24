@@ -34,6 +34,7 @@ pub mod redraw;
 pub mod render_context;
 pub mod renderer;
 mod runner;
+pub mod runtime_font;
 pub mod screenshot;
 pub mod traits;
 mod window_style;

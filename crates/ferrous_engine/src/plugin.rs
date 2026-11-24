@@ -164,7 +164,7 @@ impl AppBuilder {
         self
     }
 
-    /// Add a plain-function system using the [`IntoSystem`] conversion.
+    /// Add a plain-function system using the `IntoSystem` conversion.
     ///
     /// This is the ergonomic entry point from the roadmap.  The function is
     /// registered in [`Stage::Update`].  If you need a different stage, use
@@ -212,7 +212,7 @@ impl AppBuilder {
 
     /// Start the event loop.  This call blocks until the window is closed.
     ///
-    /// Internally this constructs a [`PluginRunner`][crate::runner::PluginRunner]
+    /// Internally this constructs a `PluginRunner`
     /// and runs it through winit's event loop.
     pub fn run(self) {
         crate::runner::run_plugin_app(self);

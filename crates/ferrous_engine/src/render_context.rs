@@ -443,7 +443,7 @@ impl<'r> RenderContext<'r> {
     /// The current orbit radius of the camera controller.
     ///
     /// Returns the `orbit_distance` stored in the renderer's built-in
-    /// [`OrbitCameraController`](ferrous_renderer::OrbitCameraController).
+    /// `OrbitCameraController`.
     /// Useful for initialising ECS `OrbitCamera` components to match the
     /// renderer state on startup.
     pub fn camera_orbit_distance(&self) -> f32 {

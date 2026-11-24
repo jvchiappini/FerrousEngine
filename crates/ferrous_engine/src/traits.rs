@@ -164,7 +164,7 @@ impl<'a, 'b> DrawContext<'a, 'b> {
 ///
 /// A minimal "hello world" GUI tool needs zero methods and
 /// `App::new(MyTool).with_mode(AppMode::Flat2D).run()`.
-/// A full 3-D game uses the default [`AppMode::Game3D`] and overrides
+/// A full 3-D game uses the default `AppMode::Game3D` and overrides
 /// `setup`, `update`, and optionally `draw_3d`.
 ///
 /// ```rust,ignore
