@@ -322,3 +322,94 @@ fn a_menu_near_the_right_edge_is_hosted_in_a_popup_and_leaves_the_parent_alone()
     );
     assert!(!small_frame.display_list.commands_for(small).is_empty());
 }
+
+#[test]
+fn a_popup_hosted_menu_is_clamped_to_the_monitor_work_area() {
+    // The window sits at an offset on a 1100x600 work area, so the overlay can
+    // leave the window but must stay inside the monitor (minus the taskbar).
+    let work = guimaker::geom::Rect::new(-500.0, -200.0, 1100.0, 600.0);
+    let mut ui: Ui<()> = Ui::new(Theme::dark());
+    ui.set_host_capabilities(guimaker::overlay::HostCapabilities::desktop());
+    ui.set_work_area(Some(work));
+    ui.set_viewport(Size::new(1000.0, 300.0), 1.0);
+    let mut text = MetricsTextSystem::new();
+    let mut frame = Frame::new();
+    ui.paint(&edge_menu(990.0, true), &mut frame, &mut text);
+
+    let menu = ui.tree().find_key("popup_menu").expect("popup menu");
+    assert_eq!(
+        ui.overlay_host(menu),
+        Some(guimaker::overlay::OverlayHost::Popup)
+    );
+    let popup = ui.overlay_popup_rect(menu).expect("popup rect");
+    assert!(
+        popup.x >= work.x && popup.right() <= work.right() + 0.01,
+        "the popup must stay inside the work area horizontally: {popup:?}"
+    );
+    assert!(
+        popup.y >= work.y && popup.bottom() <= work.bottom() + 0.01,
+        "the popup must stay inside the work area vertically: {popup:?}"
+    );
+}
+
+#[test]
+fn hovering_the_main_window_does_not_dirty_an_open_popup() {
+    use glam::Vec2;
+    use guimaker::geom::Rect;
+    use guimaker::input::InputEvent;
+    use guimaker::overlay::Side;
+
+    let view: Element<()> = Element::column()
+        .width(SizeSpec::Fill)
+        .height(SizeSpec::Fill)
+        .child(
+            guimaker::components::button("Hover me", ButtonVariant::Secondary, ()).key("outside"),
+        )
+        .child(
+            Element::overlay()
+                .child(
+                    Element::row()
+                        .key("anchor")
+                        .width(SizeSpec::Px(80.0))
+                        .height(SizeSpec::Px(32.0)),
+                )
+                .child(
+                    Element::column()
+                        .key("menu")
+                        .width(SizeSpec::Px(120.0))
+                        .height(SizeSpec::Px(100.0))
+                        .bg(ColorRole::SurfaceRaised)
+                        .overlay_on(0, Side::Bottom, 4.0),
+                ),
+        );
+
+    let mut ui: Ui<()> = Ui::new(Theme::dark());
+    ui.set_host_capabilities(guimaker::overlay::HostCapabilities::desktop());
+    ui.set_viewport(Size::new(800.0, 600.0), 1.0);
+    let mut text = MetricsTextSystem::new();
+    let mut frame = Frame::new();
+    ui.paint(&view, &mut frame, &mut text);
+    let menu = ui.tree().find_key("menu").expect("menu");
+    let before = ui.overlay_fingerprint(menu);
+    assert!(!ui.overlay_animating(menu), "an idle menu is not animating");
+
+    // Hover the button in the main window: the frame repaints, but the menu's
+    // subtree (its commands and its rect) does not change.
+    let button = ui.tree().find_key("outside").expect("button");
+    let rect: Rect = ui.layout().rect(button);
+    let centre = Vec2::new(rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
+    ui.push_event(InputEvent::PointerMoved { position: centre });
+    let mut second = Frame::new();
+    ui.paint(&view, &mut second, &mut text);
+
+    assert!(
+        second.stats.repainted,
+        "the hover changed the main window's display list"
+    );
+    assert_eq!(
+        before,
+        ui.overlay_fingerprint(menu),
+        "a hover outside the menu leaves the popup fingerprint unchanged (0 popup frames)"
+    );
+    assert!(!ui.overlay_animating(menu));
+}

@@ -13,6 +13,24 @@ use crate::render_context::RenderContext;
 /// Re-exported from winit so callers don't need a direct winit dependency.
 pub use winit::window::ResizeDirection as WindowResizeDirection;
 
+/// The usable area of a monitor, in logical pixels.
+///
+/// [`AppContext::work_area`] returns it relative to the window's client origin
+/// (so `(0, 0)` is the window's top-left corner and the rectangle can be
+/// negative), while [`AppContext::work_area_screen`] returns it in physical
+/// screen pixels. It excludes the taskbar and any other reserved screen area.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WorkArea {
+    /// Left edge.
+    pub x: f32,
+    /// Top edge.
+    pub y: f32,
+    /// Width.
+    pub width: f32,
+    /// Height.
+    pub height: f32,
+}
+
 /// Per-frame context passed to every `FerrousApp` callback.
 ///
 /// `AppContext` bundles together all the read/write access a game or app
@@ -288,6 +306,128 @@ impl<'a> AppContext<'a> {
     #[inline]
     pub fn height(&self) -> u32 {
         self.window_size.1
+    }
+
+    /// The usable area of the monitor the window is on, in window-local logical
+    /// pixels.
+    ///
+    /// This is the work area (`rcWork` on Windows: the monitor minus its
+    /// taskbar and reserved edges), translated so `(0, 0)` is the window's
+    /// client top-left and divided by [`Self::scale_factor`]. A menu hosted in
+    /// a popup window is clamped against it, so the popup stays on screen even
+    /// when the window sits next to an edge.
+    ///
+    /// Falls back to the window's own client rectangle when the platform cannot
+    /// report a monitor (the web, or a headless window).
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // reason: window/monitor pixel geometry fits f32
+    pub fn work_area(&self) -> WorkArea {
+        let scale = self.physical_scale();
+        let Some(screen) = self.work_area_screen_pixels() else {
+            return WorkArea {
+                x: 0.0,
+                y: 0.0,
+                width: self.window_size.0 as f32 / scale as f32,
+                height: self.window_size.1 as f32 / scale as f32,
+            };
+        };
+        let origin = self
+            .window
+            .inner_position()
+            .map_or((0, 0), |position| (position.x, position.y));
+        WorkArea {
+            x: (f64::from(screen.0 - origin.0) / scale) as f32,
+            y: (f64::from(screen.1 - origin.1) / scale) as f32,
+            width: (f64::from(screen.2) / scale) as f32,
+            height: (f64::from(screen.3) / scale) as f32,
+        }
+    }
+
+    /// The monitor work area in physical screen pixels, when the platform can
+    /// report it.
+    ///
+    /// Evidence harnesses compose their own captures against this rectangle and
+    /// assert a popup lies inside it. `None` on the web or a headless window.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)] // reason: monitor pixel coordinates fit f32
+    pub fn work_area_screen(&self) -> Option<WorkArea> {
+        self.work_area_screen_pixels()
+            .map(|(x, y, width, height)| WorkArea {
+                x: x as f32,
+                y: y as f32,
+                width: width as f32,
+                height: height as f32,
+            })
+    }
+
+    /// The window's scale factor, guaranteed finite and positive.
+    ///
+    /// Read from the window itself: the runner's cached value is the last
+    /// `ScaleFactorChanged` factor and is stale for the first frames (a 1.25
+    /// monitor would otherwise report the work area 1.25x too large).
+    fn physical_scale(&self) -> f64 {
+        let scale = self.window.scale_factor();
+        if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        }
+    }
+
+    /// `(x, y, width, height)` of the work area in physical screen pixels.
+    #[cfg(target_os = "windows")]
+    fn work_area_screen_pixels(&self) -> Option<(i32, i32, i32, i32)> {
+        use windows_sys::Win32::Graphics::Gdi::{
+            GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+        };
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+        let handle = self.window.window_handle().ok()?;
+        let RawWindowHandle::Win32(win32) = handle.as_raw() else {
+            return None;
+        };
+        let hwnd = win32.hwnd.get() as *mut core::ffi::c_void;
+        // SAFETY: `hwnd` is the live window; Windows returns the nearest monitor
+        // for an invalid handle instead of failing.
+        let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+        if monitor.is_null() {
+            return None;
+        }
+        let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        // SAFETY: `monitor` is a live `HMONITOR` and `info` describes a
+        // correctly sized `MONITORINFO`.
+        if unsafe { GetMonitorInfoW(monitor, &mut info) } == 0 {
+            return None;
+        }
+        let work = info.rcWork;
+        Some((
+            work.left,
+            work.top,
+            work.right - work.left,
+            work.bottom - work.top,
+        ))
+    }
+
+    /// `(x, y, width, height)` of the current monitor in physical screen pixels.
+    #[cfg(not(target_os = "windows"))]
+    fn work_area_screen_pixels(&self) -> Option<(i32, i32, i32, i32)> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            None
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let monitor = self.window.current_monitor()?;
+            let position = monitor.position();
+            let size = monitor.size();
+            Some((
+                position.x,
+                position.y,
+                i32::try_from(size.width).ok()?,
+                i32::try_from(size.height).ok()?,
+            ))
+        }
     }
 
     /// Move the OS window so that its top-left corner is at `(x, y)` in

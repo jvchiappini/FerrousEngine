@@ -762,6 +762,22 @@ impl<A: FerrousApp + 'static> Runner<A> {
         #[cfg(not(target_arch = "wasm32"))]
         self.drain_popups(event_loop);
 
+        // An evidence capture asked for by the app reads back our own popup
+        // surfaces; each armed popup presents once more and delivers its frame.
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.popups.take_capture_request() {
+            let handles = self
+                .windows
+                .as_mut()
+                .map(crate::windows::WindowMap::arm_capture)
+                .unwrap_or_default();
+            for handle in handles {
+                if let Some(windows) = self.windows.as_ref() {
+                    windows.backend().request_redraw(handle);
+                }
+            }
+        }
+
         let Some(window) = &self.window else { return };
         let now = Instant::now();
 

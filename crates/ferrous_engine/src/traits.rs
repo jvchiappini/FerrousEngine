@@ -66,6 +66,24 @@ impl FileDropEvent {
     }
 }
 
+/// A popup frame read back for evidence: its own surface, its screen rect.
+///
+/// Delivered by [`FerrousApp::on_popup_screenshot`] after the popup presents the
+/// frame requested with [`crate::windows::PopupQueue::capture_all`]. The pixels
+/// are premultiplied when the popup is transparent, so a host that composes
+/// them must blend over its own background instead of touching the screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PopupCapture {
+    /// Which popup this is.
+    pub popup: crate::windows::PopupId,
+    /// Top-left in physical screen pixels.
+    pub position: (i32, i32),
+    /// Physical size of the frame.
+    pub size: (u32, u32),
+    /// The pixels, RGBA8.
+    pub screenshot: crate::screenshot::Screenshot,
+}
+
 /// Aggregates all mutable drawing resources passed to [`FerrousApp::draw_ui`].
 pub struct DrawContext<'a, 'b> {
     pub gui: &'a mut GuiBatch,
@@ -291,6 +309,16 @@ pub trait FerrousApp {
     /// when the surface cannot be copied (the runner logs a warning instead).
     fn on_screenshot(&mut self, screenshot: Screenshot) {
         let _ = screenshot;
+    }
+
+    /// Receives one popup's presented frame after
+    /// [`crate::windows::PopupQueue::capture_all`].
+    ///
+    /// The pixels come from the popup's own swapchain, never from the desktop,
+    /// so evidence never contains another application's content. Compose them
+    /// over your own background at [`PopupCapture::position`].
+    fn on_popup_screenshot(&mut self, capture: crate::traits::PopupCapture) {
+        let _ = capture;
     }
 
     /// Called for every raw winit `WindowEvent` (after it has been processed

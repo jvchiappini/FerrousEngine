@@ -140,6 +140,10 @@ pub struct LayoutEngine {
     parent_directions: Vec<Option<Direction>>,
     has_responsive: bool,
     host_capabilities: crate::overlay::HostCapabilities,
+    /// The monitor work area in window-local logical pixels, when the host
+    /// reports one. A popup-hosted overlay is solved against it; an in-window
+    /// overlay still clamps to the viewport.
+    work_area: Option<Rect>,
     overlay_hosts: Vec<(NodeId, crate::overlay::OverlayHost, Rect)>,
     stats: LayoutStats,
 }
@@ -180,6 +184,7 @@ impl LayoutEngine {
             parent_directions: Vec::new(),
             has_responsive: false,
             host_capabilities: crate::overlay::HostCapabilities::default(),
+            work_area: None,
             overlay_hosts: Vec::new(),
             stats: LayoutStats::default(),
         }
@@ -197,6 +202,20 @@ impl LayoutEngine {
     /// Sets what the host can do with overlays that do not fit.
     pub fn set_host_capabilities(&mut self, capabilities: crate::overlay::HostCapabilities) {
         self.host_capabilities = capabilities;
+    }
+
+    /// Sets the monitor work area, in window-local logical pixels.
+    ///
+    /// A popup-hosted overlay is flipped, shifted and clamped against this
+    /// rectangle (the monitor minus its taskbar), so a menu next to a screen
+    /// edge stays fully on screen. `None` falls back to the window viewport.
+    pub fn set_work_area(&mut self, work_area: Option<Rect>) -> bool {
+        if self.work_area == work_area {
+            return false;
+        }
+        self.work_area = work_area;
+        self.viewport_dirty = true;
+        true
     }
 
     /// Where the layout decided to host the anchored overlay at `node`.
@@ -798,42 +817,44 @@ impl LayoutEngine {
                         .copied()
                         .unwrap_or(Rect::ZERO);
                     // A pure solver decides the side, the flip, the shift and
-                    // the internal scroll. The gap is applied after the solve
-                    // so the flip anchors on the sibling's opposite edge.
-                    let work_area = Rect::new(0.0, 0.0, self.viewport.width, self.viewport.height);
-                    let placement = crate::overlay::place(
-                        sibling_rect,
-                        anchor.side,
-                        Size::new(rect.width, rect.height),
-                        work_area,
-                    );
-                    rect = placement.rect;
+                    // the internal scroll. The window viewport decides whether
+                    // the overlay fits in the window; a popup is then solved
+                    // and clamped against the monitor work area instead, so it
+                    // may extend past the window but never past the screen.
+                    let window_area =
+                        Rect::new(0.0, 0.0, self.viewport.width, self.viewport.height);
+                    let content = Size::new(rect.width, rect.height);
+                    let window_placement =
+                        crate::overlay::place(sibling_rect, anchor.side, content, window_area);
+                    let host = window_placement.hosted_in(window_area, self.host_capabilities);
+                    let area = if host == crate::overlay::OverlayHost::Popup {
+                        self.work_area.unwrap_or(window_area)
+                    } else {
+                        window_area
+                    };
+                    let placement = if host == crate::overlay::OverlayHost::Popup {
+                        crate::overlay::place(sibling_rect, anchor.side, content, area)
+                    } else {
+                        window_placement
+                    };
                     let gap = if placement.side.is_horizontal() {
                         anchor.dx
                     } else {
                         anchor.dy
                     };
-                    let mut popup_rect = placement.preferred;
+                    let mut target = placement.rect;
                     match placement.side {
-                        crate::overlay::Side::Right => popup_rect.x += gap,
-                        crate::overlay::Side::Left => popup_rect.x -= gap,
-                        crate::overlay::Side::Bottom => popup_rect.y += gap,
-                        crate::overlay::Side::Top => popup_rect.y -= gap,
+                        crate::overlay::Side::Right => target.x += gap,
+                        crate::overlay::Side::Left => target.x -= gap,
+                        crate::overlay::Side::Bottom => target.y += gap,
+                        crate::overlay::Side::Top => target.y -= gap,
                     }
-                    match placement.side {
-                        crate::overlay::Side::Right => rect.x += gap,
-                        crate::overlay::Side::Left => rect.x -= gap,
-                        crate::overlay::Side::Bottom => rect.y += gap,
-                        crate::overlay::Side::Top => rect.y -= gap,
-                    }
-                    let host = placement.hosted_in(work_area, self.host_capabilities);
-                    // A popup-hosted overlay lives at its unclamped screen
-                    // rect, so a click translated back into window coordinates
-                    // hit-tests exactly where the user sees it.
-                    if host == crate::overlay::OverlayHost::Popup {
-                        rect = popup_rect;
-                    }
-                    self.overlay_hosts.push((id, host, popup_rect));
+                    // The gap is applied after the solve so the flip anchors on
+                    // the sibling's opposite edge; re-clamp in case it pushed
+                    // the overlay past the area edge.
+                    target = clamp_within(target, area);
+                    rect = target;
+                    self.overlay_hosts.push((id, host, target));
                 }
             }
         }
@@ -907,6 +928,19 @@ struct Counters {
     reused: usize,
     measure_calls: usize,
 }
+/// Clamps `rect` inside `area` on both axes, keeping its size.
+fn clamp_within(mut rect: Rect, area: Rect) -> Rect {
+    if area.width > 0.0 {
+        let max_x = (area.x + area.width - rect.width).max(area.x);
+        rect.x = rect.x.clamp(area.x, max_x);
+    }
+    if area.height > 0.0 {
+        let max_y = (area.y + area.height - rect.height).max(area.y);
+        rect.y = rect.y.clamp(area.y, max_y);
+    }
+    rect
+}
+
 fn taffy_style(
     kind: NodeKind,
     style: &ResolvedStyle,

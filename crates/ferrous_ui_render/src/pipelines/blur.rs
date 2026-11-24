@@ -6,6 +6,17 @@
 //! Both pipelines share the same bind group layout (source texture, sampler,
 //! parameters) and the same fullscreen vertex entry point.
 
+/// Builds the shader module shared by the downsample and Gaussian pipelines.
+#[must_use]
+pub(crate) fn blur_shader(device: &wgpu::Device) -> wgpu::ShaderModule {
+    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("GUI Backdrop Blur Shader"),
+        source: wgpu::ShaderSource::Wgsl(
+            include_str!("../../../../assets/shaders/backdrop_blur.wgsl").into(),
+        ),
+    })
+}
+
 /// Builds the fullscreen box-downsample pipeline for `format`.
 #[must_use]
 pub fn create_downsample_pipeline(
@@ -14,12 +25,30 @@ pub fn create_downsample_pipeline(
     pipeline_layout: &wgpu::PipelineLayout,
     cache: Option<&wgpu::PipelineCache>,
 ) -> wgpu::RenderPipeline {
+    create_downsample_pipeline_with_shader(
+        device,
+        format,
+        pipeline_layout,
+        cache,
+        &blur_shader(device),
+    )
+}
+
+/// [`create_downsample_pipeline`] reusing an already-created shader module.
+#[must_use]
+pub fn create_downsample_pipeline_with_shader(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    pipeline_layout: &wgpu::PipelineLayout,
+    cache: Option<&wgpu::PipelineCache>,
+    shader: &wgpu::ShaderModule,
+) -> wgpu::RenderPipeline {
     create_pipeline(
         device,
         format,
         pipeline_layout,
         cache,
-        "GUI Backdrop Downsample Shader",
+        shader,
         "GUI Backdrop Downsample Pipeline",
         "fs_downsample",
     )
@@ -33,12 +62,24 @@ pub fn create_blur_pipeline(
     pipeline_layout: &wgpu::PipelineLayout,
     cache: Option<&wgpu::PipelineCache>,
 ) -> wgpu::RenderPipeline {
+    create_blur_pipeline_with_shader(device, format, pipeline_layout, cache, &blur_shader(device))
+}
+
+/// [`create_blur_pipeline`] reusing an already-created shader module.
+#[must_use]
+pub fn create_blur_pipeline_with_shader(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    pipeline_layout: &wgpu::PipelineLayout,
+    cache: Option<&wgpu::PipelineCache>,
+    shader: &wgpu::ShaderModule,
+) -> wgpu::RenderPipeline {
     create_pipeline(
         device,
         format,
         pipeline_layout,
         cache,
-        "GUI Backdrop Blur Shader",
+        shader,
         "GUI Backdrop Blur Pipeline",
         "fs_blur",
     )
@@ -49,28 +90,21 @@ fn create_pipeline(
     format: wgpu::TextureFormat,
     pipeline_layout: &wgpu::PipelineLayout,
     cache: Option<&wgpu::PipelineCache>,
-    shader_label: &str,
+    shader: &wgpu::ShaderModule,
     pipeline_label: &str,
     fragment_entry: &str,
 ) -> wgpu::RenderPipeline {
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some(shader_label),
-        source: wgpu::ShaderSource::Wgsl(
-            include_str!("../../../../assets/shaders/backdrop_blur.wgsl").into(),
-        ),
-    });
-
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(pipeline_label),
         layout: Some(pipeline_layout),
         vertex: wgpu::VertexState {
-            module: &shader,
+            module: shader,
             entry_point: Some("vs_main"),
             buffers: &[],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         fragment: Some(wgpu::FragmentState {
-            module: &shader,
+            module: shader,
             entry_point: Some(fragment_entry),
             targets: &[Some(wgpu::ColorTargetState {
                 format,

@@ -69,7 +69,7 @@ use guimaker::input::shortcut::ShortcutKey;
 use guimaker::input::{InputEvent, Modifiers, PointerButton, ScrollKind};
 use guimaker::overlay::HostCapabilities;
 use guimaker::theme::Theme;
-use guimaker::view::{Element, NodeId};
+use guimaker::view::Element;
 use guimaker::{Frame, Ui};
 use guimaker_ferrous::{FerrousTextSystem, GuiMakerRenderer};
 
@@ -102,6 +102,18 @@ pub trait GuiApp {
     /// the host opening the window to that frame. An evidence harness records
     /// these; the default ignores them.
     fn on_popup_frame(&mut self, _frames: u64, _first_frame_ms: Option<f64>) {}
+
+    /// Receives one popup's own presented pixels after
+    /// [`ferrous_engine::windows::PopupQueue::capture_all`].
+    ///
+    /// The frame is read back from the popup's swapchain, never from the
+    /// desktop. Default ignores it.
+    fn on_popup_screenshot(&mut self, _capture: ferrous_engine::traits::PopupCapture) {}
+
+    /// Receives the main window's requested screenshot.
+    ///
+    /// Default ignores it.
+    fn on_screenshot(&mut self, _screenshot: ferrous_engine::Screenshot) {}
 
     /// Called once per host frame with the engine context.
     ///
@@ -155,18 +167,27 @@ pub struct GuiHost<A: GuiApp> {
     popups: Vec<HostPopup>,
     /// How many popups have been opened since the run started.
     popup_opens: u64,
+    /// When the last user gesture that can open an overlay arrived, so the
+    /// time-to-first-frame is measured from the input, not from the open.
+    last_input_at: Option<std::time::Instant>,
 }
 
 /// One popup the host opened for a popup-hosted overlay.
 struct HostPopup {
     popup: PopupId,
-    node: NodeId,
+    /// The overlay's stable path hash (its identity across tree rebuilds).
+    path: u64,
     /// Logical position of the popup's top-left in main-window coordinates.
     origin: Vec2,
     /// Physical size the popup was last given.
     size: (u32, u32),
     /// Physical position the popup was last shown at.
     position: (i32, i32),
+    /// The DPI factor of the popup's own window (it can differ from the main
+    /// window's when the popup sits on another monitor).
+    scale: f32,
+    /// Fingerprint of the overlay's painted subtree and geometry.
+    fingerprint: u64,
     /// Whether the popup is currently shown.
     shown: bool,
     /// When the host asked for it (the time-to-first-frame clock).
@@ -181,13 +202,18 @@ struct HostPopup {
 
 /// One popup as this frame's painter planned it.
 struct PopupPlan {
-    node: NodeId,
+    /// The overlay's stable path hash.
+    path: u64,
     /// Logical top-left in main-window coordinates.
     origin: Vec2,
     /// Physical size.
     size: (u32, u32),
     /// Physical screen position.
     position: (i32, i32),
+    /// The overlay subtree's content+geometry fingerprint.
+    fingerprint: u64,
+    /// Whether an animation inside the overlay is running.
+    animating: bool,
 }
 
 /// Popup evidence collected by a [`GuiHost`].
@@ -222,6 +248,7 @@ impl<A: GuiApp> GuiHost<A> {
             popup_renderer: GuiMakerRenderer::new(),
             popups: Vec::new(),
             popup_opens: 0,
+            last_input_at: None,
         }
     }
 
@@ -286,7 +313,7 @@ impl<A: GuiApp> GuiHost<A> {
                 .frame
                 .popups
                 .iter()
-                .filter(|batch| self.popups.iter().any(|popup| popup.node == batch.node))
+                .filter(|batch| self.popups.iter().any(|popup| popup.path == batch.path))
                 .count(),
         }
     }
@@ -299,51 +326,66 @@ impl<A: GuiApp> GuiHost<A> {
     /// and returned to the pool.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // reason: rect money is clamped above
     fn sync_popups(&mut self, ctx: &mut AppContext<'_>) {
-        let scale = f64::from(self.scale);
+        let main_scale = self.scale;
         let window_origin = ctx
             .window
             .inner_position()
             .map_or((0, 0), |position| (position.x, position.y));
-        let repaint = self.frame.stats.repainted || self.ui.animating();
-        let plan: Vec<PopupPlan> = self
-            .frame
-            .popups
-            .iter()
-            .map(|batch| {
-                let width = (f64::from(batch.rect.width) * scale).round().max(1.0);
-                let height = (f64::from(batch.rect.height) * scale).round().max(1.0);
-                PopupPlan {
-                    node: batch.node,
-                    origin: Vec2::new(batch.rect.x, batch.rect.y),
-                    size: (width as u32, height as u32),
-                    position: (
-                        window_origin.0 + (f64::from(batch.rect.x) * scale).round() as i32,
-                        window_origin.1 + (f64::from(batch.rect.y) * scale).round() as i32,
-                    ),
-                }
-            })
-            .collect();
+        let input_at = self.last_input_at.unwrap_or_else(std::time::Instant::now);
+        let mut plan: Vec<PopupPlan> = Vec::new();
+        for batch in &self.frame.popups {
+            // A popup redraws only when its own content, size or position
+            // changed, or one of its own animations is running. A hover in the
+            // main window leaves this fingerprint untouched.
+            let fingerprint = self.ui.overlay_fingerprint(batch.node);
+            let animating = self.ui.overlay_animating(batch.node);
+            // A popup uses its own monitor's DPI, learned from its window; the
+            // first frame uses the main window's factor for one frame.
+            let scale = self
+                .popups
+                .iter()
+                .find(|popup| popup.path == batch.path)
+                .map_or(main_scale, |popup| popup.scale);
+            let width = (batch.rect.width * scale).round().max(1.0);
+            let height = (batch.rect.height * scale).round().max(1.0);
+            plan.push(PopupPlan {
+                path: batch.path,
+                origin: Vec2::new(batch.rect.x, batch.rect.y),
+                size: (width as u32, height as u32),
+                position: (
+                    window_origin.0 + (batch.rect.x * scale).round() as i32,
+                    window_origin.1 + (batch.rect.y * scale).round() as i32,
+                ),
+                fingerprint,
+                animating,
+            });
+        }
 
         // A popup whose overlay is no longer popup-hosted (or is gone) hides.
         for host in &mut self.popups {
-            if !plan.iter().any(|entry| entry.node == host.node) && host.shown {
+            if !plan.iter().any(|entry| entry.path == host.path) && host.shown {
                 ctx.popups.hide(host.popup);
                 host.shown = false;
             }
         }
 
         for PopupPlan {
-            node,
+            path,
             origin,
             size,
             position,
+            fingerprint,
+            animating,
         } in plan
         {
-            if let Some(host) = self.popups.iter_mut().find(|popup| popup.node == node) {
+            if let Some(host) = self.popups.iter_mut().find(|popup| popup.path == path) {
+                let mut dirty = animating || host.fingerprint != fingerprint;
                 host.origin = origin;
+                host.fingerprint = fingerprint;
                 if host.size != size {
                     ctx.popups.resize(host.popup, size);
                     host.size = size;
+                    dirty = true;
                 }
                 // Only touch the window when it moved or was hidden, so an
                 // idle, unchanged popup produces no commands at all.
@@ -353,13 +395,15 @@ impl<A: GuiApp> GuiHost<A> {
                     host.position = position;
                     // A re-shown popup is the pooled case: its own
                     // time-to-first-frame starts now.
-                    host.opened_at = std::time::Instant::now();
+                    host.opened_at = input_at;
                     host.first_frame = false;
+                    dirty = true;
                 } else if host.position != position {
                     ctx.popups.show(host.popup, position);
                     host.position = position;
+                    dirty = true;
                 }
-                if repaint {
+                if dirty {
                     ctx.popups.redraw(host.popup);
                 }
             } else {
@@ -373,12 +417,14 @@ impl<A: GuiApp> GuiHost<A> {
                 self.popup_opens += 1;
                 self.popups.push(HostPopup {
                     popup,
-                    node,
+                    path,
                     origin,
                     size,
                     position,
+                    scale: main_scale,
+                    fingerprint,
                     shown: true,
-                    opened_at: std::time::Instant::now(),
+                    opened_at: input_at,
                     first_frame: false,
                     first_frame_ms: None,
                     frames: 0,
@@ -393,6 +439,18 @@ impl<A: GuiApp> GuiHost<A> {
             self.scale = scale;
             self.ui.set_viewport(viewport, scale);
         }
+    }
+
+    /// Passes the monitor work area to the layout, in window-local logical
+    /// pixels, so a popup-hosted overlay never leaves the screen.
+    fn apply_work_area(&mut self, ctx: &AppContext<'_>) {
+        let area = ctx.work_area();
+        self.ui.set_work_area(Some(guimaker::geom::Rect::new(
+            area.x,
+            area.y,
+            area.width,
+            area.height,
+        )));
     }
 
     fn apply_theme(&mut self) {
@@ -517,6 +575,7 @@ impl<A: GuiApp> FerrousApp for GuiHost<A> {
         let scale = window_scale(ctx);
         let viewport = logical_size(ctx, scale);
         self.apply_grid(viewport, scale);
+        self.apply_work_area(ctx);
         self.ui.set_host_capabilities(self.app.capabilities());
         self.apply_theme();
     }
@@ -525,6 +584,7 @@ impl<A: GuiApp> FerrousApp for GuiHost<A> {
         let scale = window_scale(ctx);
         let viewport = logical_size(ctx, scale);
         self.apply_grid(viewport, scale);
+        self.apply_work_area(ctx);
         self.apply_theme();
 
         let now_ms = self.app.time_ms().unwrap_or(ctx.time.elapsed * 1000.0);
@@ -572,15 +632,25 @@ impl<A: GuiApp> FerrousApp for GuiHost<A> {
         }
     }
 
+    #[allow(clippy::cast_possible_truncation)] // reason: a window scale factor is finite and small
     fn draw_popup(&mut self, popup: PopupId, dc: &mut DrawContext<'_, '_>) {
+        // The popup's own DPI, not the main window's: a menu on a second
+        // monitor must size its text for that monitor.
+        let popup_scale = dc.ctx.scale_factor as f32;
+        let scale = if popup_scale.is_finite() && popup_scale > 0.0 {
+            popup_scale
+        } else {
+            self.scale
+        };
         let Some(host) = self.popups.iter_mut().find(|host| host.popup == popup) else {
             return;
         };
+        host.scale = scale;
         let Some(batch) = self
             .frame
             .popups
             .iter()
-            .find(|batch| batch.node == host.node)
+            .find(|batch| batch.path == host.path)
         else {
             return;
         };
@@ -592,7 +662,7 @@ impl<A: GuiApp> FerrousApp for GuiHost<A> {
         }
         let viewport = Size::new(batch.rect.width, batch.rect.height);
         self.popup_renderer
-            .encode_commands(&commands, viewport, self.scale, dc.gui, dc.font);
+            .encode_commands(&commands, viewport, scale, dc.gui, dc.font);
 
         host.frames += 1;
         let first_frame_ms = if host.first_frame {
@@ -608,6 +678,14 @@ impl<A: GuiApp> FerrousApp for GuiHost<A> {
     }
 
     fn on_popup_event(&mut self, popup: PopupId, event: &WindowEvent, ctx: &mut AppContext<'_>) {
+        let gesture = match event {
+            WindowEvent::MouseInput { state, .. } => *state == ElementState::Pressed,
+            WindowEvent::KeyboardInput { event, .. } => event.state == ElementState::Pressed,
+            _ => false,
+        };
+        if gesture {
+            self.last_input_at = Some(std::time::Instant::now());
+        }
         let Some(origin) = self
             .popups
             .iter()
@@ -634,6 +712,14 @@ impl<A: GuiApp> FerrousApp for GuiHost<A> {
         ctx.request_redraw();
     }
 
+    fn on_popup_screenshot(&mut self, capture: ferrous_engine::traits::PopupCapture) {
+        self.app.on_popup_screenshot(capture);
+    }
+
+    fn on_screenshot(&mut self, screenshot: ferrous_engine::Screenshot) {
+        self.app.on_screenshot(screenshot);
+    }
+
     fn on_exit(&mut self) {
         let stats = self.popup_stats();
         eprintln!(
@@ -650,6 +736,16 @@ impl<A: GuiApp> FerrousApp for GuiHost<A> {
     }
 
     fn on_window_event(&mut self, event: &WindowEvent, ctx: &mut AppContext<'_>) {
+        // Remember when a gesture that can open an overlay arrived: the
+        // evidence clock starts there, not at the window creation.
+        let gesture = match event {
+            WindowEvent::MouseInput { state, .. } => *state == ElementState::Pressed,
+            WindowEvent::KeyboardInput { event, .. } => event.state == ElementState::Pressed,
+            _ => false,
+        };
+        if gesture {
+            self.last_input_at = Some(std::time::Instant::now());
+        }
         if let WindowEvent::KeyboardInput { event: key, .. } = event {
             if is_overlay_toggle(key.state, &key.logical_key) {
                 self.overlay.enabled = !self.overlay.enabled;

@@ -6,17 +6,19 @@
 use crate::gpu_types::{GuiQuad, TextQuad};
 use crate::gui_batch::GuiBatch;
 use crate::pipelines::{
-    blur::{create_blur_pipeline, create_downsample_pipeline},
-    id::create_id_pipeline,
+    blur::{create_blur_pipeline_with_shader, create_downsample_pipeline_with_shader},
+    id::create_id_pipeline_with_shader,
     layout::Layouts,
-    overdraw::{create_overdraw_pipeline, create_overdraw_text_pipeline},
-    quad::create_quad_pipeline,
-    text::create_text_pipeline,
+    overdraw::{create_overdraw_pipeline_with_shader, create_overdraw_text_pipeline_with_shader},
+    quad::create_quad_pipeline_with_shader,
+    shaders::GuiShaders,
+    svg::create_svg_pipeline_with_shader,
+    text::create_text_pipeline_with_shader,
 };
 use ferrous_core::memory::{self, Subsystem};
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use wgpu::util::DeviceExt;
 
 /// Size of one per-segment uniform: clip rect, radii and params (three vec4s).
@@ -192,17 +194,20 @@ struct PassBindState {
 /// Main UI rendering engine on the GPU.
 pub struct GuiRenderer {
     pub device: Arc<wgpu::Device>,
-    pub layouts: Layouts,
-    pub opaque_pipeline: wgpu::RenderPipeline,
-    pub transparent_pipeline: wgpu::RenderPipeline,
-    pub text_pipeline: wgpu::RenderPipeline,
-    pub svg_pipeline: wgpu::RenderPipeline,
-    pub id_pipeline: wgpu::RenderPipeline,
+    pub layouts: Arc<Layouts>,
+    /// The WGSL modules behind every pipeline in this renderer.  A popup clones
+    /// them instead of re-parsing the same source (Phase 8E).
+    pub shaders: GuiShaders,
+    pub opaque_pipeline: Arc<wgpu::RenderPipeline>,
+    pub transparent_pipeline: Arc<wgpu::RenderPipeline>,
+    pub text_pipeline: Arc<wgpu::RenderPipeline>,
+    pub svg_pipeline: Arc<wgpu::RenderPipeline>,
+    pub id_pipeline: Arc<wgpu::RenderPipeline>,
     /// Diagnostic pipelines that add a fixed heat colour per fragment instead
     /// of the normal shading (prompt 18 P5).  Never selected unless
     /// [`Self::set_overdraw`] enables the view.
-    pub overdraw_quad_pipeline: wgpu::RenderPipeline,
-    pub overdraw_text_pipeline: wgpu::RenderPipeline,
+    pub overdraw_quad_pipeline: Arc<wgpu::RenderPipeline>,
+    pub overdraw_text_pipeline: Arc<wgpu::RenderPipeline>,
     /// Runtime toggle for the overdraw debug view.
     overdraw_enabled: bool,
 
@@ -265,6 +270,24 @@ pub struct GuiRenderer {
     /// `wgpu::Features::PIPELINE_CACHE`.
     pipeline_cache: Option<Arc<wgpu::PipelineCache>>,
 
+    /// The sampler the dummy image bind group binds while no texture is set.
+    /// Stored so a sharing popup clones it instead of creating another one.
+    dummy_sampler: Arc<wgpu::Sampler>,
+
+    /// Whether this renderer publishes its buffers in the process-wide
+    /// `ferrous_core::memory` inventory.  The main renderer does; a popup does
+    /// not (the engine registers it per popup under `Subsystem::Popups`), so a
+    /// popup can never overwrite the main renderer's `gui:*` sizes.
+    register_memory: bool,
+
+    /// Identity of the pipeline set this renderer binds; shared by every
+    /// renderer that reuses the same `wgpu::RenderPipeline`s.
+    pipeline_set_id: u64,
+
+    /// This renderer is the registry's sharing source for its device (only the
+    /// first `GuiRenderer::new` per device is).
+    shared_source: bool,
+
     // Per-frame instrumentation (atomics: `render_with_timestamps` takes
     // `&self`).
     counters_passes: AtomicU32,
@@ -275,7 +298,7 @@ pub struct GuiRenderer {
     counters_bind_group_binds: AtomicU32,
     counters_buffer_binds: AtomicU32,
 
-    // ── Per-segment rounded clip + backdrop blur ──────────────────────────
+    // -- Per-segment rounded clip + backdrop blur ------------------------------
     /// Stride between per-segment uniforms (device dynamic-offset alignment).
     segment_stride: u64,
     /// Number of uniform slots the segment buffer can hold.
@@ -289,14 +312,14 @@ pub struct GuiRenderer {
     segment_bytes: Vec<u8>,
     /// The 1x1 placeholder texture used when no backdrop is bound.
     dummy_backdrop_texture: wgpu::Texture,
-    backdrop_sampler: wgpu::Sampler,
+    backdrop_sampler: Arc<wgpu::Sampler>,
     /// The texture currently bound at group 2 binding 1.
     backdrop_view: wgpu::TextureView,
     backdrop: BackdropState,
     backdrop_size: [u32; 2],
     backdrop_format: wgpu::TextureFormat,
-    blur_pipeline: wgpu::RenderPipeline,
-    downsample_pipeline: wgpu::RenderPipeline,
+    blur_pipeline: Arc<wgpu::RenderPipeline>,
+    downsample_pipeline: Arc<wgpu::RenderPipeline>,
     /// Level 1..=BACKDROP_MAX_LEVEL of the 2x prefilter chain. Views keep their
     /// textures alive; the texture handles are not stored.
     downsample_views: Vec<wgpu::TextureView>,
@@ -323,6 +346,197 @@ struct BackdropState {
     this_frame: bool,
 }
 
+/// One complete GUI pipeline set for a `(format, sample_count, depth)` target.
+///
+/// All handles are `Clone` (`Arc`-backed), so a popup can take a snapshot of the
+/// main renderer's set and bind the exact same GPU pipelines (Phase 8E).
+#[derive(Clone)]
+struct Pipelines {
+    opaque: Arc<wgpu::RenderPipeline>,
+    transparent: Arc<wgpu::RenderPipeline>,
+    text: Arc<wgpu::RenderPipeline>,
+    svg: Arc<wgpu::RenderPipeline>,
+    id: Arc<wgpu::RenderPipeline>,
+    overdraw_quad: Arc<wgpu::RenderPipeline>,
+    overdraw_text: Arc<wgpu::RenderPipeline>,
+    blur: Arc<wgpu::RenderPipeline>,
+    downsample: Arc<wgpu::RenderPipeline>,
+}
+
+impl Pipelines {
+    /// Builds every pipeline from already-created layouts and shader modules.
+    fn build(
+        device: &wgpu::Device,
+        layouts: &Layouts,
+        shaders: &GuiShaders,
+        format: wgpu::TextureFormat,
+        sample_count: u32,
+        ui_depth: bool,
+        pipeline_cache: Option<&wgpu::PipelineCache>,
+    ) -> Self {
+        let cache = pipeline_cache;
+        let depth_format = if ui_depth {
+            Some(wgpu::TextureFormat::Depth32Float)
+        } else {
+            None
+        };
+        Self {
+            opaque: Arc::new(create_quad_pipeline_with_shader(
+                device,
+                format,
+                &layouts.quad_pipeline_layout,
+                sample_count,
+                true,
+                depth_format,
+                cache,
+                &shaders.quad,
+            )),
+            transparent: Arc::new(create_quad_pipeline_with_shader(
+                device,
+                format,
+                &layouts.quad_pipeline_layout,
+                sample_count,
+                false,
+                depth_format,
+                cache,
+                &shaders.quad,
+            )),
+            text: Arc::new(create_text_pipeline_with_shader(
+                device,
+                format,
+                &layouts.text_pipeline_layout,
+                sample_count,
+                false,
+                depth_format,
+                cache,
+                &shaders.text,
+            )),
+            svg: Arc::new(create_svg_pipeline_with_shader(
+                device,
+                format,
+                &layouts.quad_pipeline_layout,
+                sample_count,
+                depth_format,
+                cache,
+                &shaders.svg,
+            )),
+            id: Arc::new(create_id_pipeline_with_shader(
+                device,
+                &layouts.quad_pipeline_layout,
+                cache,
+                &shaders.id,
+            )),
+            overdraw_quad: Arc::new(create_overdraw_pipeline_with_shader(
+                device,
+                format,
+                &layouts.quad_pipeline_layout,
+                sample_count,
+                depth_format,
+                cache,
+                &shaders.overdraw,
+            )),
+            overdraw_text: Arc::new(create_overdraw_text_pipeline_with_shader(
+                device,
+                format,
+                &layouts.text_pipeline_layout,
+                sample_count,
+                depth_format,
+                cache,
+                &shaders.overdraw,
+            )),
+            blur: Arc::new(create_blur_pipeline_with_shader(
+                device,
+                format,
+                &layouts.blur_pipeline_layout,
+                cache,
+                &shaders.blur,
+            )),
+            downsample: Arc::new(create_downsample_pipeline_with_shader(
+                device,
+                format,
+                &layouts.blur_pipeline_layout,
+                cache,
+                &shaders.blur,
+            )),
+        }
+    }
+}
+
+/// A publishable copy of a renderer's shared GPU objects.
+///
+/// A popup clones this snapshot (cheap `Arc` increments) and reuses the layouts,
+/// shader modules, pipelines and samplers.  Only the pipelines are conditional
+/// on an exact target match; the layouts, shaders and samplers are
+/// format-independent.
+#[derive(Clone)]
+struct SharedGui {
+    device: Weak<wgpu::Device>,
+    format: wgpu::TextureFormat,
+    sample_count: u32,
+    ui_depth: bool,
+    pipeline_set_id: u64,
+    layouts: Arc<Layouts>,
+    shaders: GuiShaders,
+    pipelines: Pipelines,
+    dummy_sampler: Arc<wgpu::Sampler>,
+    backdrop_sampler: Arc<wgpu::Sampler>,
+    pipeline_cache: Option<Arc<wgpu::PipelineCache>>,
+}
+
+fn shared_registry() -> &'static Mutex<Vec<SharedGui>> {
+    static REGISTRY: OnceLock<Mutex<Vec<SharedGui>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn lock_shared() -> std::sync::MutexGuard<'static, Vec<SharedGui>> {
+    shared_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The first `GuiRenderer::new` on a device publishes itself here, so a popup
+/// created later can share its GPU objects without the engine having to thread
+/// a `&GuiRenderer` through the window map.
+///
+/// Preference is an exact `(format, sample_count)` match (pipelines reusable);
+/// otherwise any live renderer on the same device is returned so the layouts,
+/// shader modules and samplers - all format-independent - are still reused. A
+/// popup that presents in sRGB while the main UI renders into HDR falls in this
+/// second case: it shares everything except the pipelines themselves.
+fn lookup_shared(
+    device: &Arc<wgpu::Device>,
+    format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> Option<SharedGui> {
+    let pointer = Arc::as_ptr(device);
+    let mut registry = lock_shared();
+    registry.retain(|entry| entry.device.strong_count() > 0);
+    let same_device = |entry: &SharedGui| entry.device.as_ptr() == pointer;
+    registry
+        .iter()
+        .find(|entry| {
+            same_device(entry) && entry.format == format && entry.sample_count == sample_count
+        })
+        .or_else(|| registry.iter().find(|entry| same_device(entry)))
+        .cloned()
+}
+
+static NEXT_PIPELINE_SET: AtomicU32 = AtomicU32::new(1);
+
+fn next_pipeline_set_id() -> u64 {
+    u64::from(NEXT_PIPELINE_SET.fetch_add(1, Ordering::Relaxed))
+}
+
+impl Drop for GuiRenderer {
+    fn drop(&mut self) {
+        if !self.shared_source {
+            return;
+        }
+        let pointer = Arc::as_ptr(&self.device);
+        lock_shared().retain(|entry| entry.device.as_ptr() != pointer);
+    }
+}
+
 impl GuiRenderer {
     pub fn new(
         device: Arc<wgpu::Device>,
@@ -335,7 +549,262 @@ impl GuiRenderer {
     ) -> Self {
         #[cfg(feature = "text")]
         install_memory_inventory();
-        let layouts = Layouts::new(&device);
+        let mut renderer = Self::construct(
+            device,
+            format,
+            max_instances,
+            width,
+            height,
+            sample_count,
+            pipeline_cache,
+            true,
+            true,
+            None,
+        );
+        renderer.register_shared_source();
+        renderer
+    }
+
+    /// Builds a popup renderer from `main`'s already-compiled GPU objects.
+    ///
+    /// When `format` and `sample_count` match the main renderer's, the popup
+    /// binds the same pipelines (and adopts the main renderer's depth
+    /// attachment contract), so it only allocates its own per-popup buffers and
+    /// bind groups.  A mismatched target creates fresh pipelines from the shared
+    /// shader modules and pipeline layouts.
+    ///
+    /// The popup does **not** register its buffers in the global GUI memory
+    /// inventory: the engine registers them per popup under
+    /// [`Subsystem::Popups`].
+    #[must_use]
+    pub fn new_sharing(
+        main: &GuiRenderer,
+        device: Arc<wgpu::Device>,
+        format: wgpu::TextureFormat,
+        max_instances: u32,
+        width: u32,
+        height: u32,
+        sample_count: u32,
+    ) -> Self {
+        #[cfg(feature = "text")]
+        install_memory_inventory();
+        let ui_depth = main.ui_depth;
+        Self::construct(
+            device,
+            format,
+            max_instances,
+            width,
+            height,
+            sample_count,
+            main.pipeline_cache.clone(),
+            ui_depth,
+            false,
+            Some(main.snapshot_shared()),
+        )
+    }
+
+    /// [`Self::new_sharing`] using the process-wide main renderer registry.
+    ///
+    /// This is the constructor the engine uses: a popup is created from the
+    /// renderer's `about_to_wait` drain, which has no borrow of the main
+    /// `GuiRenderer` (it lives inside `UiPass`).  When no live renderer is
+    /// published for the device, it falls back to a private pipeline set with
+    /// the popup's historical contract (no depth attachment).
+    ///
+    /// Note on the real engine: its main UI renderer targets HDR
+    /// (`Rgba16Float`, MSAA) while a popup presents sRGB at 1 sample, so the
+    /// pipeline sets do not match.  The popup still reuses the main renderer's
+    /// layouts, shader modules and samplers, but builds its own pipelines once;
+    /// reusing the main pipelines would require rendering the popup through an
+    /// HDR offscreen target before presenting (a `ferrous_renderer` change).
+    #[must_use]
+    pub fn new_sharing_global(
+        device: Arc<wgpu::Device>,
+        format: wgpu::TextureFormat,
+        max_instances: u32,
+        width: u32,
+        height: u32,
+        sample_count: u32,
+        pipeline_cache: Option<Arc<wgpu::PipelineCache>>,
+    ) -> Self {
+        #[cfg(feature = "text")]
+        install_memory_inventory();
+        match lookup_shared(&device, format, sample_count) {
+            Some(shared) => {
+                let ui_depth = shared.ui_depth;
+                let cache = shared.pipeline_cache.clone().or(pipeline_cache);
+                Self::construct(
+                    device,
+                    format,
+                    max_instances,
+                    width,
+                    height,
+                    sample_count,
+                    cache,
+                    ui_depth,
+                    false,
+                    Some(shared),
+                )
+            }
+            None => Self::construct(
+                device,
+                format,
+                max_instances,
+                width,
+                height,
+                sample_count,
+                pipeline_cache,
+                false,
+                false,
+                None,
+            ),
+        }
+    }
+
+    /// The identity of the pipeline set this renderer binds.
+    ///
+    /// Two renderers that share pipelines report the same non-zero id; a
+    /// renderer that built its own set gets a fresh one.
+    #[must_use]
+    pub fn pipeline_set_id(&self) -> u64 {
+        self.pipeline_set_id
+    }
+
+    /// Whether `self` and `other` bind the same pipeline set on the same device.
+    #[must_use]
+    pub fn shares_pipelines_with(&self, other: &GuiRenderer) -> bool {
+        self.pipeline_set_id != 0
+            && self.pipeline_set_id == other.pipeline_set_id
+            && Arc::ptr_eq(&self.device, &other.device)
+    }
+
+    fn snapshot_shared(&self) -> SharedGui {
+        SharedGui {
+            device: Arc::downgrade(&self.device),
+            format: self.format,
+            sample_count: self.sample_count,
+            ui_depth: self.ui_depth,
+            pipeline_set_id: self.pipeline_set_id,
+            layouts: self.layouts.clone(),
+            shaders: self.shaders.clone(),
+            pipelines: Pipelines {
+                opaque: self.opaque_pipeline.clone(),
+                transparent: self.transparent_pipeline.clone(),
+                text: self.text_pipeline.clone(),
+                svg: self.svg_pipeline.clone(),
+                id: self.id_pipeline.clone(),
+                overdraw_quad: self.overdraw_quad_pipeline.clone(),
+                overdraw_text: self.overdraw_text_pipeline.clone(),
+                blur: self.blur_pipeline.clone(),
+                downsample: self.downsample_pipeline.clone(),
+            },
+            dummy_sampler: self.dummy_sampler.clone(),
+            backdrop_sampler: self.backdrop_sampler.clone(),
+            pipeline_cache: self.pipeline_cache.clone(),
+        }
+    }
+
+    fn register_shared_source(&mut self) {
+        let pointer = Arc::as_ptr(&self.device);
+        let mut registry = lock_shared();
+        registry.retain(|entry| entry.device.strong_count() > 0);
+        if registry
+            .iter()
+            .any(|entry| entry.device.as_ptr() == pointer)
+        {
+            return;
+        }
+        registry.push(self.snapshot_shared());
+        drop(registry);
+        self.shared_source = true;
+    }
+
+    fn refresh_shared_source(&self) {
+        if !self.shared_source {
+            return;
+        }
+        let pointer = Arc::as_ptr(&self.device);
+        let mut registry = lock_shared();
+        registry.retain(|entry| entry.device.strong_count() > 0);
+        let snapshot = self.snapshot_shared();
+        if let Some(slot) = registry
+            .iter_mut()
+            .find(|entry| entry.device.as_ptr() == pointer)
+        {
+            *slot = snapshot;
+        } else {
+            registry.push(snapshot);
+        }
+    }
+
+    /// The one constructor; `new` and the sharing constructors differ only in
+    /// which objects they reuse and whether they publish memory.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    fn construct(
+        device: Arc<wgpu::Device>,
+        format: wgpu::TextureFormat,
+        max_instances: u32,
+        width: u32,
+        height: u32,
+        sample_count: u32,
+        pipeline_cache: Option<Arc<wgpu::PipelineCache>>,
+        ui_depth: bool,
+        register_memory: bool,
+        share: Option<SharedGui>,
+    ) -> Self {
+        // Never share across devices: a pipeline belongs to the device that
+        // compiled it.
+        let share = share.filter(|shared| shared.device.as_ptr() == Arc::as_ptr(&device));
+        let (layouts, shaders, dummy_sampler, backdrop_sampler) = match &share {
+            Some(shared) => (
+                shared.layouts.clone(),
+                shared.shaders.clone(),
+                shared.dummy_sampler.clone(),
+                shared.backdrop_sampler.clone(),
+            ),
+            None => (
+                Arc::new(Layouts::new(&device)),
+                GuiShaders::new(&device),
+                Arc::new(device.create_sampler(&wgpu::SamplerDescriptor {
+                    label: Some("GUI Dummy Sampler"),
+                    mag_filter: wgpu::FilterMode::Nearest,
+                    min_filter: wgpu::FilterMode::Nearest,
+                    ..Default::default()
+                })),
+                Arc::new(device.create_sampler(&wgpu::SamplerDescriptor {
+                    label: Some("GUI Backdrop Sampler"),
+                    mag_filter: wgpu::FilterMode::Linear,
+                    min_filter: wgpu::FilterMode::Linear,
+                    address_mode_u: wgpu::AddressMode::ClampToEdge,
+                    address_mode_v: wgpu::AddressMode::ClampToEdge,
+                    address_mode_w: wgpu::AddressMode::ClampToEdge,
+                    ..Default::default()
+                })),
+            ),
+        };
+
+        let reuse_pipelines = share.as_ref().is_some_and(|shared| {
+            shared.format == format
+                && shared.sample_count == sample_count
+                && shared.ui_depth == ui_depth
+        });
+        let (pipelines, pipeline_set_id) = if reuse_pipelines {
+            let shared = share.as_ref().expect("checked above");
+            (shared.pipelines.clone(), shared.pipeline_set_id)
+        } else {
+            (
+                Pipelines::build(
+                    &device,
+                    &layouts,
+                    &shaders,
+                    format,
+                    sample_count,
+                    ui_depth,
+                    pipeline_cache.as_deref(),
+                ),
+                next_pipeline_set_id(),
+            )
+        };
 
         // Standard buffers
         let vertices: &[f32] = &[0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0];
@@ -406,18 +875,13 @@ impl GuiRenderer {
             view_formats: &[],
         });
         let dummy_view = dummy_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let dummy_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("GUI Dummy Sampler"),
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            ..Default::default()
-        });
         #[cfg(not(target_arch = "wasm32"))]
         let dummy_views: Vec<&wgpu::TextureView> =
             std::iter::repeat_n(&dummy_view, crate::MAX_TEXTURE_SLOTS as usize).collect();
         #[cfg(not(target_arch = "wasm32"))]
         let dummy_samplers: Vec<&wgpu::Sampler> =
-            std::iter::repeat_n(&dummy_sampler, crate::MAX_TEXTURE_SLOTS as usize).collect();
+            std::iter::repeat_n(dummy_sampler.as_ref(), crate::MAX_TEXTURE_SLOTS as usize)
+                .collect();
 
         #[cfg(not(target_arch = "wasm32"))]
         let image_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -455,80 +919,14 @@ impl GuiRenderer {
             })
         };
 
-        // Pipelines
-        let cache = pipeline_cache.as_deref();
-        let depth_format = Some(wgpu::TextureFormat::Depth32Float);
-        let opaque_pipeline = create_quad_pipeline(
-            &device,
-            format,
-            &layouts.quad_pipeline_layout,
-            sample_count,
-            true,
-            depth_format,
-            cache,
-        );
-        let transparent_pipeline = create_quad_pipeline(
-            &device,
-            format,
-            &layouts.quad_pipeline_layout,
-            sample_count,
-            false,
-            depth_format,
-            cache,
-        );
-        let text_pipeline = create_text_pipeline(
-            &device,
-            format,
-            &layouts.text_pipeline_layout,
-            sample_count,
-            false,
-            depth_format,
-            cache,
-        );
-        let svg_pipeline = crate::pipelines::svg::create_svg_pipeline(
-            &device,
-            format,
-            &layouts.quad_pipeline_layout,
-            sample_count,
-            depth_format,
-            cache,
-        );
-        let id_pipeline = create_id_pipeline(&device, &layouts.quad_pipeline_layout, cache);
-        let overdraw_quad_pipeline = create_overdraw_pipeline(
-            &device,
-            format,
-            &layouts.quad_pipeline_layout,
-            sample_count,
-            depth_format,
-            cache,
-        );
-        let overdraw_text_pipeline = create_overdraw_text_pipeline(
-            &device,
-            format,
-            &layouts.text_pipeline_layout,
-            sample_count,
-            depth_format,
-            cache,
-        );
-
-        // Depth Buffer for Early-Z
-        let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("GUI Depth Texture"),
-            size: wgpu::Extent3d {
-                width: width.max(1),
-                height: height.max(1),
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Depth32Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
-        let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let depth_texture = Some(depth_texture);
-        let depth_view = Some(depth_view);
+        // Depth Buffer for Early-Z. A disabled (`ui_depth == false`) pass
+        // allocates nothing.
+        let (depth_texture, depth_view) = if ui_depth {
+            let (texture, view) = Self::create_depth_target(&device, width, height, sample_count);
+            (Some(texture), Some(view))
+        } else {
+            (None, None)
+        };
 
         // ID Buffer: only the 4-byte staging target is created eagerly.  The
         // full-size `R32Uint` texture is allocated by `ensure_id_target` on the
@@ -555,33 +953,37 @@ impl GuiRenderer {
             mapped_at_creation: false,
         });
 
-        memory::register_gpu("gui:quad vertices", vertex_buffer.size(), Subsystem::Gui);
-        memory::register_gpu("gui:quad indices", index_buffer.size(), Subsystem::Gui);
-        memory::register_gpu(
-            "gui:instance instances",
-            instance_buffer.size(),
-            Subsystem::Gui,
-        );
-        memory::register_gpu(
-            "gui:text instances",
-            text_instance_buffer.size(),
-            Subsystem::Gui,
-        );
-        memory::register_gpu(
-            "gui:icon instances",
-            icon_instance_buffer.size(),
-            Subsystem::Gui,
-        );
-        memory::register_gpu("gui:uniform", uniform_buffer.size(), Subsystem::Gui);
-        memory::register_gpu("gui:dummy texture", 4, Subsystem::Gui);
-        memory::register_gpu(
-            "gui:depth texture",
-            Self::depth_texture_bytes(width, height, sample_count),
-            Subsystem::Gui,
-        );
-        memory::register_gpu("gui:id staging", id_staging_buffer.size(), Subsystem::Gui);
-        memory::register_gpu("gui:svg vertices", svg_vertex_buffer.size(), Subsystem::Gui);
-        memory::register_gpu("gui:svg indices", svg_index_buffer.size(), Subsystem::Gui);
+        if register_memory {
+            memory::register_gpu("gui:quad vertices", vertex_buffer.size(), Subsystem::Gui);
+            memory::register_gpu("gui:quad indices", index_buffer.size(), Subsystem::Gui);
+            memory::register_gpu(
+                "gui:instance instances",
+                instance_buffer.size(),
+                Subsystem::Gui,
+            );
+            memory::register_gpu(
+                "gui:text instances",
+                text_instance_buffer.size(),
+                Subsystem::Gui,
+            );
+            memory::register_gpu(
+                "gui:icon instances",
+                icon_instance_buffer.size(),
+                Subsystem::Gui,
+            );
+            memory::register_gpu("gui:uniform", uniform_buffer.size(), Subsystem::Gui);
+            memory::register_gpu("gui:dummy texture", 4, Subsystem::Gui);
+            if ui_depth {
+                memory::register_gpu(
+                    "gui:depth texture",
+                    Self::depth_texture_bytes(width, height, sample_count),
+                    Subsystem::Gui,
+                );
+            }
+            memory::register_gpu("gui:id staging", id_staging_buffer.size(), Subsystem::Gui);
+            memory::register_gpu("gui:svg vertices", svg_vertex_buffer.size(), Subsystem::Gui);
+            memory::register_gpu("gui:svg indices", svg_index_buffer.size(), Subsystem::Gui);
+        }
 
         // Per-segment clip uniforms and the backdrop blur plumbing.
         let segment_stride = Self::segment_stride(&device);
@@ -612,15 +1014,6 @@ impl GuiRenderer {
         // backdrop arrives (texture views are not cloneable in wgpu 23).
         let backdrop_view =
             dummy_backdrop_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let backdrop_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("GUI Backdrop Sampler"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            ..Default::default()
-        });
         let segment_bind_group = Self::create_segment_bind_group(
             &device,
             &layouts.segment_layout,
@@ -640,37 +1033,28 @@ impl GuiRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let blur_pipeline = create_blur_pipeline(
-            &device,
-            format,
-            &layouts.blur_pipeline_layout,
-            pipeline_cache.as_deref(),
-        );
-        let downsample_pipeline = create_downsample_pipeline(
-            &device,
-            format,
-            &layouts.blur_pipeline_layout,
-            pipeline_cache.as_deref(),
-        );
         let downsample_params = Self::create_downsample_params(&device);
         let downsample_views = Vec::new();
         let downsample_bind_groups = Vec::new();
-        memory::register_gpu(
-            "gui:segment uniforms",
-            segment_buffer.size(),
-            Subsystem::Gui,
-        );
+        if register_memory {
+            memory::register_gpu(
+                "gui:segment uniforms",
+                segment_buffer.size(),
+                Subsystem::Gui,
+            );
+        }
 
         Self {
             device,
             layouts,
-            opaque_pipeline,
-            transparent_pipeline,
-            text_pipeline,
-            svg_pipeline,
-            id_pipeline,
-            overdraw_quad_pipeline,
-            overdraw_text_pipeline,
+            shaders,
+            opaque_pipeline: pipelines.opaque,
+            transparent_pipeline: pipelines.transparent,
+            text_pipeline: pipelines.text,
+            svg_pipeline: pipelines.svg,
+            id_pipeline: pipelines.id,
+            overdraw_quad_pipeline: pipelines.overdraw_quad,
+            overdraw_text_pipeline: pipelines.overdraw_text,
             overdraw_enabled: false,
             vertex_buffer,
             index_buffer,
@@ -697,13 +1081,16 @@ impl GuiRenderer {
             resolution,
             depth_texture,
             depth_view,
-            ui_depth: true,
+            ui_depth,
             id_texture: None,
             id_view: None,
             id_staging_buffer,
             format,
             sample_count,
             pipeline_cache,
+            register_memory,
+            pipeline_set_id,
+            shared_source: false,
             counters_passes: AtomicU32::new(0),
             counters_segments: AtomicU32::new(0),
             counters_scissor_changes: AtomicU32::new(0),
@@ -718,13 +1105,14 @@ impl GuiRenderer {
             segment_scratch: Vec::new(),
             segment_bytes: Vec::new(),
             dummy_backdrop_texture,
+            dummy_sampler,
             backdrop_sampler,
             backdrop_view,
             backdrop: BackdropState::default(),
             backdrop_size: [0, 0],
             backdrop_format: format,
-            blur_pipeline,
-            downsample_pipeline,
+            blur_pipeline: pipelines.blur,
+            downsample_pipeline: pipelines.downsample,
             downsample_views,
             downsample_bind_groups,
             downsample_params,
@@ -765,6 +1153,22 @@ impl GuiRenderer {
         self.svg_max_vertices = vertices;
         self.svg_max_indices = vertices;
         self
+    }
+
+    /// Bytes held by this renderer's own buffers, split the way a popup's
+    /// `memory-report` line reports them.
+    ///
+    /// Returns `(instances, svg)`: the quad/text/icon instance buffers and the
+    /// SVG vertex/index scratch.  Created with `1024` instances and a `4096`
+    /// vertex SVG capacity these are `1024 * (sizeof GuiQuad + 2 * sizeof
+    /// TextQuad)` and `4096 * (sizeof SvgVertex + 4)`.
+    #[must_use]
+    pub fn popup_buffer_bytes(&self) -> (u64, u64) {
+        let instances = self.instance_buffer.size()
+            + self.text_instance_buffer.size()
+            + self.icon_instance_buffer.size();
+        let svg = self.svg_vertex_buffer.size() + self.svg_index_buffer.size();
+        (instances, svg)
     }
 
     /// Dynamic-offset stride: the device alignment rounded up to the uniform
@@ -1038,15 +1442,19 @@ impl GuiRenderer {
                 Self::create_depth_target(&self.device, width, height, self.sample_count);
             self.depth_texture = Some(texture);
             self.depth_view = Some(view);
-            memory::register_gpu(
-                "gui:depth texture",
-                Self::depth_texture_bytes(width, height, self.sample_count),
-                Subsystem::Gui,
-            );
+            if self.register_memory {
+                memory::register_gpu(
+                    "gui:depth texture",
+                    Self::depth_texture_bytes(width, height, self.sample_count),
+                    Subsystem::Gui,
+                );
+            }
         } else {
             self.depth_texture = None;
             self.depth_view = None;
-            memory::unregister_gpu("gui:depth texture", Subsystem::Gui);
+            if self.register_memory {
+                memory::unregister_gpu("gui:depth texture", Subsystem::Gui);
+            }
         }
         // The pipelines declare the depth attachment format, so they must be
         // rebuilt for the new pass layout.
@@ -1092,75 +1500,27 @@ impl GuiRenderer {
             format,
             sample_count
         );
-        let cache = self.pipeline_cache.as_deref();
-        let depth_format = if self.ui_depth {
-            Some(wgpu::TextureFormat::Depth32Float)
-        } else {
-            None
-        };
-        self.opaque_pipeline = create_quad_pipeline(
+        let pipelines = Pipelines::build(
             &self.device,
+            &self.layouts,
+            &self.shaders,
             format,
-            &self.layouts.quad_pipeline_layout,
             sample_count,
-            true,
-            depth_format,
-            cache,
+            self.ui_depth,
+            self.pipeline_cache.as_deref(),
         );
-        self.transparent_pipeline = create_quad_pipeline(
-            &self.device,
-            format,
-            &self.layouts.quad_pipeline_layout,
-            sample_count,
-            false,
-            depth_format,
-            cache,
-        );
-        self.text_pipeline = create_text_pipeline(
-            &self.device,
-            format,
-            &self.layouts.text_pipeline_layout,
-            sample_count,
-            false,
-            depth_format,
-            cache,
-        );
-        self.svg_pipeline = crate::pipelines::svg::create_svg_pipeline(
-            &self.device,
-            format,
-            &self.layouts.quad_pipeline_layout,
-            sample_count,
-            depth_format,
-            cache,
-        );
-        self.overdraw_quad_pipeline = create_overdraw_pipeline(
-            &self.device,
-            format,
-            &self.layouts.quad_pipeline_layout,
-            sample_count,
-            depth_format,
-            cache,
-        );
-        self.overdraw_text_pipeline = create_overdraw_text_pipeline(
-            &self.device,
-            format,
-            &self.layouts.text_pipeline_layout,
-            sample_count,
-            depth_format,
-            cache,
-        );
-        self.blur_pipeline = create_blur_pipeline(
-            &self.device,
-            format,
-            &self.layouts.blur_pipeline_layout,
-            cache,
-        );
-        self.downsample_pipeline = create_downsample_pipeline(
-            &self.device,
-            format,
-            &self.layouts.blur_pipeline_layout,
-            cache,
-        );
+        self.pipeline_set_id = next_pipeline_set_id();
+        self.opaque_pipeline = pipelines.opaque;
+        self.transparent_pipeline = pipelines.transparent;
+        self.text_pipeline = pipelines.text;
+        self.svg_pipeline = pipelines.svg;
+        self.id_pipeline = pipelines.id;
+        self.overdraw_quad_pipeline = pipelines.overdraw_quad;
+        self.overdraw_text_pipeline = pipelines.overdraw_text;
+        self.blur_pipeline = pipelines.blur;
+        self.downsample_pipeline = pipelines.downsample;
+        // A rebuilt set is no longer the one a sharing popup cloned.
+        self.refresh_shared_source();
         // The blur targets use the color format; drop them so the next
         // `set_backdrop_source` recreates them at the new format.
         self.clear_backdrop_targets();
@@ -1210,15 +1570,19 @@ impl GuiRenderer {
                 Self::create_depth_target(&self.device, width, height, sample_count);
             self.depth_view = Some(depth_view);
             self.depth_texture = Some(depth_texture);
-            memory::register_gpu(
-                "gui:depth texture",
-                Self::depth_texture_bytes(width, height, sample_count),
-                Subsystem::Gui,
-            );
+            if self.register_memory {
+                memory::register_gpu(
+                    "gui:depth texture",
+                    Self::depth_texture_bytes(width, height, sample_count),
+                    Subsystem::Gui,
+                );
+            }
         } else {
             self.depth_view = None;
             self.depth_texture = None;
-            memory::unregister_gpu("gui:depth texture", Subsystem::Gui);
+            if self.register_memory {
+                memory::unregister_gpu("gui:depth texture", Subsystem::Gui);
+            }
         }
 
         // Resize ID only when the target exists: it is lazy and must not be
@@ -1228,17 +1592,19 @@ impl GuiRenderer {
             self.id_view = None;
             self.id_texture = None;
             let (id_texture, id_view) = Self::create_id_target(&self.device, width, height);
-            memory::register_gpu(
-                "gui:id texture",
-                Self::id_texture_bytes(width, height),
-                Subsystem::Gui,
-            );
+            if self.register_memory {
+                memory::register_gpu(
+                    "gui:id texture",
+                    Self::id_texture_bytes(width, height),
+                    Subsystem::Gui,
+                );
+            }
             self.id_texture = Some(id_texture);
             self.id_view = Some(id_view);
         }
     }
 
-    /// Bytes of the full-size GUI depth texture for `width × height` at
+    /// Bytes of the full-size GUI depth texture for `width x height` at
     /// `sample_count` samples (`Depth32Float` = 4 bytes per texel).
     fn depth_texture_bytes(width: u32, height: u32, sample_count: u32) -> u64 {
         u64::from(width.max(1)) * u64::from(height.max(1)) * 4 * u64::from(sample_count)
@@ -1316,11 +1682,13 @@ impl GuiRenderer {
         self.id_view = None;
         self.id_texture = None;
         let (id_texture, id_view) = Self::create_id_target(&self.device, width, height);
-        memory::register_gpu(
-            "gui:id texture",
-            Self::id_texture_bytes(width, height),
-            Subsystem::Gui,
-        );
+        if self.register_memory {
+            memory::register_gpu(
+                "gui:id texture",
+                Self::id_texture_bytes(width, height),
+                Subsystem::Gui,
+            );
+        }
         self.id_texture = Some(id_texture);
         self.id_view = Some(id_view);
     }
@@ -1388,11 +1756,13 @@ impl GuiRenderer {
                     usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
-                memory::register_gpu(
-                    "gui:instance instances",
-                    self.instance_buffer.size(),
-                    Subsystem::Gui,
-                );
+                if self.register_memory {
+                    memory::register_gpu(
+                        "gui:instance instances",
+                        self.instance_buffer.size(),
+                        Subsystem::Gui,
+                    );
+                }
                 self.max_instances = new_max;
             }
             queue.write_buffer(&self.instance_buffer, 0, bytes);
@@ -1409,11 +1779,13 @@ impl GuiRenderer {
                     usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
-                memory::register_gpu(
-                    "gui:text instances",
-                    self.text_instance_buffer.size(),
-                    Subsystem::Gui,
-                );
+                if self.register_memory {
+                    memory::register_gpu(
+                        "gui:text instances",
+                        self.text_instance_buffer.size(),
+                        Subsystem::Gui,
+                    );
+                }
                 self.text_max_instances = new_max;
             }
             queue.write_buffer(&self.text_instance_buffer, 0, bytes);
@@ -1430,11 +1802,13 @@ impl GuiRenderer {
                     usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
-                memory::register_gpu(
-                    "gui:icon instances",
-                    self.icon_instance_buffer.size(),
-                    Subsystem::Gui,
-                );
+                if self.register_memory {
+                    memory::register_gpu(
+                        "gui:icon instances",
+                        self.icon_instance_buffer.size(),
+                        Subsystem::Gui,
+                    );
+                }
                 self.icon_max_instances = new_max;
             }
             queue.write_buffer(&self.icon_instance_buffer, 0, bytes);
@@ -1541,11 +1915,13 @@ impl GuiRenderer {
                     usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
-                memory::register_gpu(
-                    "gui:svg vertices",
-                    self.svg_vertex_buffer.size(),
-                    Subsystem::Gui,
-                );
+                if self.register_memory {
+                    memory::register_gpu(
+                        "gui:svg vertices",
+                        self.svg_vertex_buffer.size(),
+                        Subsystem::Gui,
+                    );
+                }
                 self.svg_max_vertices = new_max;
             }
             if self.svg_scratch_indices.len() as u32 > self.svg_max_indices {
@@ -1558,11 +1934,13 @@ impl GuiRenderer {
                     usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
-                memory::register_gpu(
-                    "gui:svg indices",
-                    self.svg_index_buffer.size(),
-                    Subsystem::Gui,
-                );
+                if self.register_memory {
+                    memory::register_gpu(
+                        "gui:svg indices",
+                        self.svg_index_buffer.size(),
+                        Subsystem::Gui,
+                    );
+                }
                 self.svg_max_indices = new_max;
             }
 
@@ -1594,11 +1972,13 @@ impl GuiRenderer {
             mapped_at_creation: false,
         });
         self.segment_capacity = capacity;
-        memory::register_gpu(
-            "gui:segment uniforms",
-            self.segment_buffer.size(),
-            Subsystem::Gui,
-        );
+        if self.register_memory {
+            memory::register_gpu(
+                "gui:segment uniforms",
+                self.segment_buffer.size(),
+                Subsystem::Gui,
+            );
+        }
         self.rebuild_segment_bind_group();
     }
 
@@ -2298,8 +2678,94 @@ impl GuiRenderer {
         // For editor tools (GUIMaker), 1-frame latency is acceptable.
         let _receiver = self.read_pixel_id(encoder, x, y, batch);
         // El encoder debe enviarse antes de recibir.
-        // Como no tenemos el control del submit aquí, asumimos que se llamará después.
-        // En una implementación perfecta, esto se divide.
+        // Since we do not control the submit, assume the caller records it later.
+        // A perfect implementation splits this; kept linear for clarity.
         0 // Placeholder: El usuario debe llamar a fetch_pixel_id tras el submit.
+    }
+}
+
+#[cfg(test)]
+mod sharing_tests {
+    use super::GuiRenderer;
+    use std::sync::Arc;
+
+    /// Minimal executor: wgpu's request calls need a waker, and this crate has
+    /// no async test harness (the GPU tests live in `ferrous_renderer/tests`).
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        use std::task::{Context, Poll, Waker};
+
+        let mut context = Context::from_waker(Waker::noop());
+        let mut future = Box::pin(future);
+        loop {
+            match future.as_mut().poll(&mut context) {
+                Poll::Ready(value) => return value,
+                Poll::Pending => std::thread::yield_now(),
+            }
+        }
+    }
+
+    fn test_device() -> Option<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        });
+        let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))?;
+        // The GUI image bind group needs a texture-array binding; request it the
+        // way `ferrous_gpu::EngineContext` does.
+        let required_features = adapter.features()
+            & (wgpu::Features::TEXTURE_BINDING_ARRAY
+                | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING);
+        let descriptor = wgpu::DeviceDescriptor {
+            required_features,
+            ..Default::default()
+        };
+        let (device, queue) = block_on(adapter.request_device(&descriptor, None)).ok()?;
+        Some((Arc::new(device), Arc::new(queue)))
+    }
+
+    /// Serializes the GPU-sharing tests inside this crate (one adapter at a
+    /// time).  The `ferrous_renderer` GPU tests use their own crate lock.
+    fn gpu_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[test]
+    fn new_sharing_reuses_the_main_pipeline_set_only_when_the_target_matches() {
+        let _guard = gpu_lock();
+        let Some((device, _queue)) = test_device() else {
+            eprintln!("skip: no GPU adapter available");
+            return;
+        };
+        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let main = GuiRenderer::new(device.clone(), format, 64, 320, 200, 1, None);
+
+        let popup = GuiRenderer::new_sharing(&main, device.clone(), format, 64, 320, 200, 1);
+        assert!(
+            popup.shares_pipelines_with(&main),
+            "a matching popup must bind the main renderer's pipelines"
+        );
+        assert_eq!(popup.pipeline_set_id(), main.pipeline_set_id());
+
+        let wrong_samples =
+            GuiRenderer::new_sharing(&main, device.clone(), format, 64, 320, 200, 4);
+        assert!(
+            !wrong_samples.shares_pipelines_with(&main),
+            "a different sample count must build a fresh pipeline set"
+        );
+
+        let wrong_format = GuiRenderer::new_sharing(
+            &main,
+            device.clone(),
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+            64,
+            320,
+            200,
+            1,
+        );
+        assert!(
+            !wrong_format.shares_pipelines_with(&main),
+            "a different target format must build a fresh pipeline set"
+        );
     }
 }

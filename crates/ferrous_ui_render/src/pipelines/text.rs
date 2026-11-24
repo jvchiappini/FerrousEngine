@@ -9,6 +9,22 @@ const _: () = {
     assert!(std::mem::offset_of!(TextQuad, node_id) == 52);
 };
 
+/// Builds the text shader module (MSDF helpers + rounded clip + glyph body).
+#[must_use]
+pub(crate) fn text_shader(device: &wgpu::Device) -> wgpu::ShaderModule {
+    // The MSDF decode helpers are shared with the Pure2D text shader.  They are
+    // prepended as one WGSL module; the GUI module keeps only its bindings and
+    // entry points.
+    const SHARED_MSDF: &str = include_str!("../../../../assets/shaders/msdf_common.wgsl");
+    const CLIP: &str = include_str!("../../../../assets/shaders/gui_clip_common.wgsl");
+    const GUI_TEXT: &str = include_str!("../../../../assets/shaders/text.wgsl");
+    let source = format!("{SHARED_MSDF}\n{CLIP}\n{GUI_TEXT}");
+    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("GUI Text Shader"),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    })
+}
+
 pub fn create_text_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
@@ -18,25 +34,37 @@ pub fn create_text_pipeline(
     depth_format: Option<wgpu::TextureFormat>,
     cache: Option<&wgpu::PipelineCache>,
 ) -> RenderPipeline {
-    // The MSDF decode helpers are shared with the Pure2D text shader.  They are
-    // prepended as one WGSL module; the GUI module keeps only its bindings and
-    // entry points.
-    const SHARED_MSDF: &str = include_str!("../../../../assets/shaders/msdf_common.wgsl");
-    const CLIP: &str = include_str!("../../../../assets/shaders/gui_clip_common.wgsl");
-    const GUI_TEXT: &str = include_str!("../../../../assets/shaders/text.wgsl");
-    let source = format!("{SHARED_MSDF}\n{CLIP}\n{GUI_TEXT}");
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("GUI Text Shader"),
-        source: wgpu::ShaderSource::Wgsl(source.into()),
-    });
+    create_text_pipeline_with_shader(
+        device,
+        format,
+        pipeline_layout,
+        sample_count,
+        depth_write_enabled,
+        depth_format,
+        cache,
+        &text_shader(device),
+    )
+}
 
+/// [`create_text_pipeline`] reusing an already-created shader module.
+#[allow(clippy::too_many_arguments)] // reason: mirrors the pipeline descriptor table
+pub fn create_text_pipeline_with_shader(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    pipeline_layout: &wgpu::PipelineLayout,
+    sample_count: u32,
+    depth_write_enabled: bool,
+    depth_format: Option<wgpu::TextureFormat>,
+    cache: Option<&wgpu::PipelineCache>,
+    shader: &wgpu::ShaderModule,
+) -> RenderPipeline {
     let instance_size = std::mem::size_of::<TextQuad>() as u64;
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("GUI Text Render Pipeline"),
         layout: Some(pipeline_layout),
         vertex: wgpu::VertexState {
-            module: &shader,
+            module: shader,
             entry_point: Some("vs_main"),
             buffers: &[
                 wgpu::VertexBufferLayout {
@@ -93,7 +121,7 @@ pub fn create_text_pipeline(
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
-            module: &shader,
+            module: shader,
             entry_point: Some("fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
                 format,

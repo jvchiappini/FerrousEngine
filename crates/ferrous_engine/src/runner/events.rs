@@ -296,8 +296,35 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
                         }
                     }
                 }
+                WindowEvent::ScaleFactorChanged { .. } => {
+                    // A popup dragged onto a monitor with another DPI resizes
+                    // its buffer with its own factor (winit sends the new
+                    // `Resized` right after).
+                    if let Some(windows) = self.windows.as_mut() {
+                        if let Some(handle) = windows.handle(popup) {
+                            if let Some(target) = windows.backend_mut().window_mut(handle) {
+                                let size = target.window.inner_size();
+                                target.reconfigure(size.width, size.height);
+                                target.window.request_redraw();
+                            }
+                        }
+                    }
+                }
                 _ => self.deliver_popup_event(popup, &event),
             }
+            return;
+        }
+        // A click on our own popup must not count as "the app lost activation":
+        // the menu stays open and the main window keeps the keyboard. Only a
+        // real switch to another application dismisses the dismissable
+        // overlays (the host turns `Focused(false)` into `FocusLost`).
+        #[cfg(not(target_arch = "wasm32"))]
+        if matches!(event, WindowEvent::Focused(false))
+            && self
+                .windows
+                .as_ref()
+                .is_some_and(|windows| windows.backend().foreground_is_ours())
+        {
             return;
         }
         // Prompt 18 P1: measure only real event callbacks. `RedrawRequested`
@@ -467,6 +494,34 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
                     gfx.resize(size.width, size.height);
                 }
                 self.window_size = (size.width, size.height);
+                // A minimized window hides its popups; restoring brings back
+                // the ones whose overlay is still open.
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(window) = &self.window {
+                    let minimized = window.is_minimized().unwrap_or(false);
+                    if let Some(windows) = self.windows.as_mut() {
+                        windows.set_occluded(minimized);
+                    }
+                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            WindowEvent::Moved(position) => {
+                // Keep the open popups glued to their anchors in the same
+                // callback; the next frame re-solves the monitor work area.
+                let current = (position.x, position.y);
+                if let Some(previous) = self.last_window_position.replace(current) {
+                    let (dx, dy) = (current.0 - previous.0, current.1 - previous.1);
+                    if let Some(windows) = self.windows.as_mut() {
+                        windows.shift_visible(dx, dy);
+                    }
+                }
+                self.redraw.request();
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            WindowEvent::Occluded(occluded) => {
+                if let Some(windows) = self.windows.as_mut() {
+                    windows.set_occluded(occluded);
+                }
             }
             WindowEvent::CloseRequested => {
                 self.begin_close(Some(event_loop));

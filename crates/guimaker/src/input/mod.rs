@@ -300,6 +300,29 @@ impl InputState {
         closed
     }
 
+    /// Closes the dismissable overlays (menus, selects, popovers) when the app
+    /// loses activation, leaving modal dialogs open.
+    ///
+    /// A dialog pushes a trapping focus scope rooted at its overlay node; the
+    /// walk stops there. Returns whether anything closed.
+    pub fn dismiss_dismissable_overlays<Msg>(&mut self, tree: &Tree<Msg>) -> bool {
+        let mut closed = false;
+        while let Some(&path) = self.overlays.last() {
+            let modal = self.focus_scopes.last().is_some_and(|scope| {
+                scope.trap
+                    && tree
+                        .nodes
+                        .iter()
+                        .any(|node| node.path_hash == path && node.id == scope.root)
+            });
+            if modal || !self.dismiss_overlay_level(tree) {
+                break;
+            }
+            closed = true;
+        }
+        closed
+    }
+
     /// Whether `hit` is inside the topmost overlay's subtree; with no overlay
     /// open every hit counts as inside.
     #[must_use]
@@ -645,6 +668,11 @@ pub fn route<Msg: Clone>(context: &mut RouteContext<'_, Msg>, event: InputEvent)
             context.input.captured = None;
             context.input.dragging = false;
             context.focus(None);
+            // Switching to another application dismisses menus, selects and
+            // popovers; a modal dialog stays open.
+            if context.input.dismiss_dismissable_overlays(context.tree) {
+                context.index.invalidate();
+            }
         }
         InputEvent::Wheel {
             position,

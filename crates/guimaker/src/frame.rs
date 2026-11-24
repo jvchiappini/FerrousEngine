@@ -63,6 +63,10 @@ pub struct Frame<Msg> {
 pub struct PopupBatch {
     /// The overlay node.
     pub node: crate::view::NodeId,
+    /// The overlay's stable path hash: a popup is keyed by this, not by the
+    /// transient arena id, so closing and reopening the same overlay reuses its
+    /// window instead of pooling (and leaking) a new one.
+    pub path: u64,
     /// The unclamped screen rectangle, in logical window coordinates. It is
     /// also the overlay's rect in the layout, so hit-testing a click
     /// translated back into window coordinates finds the overlay.
@@ -204,6 +208,17 @@ impl<Msg: Clone> Ui<Msg> {
     pub fn set_host_capabilities(&mut self, capabilities: crate::overlay::HostCapabilities) {
         self.engine.set_host_capabilities(capabilities);
         self.layout_needed = true;
+    }
+
+    /// Sets the monitor work area, in window-local logical pixels.
+    ///
+    /// The host passes the rectangle `AppContext::work_area` reports so a
+    /// popup-hosted overlay is clamped to the monitor (minus its taskbar)
+    /// instead of the window. `None` keeps the window viewport.
+    pub fn set_work_area(&mut self, work_area: Option<Rect>) {
+        if self.engine.set_work_area(work_area) {
+            self.layout_needed = true;
+        }
     }
 
     /// Where the layout decided to host the anchored overlay at `node`.
@@ -530,6 +545,71 @@ impl<Msg: Clone> Ui<Msg> {
             || self.ring_animating
     }
 
+    /// A stable fingerprint of the painted subtree rooted at `node`.
+    ///
+    /// It folds every node's command hash (which changes when a glyph, colour
+    /// or hover state changes) and the node's snapped rectangle, so a host can
+    /// redraw a popup window only when its content or geometry really moved.
+    /// A hover elsewhere in the main window leaves this value unchanged and the
+    /// popup presents zero frames.
+    #[must_use]
+    pub fn overlay_fingerprint(&self, node: NodeId) -> u64 {
+        let mut hash = crate::hash::Fnv::new();
+        self.fold_overlay_fingerprint(node, &mut hash);
+        hash.finish()
+    }
+
+    fn fold_overlay_fingerprint(&self, id: NodeId, hash: &mut crate::hash::Fnv) {
+        let Some(current) = self.tree.node(id) else {
+            return;
+        };
+        hash.write_u64(
+            self.command_hashes
+                .get(id.index())
+                .copied()
+                .unwrap_or_default(),
+        );
+        let rect = self.engine.rect(id);
+        hash.write_f32(rect.x);
+        hash.write_f32(rect.y);
+        hash.write_f32(rect.width);
+        hash.write_f32(rect.height);
+        for child in &current.children {
+            self.fold_overlay_fingerprint(*child, hash);
+        }
+    }
+
+    /// Whether any animation runs inside the subtree rooted at `node`.
+    ///
+    /// Unlike [`Self::animating`], a colour transition, scroll glide or focus
+    /// ring elsewhere in the main window does not count: a popup repaints only
+    /// for its own animation.
+    #[must_use]
+    pub fn overlay_animating(&self, node: NodeId) -> bool {
+        let scroll = self.input.scroll.is_moving();
+        let scroll_target = self.input.scroll_target;
+        let focused = self.input.focused;
+        let ring = self.ring_animating;
+        let now = self.input.now_ms;
+        let mut stack = vec![node];
+        while let Some(id) = stack.pop() {
+            let Some(current) = self.tree.node(id) else {
+                continue;
+            };
+            if self.visuals.is_animating(current.path_hash, now) {
+                return true;
+            }
+            if scroll && Some(current.path_hash) == scroll_target {
+                return true;
+            }
+            if ring && Some(id) == focused {
+                return true;
+            }
+            stack.extend_from_slice(&current.children);
+        }
+        false
+    }
+
     /// Whether the tree contains a text caret.
     ///
     /// A caret blinks on the injected clock, so an otherwise idle host still
@@ -622,10 +702,12 @@ impl<Msg: Clone> Ui<Msg> {
         // popup's batch.
         if self.engine.overlay_host(id) == Some(crate::overlay::OverlayHost::Popup) {
             let rect = self.engine.overlay_popup_rect(id).unwrap_or(Rect::ZERO);
+            let path = self.tree.nodes[id.index()].path_hash;
             let mut commands = Vec::new();
             self.paint_contents(id, parent, &mut commands, popups);
             popups.push(PopupBatch {
                 node: id,
+                path,
                 rect,
                 commands,
             });

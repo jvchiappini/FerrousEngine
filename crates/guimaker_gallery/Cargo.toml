@@ -17,3 +17,12 @@ ferrous_font = { path = "../ferrous_font" }
 glam = { workspace = true }
 png = "0.17"
 wgpu = { workspace = true }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }

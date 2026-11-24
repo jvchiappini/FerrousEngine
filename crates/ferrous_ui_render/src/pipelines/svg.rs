@@ -9,6 +9,20 @@ const _: () = {
     assert!(std::mem::offset_of!(SvgVertex, z_order) == 24);
 };
 
+/// Builds the SVG shader module (rounded clip + vector body).
+#[must_use]
+pub(crate) fn svg_shader(device: &wgpu::Device) -> wgpu::ShaderModule {
+    const CLIP: &str = include_str!("../../../../assets/shaders/gui_clip_common.wgsl");
+    let source = format!(
+        "{CLIP}\n{}",
+        include_str!("../../../../assets/shaders/svg.wgsl")
+    );
+    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("GUI SVG Shader"),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    })
+}
+
 pub fn create_svg_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
@@ -17,21 +31,32 @@ pub fn create_svg_pipeline(
     depth_format: Option<wgpu::TextureFormat>,
     cache: Option<&wgpu::PipelineCache>,
 ) -> RenderPipeline {
-    const CLIP: &str = include_str!("../../../../assets/shaders/gui_clip_common.wgsl");
-    let source = format!(
-        "{CLIP}\n{}",
-        include_str!("../../../../assets/shaders/svg.wgsl")
-    );
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("GUI SVG Shader"),
-        source: wgpu::ShaderSource::Wgsl(source.into()),
-    });
+    create_svg_pipeline_with_shader(
+        device,
+        format,
+        pipeline_layout,
+        sample_count,
+        depth_format,
+        cache,
+        &svg_shader(device),
+    )
+}
 
+/// [`create_svg_pipeline`] reusing an already-created shader module.
+pub fn create_svg_pipeline_with_shader(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    pipeline_layout: &wgpu::PipelineLayout,
+    sample_count: u32,
+    depth_format: Option<wgpu::TextureFormat>,
+    cache: Option<&wgpu::PipelineCache>,
+    shader: &wgpu::ShaderModule,
+) -> RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("GUI SVG Render Pipeline"),
         layout: Some(pipeline_layout),
         vertex: wgpu::VertexState {
-            module: &shader,
+            module: shader,
             entry_point: Some("vs_main"),
             buffers: &[wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<SvgVertex>() as wgpu::BufferAddress,
@@ -57,7 +82,7 @@ pub fn create_svg_pipeline(
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
-            module: &shader,
+            module: shader,
             entry_point: Some("fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
                 format,

@@ -44,6 +44,16 @@ fn quad_shader_source() -> String {
     assemble(CLIP, QUAD_WEB_BODY)
 }
 
+/// Builds the quad shader module, so a second renderer can reuse it instead of
+/// compiling the same WGSL again (Phase 8E popup sharing).
+#[must_use]
+pub(crate) fn quad_shader(device: &wgpu::Device) -> wgpu::ShaderModule {
+    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("GUI Shader"),
+        source: wgpu::ShaderSource::Wgsl(quad_shader_source().into()),
+    })
+}
+
 #[must_use]
 #[allow(clippy::too_many_lines)] // reason: one flat pipeline descriptor table
 pub fn create_quad_pipeline(
@@ -55,20 +65,38 @@ pub fn create_quad_pipeline(
     depth_format: Option<wgpu::TextureFormat>,
     cache: Option<&wgpu::PipelineCache>,
 ) -> RenderPipeline {
-    let source = quad_shader_source();
+    create_quad_pipeline_with_shader(
+        device,
+        format,
+        pipeline_layout,
+        sample_count,
+        depth_write_enabled,
+        depth_format,
+        cache,
+        &quad_shader(device),
+    )
+}
 
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("GUI Shader"),
-        source: wgpu::ShaderSource::Wgsl(source.into()),
-    });
-
+/// [`create_quad_pipeline`] reusing an already-created shader module.
+#[must_use]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // reason: one flat pipeline descriptor table
+pub fn create_quad_pipeline_with_shader(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    pipeline_layout: &wgpu::PipelineLayout,
+    sample_count: u32,
+    depth_write_enabled: bool,
+    depth_format: Option<wgpu::TextureFormat>,
+    cache: Option<&wgpu::PipelineCache>,
+    shader: &wgpu::ShaderModule,
+) -> RenderPipeline {
     let instance_size = std::mem::size_of::<GuiQuad>() as u64;
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("GUI Render Pipeline"),
         layout: Some(pipeline_layout),
         vertex: wgpu::VertexState {
-            module: &shader,
+            module: shader,
             entry_point: Some("vs_main"),
             buffers: &[
                 wgpu::VertexBufferLayout {
@@ -150,7 +178,7 @@ pub fn create_quad_pipeline(
             compilation_options: PipelineCompilationOptions::default(),
         },
         fragment: Some(wgpu::FragmentState {
-            module: &shader,
+            module: shader,
             entry_point: Some("fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
                 format,

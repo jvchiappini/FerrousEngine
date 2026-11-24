@@ -61,10 +61,12 @@ impl<A: FerrousApp + 'static> Runner<A> {
 
     /// Draws and presents one popup frame.
     ///
-    /// The popup owns its `GuiRenderer` (its own instance buffers) but shares
-    /// the main window's glyph and icon atlas bind groups, so both windows
-    /// paint the same atlas. A lost or outdated swapchain is reconfigured the
-    /// way the main window is and the frame is retried on the next request.
+    /// The popup owns its `GuiRenderer` buffers and bind groups, but (Phase 8E)
+    /// reuses the main renderer's layouts, shader modules, pipelines and
+    /// samplers through `new_sharing_global`; it also shares the main window's
+    /// glyph and icon atlas bind groups, so both windows paint the same atlas.
+    /// A lost or outdated swapchain is reconfigured the way the main window is
+    /// and the frame is retried on the next request.
     ///
     /// Returns whether a frame was presented.
     #[allow(clippy::too_many_lines)] // reason: one linear acquire → draw → present path
@@ -77,9 +79,15 @@ impl<A: FerrousApp + 'static> Runner<A> {
             return false;
         };
         let time = self.clock.peek();
-        let scale = self.scale_factor;
+        // A popup can sit on another monitor: its own factor, not the main
+        // window's, decides the buffer and the text size.
+        let scale = self
+            .windows
+            .as_ref()
+            .and_then(|windows| windows.backend().window_scale(handle))
+            .unwrap_or(self.scale_factor);
         let current_atlas = self.font.clone();
-        let (frame, view, size) = {
+        let (frame, view, size, capture) = {
             if self.graphics.is_none() {
                 return false;
             }
@@ -89,6 +97,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
             let Some(target) = windows.backend_mut().window_mut(handle) else {
                 return false;
             };
+            let capture = std::mem::take(&mut target.capture_next);
             let PopupWindow {
                 surface,
                 window: popup_window,
@@ -101,8 +110,14 @@ impl<A: FerrousApp + 'static> Runner<A> {
             } = target;
             let (width, height) = (config.width.max(1), config.height.max(1));
             let format = config.format;
+            let mut created = false;
             let gui = gui.get_or_insert_with(|| {
-                let mut renderer = ferrous_ui_render::GuiRenderer::new(
+                created = true;
+                // Reuse the main renderer's layouts, shader modules, pipelines
+                // and samplers (Phase 8E): a popup then allocates only its own
+                // buffers and bind groups. Without a published main renderer
+                // this falls back to a private, depth-less pipeline set.
+                ferrous_ui_render::GuiRenderer::new_sharing_global(
                     device.clone(),
                     format,
                     1024,
@@ -110,13 +125,16 @@ impl<A: FerrousApp + 'static> Runner<A> {
                     height,
                     1,
                     pipeline_cache.clone(),
-                );
-                // A popup is a menu-sized surface: no depth attachment and a
-                // small SVG scratch set keep its VRAM near the instance
-                // buffers the design asks for.
-                renderer.set_ui_depth(false);
-                renderer.with_svg_capacity(4096)
+                )
+                // A popup draws a handful of icon paths: its own small SVG
+                // scratch set instead of the main window's 65k vertices.
+                .with_svg_capacity(4096)
             });
+            if created {
+                // The popup owns these buffers; report them under `popups`, not
+                // by overwriting the main renderer's `gui:*` entries.
+                crate::windows::register_popup_gui(handle, gui);
+            }
             // Share the main window's glyph atlas: the popup rebuilds its
             // group only when the atlas Arc changed (a runtime fallback bake
             // swaps it), never per frame. The engine wires no icon atlas, so
@@ -146,7 +164,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
             let view = frame
                 .texture
                 .create_view(&wgpu::TextureViewDescriptor::default());
-            (frame, view, (width, height))
+            (frame, view, (width, height), capture)
         };
 
         // Paint through the same `AppContext` builder as every other callback.
@@ -197,10 +215,13 @@ impl<A: FerrousApp + 'static> Runner<A> {
         let Some(windows) = self.windows.as_mut() else {
             return false;
         };
+        let position = windows.spec(popup).map_or((0, 0), |spec| spec.position);
         let Some(target) = windows.backend_mut().window_mut(handle) else {
             return false;
         };
         let transparent = target.transparent();
+        let can_copy = target.config.usage.contains(wgpu::TextureUsages::COPY_SRC);
+        let mut capture_buffer = None;
         {
             let PopupWindow {
                 gui, queue, device, ..
@@ -224,13 +245,58 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 &batch,
                 wgpu::LoadOp::Clear(clear),
             );
+            if capture && can_copy {
+                // Copy before presenting: the swapchain image is the frame the
+                // host will compose. Nothing here reads the desktop.
+                let (width, height) = size;
+                let buffer = crate::screenshot::capture_buffer(device, width, height);
+                let padded = crate::screenshot::padded_bytes_per_row(width);
+                encoder.copy_texture_to_buffer(
+                    wgpu::ImageCopyTexture {
+                        texture: &frame.texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::ImageCopyBuffer {
+                        buffer: &buffer,
+                        layout: wgpu::ImageDataLayout {
+                            offset: 0,
+                            bytes_per_row: Some(padded),
+                            rows_per_image: Some(height.max(1)),
+                        },
+                    },
+                    wgpu::Extent3d {
+                        width: width.max(1),
+                        height: height.max(1),
+                        depth_or_array_layers: 1,
+                    },
+                );
+                capture_buffer = Some(buffer);
+            }
             queue.submit(Some(encoder.finish()));
         }
         frame.present();
-        target.batch = batch;
-        target.frames += 1;
-        if target.first_frame_at.is_none() {
-            target.first_frame_at = Some(std::time::Instant::now());
+        let (device, format) = {
+            target.batch = batch;
+            target.frames += 1;
+            if target.first_frame_at.is_none() {
+                target.first_frame_at = Some(std::time::Instant::now());
+            }
+            (target.device.clone(), target.config.format)
+        };
+        if let Some(buffer) = capture_buffer {
+            let bgra = crate::screenshot::is_bgra(format);
+            if let Some(shot) =
+                crate::screenshot::read_capture(&device, &buffer, size.0, size.1, bgra)
+            {
+                self.app.on_popup_screenshot(crate::traits::PopupCapture {
+                    popup,
+                    position,
+                    size,
+                    screenshot: shot,
+                });
+            }
         }
         true
     }

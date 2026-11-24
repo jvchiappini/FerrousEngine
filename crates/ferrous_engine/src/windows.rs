@@ -23,11 +23,28 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use winit::window::WindowId;
 
 #[cfg(not(target_arch = "wasm32"))]
+use ferrous_core::memory::{self, Subsystem};
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
 /// A popup's stable id, assigned by [`PopupQueue::open`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PopupId(pub u32);
+
+/// How many hidden popup windows the pool keeps alive for reuse.
+///
+/// A hidden popup costs about 50 MB of RSS (a swapchain plus its surfaces), so
+/// the pool is deliberately tiny: two covers the common "menu then submenu"
+/// case without letting a long session accumulate windows. A third hide
+/// destroys the oldest hidden one.
+pub const POPUP_POOL_CAP: usize = 2;
+
+/// Swapchain images assumed when estimating a popup's VRAM.
+///
+/// wgpu 23 has no query for the actual DXGI/Vulkan image count; a flip-model
+/// swapchain with `desired_maximum_frame_latency: 1` usually allocates two or
+/// three.  The report uses three as a documented upper-bound estimate.
+pub const POPUP_SWAPCHAIN_IMAGES: u32 = 3;
 
 /// Where an event for a window must be delivered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,6 +138,8 @@ pub enum PopupCommand {
 pub struct PopupQueue {
     next: u32,
     commands: Vec<PopupCommand>,
+    /// A popup-frame capture was requested this frame.
+    capture: bool,
 }
 
 impl PopupQueue {
@@ -168,6 +187,22 @@ impl PopupQueue {
         self.commands.push(PopupCommand::Redraw { id });
     }
 
+    /// Asks for one readback of every visible popup's next frame.
+    ///
+    /// The runner arms each popup and asks it for a frame; each popup then
+    /// delivers its own surface through
+    /// [`crate::traits::FerrousApp::on_popup_screenshot`]. Nothing is read from
+    /// the desktop.
+    pub fn capture_all(&mut self) {
+        self.capture = true;
+    }
+
+    /// Takes the pending capture request.
+    #[must_use]
+    pub fn take_capture_request(&mut self) -> bool {
+        std::mem::take(&mut self.capture)
+    }
+
     /// Whether a command is waiting.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -205,6 +240,8 @@ pub trait PopupBackend {
     fn transparent(&self, handle: u32) -> bool;
     /// A routing key for a handle; `None` when the window is gone.
     fn key(&self, handle: u32) -> Option<u64>;
+    /// Arms a readback of this popup's next presented frame (evidence capture).
+    fn arm_capture(&mut self, _handle: u32) {}
     /// The routing key for an event's `WindowId`.
     fn key_of(&self, window: WindowId) -> u64 {
         key_of(window)
@@ -240,6 +277,9 @@ pub struct WindowMap<B: PopupBackend> {
     /// Slot table: the index is the [`PopupId`] the app reserved, and an id
     /// never moves, so destroying or pooling one never renumbers the others.
     entries: Vec<Option<Entry>>,
+    /// The main window is minimized or occluded: every logical popup is hidden
+    /// at the OS level, and restoring re-shows the ones that were visible.
+    occluded: bool,
 }
 
 impl<B: PopupBackend> WindowMap<B> {
@@ -250,6 +290,7 @@ impl<B: PopupBackend> WindowMap<B> {
             main_key: key_of(main),
             backend,
             entries: Vec::new(),
+            occluded: false,
         }
     }
 
@@ -350,7 +391,7 @@ impl<B: PopupBackend> WindowMap<B> {
             return;
         };
         self.backend.set_position(handle, position);
-        self.backend.set_visible(handle, true);
+        self.backend.set_visible(handle, !self.occluded);
     }
 
     /// Moves `id`.
@@ -376,6 +417,9 @@ impl<B: PopupBackend> WindowMap<B> {
     }
 
     /// Hides `id`, returning it to the pool.
+    ///
+    /// The pool keeps at most [`POPUP_POOL_CAP`] hidden windows; hiding one
+    /// beyond the cap destroys the oldest hidden window for good.
     pub fn hide(&mut self, id: PopupId) {
         let Some(handle) = self.entry_mut(id).map(|entry| {
             entry.visible = false;
@@ -385,6 +429,33 @@ impl<B: PopupBackend> WindowMap<B> {
             return;
         };
         self.backend.set_visible(handle, false);
+        self.trim_pool();
+    }
+
+    /// Destroys the oldest hidden popup while the pool is over its cap.
+    fn trim_pool(&mut self) {
+        loop {
+            let hidden: Vec<usize> = self
+                .entries
+                .iter()
+                .enumerate()
+                .filter_map(|(index, entry)| {
+                    entry
+                        .as_ref()
+                        .filter(|entry| !entry.visible && entry.poolable)
+                        .map(|_| index)
+                })
+                .collect();
+            if hidden.len() <= POPUP_POOL_CAP {
+                return;
+            }
+            let Some(index) = hidden.first().copied() else {
+                return;
+            };
+            if let Some(Some(entry)) = self.entries.get_mut(index).map(Option::take) {
+                self.backend.destroy(entry.handle);
+            }
+        }
     }
 
     /// Destroys `id` for good.
@@ -439,6 +510,72 @@ impl<B: PopupBackend> WindowMap<B> {
         self.len() == 0
     }
 
+    /// Hides every popup while the main window is minimized or occluded, and
+    /// re-shows the visible ones on restore.
+    ///
+    /// The logical visibility is untouched, so the app never has to re-open an
+    /// overlay because the user minimized the window.
+    pub fn set_occluded(&mut self, occluded: bool) {
+        if self.occluded == occluded {
+            return;
+        }
+        self.occluded = occluded;
+        let handles: Vec<(u32, bool)> = self
+            .entries
+            .iter()
+            .flatten()
+            .map(|entry| (entry.handle, entry.visible))
+            .collect();
+        for (handle, visible) in handles {
+            self.backend.set_visible(handle, visible && !occluded);
+        }
+    }
+
+    /// Moves every visible popup by `(dx, dy)` physical pixels.
+    ///
+    /// The main window moved: shifting the popups in the same callback keeps
+    /// them glued to their anchors instead of waiting for the next frame. The
+    /// next frame re-solves the work area and corrects any clamp.
+    pub fn shift_visible(&mut self, dx: i32, dy: i32) {
+        if dx == 0 && dy == 0 {
+            return;
+        }
+        let positions: Vec<(u32, (i32, i32))> = self
+            .entries
+            .iter_mut()
+            .flatten()
+            .filter(|entry| entry.visible)
+            .map(|entry| {
+                entry.spec.position = (
+                    entry.spec.position.0.saturating_add(dx),
+                    entry.spec.position.1.saturating_add(dy),
+                );
+                (entry.handle, entry.spec.position)
+            })
+            .collect();
+        for (handle, position) in positions {
+            self.backend.set_position(handle, position);
+        }
+    }
+
+    /// Arms a readback of every visible popup's next frame.
+    ///
+    /// Returns the handles that were armed so the runner can ask them for a
+    /// frame; the per-popup present path delivers the pixels.
+    pub fn arm_capture(&mut self) -> Vec<u32> {
+        let handles: Vec<u32> = self
+            .entries
+            .iter()
+            .flatten()
+            .filter(|entry| entry.visible)
+            .map(|entry| entry.handle)
+            .collect();
+        for &handle in &handles {
+            self.backend.arm_capture(handle);
+        }
+        handles
+    }
+
     /// Where an event for `window` goes.
     #[must_use]
     pub fn route(&self, window: WindowId) -> WindowTarget {
@@ -480,7 +617,7 @@ impl<B: PopupBackend> WindowMap<B> {
 /// Applies every queued command to `map`, returning the popups that must be
 /// redrawn.
 ///
-/// The runner calls this in `about_to_wait` — the only callback with the
+/// The runner calls this in `about_to_wait`: the only callback with the
 /// event loop the backend needs to create a window. An `Open`, `Show`, `Move`
 /// or `Resize` asks for one frame too, so a new popup appears with its
 /// content instead of an empty surface.
@@ -518,7 +655,7 @@ pub fn drain<B: PopupBackend>(
     redraw
 }
 
-// ── The real backend ────────────────────────────────────────────────────────
+// -- The real backend -------------------------------------------------------
 
 /// One live popup window: the OS window, its swapchain and the GUI renderer
 /// that paints it.
@@ -553,6 +690,8 @@ pub struct PopupWindow {
     pub first_frame_at: Option<std::time::Instant>,
     /// Presented frames (the idle-popup evidence reads this).
     pub frames: u64,
+    /// Copy the next presented frame back to CPU (evidence capture).
+    pub capture_next: bool,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -592,7 +731,16 @@ impl PopupWindow {
         (self.config.width, self.config.height)
     }
 
-    /// Reconfigures the swapchain at `width × height`.
+    /// The popup's own DPI scale factor.
+    ///
+    /// A popup can sit on a monitor whose scale differs from the main window's;
+    /// its buffer and its text must use this factor, not the main window's.
+    #[must_use]
+    pub fn scale_factor(&self) -> f64 {
+        self.window.scale_factor()
+    }
+
+    /// Reconfigures the swapchain at `width x height`.
     pub fn reconfigure(&mut self, width: u32, height: u32) {
         let width = width.max(1);
         let height = height.max(1);
@@ -617,7 +765,7 @@ impl PopupWindow {
     ///
     /// # Errors
     ///
-    /// Returns the wgpu surface error (`Lost`, `Outdated`, `Timeout`, …).
+    /// Returns the wgpu surface error (`Lost`, `Outdated`, `Timeout`, ...).
     pub fn acquire(&mut self) -> Result<wgpu::SurfaceTexture, wgpu::SurfaceError> {
         self.surface.get_current_texture()
     }
@@ -644,6 +792,55 @@ pub struct PopupContext<'a> {
     pub pipeline_cache: Option<Arc<wgpu::PipelineCache>>,
     /// The main window's format, the fallback when the surface exposes none.
     pub format: wgpu::TextureFormat,
+}
+
+/// A popup's `memory-report` label: `popup:{handle}:{part}`.
+///
+/// The label is the registry identity, so a re-register (a resize, a pooled
+/// reopen) replaces the bytes instead of adding a second entry.
+#[must_use]
+#[cfg(not(target_arch = "wasm32"))]
+pub fn popup_memory_label(handle: u32, part: &str) -> String {
+    format!("popup:{handle}:{part}")
+}
+
+/// Bytes of one popup's swapchain estimate (`w * h * 4 * images`).
+///
+/// The image count is [`POPUP_SWAPCHAIN_IMAGES`] because wgpu exposes none.
+#[must_use]
+#[cfg(not(target_arch = "wasm32"))]
+pub fn popup_swapchain_bytes(width: u32, height: u32) -> u64 {
+    u64::from(width.max(1)) * u64::from(height.max(1)) * 4 * u64::from(POPUP_SWAPCHAIN_IMAGES)
+}
+
+/// Registers/replaces the swapchain estimate of `handle`.
+#[cfg(not(target_arch = "wasm32"))]
+fn register_popup_swapchain(handle: u32, config: &wgpu::SurfaceConfiguration) {
+    memory::register_gpu(
+        popup_memory_label(handle, "swapchain"),
+        popup_swapchain_bytes(config.width, config.height),
+        Subsystem::Popups,
+    );
+}
+
+/// Registers/replaces the GUI buffers `gui` owns for `handle`.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn register_popup_gui(handle: u32, gui: &ferrous_ui_render::GuiRenderer) {
+    let (instances, svg) = gui.popup_buffer_bytes();
+    memory::register_gpu(
+        popup_memory_label(handle, "instances"),
+        instances,
+        Subsystem::Popups,
+    );
+    memory::register_gpu(popup_memory_label(handle, "svg"), svg, Subsystem::Popups);
+}
+
+/// Drops every `popups` entry a destroyed popup owned.
+#[cfg(not(target_arch = "wasm32"))]
+fn unregister_popup_memory(handle: u32) {
+    memory::unregister_gpu(&popup_memory_label(handle, "instances"), Subsystem::Popups);
+    memory::unregister_gpu(&popup_memory_label(handle, "svg"), Subsystem::Popups);
+    memory::unregister_gpu(&popup_memory_label(handle, "swapchain"), Subsystem::Popups);
 }
 
 /// The winit popup backend.
@@ -702,9 +899,52 @@ impl WinitPopups {
         }
     }
 
+    /// Whether `handle`'s next frame will be copied back.
+    pub fn take_capture(&mut self, handle: u32) -> bool {
+        match self.window_mut(handle) {
+            Some(window) => std::mem::take(&mut window.capture_next),
+            None => false,
+        }
+    }
+
     /// The live popup windows.
     pub fn iter(&self) -> impl Iterator<Item = &PopupWindow> {
         self.windows.iter().flatten()
+    }
+
+    /// The popup's own DPI factor, when it exists.
+    #[must_use]
+    pub fn window_scale(&self, handle: u32) -> Option<f64> {
+        self.window(handle).map(PopupWindow::scale_factor)
+    }
+
+    /// Whether `GetForegroundWindow` is the main window or one of our popups.
+    ///
+    /// A menu that does not take activation keeps the main window foreground;
+    /// this is the check that decides whether a `Focused(false)` is a real app
+    /// switch (dismiss the overlays) or just a popup interaction (keep them).
+    #[cfg(target_os = "windows")]
+    #[must_use]
+    pub fn foreground_is_ours(&self) -> bool {
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+        // SAFETY: `GetForegroundWindow` takes no arguments and returns a
+        // borrowed handle that Windows owns.
+        let foreground = unsafe { GetForegroundWindow() } as isize;
+        if foreground == 0 {
+            return false;
+        }
+        if foreground == self.owner {
+            return true;
+        }
+        self.iter()
+            .any(|popup| hwnd_of(&popup.window) == foreground)
+    }
+
+    /// A non-Windows host never treats a focus change as its own window.
+    #[cfg(not(target_os = "windows"))]
+    #[must_use]
+    pub fn foreground_is_ours(&self) -> bool {
+        false
     }
 
     fn alpha_mode(caps: &wgpu::SurfaceCapabilities) -> wgpu::CompositeAlphaMode {
@@ -726,6 +966,29 @@ fn hwnd_of(window: &winit::window::Window) -> isize {
     match window.window_handle().map(|handle| handle.as_raw()) {
         Ok(RawWindowHandle::Win32(handle)) => handle.hwnd.get(),
         _ => 0,
+    }
+}
+
+/// Adds `WS_EX_NOACTIVATE` so clicking the popup never activates it.
+///
+/// Without it a normal top-level window takes activation on a click: the main
+/// window loses focus (its title bar greys out) and the keyboard moves to the
+/// popup, so Escape would no longer reach the menu's owner.
+#[cfg(target_os = "windows")]
+fn set_no_activate(hwnd: isize) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_NOACTIVATE,
+    };
+    if hwnd == 0 {
+        return;
+    }
+    let window = hwnd as *mut core::ffi::c_void;
+    // SAFETY: `hwnd` is a live window created above; the extended style is an
+    // `isize` bit set.
+    let style = unsafe { GetWindowLongPtrW(window, GWL_EXSTYLE) };
+    // SAFETY: the same live window handle; adding one extended style bit.
+    unsafe {
+        SetWindowLongPtrW(window, GWL_EXSTYLE, style | WS_EX_NOACTIVATE as isize);
     }
 }
 
@@ -776,6 +1039,10 @@ impl PopupBackend for WinitPopups {
                 .with_skip_taskbar(true);
         }
         let window = Arc::new(context.event_loop.create_window(attributes).ok()?);
+        // A menu must never take activation: the main window keeps the keyboard
+        // (Escape still reaches it) and its title bar never greys out.
+        #[cfg(target_os = "windows")]
+        set_no_activate(hwnd_of(&window));
         let surface = context
             .instance
             .create_surface(OwnedWindow(window.clone()))
@@ -788,15 +1055,21 @@ impl PopupBackend for WinitPopups {
             .find(wgpu::TextureFormat::is_srgb)
             .or_else(|| caps.formats.first().copied())
             .unwrap_or(context.format);
+        let mut usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
+        if crate::screenshot::supports_copy_src(&caps) {
+            usage |= wgpu::TextureUsages::COPY_SRC;
+        }
         let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage,
             format,
             width: spec.size.0.max(1),
             height: spec.size.1.max(1),
             present_mode: wgpu::PresentMode::Fifo,
             alpha_mode: Self::alpha_mode(&caps),
             view_formats: vec![],
-            desired_maximum_frame_latency: 2,
+            // A popup is a small surface shown right after input: the shortest
+            // queue (one frame in flight) keeps input-to-present low.
+            desired_maximum_frame_latency: 1,
         };
         surface.configure(context.device, &config);
         let key = key_of(window.id());
@@ -815,7 +1088,13 @@ impl PopupBackend for WinitPopups {
             opened_at: std::time::Instant::now(),
             first_frame_at: None,
             frames: 0,
+            capture_next: false,
         }));
+        // The swapchain exists from creation; the GUI buffers are registered
+        // when the first frame lazily creates the popup's `GuiRenderer`.
+        if let Some(window) = self.window(handle) {
+            register_popup_swapchain(handle, &window.config);
+        }
         Some(handle)
     }
 
@@ -839,6 +1118,7 @@ impl PopupBackend for WinitPopups {
                 .window
                 .request_inner_size(winit::dpi::PhysicalSize::new(size.0.max(1), size.1.max(1)));
             window.reconfigure(size.0, size.1);
+            register_popup_swapchain(handle, &window.config);
         }
     }
 
@@ -846,6 +1126,7 @@ impl PopupBackend for WinitPopups {
         if let Some(slot) = self.windows.get_mut(handle as usize) {
             // Dropping the surface first, then the window, closes the popup.
             slot.take();
+            unregister_popup_memory(handle);
         }
     }
 
@@ -861,6 +1142,12 @@ impl PopupBackend for WinitPopups {
         if let Some(window) = self.window_mut(handle) {
             window.opened_at = std::time::Instant::now();
             window.first_frame_at = None;
+        }
+    }
+
+    fn arm_capture(&mut self, handle: u32) {
+        if let Some(window) = self.window_mut(handle) {
+            window.capture_next = true;
         }
     }
 }
@@ -883,6 +1170,14 @@ impl MockBackend {
     #[allow(dead_code)] // used by the runner popup tests when they check the pool
     pub(crate) fn live(&self) -> usize {
         self.windows.len()
+    }
+
+    /// Whether the mock window is OS-visible.
+    #[allow(dead_code)] // used by the occlusion test
+    pub(crate) fn visible(&self, handle: u32) -> bool {
+        self.windows
+            .get(&handle)
+            .is_some_and(|(_, visible, _)| *visible)
     }
 }
 
@@ -1109,6 +1404,64 @@ mod tests {
             WindowTarget::Main
         );
         assert_eq!(window_map.route_key(u64::MAX - 1), WindowTarget::Main);
+    }
+
+    #[test]
+    fn the_pool_keeps_at_most_two_hidden_windows() {
+        let mut window_map = map();
+        let ids: Vec<PopupId> = (0..5)
+            .map(|_| window_map.create(PopupSpec::default(), ()).expect("create"))
+            .collect();
+        assert_eq!(window_map.len(), 5, "five visible popups");
+        for id in ids {
+            window_map.hide(id);
+        }
+        assert_eq!(
+            window_map.len(),
+            super::POPUP_POOL_CAP,
+            "hiding beyond the cap destroys the oldest hidden window"
+        );
+        assert_eq!(window_map.backend().live(), super::POPUP_POOL_CAP);
+    }
+
+    #[test]
+    fn occluding_hides_and_restoring_re_shows_the_visible_popups() {
+        let mut window_map = map();
+        let shown = window_map.create(PopupSpec::default(), ()).expect("shown");
+        window_map.show(shown, (10, 20));
+        let hidden = window_map.create(PopupSpec::default(), ()).expect("hidden");
+        window_map.set_occluded(true);
+        assert!(window_map.visible(shown), "logical visibility is kept");
+        assert!(
+            !window_map
+                .backend()
+                .visible(window_map.handle(shown).expect("handle")),
+            "the OS window is hidden"
+        );
+        window_map.set_occluded(false);
+        assert!(
+            window_map
+                .backend()
+                .visible(window_map.handle(shown).expect("handle")),
+            "restore re-shows it"
+        );
+        assert!(
+            !window_map
+                .backend()
+                .visible(window_map.handle(hidden).expect("handle")),
+            "a closed popup stays hidden"
+        );
+    }
+
+    #[test]
+    fn a_window_move_shifts_only_the_visible_popups() {
+        let mut window_map = map();
+        let shown = window_map.create(PopupSpec::default(), ()).expect("shown");
+        window_map.show(shown, (10, 20));
+        let hidden = window_map.create(PopupSpec::default(), ()).expect("hidden");
+        window_map.shift_visible(5, -7);
+        assert_eq!(window_map.spec(shown).expect("spec").position, (15, 13));
+        assert_eq!(window_map.spec(hidden).expect("spec").position, (0, 0));
     }
 
     #[test]

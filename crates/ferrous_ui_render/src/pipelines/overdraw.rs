@@ -189,7 +189,7 @@ fn overdraw_blend() -> wgpu::BlendState {
     }
 }
 
-fn overdraw_shader(device: &wgpu::Device) -> wgpu::ShaderModule {
+pub(crate) fn overdraw_shader(device: &wgpu::Device) -> wgpu::ShaderModule {
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("GUI Overdraw Shader"),
         source: wgpu::ShaderSource::Wgsl(OVERDRAW_SHADER.into()),
@@ -222,19 +222,40 @@ pub fn create_overdraw_pipeline(
     depth_format: Option<wgpu::TextureFormat>,
     cache: Option<&wgpu::PipelineCache>,
 ) -> RenderPipeline {
+    create_overdraw_pipeline_with_shader(
+        device,
+        format,
+        layout,
+        sample_count,
+        depth_format,
+        cache,
+        &overdraw_shader(device),
+    )
+}
+
+/// [`create_overdraw_pipeline`] reusing an already-created shader module.
+#[must_use]
+pub fn create_overdraw_pipeline_with_shader(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    layout: &wgpu::PipelineLayout,
+    sample_count: u32,
+    depth_format: Option<wgpu::TextureFormat>,
+    cache: Option<&wgpu::PipelineCache>,
+    shader: &wgpu::ShaderModule,
+) -> RenderPipeline {
     // The instance stride must stay 96 bytes: the same buffer feeds the normal
-    // quad and ID passes.
+    // quad and the ID passes.
     const _: () = {
         assert!(std::mem::size_of::<GuiQuad>() == 96);
     };
-    let shader = overdraw_shader(device);
     let instance_size = std::mem::size_of::<GuiQuad>() as u64;
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("GUI Overdraw Pipeline"),
         layout: Some(layout),
         vertex: wgpu::VertexState {
-            module: &shader,
+            module: shader,
             entry_point: Some("vs_main"),
             buffers: &[
                 wgpu::VertexBufferLayout {
@@ -306,7 +327,7 @@ pub fn create_overdraw_pipeline(
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
-            module: &shader,
+            module: shader,
             entry_point: Some("fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
@@ -339,17 +360,38 @@ pub fn create_overdraw_text_pipeline(
     depth_format: Option<wgpu::TextureFormat>,
     cache: Option<&wgpu::PipelineCache>,
 ) -> RenderPipeline {
+    create_overdraw_text_pipeline_with_shader(
+        device,
+        format,
+        layout,
+        sample_count,
+        depth_format,
+        cache,
+        &overdraw_shader(device),
+    )
+}
+
+/// [`create_overdraw_text_pipeline`] reusing an already-created shader module.
+#[must_use]
+pub fn create_overdraw_text_pipeline_with_shader(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    layout: &wgpu::PipelineLayout,
+    sample_count: u32,
+    depth_format: Option<wgpu::TextureFormat>,
+    cache: Option<&wgpu::PipelineCache>,
+    shader: &wgpu::ShaderModule,
+) -> RenderPipeline {
     const _: () = {
         assert!(std::mem::size_of::<TextQuad>() == 56);
     };
-    let shader = overdraw_shader(device);
     let instance_size = std::mem::size_of::<TextQuad>() as u64;
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("GUI Overdraw Text Pipeline"),
         layout: Some(layout),
         vertex: wgpu::VertexState {
-            module: &shader,
+            module: shader,
             entry_point: Some("vs_text"),
             buffers: &[
                 wgpu::VertexBufferLayout {
@@ -406,7 +448,7 @@ pub fn create_overdraw_text_pipeline(
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
-            module: &shader,
+            module: shader,
             entry_point: Some("fs_text"),
             targets: &[Some(wgpu::ColorTargetState {
                 format,

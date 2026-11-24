@@ -41,6 +41,8 @@ pub enum Subsystem {
     Fonts,
     /// Decoded images, video frames and their GPU textures.
     Assets,
+    /// Popup windows: their per-popup GUI buffers and swapchains.
+    Popups,
     /// Everything else owned by the engine.
     Engine,
     /// An application-owned resource registered through this API.
@@ -58,6 +60,7 @@ impl Subsystem {
             Subsystem::RenderTarget => "render_target",
             Subsystem::Fonts => "fonts",
             Subsystem::Assets => "assets",
+            Subsystem::Popups => "popups",
             Subsystem::Engine => "engine",
             Subsystem::Other => "other",
         }
@@ -260,6 +263,20 @@ mod tests {
         let report = report(10);
         assert_eq!(report.gpu_bytes, 250);
         assert_eq!(report.largest.len(), 1);
+        clear();
+    }
+
+    #[test]
+    fn popups_are_a_their_own_subsystem() {
+        let _lock = test_lock();
+        clear();
+        assert_eq!(Subsystem::Popups.name(), "popups");
+        register_gpu("popup:0:instances", 1024, Subsystem::Popups);
+        register_gpu("popup:0:svg", 2048, Subsystem::Popups);
+        let report = report(10);
+        assert_eq!(report.by_subsystem.len(), 1);
+        assert_eq!(report.by_subsystem[0].subsystem, "popups");
+        assert_eq!(report.by_subsystem[0].gpu_bytes, 3072);
         clear();
     }
 }

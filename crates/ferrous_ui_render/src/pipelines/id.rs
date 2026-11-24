@@ -8,25 +8,39 @@ const _: () = {
     assert!(std::mem::offset_of!(GuiQuad, node_id) == 92);
 };
 
+/// Builds the ID-buffer shader module.
+#[must_use]
+pub(crate) fn id_shader(device: &wgpu::Device) -> wgpu::ShaderModule {
+    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("GUI ID Buffer Shader"),
+        source: wgpu::ShaderSource::Wgsl(
+            include_str!("../../../../assets/shaders/id_buffer.wgsl").into(),
+        ),
+    })
+}
+
 pub fn create_id_pipeline(
     device: &wgpu::Device,
     pipeline_layout: &wgpu::PipelineLayout,
     cache: Option<&wgpu::PipelineCache>,
 ) -> RenderPipeline {
-    let id_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("GUI ID Buffer Shader"),
-        source: wgpu::ShaderSource::Wgsl(
-            include_str!("../../../../assets/shaders/id_buffer.wgsl").into(),
-        ),
-    });
+    create_id_pipeline_with_shader(device, pipeline_layout, cache, &id_shader(device))
+}
 
+/// [`create_id_pipeline`] reusing an already-created shader module.
+pub fn create_id_pipeline_with_shader(
+    device: &wgpu::Device,
+    pipeline_layout: &wgpu::PipelineLayout,
+    cache: Option<&wgpu::PipelineCache>,
+    id_shader: &wgpu::ShaderModule,
+) -> RenderPipeline {
     let instance_size = std::mem::size_of::<GuiQuad>() as u64;
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("GUI ID Render Pipeline"),
         layout: Some(pipeline_layout),
         vertex: wgpu::VertexState {
-            module: &id_shader,
+            module: id_shader,
             entry_point: Some("vs_main"),
             buffers: &[
                 wgpu::VertexBufferLayout {
@@ -104,7 +118,7 @@ pub fn create_id_pipeline(
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
-            module: &id_shader,
+            module: id_shader,
             entry_point: Some("fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
                 format: wgpu::TextureFormat::R32Uint,
