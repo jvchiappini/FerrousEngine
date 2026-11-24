@@ -263,6 +263,20 @@ pub trait FerrousApp {
     ) {
     }
 
+    /// Paints one frame of a popup window.
+    ///
+    /// The runner opens the window when the app calls `ctx.popups.open(..)`,
+    /// and calls this only when that window asked for a frame (an `Open`,
+    /// `Show`, `Move`, `Resize` or [`crate::windows::PopupQueue::redraw`]). An
+    /// idle popup therefore presents zero frames.
+    ///
+    /// `dc.gui` starts empty and `dc.ctx.window_size` is the popup's physical
+    /// size, so coordinates are popup-local; `dc.ctx.scale_factor` is the same
+    /// factor the main frame uses. The swapchain is cleared to transparent
+    /// before the call when the OS blends the window, and to black when it
+    /// cannot (the documented opaque fallback: paint an opaque background).
+    fn draw_popup(&mut self, _popup: crate::windows::PopupId, _dc: &mut DrawContext<'_, '_>) {}
+
     /// Called whenever the window is resized.
     ///
     /// The new physical pixel dimensions are in `new_size`.  The runner

@@ -116,7 +116,7 @@ pub mod prelude {
     pub use crate::components::*;
     pub use crate::debug::{CacheState, FrameDebug, NodeDebug};
     pub use crate::display_list::{DisplayList, DrawCommand, ImageFit};
-    pub use crate::frame::{Frame, FrameStats, Ui};
+    pub use crate::frame::{Frame, FrameStats, PopupBatch, Ui};
     pub use crate::geom::{Rect, Size};
     pub use crate::icons::Icon;
     pub use crate::input::focus::FocusScope;

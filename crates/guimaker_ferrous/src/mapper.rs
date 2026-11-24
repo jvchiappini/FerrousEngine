@@ -152,6 +152,32 @@ impl GuiMakerRenderer {
         gui: &mut GuiBatch,
         font: Option<&F>,
     ) {
+        self.encode_commands_with(&display_list.commands, viewport, scale, gui, font);
+    }
+
+    /// Maps a slice of commands into `gui` using `font` for text.
+    ///
+    /// Use this for a partial list: a host draws a popup-hosted overlay from
+    /// its own commands, already translated to the popup's origin.
+    pub fn encode_commands(
+        &mut self,
+        commands: &[DrawCommand],
+        viewport: Size,
+        scale: f32,
+        gui: &mut GuiBatch,
+        font: &Font,
+    ) {
+        self.encode_commands_with(commands, viewport, scale, gui, Some(font));
+    }
+
+    fn encode_commands_with<F: PaintFont + ?Sized>(
+        &mut self,
+        commands: &[DrawCommand],
+        viewport: Size,
+        scale: f32,
+        gui: &mut GuiBatch,
+        font: Option<&F>,
+    ) {
         self.pending_backdrop = None;
         if !(viewport.width > 0.0 && viewport.height > 0.0 && scale.is_finite() && scale > 0.0) {
             return;
@@ -159,7 +185,7 @@ impl GuiMakerRenderer {
         self.opacity = 1.0;
         self.opacity_stack.clear();
 
-        for command in &display_list.commands {
+        for command in commands {
             self.encode_command(command, scale, gui, font);
         }
         if let Some(pending) = self.pending_backdrop.take() {

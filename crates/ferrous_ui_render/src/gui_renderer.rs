@@ -738,6 +738,35 @@ impl GuiRenderer {
         }
     }
 
+    /// Replaces the SVG scratch buffers with `vertices`-sized ones.
+    ///
+    /// A popup window draws a handful of icon paths at most, not the main
+    /// window's 65k vertices. The buffers still grow on demand (see
+    /// The buffers still grow on demand when a batch exceeds them, so a popup
+    /// that ever needs more keeps working. The global `gui:svg vertices` memory entry stays at the main
+    /// renderer's size, which makes the report an upper bound for popups.
+    #[must_use]
+    pub fn with_svg_capacity(mut self, vertices: u32) -> Self {
+        let vertices = vertices.max(64);
+        let vertex_bytes =
+            u64::from(vertices) * std::mem::size_of::<ferrous_svg::SvgVertex>() as u64;
+        self.svg_vertex_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("GUI SVG Vertex Buffer (popup)"),
+            size: vertex_bytes,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.svg_index_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("GUI SVG Index Buffer (popup)"),
+            size: u64::from(vertices) * 4,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.svg_max_vertices = vertices;
+        self.svg_max_indices = vertices;
+        self
+    }
+
     /// Dynamic-offset stride: the device alignment rounded up to the uniform
     /// size (at least 48 bytes).
     fn segment_stride(device: &wgpu::Device) -> u64 {

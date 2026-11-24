@@ -813,6 +813,13 @@ impl LayoutEngine {
                     } else {
                         anchor.dy
                     };
+                    let mut popup_rect = placement.preferred;
+                    match placement.side {
+                        crate::overlay::Side::Right => popup_rect.x += gap,
+                        crate::overlay::Side::Left => popup_rect.x -= gap,
+                        crate::overlay::Side::Bottom => popup_rect.y += gap,
+                        crate::overlay::Side::Top => popup_rect.y -= gap,
+                    }
                     match placement.side {
                         crate::overlay::Side::Right => rect.x += gap,
                         crate::overlay::Side::Left => rect.x -= gap,
@@ -820,7 +827,13 @@ impl LayoutEngine {
                         crate::overlay::Side::Top => rect.y -= gap,
                     }
                     let host = placement.hosted_in(work_area, self.host_capabilities);
-                    self.overlay_hosts.push((id, host, placement.preferred));
+                    // A popup-hosted overlay lives at its unclamped screen
+                    // rect, so a click translated back into window coordinates
+                    // hit-tests exactly where the user sees it.
+                    if host == crate::overlay::OverlayHost::Popup {
+                        rect = popup_rect;
+                    }
+                    self.overlay_hosts.push((id, host, popup_rect));
                 }
             }
         }

@@ -34,6 +34,10 @@ pub struct AppContext<'a> {
     /// Frame timing: delta, elapsed, FPS.
     pub time: Time,
 
+    /// Popup commands for the runner: `ctx.popups.open(spec)` returns an id at
+    /// once and the runner creates the window in its next `about_to_wait`.
+    pub popups: &'a mut crate::windows::PopupQueue,
+
     /// The current UI glyph atlas, so an app can test whether a character is
     /// drawable before requesting it.
     pub font: Option<&'a ferrous_assets::Font>,

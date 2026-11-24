@@ -46,16 +46,37 @@ pub struct FrameStats {
 pub struct Frame<Msg> {
     /// The flat display list, in paint order.
     pub display_list: DisplayList,
+    /// The overlays the host must draw in their own popup windows.
+    ///
+    /// A host that claims `HostCapabilities::desktop()` draws each entry in a
+    /// child window at [`PopupBatch::rect`] and keeps it out of the main
+    /// display list (the painter already skipped it).
+    pub popups: Vec<PopupBatch>,
     /// Messages emitted by this frame's input.
     pub messages: Vec<Msg>,
     /// This frame's counters.
     pub stats: FrameStats,
 }
 
+/// One overlay that belongs in a popup window.
+#[derive(Clone, Debug)]
+pub struct PopupBatch {
+    /// The overlay node.
+    pub node: crate::view::NodeId,
+    /// The unclamped screen rectangle, in logical window coordinates. It is
+    /// also the overlay's rect in the layout, so hit-testing a click
+    /// translated back into window coordinates finds the overlay.
+    pub rect: Rect,
+    /// That overlay's commands, in window coordinates. A host offsets them to
+    /// the popup's origin before drawing.
+    pub commands: Vec<crate::display_list::DrawCommand>,
+}
+
 impl<Msg> Default for Frame<Msg> {
     fn default() -> Self {
         Self {
             display_list: DisplayList::new(),
+            popups: Vec::new(),
             messages: Vec::new(),
             stats: FrameStats::default(),
         }
@@ -567,6 +588,7 @@ impl<Msg: Clone> Ui<Msg> {
 
     fn paint_display_list(&mut self, frame: &mut Frame<Msg>) {
         frame.display_list.commands.clear();
+        frame.popups.clear();
         self.ring_animating = false;
         if self.tree.root.is_none() {
             return;
@@ -579,7 +601,7 @@ impl<Msg: Clone> Ui<Msg> {
             self.command_hashes.resize(self.tree.len(), 0);
             self.command_counts.resize(self.tree.len(), 0);
         }
-        self.paint_node(root, Interaction::default(), &mut output);
+        self.paint_node(root, Interaction::default(), &mut output, &mut frame.popups);
         frame.display_list.commands = output;
         frame
             .display_list
@@ -587,12 +609,38 @@ impl<Msg: Clone> Ui<Msg> {
             .extend_from_slice(&self.animation_damage);
     }
 
-    fn paint_node(&mut self, id: NodeId, parent: Interaction, output: &mut Vec<DrawCommand>) {
+    fn paint_node(
+        &mut self,
+        id: NodeId,
+        parent: Interaction,
+        output: &mut Vec<DrawCommand>,
+        popups: &mut Vec<PopupBatch>,
+    ) {
         // An overlay that does not fit belongs to a popup window: the host
-        // draws it there, never in the main window (no duplicate pixels).
+        // draws it there, never in the main window (no duplicate pixels). Its
+        // commands go to their own list so the host can encode them into the
+        // popup's batch.
         if self.engine.overlay_host(id) == Some(crate::overlay::OverlayHost::Popup) {
+            let rect = self.engine.overlay_popup_rect(id).unwrap_or(Rect::ZERO);
+            let mut commands = Vec::new();
+            self.paint_contents(id, parent, &mut commands, popups);
+            popups.push(PopupBatch {
+                node: id,
+                rect,
+                commands,
+            });
             return;
         }
+        self.paint_contents(id, parent, output, popups);
+    }
+
+    fn paint_contents(
+        &mut self,
+        id: NodeId,
+        parent: Interaction,
+        output: &mut Vec<DrawCommand>,
+        popups: &mut Vec<PopupBatch>,
+    ) {
         let resolved = self.engine.resolved(id).cloned().unwrap_or_else(|| {
             crate::style::Style::default().resolve(&self.theme, self.viewport.width)
         });
@@ -633,7 +681,7 @@ impl<Msg: Clone> Ui<Msg> {
         let child_count = self.tree.nodes[id.index()].children.len();
         for index in 0..child_count {
             let child = self.tree.nodes[id.index()].children[index];
-            self.paint_node(child, interaction, output);
+            self.paint_node(child, interaction, output, popups);
         }
         self.emit_scrollbar(id, rect, &resolved, path_hash, output);
         if opacity < 1.0 {

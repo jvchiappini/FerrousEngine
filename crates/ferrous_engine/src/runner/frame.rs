@@ -1,13 +1,16 @@
 //! Per-frame logic: `render_frame` and `about_to_wait`.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use ferrous_assets::AssetState;
 use ferrous_core::frame_trace::{self, Stage};
 use ferrous_core::glam::Vec3;
 use ferrous_core::startup;
+use ferrous_core::{RenderStats, Time, Viewport};
 use ferrous_ui_core::Rect;
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
+use winit::window::Window;
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
@@ -15,13 +18,144 @@ use std::time::Instant;
 use web_time::Instant;
 
 use crate::builder::AppMode;
-use crate::context::AppContext;
-use crate::render_context::RenderContext;
 use crate::traits::{DrawContext, FerrousApp};
 
 use super::types::Runner;
 
+/// What `FerrousApp::update` (and the callbacks it drives) asked the runner to
+/// do once the call returns.
+#[allow(clippy::struct_excessive_bools)] // reason: four independent one-shot requests
+struct UpdateOutcome {
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // no readback on the web
+    screenshot: bool,
+    redraw_request: bool,
+    redraw_at: Option<Instant>,
+    keep_awake: bool,
+    resolution_scale: Option<f64>,
+    exit: bool,
+    viewport: Viewport,
+}
+
+/// What the draw callbacks produced.
+struct DrawOutcome {
+    gui_batch: ferrous_gui::GuiBatch,
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // no readback on the web
+    screenshot: bool,
+    redraw_request: bool,
+    redraw_at: Option<Instant>,
+}
+
 impl<A: FerrousApp + 'static> Runner<A> {
+    /// Runs `update`, the file drops and everything else that needs the app,
+    /// through the one `AppContext` builder.
+    fn run_update(&mut self, window: &Arc<Window>, time: Time) -> Option<UpdateOutcome> {
+        let size = self.window_size;
+        let scale = self.scale_factor;
+        let drops = std::mem::take(&mut self.pending_file_drops);
+        let (screenshot, redraw_request, redraw_at, keep_awake, resolution_scale, exit, viewport) =
+            self.with_ctx(
+                window,
+                time,
+                RenderStats::default(),
+                Vec3::ZERO,
+                Vec3::ZERO,
+                size,
+                scale,
+                move |app, ctx| {
+                    let update_stage = frame_trace::stage(Stage::AppUpdate);
+                    app.update(ctx);
+                    drop(update_stage);
+                    for event in drops {
+                        app.on_file_drop(event, ctx);
+                    }
+                    (
+                        ctx.screenshot_requested,
+                        ctx.redraw_requested,
+                        ctx.redraw_at,
+                        ctx.keep_awake_requested,
+                        ctx.requested_resolution_scale.take(),
+                        ctx.exit_requested,
+                        ctx.viewport,
+                    )
+                },
+            )?;
+        Some(UpdateOutcome {
+            screenshot,
+            redraw_request,
+            redraw_at,
+            keep_awake,
+            resolution_scale,
+            exit,
+            viewport,
+        })
+    }
+
+    /// Runs `draw_3d`/`draw_ui` through the one `AppContext` builder and
+    /// returns the batch they filled.
+    fn run_draw(&mut self, window: &Arc<Window>, time: Time) -> Option<DrawOutcome> {
+        let (render_stats, camera_eye, camera_target) = {
+            let gfx = self.graphics.as_mut()?;
+            (
+                gfx.renderer.render_stats,
+                gfx.renderer.camera().eye,
+                gfx.renderer.camera().target,
+            )
+        };
+        let mut gui_batch = {
+            let gfx = self.graphics.as_mut()?;
+            // Reuse the batch the renderer reclaimed last frame. Clearing it
+            // keeps every primitive Vec's capacity, so the chrome's steady
+            // state does not allocate (measured by Motioner's alloc counter).
+            let mut batch = gfx.renderer.take_recycled_ui_batch().unwrap_or_default();
+            batch.clear();
+            batch
+        };
+        let mode = self.config.mode;
+        let viewport = self.viewport;
+        let size = self.window_size;
+        let scale = self.scale_factor;
+        let (gui_batch, screenshot, redraw_request, redraw_at) = self.with_ctx(
+            window,
+            time,
+            render_stats,
+            camera_eye,
+            camera_target,
+            size,
+            scale,
+            move |app, ctx| {
+                let _collect = frame_trace::stage(Stage::CommandCollection);
+                if viewport.width > 0 && mode == AppMode::Game3D {
+                    app.draw_3d(ctx);
+                }
+
+                for gizmo in ctx.gizmos.drain(..) {
+                    ctx.render.inner.queue_gizmo(gizmo);
+                }
+
+                if let Some(font) = ctx.font {
+                    let mut dc = DrawContext {
+                        gui: &mut gui_batch,
+                        font,
+                        ctx,
+                    };
+                    app.draw_ui(&mut dc);
+                }
+                (
+                    gui_batch,
+                    ctx.screenshot_requested,
+                    ctx.redraw_requested,
+                    ctx.redraw_at,
+                )
+            },
+        )?;
+        Some(DrawOutcome {
+            gui_batch,
+            screenshot,
+            redraw_request,
+            redraw_at,
+        })
+    }
+
     /// Executes one full update + render cycle relying on external absolute time or clock elapsed time if interactive.
     pub fn render_frame(
         &mut self,
@@ -37,69 +171,61 @@ impl<A: FerrousApp + 'static> Runner<A> {
         #[cfg(target_arch = "wasm32")]
         {
             if self.graphics.is_none() {
-                if let Some(slot) = &self.gfx_pending {
-                    if slot.borrow().is_some() {
-                        self.graphics = slot.borrow_mut().take();
-                        self.gfx_pending = None;
-                        if let (Some(gfx), Some(window)) = (&mut self.graphics, &self.window) {
-                            #[cfg(target_arch = "wasm32")]
-                            let (w, h) =
-                                super::canvas_physical_size(window, self.config.resolution_scale);
-                            #[cfg(not(target_arch = "wasm32"))]
-                            let (w, h) = {
-                                let size = window.inner_size();
-                                (size.width, size.height)
-                            };
-                            self.window_size = (w.max(1), h.max(1));
-                            self.viewport = ferrous_core::Viewport {
-                                x: 0,
-                                y: 0,
-                                width: self.window_size.0,
-                                height: self.window_size.1,
-                            };
+                let Some(slot) = self.gfx_pending.clone() else {
+                    return None;
+                };
+                if slot.borrow().is_some() {
+                    self.graphics = slot.borrow_mut().take();
+                    self.gfx_pending = None;
+                    if self.graphics.is_some() && self.window.is_some() {
+                        let Some(window) = self.window.clone() else {
+                            return None;
+                        };
+                        #[cfg(target_arch = "wasm32")]
+                        let (w, h) =
+                            super::canvas_physical_size(&window, self.config.resolution_scale);
+                        #[cfg(not(target_arch = "wasm32"))]
+                        let (w, h) = {
+                            let size = window.inner_size();
+                            (size.width, size.height)
+                        };
+                        self.window_size = (w.max(1), h.max(1));
+                        self.viewport = ferrous_core::Viewport {
+                            x: 0,
+                            y: 0,
+                            width: self.window_size.0,
+                            height: self.window_size.1,
+                        };
+                        if let Some(gfx) = self.graphics.as_mut() {
                             gfx.resize(self.window_size.0, self.window_size.1);
                             gfx.renderer.set_viewport(self.viewport);
-                            let time = self.clock.peek();
-                            let waker = self.waker.clone();
-                            let mut ctx = AppContext {
-                                input: &self.input,
-                                font: self.font.as_deref(),
-                                glyph_requests: &mut self.glyph_requests,
-                                time,
-                                window_size: self.window_size,
-
-                                scale_factor: self.scale_factor,
-                                window,
-                                viewport: self.viewport,
-                                render_stats: Default::default(),
-                                camera_eye: Vec3::ZERO,
-                                camera_target: Vec3::ZERO,
-                                gizmos: Vec::new(),
-                                world: &mut self.world,
-                                exit_requested: false,
-                                requested_resolution_scale: None,
-                                keep_awake_requested: false,
-                                screenshot_requested: false,
-                                redraw_requested: false,
-                                redraw_at: None,
-                                waker: &waker,
-                                _gpu_backend: gfx.renderer.context.backend,
-                                render: RenderContext::new(&mut gfx.renderer),
-                                asset_server: &mut self.asset_server,
-                            };
-                            self.app.setup(&mut ctx);
-                            self.viewport = ctx.viewport;
-                            // self.ui.viewport = ctx.viewport;
                         }
-                        if let Some(font_slot) = self.font_pending.take() {
-                            if let Ok(mut borrow) = font_slot.try_borrow_mut() {
-                                if let Some(font) = borrow.take() {
-                                    self.font = Some(std::sync::Arc::new(font));
-                                }
+                        let time = self.clock.peek();
+                        let size = self.window_size;
+                        let scale = self.scale_factor;
+                        let viewport = self.with_ctx(
+                            &window,
+                            time,
+                            RenderStats::default(),
+                            Vec3::ZERO,
+                            Vec3::ZERO,
+                            size,
+                            scale,
+                            |app, ctx| {
+                                app.setup(ctx);
+                                ctx.viewport
+                            },
+                        );
+                        if let Some(viewport) = viewport {
+                            self.viewport = viewport;
+                        }
+                    }
+                    if let Some(font_slot) = self.font_pending.take() {
+                        if let Ok(mut borrow) = font_slot.try_borrow_mut() {
+                            if let Some(font) = borrow.take() {
+                                self.font = Some(std::sync::Arc::new(font));
                             }
                         }
-                    } else {
-                        return None;
                     }
                 } else {
                     return None;
@@ -107,9 +233,10 @@ impl<A: FerrousApp + 'static> Runner<A> {
             }
         }
 
-        let (Some(gfx), Some(window)) = (&mut self.graphics, &self.window) else {
+        if self.graphics.is_none() || self.window.is_none() {
             return None;
-        };
+        }
+        let window = self.window.clone()?;
 
         // Immediate-mode 2D geometry is per-frame. The runner owns that
         // lifecycle and clears both 2D batchers once here, before
@@ -118,7 +245,9 @@ impl<A: FerrousApp + 'static> Runner<A> {
         // across frames ("ghosting"). `clear_2d()` is idempotent, so an
         // application that also clears at the start of its own frame is
         // unaffected; it can remove its manual call.
-        gfx.renderer.clear_2d();
+        if let Some(gfx) = self.graphics.as_mut() {
+            gfx.renderer.clear_2d();
+        }
 
         // Prompt 18 P0: per-frame stage trace.  The guard closes the frame on
         // every return path below; it is a no-op unless FERROUS_TRACE_FRAMES
@@ -126,8 +255,6 @@ impl<A: FerrousApp + 'static> Runner<A> {
         let _frame = frame_trace::begin_frame();
         // Prompt 18 P1: this frame answers any queued input/redraw request.
         self.redraw.begin_frame();
-        let mut redraw_request: bool;
-        let mut redraw_at: Option<Instant>;
 
         // Wall-clock timing for the whole frame (update + draw + present).
         // Recorded on every return path below; `RenderContext::frame_ms()` and
@@ -138,9 +265,9 @@ impl<A: FerrousApp + 'static> Runner<A> {
         // Measure **the canvas element** (not window.innerWidth) so the buffer
         // is exactly the device-pixel box and the browser never rescales it.
         #[cfg(target_arch = "wasm32")]
-        {
+        if let Some(gfx) = self.graphics.as_mut() {
             let (phys_w, phys_h) =
-                super::canvas_physical_size(window, self.config.resolution_scale);
+                super::canvas_physical_size(&window, self.config.resolution_scale);
             if phys_w > 0
                 && phys_h > 0
                 && (phys_w != self.window_size.0 || phys_h != self.window_size.1)
@@ -154,7 +281,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 };
                 gfx.resize(phys_w, phys_h);
                 gfx.renderer.set_viewport(self.viewport);
-                super::set_canvas_backing_size(window, phys_w, phys_h);
+                super::set_canvas_backing_size(&window, phys_w, phys_h);
             }
         }
 
@@ -185,20 +312,22 @@ impl<A: FerrousApp + 'static> Runner<A> {
         if self.font.is_none() {
             if let Some(handle) = self.font_asset_handle {
                 if let AssetState::Ready(font_data) = self.asset_server.get(handle) {
-                    let font = font_data.into_font(
-                        &gfx.renderer.context.device,
-                        &gfx.renderer.context.queue,
-                        ferrous_font::latin_western(),
-                    );
-                    startup::mark("engine: fonts ready");
-                    gfx.renderer
-                        .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
-                    ferrous_core::memory::register_gpu(
-                        "font:ui atlas texture",
-                        font.atlas.gpu_bytes(),
-                        ferrous_core::memory::Subsystem::Fonts,
-                    );
-                    self.font = Some(std::sync::Arc::new(font));
+                    if let Some(gfx) = self.graphics.as_mut() {
+                        let font = font_data.into_font(
+                            &gfx.renderer.context.device,
+                            &gfx.renderer.context.queue,
+                            ferrous_font::latin_western(),
+                        );
+                        startup::mark("engine: fonts ready");
+                        gfx.renderer
+                            .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
+                        ferrous_core::memory::register_gpu(
+                            "font:ui atlas texture",
+                            font.atlas.gpu_bytes(),
+                            ferrous_core::memory::Subsystem::Fonts,
+                        );
+                        self.font = Some(std::sync::Arc::new(font));
+                    }
                     self.font_asset_handle = None;
                 }
             }
@@ -225,77 +354,32 @@ impl<A: FerrousApp + 'static> Runner<A> {
         let time = time_snapshot;
 
         // ── 1. UPDATE ───────────────────────────────────────────────────────
-        // A screenshot asked for during `update` (or `setup`) must be copied
-        // on the frame that is about to be presented: the draw pass builds a
-        // fresh `AppContext`, so carry the flag across the two passes.
-        let update_screenshot;
-        // Whether this frame showed the window and can deliver queued input.
-        #[cfg(not(target_arch = "wasm32"))]
-        let mut first_frame_shown = false;
-        {
-            let backend = gfx.renderer.context.backend;
-            let waker = self.waker.clone();
-            let mut ctx = AppContext {
-                input: &self.input,
-                font: self.font.as_deref(),
-                glyph_requests: &mut self.glyph_requests,
-                time,
-                window_size: self.window_size,
-
-                scale_factor: self.scale_factor,
-                window,
-                viewport: self.viewport,
-                render_stats: Default::default(),
-                camera_eye: Vec3::ZERO,
-                camera_target: Vec3::ZERO,
-                gizmos: Vec::new(),
-                world: &mut self.world,
-                render: RenderContext::new(&mut gfx.renderer),
-                exit_requested: false,
-                requested_resolution_scale: None,
-                keep_awake_requested: false,
-                screenshot_requested: false,
-                redraw_requested: false,
-                redraw_at: None,
-                waker: &waker,
-                _gpu_backend: backend,
-                asset_server: &mut self.asset_server,
-            };
-
-            let update_stage = frame_trace::stage(Stage::AppUpdate);
-            self.app.update(&mut ctx);
-            drop(update_stage);
-
-            let drops = std::mem::take(&mut self.pending_file_drops);
-            for event in drops {
-                self.app.on_file_drop(event, &mut ctx);
-            }
-            update_screenshot = ctx.screenshot_requested;
-            redraw_request = ctx.redraw_requested;
-            redraw_at = ctx.redraw_at;
-
-            if ctx.keep_awake_requested {
-                self.last_action_time = Instant::now();
-            }
-
-            // Live render-scale change: resize the surface next frame.
-            if let Some(requested) = ctx.requested_resolution_scale.take() {
-                self.config.resolution_scale = requested;
-                self.redraw.request();
-            }
-
-            if ctx.exit_requested {
-                drop(ctx);
+        let update = self.run_update(&window, time)?;
+        if update.keep_awake {
+            self.last_action_time = Instant::now();
+        }
+        // Live render-scale change: resize the surface next frame.
+        if let Some(requested) = update.resolution_scale {
+            self.config.resolution_scale = requested;
+            self.redraw.request();
+        }
+        if update.exit {
+            if let Some(gfx) = self.graphics.as_mut() {
                 gfx.renderer
                     .record_frame_time(frame_start.elapsed().as_secs_f32() * 1000.0);
-                self.begin_close(event_loop);
-                return None;
             }
-
-            if self.viewport != ctx.viewport {
-                self.viewport = ctx.viewport;
+            self.begin_close(event_loop);
+            return None;
+        }
+        if self.viewport != update.viewport {
+            self.viewport = update.viewport;
+            if let Some(gfx) = self.graphics.as_mut() {
                 gfx.renderer.set_viewport(self.viewport);
             }
+        }
+        let mut redraw_request = update.redraw_request;
+        let mut redraw_at = update.redraw_at;
+        {
             let _layout = frame_trace::stage(Stage::UiLayout);
             self.ui.update(
                 time.delta,
@@ -310,16 +394,16 @@ impl<A: FerrousApp + 'static> Runner<A> {
         if !self.glyph_requests.is_empty() {
             let requested = std::mem::take(&mut self.glyph_requests);
             if let Some(runtime) = self.runtime_font.as_mut() {
-                if runtime.ensure(
-                    &requested,
-                    &gfx.renderer.context.device,
-                    &gfx.renderer.context.queue,
-                ) {
-                    let font = runtime.font().clone();
-                    gfx.renderer
-                        .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
-                    self.font = Some(font);
-                    redraw_request = true;
+                if let Some(gfx) = self.graphics.as_mut() {
+                    let device = gfx.renderer.context.device.clone();
+                    let queue = gfx.renderer.context.queue.clone();
+                    if runtime.ensure(&requested, &device, &queue) {
+                        let font = runtime.font().clone();
+                        gfx.renderer
+                            .set_font_atlas(&font.atlas.view, &font.atlas.sampler);
+                        self.font = Some(font);
+                        redraw_request = true;
+                    }
                 }
             }
         }
@@ -327,12 +411,12 @@ impl<A: FerrousApp + 'static> Runner<A> {
         // ECS → renderer sync and 3-D camera input are active in Game3D mode
         // OR if the renderer has been explicitly switched to Full3D (hybrid mode).
         let dt = time.delta;
-        let renderer_mode = gfx.renderer.mode;
-
+        let renderer_mode = self.graphics.as_ref()?.renderer.mode;
         if self.config.mode == AppMode::Game3D
             || renderer_mode == ferrous_renderer::RendererMode::Full3D
         {
             self.app.on_sync_world(&self.world);
+            let gfx = self.graphics.as_mut()?;
             gfx.renderer.sync_world(&self.world);
 
             if self.viewport.width > 0 && self.viewport.height > 0 {
@@ -348,69 +432,15 @@ impl<A: FerrousApp + 'static> Runner<A> {
         }
 
         // ── 2. DRAW ─────────────────────────────────────────────────────────
-        let mut encoder = gfx.renderer.begin_frame();
+        let mut encoder = self.graphics.as_mut()?.renderer.begin_frame();
+        let draw = self.run_draw(&window, time)?;
+        let mut gui_batch = draw.gui_batch;
+        redraw_request |= draw.redraw_request;
+        if let Some(when) = draw.redraw_at {
+            redraw_at = Some(redraw_at.map_or(when, |current| current.min(when)));
+        }
+
         {
-            let render_stats = gfx.renderer.render_stats;
-            let camera_eye = gfx.renderer.camera().eye;
-            let camera_target = gfx.renderer.camera().target;
-            let backend = gfx.renderer.context.backend;
-            // Reuse the batch the renderer reclaimed last frame. Clearing it
-            // keeps every primitive Vec's capacity, so the chrome's steady
-            // state does not allocate (measured by Motioner's alloc counter).
-            let mut gui_batch = gfx.renderer.take_recycled_ui_batch().unwrap_or_default();
-            gui_batch.clear();
-            let waker = self.waker.clone();
-            let mut ctx = AppContext {
-                input: &self.input,
-                font: self.font.as_deref(),
-                glyph_requests: &mut self.glyph_requests,
-                time,
-                window_size: self.window_size,
-
-                scale_factor: self.scale_factor,
-                window,
-                viewport: self.viewport,
-                render_stats,
-                camera_eye,
-                camera_target,
-                gizmos: Vec::new(),
-                world: &mut self.world,
-                render: RenderContext::new(&mut gfx.renderer),
-                exit_requested: false,
-                requested_resolution_scale: None,
-                keep_awake_requested: false,
-                screenshot_requested: false,
-                redraw_requested: false,
-                redraw_at: None,
-                waker: &waker,
-                _gpu_backend: backend,
-                asset_server: &mut self.asset_server,
-            };
-
-            {
-                let _collect = frame_trace::stage(Stage::CommandCollection);
-                if self.viewport.width > 0 && self.config.mode == AppMode::Game3D {
-                    self.app.draw_3d(&mut ctx);
-                }
-
-                for gizmo in ctx.gizmos.drain(..) {
-                    ctx.render.inner.queue_gizmo(gizmo);
-                }
-
-                if let Some(font) = self.font.as_deref() {
-                    let mut dc = DrawContext {
-                        gui: &mut gui_batch,
-                        font,
-                        ctx: &mut ctx,
-                    };
-                    self.app.draw_ui(&mut dc);
-                }
-            }
-            redraw_request |= ctx.redraw_requested;
-            if let Some(when) = ctx.redraw_at {
-                redraw_at = Some(redraw_at.map_or(when, |current| current.min(when)));
-            }
-
             let viewport_rect = Rect {
                 x: 0.0,
                 y: 0.0,
@@ -430,10 +460,16 @@ impl<A: FerrousApp + 'static> Runner<A> {
             let want_screenshot = false;
             #[cfg(not(target_arch = "wasm32"))]
             let want_screenshot = screenshot_wanted(
-                update_screenshot,
-                ctx.screenshot_requested,
-                gfx.config.usage.contains(wgpu::TextureUsages::COPY_SRC),
+                update.screenshot,
+                draw.screenshot,
+                self.graphics
+                    .as_ref()
+                    .is_some_and(|gfx| gfx.config.usage.contains(wgpu::TextureUsages::COPY_SRC)),
             );
+
+            let gfx = self.graphics.as_mut()?;
+            #[cfg(not(target_arch = "wasm32"))]
+            let mut first_frame_shown = false;
 
             // ── 3. RENDER FINAL ─────────────────────────────────────────────
             let frame = {
@@ -560,7 +596,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
                         // below, after the visibility mark.
                         startup::mark("engine: first frame presented");
                         if self.config.visible && !gate.is_shown() {
-                            crate::window_style::show_ready(window);
+                            crate::window_style::show_ready(&window);
                             startup::mark("engine: window visible");
                             first_frame_shown = true;
                         }
@@ -644,32 +680,32 @@ impl<A: FerrousApp + 'static> Runner<A> {
                     return None;
                 }
             }
-        }
 
-        // Prompt 18 P1: whatever the app asked for during this frame.
-        if redraw_request {
-            self.redraw.request();
-        }
-        if let Some(when) = redraw_at {
-            self.redraw.request_at(when);
-        }
+            // Prompt 18 P1: whatever the app asked for during this frame.
+            if redraw_request {
+                self.redraw.request();
+            }
+            if let Some(when) = redraw_at {
+                self.redraw.request_at(when);
+            }
 
-        self.input.end_frame();
+            self.input.end_frame();
 
-        // Prompt 17 S3b: the first frame is visible; deliver the input that
-        // arrived while the window was hidden, in order.
-        #[cfg(not(target_arch = "wasm32"))]
-        if first_frame_shown {
-            let queued = self
-                .startup
-                .as_mut()
-                .map(super::show::StartupGate::take_queue)
-                .unwrap_or_default();
-            if let Some(event_loop) = event_loop {
-                for (id, event) in queued {
-                    <Self as winit::application::ApplicationHandler<
-                        crate::redraw::EngineEvent,
-                    >>::window_event(self, event_loop, id, event);
+            // Prompt 17 S3b: the first frame is visible; deliver the input that
+            // arrived while the window was hidden, in order.
+            #[cfg(not(target_arch = "wasm32"))]
+            if first_frame_shown {
+                let queued = self
+                    .startup
+                    .as_mut()
+                    .map(super::show::StartupGate::take_queue)
+                    .unwrap_or_default();
+                if let Some(event_loop) = event_loop {
+                    for (id, event) in queued {
+                        <Self as winit::application::ApplicationHandler<
+                            crate::redraw::EngineEvent,
+                        >>::window_event(self, event_loop, id, event);
+                    }
                 }
             }
         }
@@ -720,6 +756,11 @@ impl<A: FerrousApp + 'static> Runner<A> {
         let installed = self.poll_startup(Some(event_loop));
         #[cfg(target_arch = "wasm32")]
         let installed = false;
+
+        // Prompt 18 P1: popup commands are applied here and only here, because
+        // this is the one callback that has the event loop a new window needs.
+        #[cfg(not(target_arch = "wasm32"))]
+        self.drain_popups(event_loop);
 
         let Some(window) = &self.window else { return };
         let now = Instant::now();

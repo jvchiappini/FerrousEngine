@@ -22,8 +22,10 @@ use std::rc::Rc;
 use ferrous_assets::font_importer::FontData;
 
 use crate::builder::AppConfig;
+use crate::context::AppContext;
 use crate::graphics::GraphicsState;
 use crate::redraw::{Scheduler, Waker};
+use crate::render_context::RenderContext;
 use crate::traits::{FerrousApp, FileDropEvent};
 
 // ─── Runner ─────────────────────────────────────────────────────────────────
@@ -41,11 +43,14 @@ pub(crate) struct Runner<A: FerrousApp + 'static> {
     /// The window's current DPI scale factor.
     pub(super) scale_factor: f64,
     /// The main window plus owned popups (popup-capable hosts only).
-    pub(super) windows: Option<crate::windows::WindowMap>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) windows: Option<crate::windows::WindowMap<crate::windows::WinitPopups>>,
     /// The composite UI atlas, extendable when a frame needs a fallback glyph.
     pub(super) runtime_font: Option<crate::runtime_font::RuntimeFont>,
     /// Characters the last frame's text asked for and the atlas lacks.
     pub(super) glyph_requests: Vec<char>,
+    /// Popup commands queued by the app.
+    pub(super) popups: crate::windows::PopupQueue,
     pub(super) viewport: Viewport,
     pub(super) clock: TimeClock,
     pub(super) world: World,
@@ -122,9 +127,11 @@ impl<A: FerrousApp + 'static> Runner<A> {
             },
             window_size: (0, 0),
             scale_factor: 1.0,
+            #[cfg(not(target_arch = "wasm32"))]
             windows: None,
             runtime_font: None,
             glyph_requests: Vec::new(),
+            popups: crate::windows::PopupQueue::new(),
             clock: TimeClock::new(),
             world: World::new(),
             font: None,
@@ -155,5 +162,67 @@ impl<A: FerrousApp + 'static> Runner<A> {
             waker: Waker::from_proxy(proxy),
             ui_presenter: None,
         }
+    }
+
+    /// Builds the one `AppContext` every callback shares.
+    ///
+    /// Every call site used to spell out the ~25-field literal by hand; one
+    /// builder keeps `AppContext` and `Runner` in sync when either grows.
+    /// Returns `None` before the window or the GPU state exists.
+    #[allow(clippy::too_many_arguments)] // mirrors the `AppContext` fields
+    pub(super) fn with_ctx<R>(
+        &mut self,
+        window: &Arc<Window>,
+        time: ferrous_core::Time,
+        render_stats: ferrous_core::RenderStats,
+        camera_eye: ferrous_core::glam::Vec3,
+        camera_target: ferrous_core::glam::Vec3,
+        window_size: (u32, u32),
+        scale_factor: f64,
+        callback: impl FnOnce(&mut A, &mut AppContext<'_>) -> R,
+    ) -> Option<R> {
+        let Runner {
+            app,
+            graphics,
+            input,
+            font,
+            glyph_requests,
+            popups,
+            world,
+            viewport,
+            asset_server,
+            waker,
+            ..
+        } = self;
+        let gfx = graphics.as_mut()?;
+        let backend = gfx.renderer.context.backend;
+        let waker = waker.clone();
+        let mut ctx = AppContext {
+            input,
+            font: font.as_deref(),
+            glyph_requests,
+            popups,
+            time,
+            window_size,
+            scale_factor,
+            window,
+            viewport: *viewport,
+            render_stats,
+            camera_eye,
+            camera_target,
+            gizmos: Vec::new(),
+            world,
+            render: RenderContext::new(&mut gfx.renderer),
+            asset_server,
+            exit_requested: false,
+            requested_resolution_scale: None,
+            keep_awake_requested: false,
+            screenshot_requested: false,
+            redraw_requested: false,
+            redraw_at: None,
+            waker: &waker,
+            _gpu_backend: backend,
+        };
+        Some(callback(app, &mut ctx))
     }
 }

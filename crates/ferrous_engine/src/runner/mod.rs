@@ -8,6 +8,8 @@
 mod events;
 mod frame;
 #[cfg(not(target_arch = "wasm32"))]
+mod popups;
+#[cfg(not(target_arch = "wasm32"))]
 mod show;
 mod types;
 

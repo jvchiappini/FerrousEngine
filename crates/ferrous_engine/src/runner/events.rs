@@ -19,9 +19,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::builder::AppMode;
-use crate::context::AppContext;
 use crate::redraw::EngineEvent;
-use crate::render_context::RenderContext;
 use crate::traits::{FerrousApp, FileDropEvent};
 #[cfg(target_arch = "wasm32")]
 use ferrous_assets::Font;
@@ -70,45 +68,28 @@ impl<A: FerrousApp> Runner<A> {
 
 impl<A: FerrousApp + 'static> Runner<A> {
     /// Forwards a popup's raw event to the app.
+    #[cfg(not(target_arch = "wasm32"))]
     fn deliver_popup_event(&mut self, popup: crate::windows::PopupId, event: &WindowEvent) {
         let Some(window) = self.window.clone() else {
             return;
         };
-        let Some(gfx) = self.graphics.as_mut() else {
-            return;
-        };
-        let waker = self.waker.clone();
+        let time = self.clock.peek();
         let size = self.window_size;
-        let (redraw, redraw_at) = {
-            let backend = gfx.renderer.context.backend;
-            let time = self.clock.peek();
-            let mut ctx = AppContext {
-                input: &self.input,
-                font: self.font.as_deref(),
-                glyph_requests: &mut self.glyph_requests,
-                time,
-                window_size: size,
-                scale_factor: self.scale_factor,
-                window: &window,
-                viewport: self.viewport,
-                render_stats: ferrous_core::RenderStats::default(),
-                camera_eye: ferrous_core::glam::Vec3::ZERO,
-                camera_target: ferrous_core::glam::Vec3::ZERO,
-                gizmos: Vec::new(),
-                world: &mut self.world,
-                render: RenderContext::new(&mut gfx.renderer),
-                asset_server: &mut self.asset_server,
-                exit_requested: false,
-                requested_resolution_scale: None,
-                keep_awake_requested: false,
-                screenshot_requested: false,
-                redraw_requested: false,
-                redraw_at: None,
-                waker: &waker,
-                _gpu_backend: backend,
-            };
-            self.app.on_popup_event(popup, event, &mut ctx);
-            (ctx.redraw_requested, ctx.redraw_at)
+        let scale = self.scale_factor;
+        let Some((redraw, redraw_at)) = self.with_ctx(
+            &window,
+            time,
+            ferrous_core::RenderStats::default(),
+            ferrous_core::glam::Vec3::ZERO,
+            ferrous_core::glam::Vec3::ZERO,
+            size,
+            scale,
+            |app, ctx| {
+                app.on_popup_event(popup, event, ctx);
+                (ctx.redraw_requested, ctx.redraw_at)
+            },
+        ) else {
+            return;
         };
         if redraw {
             self.redraw.request();
@@ -127,41 +108,21 @@ impl<A: FerrousApp + 'static> Runner<A> {
         let Some(window) = self.window.clone() else {
             return;
         };
-        let Some(gfx) = self.graphics.as_mut() else {
+        let time = self.clock.peek();
+        let Some((redraw, redraw_at)) = self.with_ctx(
+            &window,
+            time,
+            ferrous_core::RenderStats::default(),
+            ferrous_core::glam::Vec3::ZERO,
+            ferrous_core::glam::Vec3::ZERO,
+            size,
+            scale_factor,
+            |app, ctx| {
+                app.on_scale_factor_changed(scale_factor, size, ctx);
+                (ctx.redraw_requested, ctx.redraw_at)
+            },
+        ) else {
             return;
-        };
-        let waker = self.waker.clone();
-        let (redraw, redraw_at) = {
-            let backend = gfx.renderer.context.backend;
-            let time = self.clock.peek();
-            let mut ctx = AppContext {
-                input: &self.input,
-                font: self.font.as_deref(),
-                glyph_requests: &mut self.glyph_requests,
-                time,
-                window_size: size,
-                window: &window,
-                viewport: self.viewport,
-                render_stats: ferrous_core::RenderStats::default(),
-                camera_eye: ferrous_core::glam::Vec3::ZERO,
-                camera_target: ferrous_core::glam::Vec3::ZERO,
-                gizmos: Vec::new(),
-                world: &mut self.world,
-                render: RenderContext::new(&mut gfx.renderer),
-                asset_server: &mut self.asset_server,
-                exit_requested: false,
-                requested_resolution_scale: None,
-                keep_awake_requested: false,
-                screenshot_requested: false,
-                redraw_requested: false,
-                redraw_at: None,
-                waker: &waker,
-                _gpu_backend: backend,
-                scale_factor,
-            };
-            self.app
-                .on_scale_factor_changed(scale_factor, size, &mut ctx);
-            (ctx.redraw_requested, ctx.redraw_at)
         };
         if redraw {
             self.redraw.request();
@@ -234,6 +195,12 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
             self.init = Some(super::show::InitJob::start(device));
             self.startup_work = work;
             self.startup = Some(gate);
+            // The map exists from here on, so every later event is routed: a
+            // popup created in `about_to_wait` already has its route.
+            self.windows = Some(crate::windows::WindowMap::new(
+                window.id(),
+                crate::windows::WinitPopups::new(&window),
+            ));
             self.window = Some(window);
         }
 
@@ -312,14 +279,25 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         // Route by window id before anything else: a popup's input goes to
         // `on_popup_event` and never reaches the main window's path.
-        let target = self
-            .windows
-            .as_ref()
-            .map_or(crate::windows::WindowTarget::Main, |windows| {
-                windows.route(id)
-            });
-        if let crate::windows::WindowTarget::Popup(popup) = target {
-            self.deliver_popup_event(popup, &event);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(popup) = super::popups::popup_for_event(self.windows.as_ref(), id) {
+            match event {
+                WindowEvent::RedrawRequested => {
+                    let _ = self.render_popup(popup);
+                }
+                WindowEvent::Resized(size) => {
+                    // The pópup swapchain follows its window like the main one.
+                    if let Some(windows) = self.windows.as_mut() {
+                        if let Some(handle) = windows.handle(popup) {
+                            if let Some(target) = windows.backend_mut().window_mut(handle) {
+                                target.reconfigure(size.width, size.height);
+                                target.window.request_redraw();
+                            }
+                        }
+                    }
+                }
+                _ => self.deliver_popup_event(popup, &event),
+            }
             return;
         }
         // Prompt 18 P1: measure only real event callbacks. `RedrawRequested`
@@ -546,41 +524,23 @@ impl<A: FerrousApp + 'static> Runner<A> {
         let Some(window) = self.window.clone() else {
             return;
         };
-        let Some(gfx) = self.graphics.as_mut() else {
+        let time = self.clock.peek();
+        let size = self.window_size;
+        let scale = self.scale_factor;
+        let Some((redraw, redraw_at)) = self.with_ctx(
+            &window,
+            time,
+            ferrous_core::RenderStats::default(),
+            ferrous_core::glam::Vec3::ZERO,
+            ferrous_core::glam::Vec3::ZERO,
+            size,
+            scale,
+            |app, ctx| {
+                app.on_window_event(event, ctx);
+                (ctx.redraw_requested, ctx.redraw_at)
+            },
+        ) else {
             return;
-        };
-        let waker = self.waker.clone();
-        let (redraw, redraw_at) = {
-            let backend = gfx.renderer.context.backend;
-            let time = self.clock.peek();
-            let mut ctx = AppContext {
-                input: &self.input,
-                font: self.font.as_deref(),
-                glyph_requests: &mut self.glyph_requests,
-                time,
-                window_size: self.window_size,
-
-                scale_factor: self.scale_factor,
-                window: &window,
-                viewport: self.viewport,
-                render_stats: ferrous_core::RenderStats::default(),
-                camera_eye: ferrous_core::glam::Vec3::ZERO,
-                camera_target: ferrous_core::glam::Vec3::ZERO,
-                gizmos: Vec::new(),
-                world: &mut self.world,
-                render: RenderContext::new(&mut gfx.renderer),
-                asset_server: &mut self.asset_server,
-                exit_requested: false,
-                requested_resolution_scale: None,
-                keep_awake_requested: false,
-                screenshot_requested: false,
-                redraw_requested: false,
-                redraw_at: None,
-                waker: &waker,
-                _gpu_backend: backend,
-            };
-            self.app.on_window_event(event, &mut ctx);
-            (ctx.redraw_requested, ctx.redraw_at)
         };
         if redraw {
             self.redraw.request();
@@ -642,49 +602,32 @@ impl<A: FerrousApp + 'static> Runner<A> {
                 .load::<ferrous_assets::font_importer::FontData>(path.as_str());
             self.font_asset_handle = Some(handle);
         }
-        {
-            let time = self.clock.peek();
-            let backend = gfx.renderer.context.backend;
-            let waker = self.waker.clone();
-            let (redraw, redraw_at) = {
-                let mut ctx = AppContext {
-                    input: &self.input,
-                    font: self.font.as_deref(),
-                    glyph_requests: &mut self.glyph_requests,
-                    time,
-                    window_size: self.window_size,
-
-                    scale_factor: self.scale_factor,
-                    window: &window,
-                    render_stats: ferrous_core::RenderStats::default(),
-                    camera_eye: ferrous_core::glam::Vec3::ZERO,
-                    camera_target: ferrous_core::glam::Vec3::ZERO,
-                    world: &mut self.world,
-                    viewport: self.viewport,
-                    gizmos: Vec::new(),
-                    render: RenderContext::new(&mut gfx.renderer),
-                    asset_server: &mut self.asset_server,
-                    exit_requested: false,
-                    requested_resolution_scale: None,
-                    keep_awake_requested: false,
-                    screenshot_requested: false,
-                    redraw_requested: false,
-                    redraw_at: None,
-                    waker: &waker,
-                    _gpu_backend: backend,
-                };
-                self.app.setup(&mut ctx);
-                (ctx.redraw_requested, ctx.redraw_at)
-            };
-            if redraw {
-                self.redraw.request();
-            }
-            if let Some(when) = redraw_at {
-                self.redraw.request_at(when);
-            }
+        self.graphics = Some(gfx);
+        let time = self.clock.peek();
+        let size = self.window_size;
+        let scale = self.scale_factor;
+        let (redraw, redraw_at) = self
+            .with_ctx(
+                &window,
+                time,
+                ferrous_core::RenderStats::default(),
+                ferrous_core::glam::Vec3::ZERO,
+                ferrous_core::glam::Vec3::ZERO,
+                size,
+                scale,
+                |app, ctx| {
+                    app.setup(ctx);
+                    (ctx.redraw_requested, ctx.redraw_at)
+                },
+            )
+            .unwrap_or((false, None));
+        if redraw {
+            self.redraw.request();
+        }
+        if let Some(when) = redraw_at {
+            self.redraw.request_at(when);
         }
         ferrous_core::startup::mark("engine: app setup done");
-        self.graphics = Some(gfx);
     }
 
     /// Polls the startup: installs the GPU state when the worker is done and

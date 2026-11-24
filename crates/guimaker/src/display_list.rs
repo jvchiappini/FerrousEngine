@@ -265,6 +265,34 @@ impl DisplayList {
 }
 
 impl DrawCommand {
+    /// Moves every geometry the command carries by `(dx, dy)` logical pixels.
+    ///
+    /// A host uses it to offset an overlay's window coordinates to the origin
+    /// of the popup window that draws it.
+    pub fn translate(&mut self, dx: f32, dy: f32) {
+        match self {
+            Self::Rect { rect, .. }
+            | Self::Border { rect, .. }
+            | Self::Shadow { rect, .. }
+            | Self::Gradient { rect, .. }
+            | Self::Text { rect, .. }
+            | Self::Image { rect, .. }
+            | Self::Icon { rect, .. }
+            | Self::ClipPush { rect, .. }
+            | Self::BackdropBlur { rect, .. } => {
+                rect.x += dx;
+                rect.y += dy;
+            }
+            Self::Path { points, .. } => {
+                *points = points
+                    .iter()
+                    .map(|point| Vec2::new(point.x + dx, point.y + dy))
+                    .collect();
+            }
+            Self::ClipPop { .. } | Self::LayerPush { .. } | Self::LayerPop { .. } => {}
+        }
+    }
+
     /// The node this command belongs to.
     #[must_use]
     pub fn node(&self) -> NodeId {
