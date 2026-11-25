@@ -115,20 +115,31 @@ nav:
       - World Sync: ferrous_renderer/extending/world_sync.md
   - GUIMaker - the UI library:
     - Overview: guimaker/README.md
+    - Getting started: guimaker/getting-started.md
+    - Concepts: guimaker/concepts.md
+    - Components: guimaker/components.md
+    - Recipes: guimaker/recipes.md
+    - Design guide for models: guimaker/design-guide.md
+    - Theming: guimaker/theming.md
     - Theme tokens: guimaker/theme.md
     - View tree and layout: guimaker/layout.md
     - Responsive layout: guimaker/responsive.md
     - Input, focus and text editing: guimaker/input.md
     - Text: guimaker/text.md
-    - FerrousEngine backend: guimaker_ferrous/backend.md
+    - Backend contract: guimaker/backend.md
+    - FerrousEngine backend mapping: guimaker_ferrous/backend.md
     - Gallery overview: guimaker_gallery/README.md
     - Gallery, screenshots and goldens: guimaker_gallery/gallery.md
+    - Screenshots and the lint loop: guimaker/screenshots.md
+    - Popup pre-warming: guimaker/prewarming.md
+    - Roadmap: guimaker/roadmap.md
     - Decisions:
       - Decision log: guimaker/decisions/README.md
       - G-0001 - Library architecture: guimaker/decisions/G-0001.md
       - G-0002 - Typefaces and densities: guimaker/decisions/G-0002.md
       - G-0003 - Theme file format: guimaker/decisions/G-0003.md
       - G-0004 - Grapheme segmentation: guimaker/decisions/G-0004.md
+      - G-0010 - Popup present backend: guimaker/decisions/G-0010.md
   - Other crates:
     - ferrous_assets: ferrous_assets/README.md
     - ferrous_asset_types: ferrous_asset_types/README.md
