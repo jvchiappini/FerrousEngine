@@ -206,21 +206,18 @@ mod win {
                     MenuItem::separator(),
                     MenuItem::item("Delete", Msg::Pick("delete")),
                 ];
-                overlay = overlay.child(
-                    menu(&items, None)
-                        .key(MEASURE_MENUS[index])
-                        .width(SizeSpec::Px(400.0))
-                        .height(SizeSpec::Px(180.0))
-                        .overlay_on(
-                            0,
-                            if index == 0 {
-                                self.menu_side
-                            } else {
-                                Side::Bottom
-                            },
-                            if index == 0 { self.menu_gap } else { 6.0 },
-                        ),
-                );
+                // The measurement child opens every menu on the right so a
+                // narrow window forces all five onto the popup path.
+                let side = if self.measure || index == 0 {
+                    self.menu_side
+                } else {
+                    Side::Bottom
+                };
+                overlay = overlay.child(menu(&items, None).key(MEASURE_MENUS[index]).overlay_on(
+                    0,
+                    side,
+                    if index == 0 { self.menu_gap } else { 6.0 },
+                ));
             }
             overlay
         }
@@ -241,12 +238,14 @@ mod win {
         }
 
         fn view_menus(&self) -> Element<Msg> {
-            let mut row = Element::row()
-                .width(SizeSpec::Fill)
-                .justify(Justify::End)
-                .gap(Spacing::S2);
+            let mut anchors = Element::column().width(SizeSpec::Fill).gap(Spacing::S2);
             for index in 0..NEW_RUNS {
-                row = row.child(self.anchor_overlay(index));
+                anchors = anchors.child(
+                    Element::row()
+                        .width(SizeSpec::Fill)
+                        .justify(Justify::End)
+                        .child(self.anchor_overlay(index)),
+                );
             }
             Element::column()
                 .width(SizeSpec::Fill)
@@ -254,7 +253,7 @@ mod win {
                 .bg(ColorRole::Bg)
                 .pad(Spacing::S5)
                 .gap(Spacing::S4)
-                .child(row)
+                .child(anchors)
                 .child(self.content())
         }
     }
@@ -1632,9 +1631,13 @@ mod win {
                     self.host.app_mut().close_all();
                     if self.visible() == 0 && !self.menu_open() {
                         self.host.app_mut().menu_side = Side::Right;
+                        // The menu is content-sized now, so the window must be
+                        // narrower than it for the right-edge case to be
+                        // hosted in a popup instead of fitting beside the
+                        // anchor in-window.
                         let _ = ctx
                             .window
-                            .request_inner_size(LogicalSize::new(300.0, 420.0));
+                            .request_inner_size(LogicalSize::new(180.0, 420.0));
                         self.action_started = Instant::now();
                         self.step = 1;
                         self.arm(500);
@@ -2580,7 +2583,8 @@ mod win {
                 .map_or_else(measurement_path, PathBuf::from);
             let mut host = GuiHost::new(Demo::default());
             host.app_mut().measure = true;
-            run_app(Driver::measure_child(host, file));
+            host.app_mut().menu_side = Side::Right;
+            run_app(Driver::measure_child(host, file), true);
             if FAILED.load(Ordering::SeqCst) {
                 std::process::exit(1);
             }
@@ -2602,16 +2606,19 @@ mod win {
 
         let driver = Driver::new(GuiHost::new(Demo::default()))
             .with_measurement(measurement.unwrap_or_default());
-        run_app(driver);
+        run_app(driver, false);
         if FAILED.load(Ordering::SeqCst) {
             std::process::exit(1);
         }
     }
 
-    fn run_app(driver: Driver) {
+    fn run_app(driver: Driver, measurement: bool) {
+        // The measurement child is narrow so the content-sized menu cannot
+        // fit beside its anchor and therefore exercises the popup path.
+        let width = if measurement { 220 } else { 1000 };
         App::new(driver)
             .with_title("GUIMaker Phase 8E popup evidence")
-            .with_size(1000, 600)
+            .with_size(width, 600)
             .with_mode(AppMode::Flat2D)
             .with_redraw_policy(RedrawPolicy::OnDemand)
             .with_font_bytes(ROBOTO)

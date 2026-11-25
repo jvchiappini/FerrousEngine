@@ -52,7 +52,30 @@ fn cases() -> Vec<(String, Story, Theme)> {
             ));
         }
     }
+    for story in Story::RECIPES {
+        for (mode, theme) in [("light", Theme::light()), ("dark", Theme::dark())] {
+            cases.push((
+                format!("{}-{mode}-1280x800-1.5", recipe_golden_name(story)),
+                story,
+                theme,
+            ));
+        }
+    }
     cases
+}
+
+/// The golden file stem for a recipe.
+///
+/// Two recipe CLI names (`empty-state`, `command-palette`) are also component
+/// story names, and the component goldens already own those file stems. The
+/// recipe goldens take a `-screen` suffix so neither set of committed PNGs is
+/// rewritten.
+fn recipe_golden_name(story: Story) -> &'static str {
+    match story {
+        Story::EmptyState => "empty-state-screen",
+        Story::CommandPalette => "command-palette-screen",
+        other => other.name(),
+    }
 }
 
 #[test]

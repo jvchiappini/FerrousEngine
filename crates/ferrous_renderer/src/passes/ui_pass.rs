@@ -29,6 +29,18 @@ impl UiPass {
         }
     }
 
+    /// The GUI renderer this pass owns.
+    ///
+    /// A popup window built through [`crate::passes::UiPass`] reuses its
+    /// layouts, shaders, pipelines and samplers with
+    /// [`GuiRenderer::new_sharing`](ferrous_ui_render::GuiRenderer::new_sharing).
+    /// The engine threads this reference through its popup context instead of
+    /// keeping process-wide registry state.
+    #[must_use]
+    pub fn gui_renderer(&self) -> &GuiRenderer {
+        &self.renderer
+    }
+
     pub fn set_font_atlas(&mut self, view: &wgpu::TextureView, sampler: &wgpu::Sampler) {
         self.renderer.set_font_atlas(view, sampler);
     }

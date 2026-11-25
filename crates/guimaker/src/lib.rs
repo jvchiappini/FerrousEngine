@@ -102,6 +102,7 @@ pub mod motion;
 pub mod overlay;
 pub mod patterns;
 pub mod recipe;
+pub mod recipes;
 pub mod spatial;
 pub mod store;
 pub mod style;
@@ -127,6 +128,10 @@ pub mod prelude {
     pub use crate::lint::{Finding, Rule, Severity};
     pub use crate::motion::{caret_visible, next_caret_wake_ms, EnterExit};
     pub use crate::recipe::{start_screen, StartMsg};
+    pub use crate::recipes::{
+        command_palette_screen, editor_shell, empty_first_run, file_browser, new_item_dialog,
+        settings_screen, toasts_after_action, RecipeMsg,
+    };
     pub use crate::resp;
     pub use crate::store::{NodeState, RepaintReason};
     pub use crate::style::{

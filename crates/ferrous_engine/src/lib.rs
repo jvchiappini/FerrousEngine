@@ -30,6 +30,9 @@ pub mod config;
 pub mod context;
 mod graphics;
 pub mod plugin;
+/// Desktop-only: presenting a popup frame through the selected backend.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod popup_present;
 pub mod redraw;
 pub mod render_context;
 pub mod renderer;

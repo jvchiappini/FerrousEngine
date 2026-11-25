@@ -346,3 +346,19 @@ Every rewrite records its reason here.
 - 1795441701 `dialog-light-1280x800-1.5.png`: P8 fix: prefiltered level-matched backdrop blur; real titles and body text behind the scrim, Default tone for contrast
 - 1795441930 `dialog-dark-1280x800-1.5.png`: P8 fix: prefiltered backdrop blur with real text behind it; narrow-width cards wrap (min_width S0, text Fill)
 - 1795441931 `dialog-light-1280x800-1.5.png`: P8 fix: prefiltered backdrop blur with real text behind it; narrow-width cards wrap (min_width S0, text Fill)
+- 1795563489 `launcher-light-1280x800-1.5.png`: phase 9 recipes
+- 1795563503 `launcher-dark-1280x800-1.5.png`: phase 9 recipes
+- 1795563505 `new-item-dialog-light-1280x800-1.5.png`: phase 9 recipes
+- 1795563507 `new-item-dialog-dark-1280x800-1.5.png`: phase 9 recipes
+- 1795563509 `settings-light-1280x800-1.5.png`: phase 9 recipes
+- 1795563511 `settings-dark-1280x800-1.5.png`: phase 9 recipes
+- 1795563514 `file-browser-light-1280x800-1.5.png`: phase 9 recipes
+- 1795563524 `file-browser-dark-1280x800-1.5.png`: phase 9 recipes
+- 1795563541 `empty-state-screen-light-1280x800-1.5.png`: phase 9 recipes
+- 1795563542 `empty-state-screen-dark-1280x800-1.5.png`: phase 9 recipes
+- 1795563544 `editor-shell-light-1280x800-1.5.png`: phase 9 recipes
+- 1795563546 `editor-shell-dark-1280x800-1.5.png`: phase 9 recipes
+- 1795563548 `command-palette-screen-light-1280x800-1.5.png`: phase 9 recipes
+- 1795563550 `command-palette-screen-dark-1280x800-1.5.png`: phase 9 recipes
+- 1795563552 `toasts-light-1280x800-1.5.png`: phase 9 recipes
+- 1795563555 `toasts-dark-1280x800-1.5.png`: phase 9 recipes

@@ -18,7 +18,7 @@ use crate::pipelines::{
 use ferrous_core::memory::{self, Subsystem};
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use wgpu::util::DeviceExt;
 
 /// Size of one per-segment uniform: clip rect, radii and params (three vec4s).
@@ -284,9 +284,17 @@ pub struct GuiRenderer {
     /// renderer that reuses the same `wgpu::RenderPipeline`s.
     pipeline_set_id: u64,
 
-    /// This renderer is the registry's sharing source for its device (only the
-    /// first `GuiRenderer::new` per device is).
-    shared_source: bool,
+    /// Popup pipeline variants built from this renderer's layouts, shaders and
+    /// samplers, keyed by `(format, sample_count, ui_depth)`.
+    ///
+    /// The main renderer owns the cache: a popup presents sRGB at 1 sample while
+    /// the main UI renders to HDR at 4 samples, so its pipelines are built once
+    /// here and every later popup on the same device reuses them. The cache
+    /// lives and dies with the renderer, not the process.
+    variants: Mutex<Vec<SharedGui>>,
+
+    /// Bytes of the depth attachment when [`Self::ui_depth`] is on.
+    depth_bytes: u64,
 
     // Per-frame instrumentation (atomics: `render_with_timestamps` takes
     // `&self`).
@@ -480,61 +488,12 @@ struct SharedGui {
     pipelines: Pipelines,
     dummy_sampler: Arc<wgpu::Sampler>,
     backdrop_sampler: Arc<wgpu::Sampler>,
-    pipeline_cache: Option<Arc<wgpu::PipelineCache>>,
-}
-
-fn shared_registry() -> &'static Mutex<Vec<SharedGui>> {
-    static REGISTRY: OnceLock<Mutex<Vec<SharedGui>>> = OnceLock::new();
-    REGISTRY.get_or_init(|| Mutex::new(Vec::new()))
-}
-
-fn lock_shared() -> std::sync::MutexGuard<'static, Vec<SharedGui>> {
-    shared_registry()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-/// The first `GuiRenderer::new` on a device publishes itself here, so a popup
-/// created later can share its GPU objects without the engine having to thread
-/// a `&GuiRenderer` through the window map.
-///
-/// Preference is an exact `(format, sample_count)` match (pipelines reusable);
-/// otherwise any live renderer on the same device is returned so the layouts,
-/// shader modules and samplers - all format-independent - are still reused. A
-/// popup that presents in sRGB while the main UI renders into HDR falls in this
-/// second case: it shares everything except the pipelines themselves.
-fn lookup_shared(
-    device: &Arc<wgpu::Device>,
-    format: wgpu::TextureFormat,
-    sample_count: u32,
-) -> Option<SharedGui> {
-    let pointer = Arc::as_ptr(device);
-    let mut registry = lock_shared();
-    registry.retain(|entry| entry.device.strong_count() > 0);
-    let same_device = |entry: &SharedGui| entry.device.as_ptr() == pointer;
-    registry
-        .iter()
-        .find(|entry| {
-            same_device(entry) && entry.format == format && entry.sample_count == sample_count
-        })
-        .or_else(|| registry.iter().find(|entry| same_device(entry)))
-        .cloned()
 }
 
 static NEXT_PIPELINE_SET: AtomicU32 = AtomicU32::new(1);
 
 fn next_pipeline_set_id() -> u64 {
     u64::from(NEXT_PIPELINE_SET.fetch_add(1, Ordering::Relaxed))
-}
-
-impl Drop for GuiRenderer {
-    fn drop(&mut self) {
-        if !self.shared_source {
-            return;
-        }
-        let pointer = Arc::as_ptr(&self.device);
-        lock_shared().retain(|entry| entry.device.as_ptr() != pointer);
-    }
 }
 
 impl GuiRenderer {
@@ -549,7 +508,7 @@ impl GuiRenderer {
     ) -> Self {
         #[cfg(feature = "text")]
         install_memory_inventory();
-        let mut renderer = Self::construct(
+        Self::construct(
             device,
             format,
             max_instances,
@@ -560,9 +519,7 @@ impl GuiRenderer {
             true,
             true,
             None,
-        );
-        renderer.register_shared_source();
-        renderer
+        )
     }
 
     /// Builds a popup renderer from `main`'s already-compiled GPU objects.
@@ -589,6 +546,7 @@ impl GuiRenderer {
         #[cfg(feature = "text")]
         install_memory_inventory();
         let ui_depth = main.ui_depth;
+        let shared = main.shared_for_target(&device, format, sample_count, ui_depth);
         Self::construct(
             device,
             format,
@@ -599,66 +557,60 @@ impl GuiRenderer {
             main.pipeline_cache.clone(),
             ui_depth,
             false,
-            Some(main.snapshot_shared()),
+            Some(shared),
         )
     }
 
-    /// [`Self::new_sharing`] using the process-wide main renderer registry.
+    /// The shared objects a renderer on `format`/`sample_count`/`ui_depth`
+    /// should bind.
     ///
-    /// This is the constructor the engine uses: a popup is created from the
-    /// renderer's `about_to_wait` drain, which has no borrow of the main
-    /// `GuiRenderer` (it lives inside `UiPass`).  When no live renderer is
-    /// published for the device, it falls back to a private pipeline set with
-    /// the popup's historical contract (no depth attachment).
-    ///
-    /// Note on the real engine: its main UI renderer targets HDR
-    /// (`Rgba16Float`, MSAA) while a popup presents sRGB at 1 sample, so the
-    /// pipeline sets do not match.  The popup still reuses the main renderer's
-    /// layouts, shader modules and samplers, but builds its own pipelines once;
-    /// reusing the main pipelines would require rendering the popup through an
-    /// HDR offscreen target before presenting (a `ferrous_renderer` change).
-    #[must_use]
-    pub fn new_sharing_global(
-        device: Arc<wgpu::Device>,
+    /// An exact target match returns this renderer's own snapshot. A popup that
+    /// presents sRGB at 1 sample while the main UI renders HDR at 4 builds that
+    /// variant once, stores it in this renderer's per-device cache, and every
+    /// later popup reuses it (layouts, shaders and samplers are always shared).
+    fn shared_for_target(
+        &self,
+        device: &Arc<wgpu::Device>,
         format: wgpu::TextureFormat,
-        max_instances: u32,
-        width: u32,
-        height: u32,
         sample_count: u32,
-        pipeline_cache: Option<Arc<wgpu::PipelineCache>>,
-    ) -> Self {
-        #[cfg(feature = "text")]
-        install_memory_inventory();
-        match lookup_shared(&device, format, sample_count) {
-            Some(shared) => {
-                let ui_depth = shared.ui_depth;
-                let cache = shared.pipeline_cache.clone().or(pipeline_cache);
-                Self::construct(
-                    device,
-                    format,
-                    max_instances,
-                    width,
-                    height,
-                    sample_count,
-                    cache,
-                    ui_depth,
-                    false,
-                    Some(shared),
-                )
-            }
-            None => Self::construct(
-                device,
-                format,
-                max_instances,
-                width,
-                height,
-                sample_count,
-                pipeline_cache,
-                false,
-                false,
-                None,
-            ),
+        ui_depth: bool,
+    ) -> SharedGui {
+        if self.format == format && self.sample_count == sample_count && self.ui_depth == ui_depth {
+            return self.snapshot_shared();
         }
+        let mut variants = self
+            .variants
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(found) = variants.iter().find(|variant| {
+            variant.format == format
+                && variant.sample_count == sample_count
+                && variant.ui_depth == ui_depth
+        }) {
+            return found.clone();
+        }
+        let variant = SharedGui {
+            device: Arc::downgrade(device),
+            format,
+            sample_count,
+            ui_depth,
+            pipeline_set_id: next_pipeline_set_id(),
+            layouts: self.layouts.clone(),
+            shaders: self.shaders.clone(),
+            pipelines: Pipelines::build(
+                device,
+                &self.layouts,
+                &self.shaders,
+                format,
+                sample_count,
+                ui_depth,
+                self.pipeline_cache.as_deref(),
+            ),
+            dummy_sampler: self.dummy_sampler.clone(),
+            backdrop_sampler: self.backdrop_sampler.clone(),
+        };
+        variants.push(variant.clone());
+        variant
     }
 
     /// The identity of the pipeline set this renderer binds.
@@ -700,40 +652,6 @@ impl GuiRenderer {
             },
             dummy_sampler: self.dummy_sampler.clone(),
             backdrop_sampler: self.backdrop_sampler.clone(),
-            pipeline_cache: self.pipeline_cache.clone(),
-        }
-    }
-
-    fn register_shared_source(&mut self) {
-        let pointer = Arc::as_ptr(&self.device);
-        let mut registry = lock_shared();
-        registry.retain(|entry| entry.device.strong_count() > 0);
-        if registry
-            .iter()
-            .any(|entry| entry.device.as_ptr() == pointer)
-        {
-            return;
-        }
-        registry.push(self.snapshot_shared());
-        drop(registry);
-        self.shared_source = true;
-    }
-
-    fn refresh_shared_source(&self) {
-        if !self.shared_source {
-            return;
-        }
-        let pointer = Arc::as_ptr(&self.device);
-        let mut registry = lock_shared();
-        registry.retain(|entry| entry.device.strong_count() > 0);
-        let snapshot = self.snapshot_shared();
-        if let Some(slot) = registry
-            .iter_mut()
-            .find(|entry| entry.device.as_ptr() == pointer)
-        {
-            *slot = snapshot;
-        } else {
-            registry.push(snapshot);
         }
     }
 
@@ -1090,7 +1008,12 @@ impl GuiRenderer {
             pipeline_cache,
             register_memory,
             pipeline_set_id,
-            shared_source: false,
+            variants: Mutex::new(Vec::new()),
+            depth_bytes: if ui_depth {
+                Self::depth_texture_bytes(width, height, sample_count)
+            } else {
+                0
+            },
             counters_passes: AtomicU32::new(0),
             counters_segments: AtomicU32::new(0),
             counters_scissor_changes: AtomicU32::new(0),
@@ -1169,6 +1092,13 @@ impl GuiRenderer {
             + self.icon_instance_buffer.size();
         let svg = self.svg_vertex_buffer.size() + self.svg_index_buffer.size();
         (instances, svg)
+    }
+
+    /// Bytes held by this renderer's depth attachment, or `0` when the pass
+    /// runs without one (`ui_depth == false`).
+    #[must_use]
+    pub fn popup_depth_bytes(&self) -> u64 {
+        self.depth_bytes
     }
 
     /// Dynamic-offset stride: the device alignment rounded up to the uniform
@@ -1442,6 +1372,7 @@ impl GuiRenderer {
                 Self::create_depth_target(&self.device, width, height, self.sample_count);
             self.depth_texture = Some(texture);
             self.depth_view = Some(view);
+            self.depth_bytes = Self::depth_texture_bytes(width, height, self.sample_count);
             if self.register_memory {
                 memory::register_gpu(
                     "gui:depth texture",
@@ -1452,6 +1383,7 @@ impl GuiRenderer {
         } else {
             self.depth_texture = None;
             self.depth_view = None;
+            self.depth_bytes = 0;
             if self.register_memory {
                 memory::unregister_gpu("gui:depth texture", Subsystem::Gui);
             }
@@ -1519,8 +1451,6 @@ impl GuiRenderer {
         self.overdraw_text_pipeline = pipelines.overdraw_text;
         self.blur_pipeline = pipelines.blur;
         self.downsample_pipeline = pipelines.downsample;
-        // A rebuilt set is no longer the one a sharing popup cloned.
-        self.refresh_shared_source();
         // The blur targets use the color format; drop them so the next
         // `set_backdrop_source` recreates them at the new format.
         self.clear_backdrop_targets();
@@ -1570,6 +1500,7 @@ impl GuiRenderer {
                 Self::create_depth_target(&self.device, width, height, sample_count);
             self.depth_view = Some(depth_view);
             self.depth_texture = Some(depth_texture);
+            self.depth_bytes = Self::depth_texture_bytes(width, height, sample_count);
             if self.register_memory {
                 memory::register_gpu(
                     "gui:depth texture",
@@ -1580,6 +1511,7 @@ impl GuiRenderer {
         } else {
             self.depth_view = None;
             self.depth_texture = None;
+            self.depth_bytes = 0;
             if self.register_memory {
                 memory::unregister_gpu("gui:depth texture", Subsystem::Gui);
             }
@@ -2766,6 +2698,60 @@ mod sharing_tests {
         assert!(
             !wrong_format.shares_pipelines_with(&main),
             "a different target format must build a fresh pipeline set"
+        );
+    }
+
+    #[test]
+    fn a_mismatched_popup_variant_is_built_once_per_device() {
+        let _guard = gpu_lock();
+        let Some((device, _queue)) = test_device() else {
+            eprintln!("skip: no GPU adapter available");
+            return;
+        };
+        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let main = GuiRenderer::new(device.clone(), format, 64, 320, 200, 1, None);
+
+        // The popup presents sRGB while the main UI renders in linear: the
+        // first popup builds and caches that variant, the second reuses it.
+        let first = GuiRenderer::new_sharing(
+            &main,
+            device.clone(),
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+            64,
+            320,
+            200,
+            1,
+        );
+        let second = GuiRenderer::new_sharing(
+            &main,
+            device.clone(),
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+            64,
+            320,
+            200,
+            1,
+        );
+        assert!(
+            first.shares_pipelines_with(&second),
+            "the second popup binds the cached sRGB/1 pipeline variant"
+        );
+        assert!(
+            !first.shares_pipelines_with(&main),
+            "the variant is not the main renderer's pipeline set"
+        );
+
+        let other_samples = GuiRenderer::new_sharing(
+            &main,
+            device.clone(),
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+            64,
+            320,
+            200,
+            4,
+        );
+        assert!(
+            !other_samples.shares_pipelines_with(&first),
+            "a different sample count is a different cached variant"
         );
     }
 }

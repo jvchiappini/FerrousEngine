@@ -36,11 +36,11 @@ and positive, so a degenerate frame cannot emit NaN geometry.
 | `Text` | `draw_text_baseline` or per-glyph `push_text` | see *Text* below |
 | `Image` | `reserve_texture_slot` + textured `push_quad` | `TextureMap` resolves `source: u64`; fit changes the destination rect or the UVs |
 | `Icon` | `push_svg` | `ferrous_svg::SvgMesh::from_str` subset; plain rectangle for unsupported paths |
-| `ClipPush` | `push_clip` | rectangular |
+| `ClipPush` | `push_clip` | rectangular; see the fallback table |
 | `ClipPop` | `pop_clip` | |
 | `LayerPush` | `begin_layer` + alpha multiplication | barrier plus opacity fallback |
 | `LayerPop` | `begin_layer` + alpha restore | closes the painter-order barrier |
-| `BackdropBlur` | skipped | no tint in the command; see fallbacks |
+| `BackdropBlur` | `backdrop_blur` | deferred to the owning rect, which supplies the tint |
 
 Every primitive the adapter emits is stamped with the GUIMaker `NodeId` in its
 `node_id` field (`GuiQuad`/`TextQuad`), so a later host can correlate GPU
@@ -128,26 +128,27 @@ host supplies one `DrawContext::font`. Span colour is always applied.
   colour the display list leaves available in that case. The core's frame
   builder normally emits a span for the resolved text tone.
 
-## Documented fallbacks at the pin
+## Documented fallbacks
 
-The backend targets FerrousEngine `dd382bd`, which has:
+The adapter targets the workspace engine through `ferrous_ui_render`, which has:
 
-- rectangular scissor clips only (`push_clip`/`pop_clip`);
+- rectangular scissor clips in the adapter path (`push_clip`), even though the
+  batch also exposes `push_clip_rounded`;
 - one soft shadow per `GuiBatch::shadow` call (the adapter issues one call per
   `Shadow` command, so several shadows per rect work);
 - a two-stop gradient shader;
-- no backdrop blur;
-- the `ferrous_svg` stub.
+- a `ferrous_svg` subset for icons;
+- a backdrop-blur request whose filter depends on the engine's backdrop source.
 
 Therefore:
 
 | Capability | Fallback |
 |---|---|
-| rounded clips | `push_clip(rect)`; the radii are ignored until the engine ships a rounded clip shape |
+| rounded clips | `push_clip(rect)`; the radii are ignored until the mapper switches to `push_clip_rounded` |
 | gradient borders | not requested by the display list today; a plain `Border` is drawn |
 | more than two gradient stops | first and last stop |
 | arbitrary gradient angle | horizontal or vertical (the dominant axis) |
-| backdrop blur | the command is skipped: it carries no tint and the pin has no blur pass |
+| backdrop blur | emitted on the owning rect with a fixed tint; the engine's backdrop source decides the actual blur |
 | layer opacity | alpha multiplied per primitive (see *Layers*) |
 | unsupported SVG icon path | filled rectangle in the icon colour |
 | missing image texture | the image is skipped |
@@ -158,10 +159,8 @@ API and deletes the fallback. The public GUIMaker API does not change.
 
 ## Dependency note
 
-`DrawContext` lives in `ferrous_engine`, so this crate depends on the engine
-crate to expose the requested `encode` signature. The GUIMaker boundary script
-currently classifies `ferrous_engine` as an application crate that GUIMaker
-layers may not use. The reviewer must either allow `guimaker_ferrous ->
-ferrous_engine` or split the host adapter into a crate that owns that edge; the
-mapping itself does not need anything beyond `GuiBatch`, `Font`,
-`ferrous_ui_render`, `ferrous_font`, `ferrous_assets` and `ferrous_svg`.
+The mapping depends only on `ferrous_ui_render`, `ferrous_font`,
+`ferrous_assets` and `ferrous_svg`. It does not depend on `ferrous_engine`: the
+engine-facing `FerrousApp` adapter lives in `guimaker_gallery::host`, which is
+where `DrawContext` and the winit event mapping belong. This keeps a backend
+crate reusable by any host that can supply a `GuiBatch` and a `Font`.

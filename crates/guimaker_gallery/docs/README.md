@@ -7,6 +7,7 @@ The gallery is the runnable face of GUIMaker:
   headlessly, through the real GUI renderer;
 - it keeps **tolerance goldens** in the repository and compares them with a
   per-channel and pixel-count budget;
+- it runs the **design lint** on a story, or across the responsive sweep;
 - it provides the `FerrousApp` **host adapter** so an ordinary windowed app can
   adopt GUIMaker in about one screen of glue.
 
@@ -16,6 +17,7 @@ Start with the CLI:
 cargo run -p guimaker_gallery -- stories
 cargo run -p guimaker_gallery -- shot start --size 1280x800 --scale 1.5 \
     --theme light --out out/p5-start-light.png
+cargo run -p guimaker_gallery -- lint start --sweep
 ```
 
 The full command reference, the input mapping, the golden tolerance and the

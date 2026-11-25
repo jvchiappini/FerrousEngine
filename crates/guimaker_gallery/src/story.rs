@@ -9,6 +9,10 @@
 use guimaker::display_list::DisplayList;
 use guimaker::geom::Size;
 use guimaker::recipe::start_screen;
+use guimaker::recipes::{
+    command_palette_screen, editor_shell, empty_first_run, file_browser, new_item_dialog,
+    settings_screen, toasts_after_action,
+};
 use guimaker::style::Tone;
 use guimaker::theme::{ColorRole, Radius, Spacing, Theme, TypeRole};
 use guimaker::view::{text, Element};
@@ -32,13 +36,52 @@ pub enum Story {
     /// A components/actions board: the primitive vocabulary a screen is built
     /// from, with every action, tone, surface and divider in one place.
     Components,
+    /// The Phase 9 launcher: the start recipe as its own story.
+    Launcher,
+    /// A new-item dialog over a dimmed workspace.
+    NewItemDialog,
+    /// A settings window with a sidebar and grouped forms.
+    Settings,
+    /// A file browser with a grid of thumbnails.
+    FileBrowser,
+    /// The first-run empty state with one primary action.
+    EmptyState,
+    /// An editor shell: toolbar, sidebar, canvas, inspector and status bar.
+    EditorShell,
+    /// A command palette over a dimmed workspace.
+    CommandPalette,
+    /// Toasts after an export, over the screen that ran the action.
+    Toasts,
     /// One Phase 6 component, in every variant and state.
     Component(Component),
 }
 
 impl Story {
-    /// The two hand-built board stories.
-    pub const ALL: [Self; 2] = [Self::Start, Self::Components];
+    /// The two hand-built board stories and the eight Phase 9 recipes.
+    pub const ALL: [Self; 10] = [
+        Self::Start,
+        Self::Components,
+        Self::Launcher,
+        Self::NewItemDialog,
+        Self::Settings,
+        Self::FileBrowser,
+        Self::EmptyState,
+        Self::EditorShell,
+        Self::CommandPalette,
+        Self::Toasts,
+    ];
+
+    /// The eight Phase 9 screen recipes, in registry order.
+    pub const RECIPES: [Self; 8] = [
+        Self::Launcher,
+        Self::NewItemDialog,
+        Self::Settings,
+        Self::FileBrowser,
+        Self::EmptyState,
+        Self::EditorShell,
+        Self::CommandPalette,
+        Self::Toasts,
+    ];
 
     /// Every story, in registry order: the boards, then every component.
     #[must_use]
@@ -55,16 +98,37 @@ impl Story {
         match self {
             Self::Start => "start",
             Self::Components => "components",
+            Self::Launcher => "launcher",
+            Self::NewItemDialog => "new-item-dialog",
+            Self::Settings => "settings",
+            Self::FileBrowser => "file-browser",
+            Self::EmptyState => "empty-state",
+            Self::EditorShell => "editor-shell",
+            Self::CommandPalette => "command-palette",
+            Self::Toasts => "toasts",
             Self::Component(component) => component.name(),
         }
     }
 
     /// Parses a CLI name.
+    ///
+    /// The recipe names take precedence over the two component names that read
+    /// the same (`empty-state`, `command-palette`). The component stories are
+    /// still addressable through [`Component::parse`] and are still rendered by
+    /// the golden suite, which iterates [`Component::ALL`] directly.
     #[must_use]
     pub fn parse(name: &str) -> Option<Self> {
         match name {
             "start" => Some(Self::Start),
             "components" => Some(Self::Components),
+            "launcher" => Some(Self::Launcher),
+            "new-item-dialog" => Some(Self::NewItemDialog),
+            "settings" => Some(Self::Settings),
+            "file-browser" => Some(Self::FileBrowser),
+            "empty-state" => Some(Self::EmptyState),
+            "editor-shell" => Some(Self::EditorShell),
+            "command-palette" => Some(Self::CommandPalette),
+            "toasts" => Some(Self::Toasts),
             other => Component::parse(other).map(Self::Component),
         }
     }
@@ -89,8 +153,15 @@ impl Story {
     #[must_use]
     pub fn view(self) -> Element<()> {
         match self {
-            Self::Start => erase_actions(start_screen(START_TIME_MS)),
+            Self::Start | Self::Launcher => erase_actions(start_screen(START_TIME_MS)),
             Self::Components => erase_actions(components_screen()),
+            Self::NewItemDialog => erase_actions(new_item_dialog()),
+            Self::Settings => erase_actions(settings_screen()),
+            Self::FileBrowser => erase_actions(file_browser()),
+            Self::EmptyState => erase_actions(empty_first_run()),
+            Self::EditorShell => erase_actions(editor_shell()),
+            Self::CommandPalette => erase_actions(command_palette_screen()),
+            Self::Toasts => erase_actions(toasts_after_action()),
             Self::Component(component) => component.view(),
         }
     }
@@ -416,7 +487,7 @@ fn card(
 
 #[cfg(test)]
 mod tests {
-    use super::{Story, START_TIME_MS};
+    use super::{Component, Story, START_TIME_MS};
     use guimaker::display_list::DrawCommand;
     use guimaker::geom::Size;
     use guimaker::theme::Theme;
@@ -452,8 +523,44 @@ mod tests {
     #[test]
     fn names_round_trip() {
         for story in Story::all() {
-            assert_eq!(Story::parse(story.name()), Some(story));
+            if let Story::Component(component) = story {
+                if matches!(component, Component::EmptyState | Component::CommandPalette) {
+                    // A recipe name takes precedence over the two component
+                    // names that read the same; the component stays reachable
+                    // through its own registry and golden.
+                    assert!(matches!(
+                        Story::parse(story.name()),
+                        Some(Story::EmptyState | Story::CommandPalette)
+                    ));
+                    assert_eq!(Component::parse(component.name()), Some(component));
+                    continue;
+                }
+            }
+            assert_eq!(
+                Story::parse(story.name()),
+                Some(story),
+                "{} did not round-trip",
+                story.name()
+            );
         }
         assert_eq!(Story::parse("nope"), None);
+    }
+
+    #[test]
+    fn the_eight_recipes_have_stable_names() {
+        let expected = [
+            "launcher",
+            "new-item-dialog",
+            "settings",
+            "file-browser",
+            "empty-state",
+            "editor-shell",
+            "command-palette",
+            "toasts",
+        ];
+        for (story, name) in Story::RECIPES.into_iter().zip(expected) {
+            assert_eq!(story.name(), name);
+            assert_eq!(Story::parse(name), Some(story));
+        }
     }
 }

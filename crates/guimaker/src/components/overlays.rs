@@ -575,7 +575,15 @@ fn menu_row<Msg: Clone>(item: &MenuItem<Msg>) -> Element<Msg> {
 }
 
 fn menu_panel<Msg: Clone>(items: &[MenuItem<Msg>], open_submenu: Option<usize>) -> Element<Msg> {
+    // A menu is content-sized, never a fixed box: `Hug` asks the layout to run
+    // the real text measurement and take the widest label (including the
+    // check, shortcut and chevron columns and every gap the row reserves) with
+    // the theme minimum as a floor. `Hug` on the height sums the real row and
+    // divider heights, so no empty band is left under the last item. Callers
+    // that need an explicit box still override both with `.width()`/`.height()`.
     let mut panel = Element::column()
+        .width(SizeSpec::Hug)
+        .height(SizeSpec::Hug)
         .pad(Spacing::S1)
         .gap(Spacing::S0)
         .min_width(Spacing::S24)

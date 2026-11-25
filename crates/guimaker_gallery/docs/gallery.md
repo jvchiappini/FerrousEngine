@@ -16,6 +16,9 @@ cargo run -p guimaker_gallery -- <command> [options]
 | `stories` | list the story names |
 | `shot <story>` | render a PNG and print its absolute path |
 | `golden <story>` | compare with a committed golden, or rewrite it |
+| `lint <story>` | run the design lint; `--sweep` runs all widths and scales |
+| `shots` | render every story, light and dark, to a directory |
+| `goldens` | rewrite every golden and append each reason to the update log |
 | `help` | usage |
 
 Options (shared):
@@ -28,10 +31,19 @@ Options (shared):
 | `--out PATH` | see below | output PNG |
 | `--check PATH` | - | compare against this PNG (`shot`) or compare path (`golden`) |
 | `--update` | - | rewrite the golden (`golden` only) |
-| `--reason TEXT` | - | required with `--update`, recorded in `goldens/UPDATE_LOG.md` |
+| `--reason TEXT` | - | required with `--update` (`golden`) and with `goldens` |
+| `--sweep` | - | run the responsive sweep (`lint` only) |
+| `--json` | - | one JSON object per finding (`lint` only) |
+
+The batch commands (`shots`, `goldens`) take their own options: default logical
+size `1280x800`, scale `1.5`, output `out/shots` for `shots`. For the two
+recipe/component name collisions, pass `--out` with the `-screen` stem when
+checking a recipe golden.
 
 The physical PNG is `round(logical * scale)` per axis. `shot` with
-`--size 1280x800 --scale 1.5` writes 1920x1200 pixels.
+`--size 1280x800 --scale 1.5` writes 1920x1200 pixels. The batch commands use
+the story CLI name as the file stem; `empty-state` and `command-palette` are
+shared with a recipe and a component, and the recipe render is the one written.
 
 Default output paths:
 
@@ -75,8 +87,21 @@ the sRGB transfer on store, so the cleared pixels match the painted backdrop.
 
 | Story | Source |
 |---|---|
-| `start` | `guimaker::recipe::start_screen()` |
+| `start` | `guimaker::recipe::start_screen()`, the original board |
 | `components` | a local board exercising actions, tones, surfaces and dividers |
+| `launcher` | the start recipe as its own Phase 9 story |
+| `new-item-dialog` | `guimaker::recipes::new_item_dialog()` |
+| `settings` | `guimaker::recipes::settings_screen()` |
+| `file-browser` | `guimaker::recipes::file_browser()` |
+| `empty-state` | `guimaker::recipes::empty_first_run()` |
+| `editor-shell` | `guimaker::recipes::editor_shell()` |
+| `command-palette` | `guimaker::recipes::command_palette_screen()` |
+| `toasts` | `guimaker::recipes::toasts_after_action()` |
+| 50 component names | one per `Component::ALL` entry; the same names the components page lists |
+
+`empty-state` and `command-palette` are recipe names; the component stories with
+the same names are reached through `Component::parse` and the component golden
+suite.
 
 A story is pure in `(theme, viewport, scale)` and touches no GPU. The same
 function is used by the CLI, the golden test and the windowed host example.
@@ -141,11 +166,12 @@ App::new(GuiHost::new(MyModel::default()))
 
 ## Goldens
 
-Goldens under `crates/guimaker_gallery/goldens/`:
-
-- `start-light-1280x800-1.5.png`
-- `start-dark-1280x800-1.5.png`
-- `components-light-1280x800-1.5.png`
+Goldens under `crates/guimaker_gallery/goldens/`: one per story per theme at
+`1280x800` and scale `1.5`. The suite covers the two boards, the eight recipes
+and all 50 components, 120 files. The names are
+`<story>-<theme>-1280x800-1.5.png`; the two recipes whose CLI name is also a
+component name use `empty-state-screen` and `command-palette-screen` so the
+component goldens keep their existing stems.
 
 Comparison is tolerance based:
 
@@ -176,8 +202,10 @@ cargo run -p guimaker_gallery -- golden start --size 1280x800 --scale 1.5 \
 
 `cargo test -p guimaker_gallery` runs
 `tests/goldens.rs::committed_goldens_match_the_current_render`, which
-re-renders the three cases and applies the same tolerance. Without a headless
-GPU adapter the test prints a skip message; with one it is a real comparison.
+re-renders every story/theme case and applies the same tolerance, and
+`tests/lint.rs`, which lints every story at the desktop size and across the
+sweep. Without a headless GPU adapter the golden test prints a skip message;
+with one it is a real comparison.
 
 ## Fallbacks and limits
 

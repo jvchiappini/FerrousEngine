@@ -12,8 +12,9 @@ carry does not.
 | G-0002 | Typefaces and densities | accepted |
 | G-0003 | Theme file format | accepted |
 | G-0004 | Grapheme segmentation for the text editor | accepted |
+| G-0010 | Popup present backend (swapchain vs layered) | accepted |
 
-Next expected: G-0005 (draw-command mapping), in phase 5.
+Next expected: G-0011.
 
 Rules:
 
