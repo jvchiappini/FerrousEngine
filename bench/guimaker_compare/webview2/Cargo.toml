@@ -1,0 +1,17 @@
+[workspace]
+
+[package]
+name = "guimaker-compare-webview2"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "guimaker-compare-webview2"
+path = "src/main.rs"
+
+[dependencies]
+# Best-effort: most recent wry + tao. `rwh_06` makes tao's Window implement
+# `HasWindowHandle`, which is what wry 0.57's WebViewBuilder::build expects.
+wry = "0.57"
+tao = { version = "0.38", features = ["rwh_06"] }

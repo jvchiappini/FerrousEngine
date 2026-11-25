@@ -85,6 +85,27 @@ the component variants.
 | `status_bar` | `status-bar` | A thin row of state and counts at the bottom of the window. |
 | `app_shell` | `app-shell` | The outer frame that arranges title, tools, navigation, body and status. |
 
+## General builders
+
+These small builders cover the repeated structure of a real screen, so a view
+spells intent and not the same chain four times. They are library API for every
+app, not recipe helpers.
+
+| Builder | Use it for |
+|---|---|
+| `brand(name, tagline)` | An app name and one-line tagline in a page header. |
+| `section_heading(text)` | A section title at the library's section level. |
+| `caption(text)` | One line of faint metadata (version, licence, timestamp). |
+| `field(label, value)` | A labelled read-only value well (a summary or inspector). |
+| `list_row(title, subtitle, trailing)` | A recents/files/members card row; add `.key_id` and `.on_click` for an action. |
+| `nav_link(label, message)` | A quiet header/footer navigation action. |
+| `content_column(child, fraction)` | A centring slot that caps its child at the child's `max_width`. |
+
+The matching tokens keep numbers out of the view: `Priority::KEEP` /
+`Priority::SHRINK`, `Lines::ONE` / `Lines::TWO`, `Split::LEADING` /
+`Split::TRAILING`, `FluidText::between`, `.grow()` (no argument) and
+`format::clock_hh_mm`.
+
 ## Overlays
 
 | Component | Story | Use it for |

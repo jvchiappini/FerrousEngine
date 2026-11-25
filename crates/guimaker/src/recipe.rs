@@ -1,10 +1,12 @@
 //! The start-screen recipe: the layout benchmark, a realistic view and the
 //! phase 3 responsive reference.
 //!
-//! This is a structural screen, not a component library: the phase 6 components
-//! replace the hand-built rows. It exists so the 0.3 ms layout threshold has a
-//! concrete, measured workload, so phase 6 has a target to match, and so the
-//! responsive sweep has a real screen to guard.
+//! The structure comes from the general component library: [`field`] is the
+//! read-only form field, [`list_row`] is the recent-project card,
+//! [`nav_link`] is the header action and [`content_column`] is the centring
+//! slot. The recipe only decides what the screen *is*; it spells no coordinates
+//! and no design values, so the phase 9 comparison against plain HTML + CSS can
+//! count just the view.
 //!
 //! At `Lg` and up the body is two columns (recent projects and the new-project
 //! form), each capped to a content column and centred; below `Lg` they stack and
@@ -15,11 +17,22 @@
 //! sweeps it at ten widths and four scales.
 
 #![allow(clippy::too_many_lines)] // reason: the recipe is one declarative screen
+use crate::components::{
+    brand, caption, content_column, field, list_row, nav_link, paragraph, section_heading,
+};
 use crate::resp;
-use crate::style::{Align, FluidText, Justify, SizeSpec, Tone};
-use crate::text::Ellipsis;
+use crate::style::{Align, Justify, Lines, Priority, SizeSpec, Split, Tone};
 use crate::theme::{ColorRole, ContentWidth, Radius, Spacing, TypeRole};
 use crate::view::{text, Element};
+
+/// How many recent projects the sample screen shows.
+///
+/// It is demo data, not a design value: a real app feeds the rows from its own
+/// recent-projects list.
+const RECENT_COUNT: u64 = 5;
+
+/// The recent-project indices, as a named range so the view spells no number.
+const RECENT_INDICES: std::ops::Range<u64> = 0..RECENT_COUNT;
 
 /// A start-screen action.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,41 +56,21 @@ pub enum StartMsg {
 /// stays identical at any hour.
 #[must_use]
 pub fn start_screen(now_ms: f64) -> Element<StartMsg> {
-    let time = clock_label(now_ms);
+    let time = crate::format::clock_hh_mm(now_ms);
     let header = Element::row()
         .key("header")
         .gap(resp![Xs: Spacing::S2, Md: Spacing::S3])
         .align(Align::Center)
         .justify(Justify::SpaceBetween)
         .flow_wrap()
-        .child(
-            Element::column()
-                .key("brand")
-                .gap(Spacing::S1)
-                .child(
-                    text::<StartMsg>("Motioner")
-                        .key("title")
-                        .text_role(TypeRole::Display)
-                        .fluid_text(FluidText::new(TypeRole::Heading, 0.012, TypeRole::Display))
-                        .tone(Tone::Default)
-                        .priority(9),
-                )
-                .child(
-                    text::<StartMsg>("Code-driven motion graphics")
-                        .text_role(TypeRole::Caption)
-                        .tone(Tone::Muted)
-                        .priority(1)
-                        .lines(1)
-                        .ellipsis(Ellipsis::End),
-                ),
-        )
+        .child(brand("Motioner", "Code-driven motion graphics"))
         .child(
             Element::row()
                 .key("header_actions")
                 .gap(Spacing::S1)
                 .align(Align::Center)
-                .child(link("Settings", StartMsg::Settings))
-                .child(link("Docs", StartMsg::Docs)),
+                .child(nav_link("Settings", StartMsg::Settings))
+                .child(nav_link("Docs", StartMsg::Docs)),
         );
 
     let mut recent = Element::column()
@@ -86,13 +79,13 @@ pub fn start_screen(now_ms: f64) -> Element<StartMsg> {
         .gap(resp![Xs: Spacing::S2, Md: Spacing::S3])
         .width(SizeSpec::Fill)
         .max_width(ContentWidth::Lg)
-        .child(
-            text::<StartMsg>("Recent projects")
-                .text_role(TypeRole::Heading)
-                .tone(Tone::Default),
+        .child(section_heading::<StartMsg>("Recent projects"));
+    for index in RECENT_INDICES {
+        recent = recent.child(
+            list_row(format!("Project {index}"), "Edited recently", time.clone())
+                .key_id(index)
+                .on_click(StartMsg::OpenRecent(index)),
         );
-    for index in 0..5u64 {
-        recent = recent.child(recent_row(index, time.clone()));
     }
 
     let mut fields = Element::column()
@@ -101,25 +94,23 @@ pub fn start_screen(now_ms: f64) -> Element<StartMsg> {
         .gap(resp![Xs: Spacing::S3, Md: Spacing::S4])
         .width(SizeSpec::Fill)
         .max_width(ContentWidth::Md)
+        .child(section_heading::<StartMsg>("New project"))
         .child(
-            text::<StartMsg>("New project")
-                .text_role(TypeRole::Heading)
-                .tone(Tone::Default),
-        )
-        .child(
-            text::<StartMsg>("Start with a prompt, an example, or an empty composition")
-                .text_role(TypeRole::Body)
-                .tone(Tone::Muted)
-                .lines(2)
-                .priority(1),
+            paragraph::<StartMsg>(
+                "Start with a prompt, an example, or an empty composition",
+                TypeRole::Body,
+                Tone::Muted,
+                Lines::TWO,
+            )
+            .priority(Priority::SHRINK),
         );
-    for (key, label, placeholder) in [
-        ("field_name", "Name", "Untitled"),
-        ("field_size", "Size", "1920 x 1080"),
-        ("field_rate", "Frame rate", "60 fps"),
-        ("field_engine", "Engine", "FerrousEngine"),
+    for (label, value) in [
+        ("Name", "Untitled"),
+        ("Size", "1920 x 1080"),
+        ("Frame rate", "60 fps"),
+        ("Engine", "FerrousEngine"),
     ] {
-        fields = fields.child(field(key, label, placeholder));
+        fields = fields.child(field(label, value));
     }
     fields = fields.child(
         Element::row()
@@ -174,139 +165,24 @@ pub fn start_screen(now_ms: f64) -> Element<StartMsg> {
                     Xs: crate::style::Direction::Column,
                     Lg: crate::style::Direction::Row
                 ])
-                .grow(1.0)
-                .child(content_column(recent, SizeSpec::Fraction(0.55)))
-                .child(content_column(fields, SizeSpec::Fraction(0.45))),
+                .grow()
+                .child(content_column(recent, SizeSpec::Fraction(Split::LEADING)))
+                .child(content_column(fields, SizeSpec::Fraction(Split::TRAILING))),
         )
         .child(
             Element::row()
                 .key("footer")
                 .gap(Spacing::S2)
                 .align(Align::Center)
-                .child(
-                    text::<StartMsg>("FerrousEngine 0.1")
-                        .text_role(TypeRole::Caption)
-                        .tone(Tone::Faint)
-                        .priority(1),
-                )
+                .child(caption::<StartMsg>("FerrousEngine 0.1").priority(Priority::SHRINK))
                 .child(Element::spacer())
-                .child(
-                    text::<StartMsg>("Apache-2.0")
-                        .text_role(TypeRole::Caption)
-                        .tone(Tone::Faint)
-                        .priority(9),
-                ),
-        )
-}
-
-/// A full-width centring slot whose child is capped by its own `max_width`.
-///
-/// Stacked, the slot is full width and the content column centres inside it;
-/// side by side, the slot is a fraction of the row. Above the cap the column
-/// stops growing, which is what keeps prose and forms readable at 3840 px.
-fn content_column(content: Element<StartMsg>, width: SizeSpec) -> Element<StartMsg> {
-    Element::row()
-        .justify(Justify::Center)
-        .align(Align::Start)
-        .width(resp![Xs: SizeSpec::Fill, Lg: width])
-        .child(content)
-}
-
-fn link(label: &'static str, message: StartMsg) -> Element<StartMsg> {
-    text::<StartMsg>(label)
-        .text_role(TypeRole::Label)
-        .tone(Tone::Muted)
-        .pad_x(Spacing::S3)
-        .pad_y(Spacing::S2)
-        .radius(Radius::Sm)
-        .on_click(message)
-}
-
-fn recent_row(index: u64, time: std::sync::Arc<str>) -> Element<StartMsg> {
-    Element::row()
-        .key_id(index)
-        .gap(resp![Xs: Spacing::S2, Md: Spacing::S3])
-        .align(Align::Center)
-        .pad(resp![Xs: Spacing::S2, Md: Spacing::S3])
-        .bg(ColorRole::Surface)
-        .border(ColorRole::Border)
-        .radius(Radius::Md)
-        .child(
-            Element::column()
-                .gap(Spacing::S1)
-                .width(SizeSpec::Fill)
-                .child(
-                    text::<StartMsg>(format!("Project {index}"))
-                        .text_role(TypeRole::Label)
-                        .tone(Tone::Default)
-                        .priority(1)
-                        .ellipsis(Ellipsis::End)
-                        .lines(1),
-                )
-                .child(
-                    text::<StartMsg>("Edited recently")
-                        .text_role(TypeRole::Caption)
-                        .tone(Tone::Muted)
-                        .ellipsis(Ellipsis::End)
-                        .lines(1),
-                ),
-        )
-        .child(
-            text::<StartMsg>(time)
-                .text_role(TypeRole::Caption)
-                .tone(Tone::Faint)
-                .priority(9)
-                .tabular(),
-        )
-        .on_click(StartMsg::OpenRecent(index))
-}
-
-/// Formats an injected millisecond instant as `HH:MM` on a 24-hour clock.
-fn clock_label(now_ms: f64) -> std::sync::Arc<str> {
-    let millis = if now_ms.is_finite() {
-        now_ms.max(0.0)
-    } else {
-        0.0
-    };
-    // A finite, non-negative instant fits in `u64` after saturating casts; the
-    // modulo keeps only the time of day.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    // reason: `millis` is finite and non-negative; saturation is acceptable
-    let minutes = (millis / 60_000.0) as u64 % (24 * 60);
-    format!("{:02}:{:02}", minutes / 60, minutes % 60).into()
-}
-
-fn field(key: &'static str, label: &'static str, placeholder: &'static str) -> Element<StartMsg> {
-    Element::column()
-        .key(key)
-        .gap(Spacing::S1)
-        .child(
-            text::<StartMsg>(label)
-                .text_role(TypeRole::Caption)
-                .tone(Tone::Muted),
-        )
-        .child(
-            Element::row()
-                .pad(Spacing::S3)
-                .min_height(Spacing::S10)
-                .width(SizeSpec::Fill)
-                .bg(ColorRole::SurfaceSunken)
-                .border(ColorRole::Border)
-                .radius(Radius::Sm)
-                .child(
-                    text::<StartMsg>(placeholder)
-                        .text_role(TypeRole::Body)
-                        .tone(Tone::Faint)
-                        .priority(1)
-                        .ellipsis(Ellipsis::End)
-                        .lines(1),
-                ),
+                .child(caption::<StartMsg>("Apache-2.0").priority(Priority::KEEP)),
         )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{clock_label, start_screen};
+    use super::start_screen;
     use crate::view::Tree;
 
     #[test]
@@ -339,9 +215,7 @@ mod tests {
 
     #[test]
     fn the_clock_comes_from_the_injected_instant() {
-        assert_eq!(&*clock_label(0.0), "00:00");
-        assert_eq!(&*clock_label(11.0 * 3_600_000.0 + 42.0 * 60_000.0), "11:42");
-        assert_eq!(&*clock_label(f64::NAN), "00:00");
+        assert_eq!(&*crate::format::clock_hh_mm(0.0), "00:00");
 
         let first = Tree::build(&start_screen(0.0));
         let second = Tree::build(&start_screen(9.0 * 3_600_000.0 + 5.0 * 60_000.0));

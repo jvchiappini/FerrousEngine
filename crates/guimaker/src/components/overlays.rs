@@ -937,7 +937,7 @@ fn toast_icon(status: Status) -> Icon {
 pub fn toast<Msg: Clone>(value: &Toast, dismiss: Option<Msg>) -> Element<Msg> {
     let size = ControlSize::Md;
     let status_spec = StateSpec::tone(value.status.tone());
-    let mut copy = Element::column().gap(Spacing::S1).grow(1.0).child(
+    let mut copy = Element::column().gap(Spacing::S1).grow().child(
         text::<Msg>(value.title.as_str())
             .text_role(TypeRole::BodyStrong)
             .tone(Tone::Default),

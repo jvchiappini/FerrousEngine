@@ -44,6 +44,7 @@ nav:
     - Startup trace: ferrous_engine/startup.md
     - GPU memory: ferrous_engine/memory.md
     - Performance & GPU timing: ferrous_engine/performance.md
+    - UI performance: ferrous_engine/ui-performance.md
     - Redraw policy: ferrous_engine/redraw.md
     - Present modes & persistent UI: ferrous_engine/present.md
   - ferrous_2d — 2D Rendering:
@@ -140,6 +141,7 @@ nav:
       - G-0003 - Theme file format: guimaker/decisions/G-0003.md
       - G-0004 - Grapheme segmentation: guimaker/decisions/G-0004.md
       - G-0010 - Popup present backend: guimaker/decisions/G-0010.md
+      - G-0011 - Main-window backend default: guimaker/decisions/G-0011.md
   - Other crates:
     - ferrous_assets: ferrous_assets/README.md
     - ferrous_asset_types: ferrous_asset_types/README.md

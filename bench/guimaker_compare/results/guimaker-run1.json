@@ -1,0 +1,12 @@
+{
+  "library": "guimaker",
+  "run": 1,
+  "startup_ms": 565.0511999847367,
+  "startup_stage": "harness-wall",
+  "idle_cpu_pct": 2.709,
+  "idle_frames": 3,
+  "rss_bytes": 228564992,
+  "wall_seconds": 6.725,
+  "hover_moves": 0,
+  "features": {}
+}

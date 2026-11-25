@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use guimaker::geom::Size;
 use guimaker::theme::Theme;
 use guimaker_gallery::golden::{compare_png, Tolerance};
-use guimaker_gallery::shot::render_story;
+use guimaker_gallery::shot::StoryTarget;
 use guimaker_gallery::story::Story;
 use guimaker_gallery::Component;
 
@@ -80,6 +80,18 @@ fn recipe_golden_name(story: Story) -> &'static str {
 
 #[test]
 fn committed_goldens_match_the_current_render() {
+    // One device, GUI renderer and target for the whole batch: creating a
+    // headless harness per case was the dominant cost of this test.
+    let logical = Size::new(1280.0, 800.0);
+    let scale = 1.5;
+    let mut target = match StoryTarget::new(logical, scale) {
+        Ok(target) => target,
+        Err(error) => {
+            eprintln!("skipping every golden: no headless GPU ({error})");
+            return;
+        }
+    };
+
     for (name, story, theme) in cases() {
         let path = golden_path(&name);
         assert!(
@@ -90,13 +102,9 @@ fn committed_goldens_match_the_current_render() {
             theme.mode_name(),
         );
 
-        let image = match render_story(story, &theme, Size::new(1280.0, 800.0), 1.5) {
-            Ok(image) => image,
-            Err(error) => {
-                eprintln!("skipping golden `{name}`: no headless GPU ({error})");
-                continue;
-            }
-        };
+        let image = target
+            .render_story(story, &theme, logical, scale)
+            .expect("golden render");
 
         let tolerance = Tolerance::gallery(image.pixel_count());
         let report = compare_png(&path, &image, tolerance).expect("golden comparison");

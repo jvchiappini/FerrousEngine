@@ -149,7 +149,7 @@ pub fn split_panes<Msg: Clone>(
         .child(
             Element::column()
                 .key("split_first")
-                .grow(1.0)
+                .grow()
                 .min_width(resp![Xs: Spacing::S0, Md: first_min])
                 .child(first),
         )
@@ -157,7 +157,7 @@ pub fn split_panes<Msg: Clone>(
         .child(
             Element::column()
                 .key("split_second")
-                .grow(1.0)
+                .grow()
                 .min_width(resp![Xs: Spacing::S0, Md: second_min])
                 .child(second),
         )

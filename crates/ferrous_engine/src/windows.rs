@@ -774,14 +774,124 @@ pub struct OffscreenTarget {
     pub texture: wgpu::Texture,
     /// The view the GUI pass renders into (and the copy reads from).
     pub view: wgpu::TextureView,
-    /// Reused staging buffer for the readback.
-    pub staging: wgpu::Buffer,
     /// Physical size of `texture`.
     pub width: u32,
     /// Physical size of `texture`.
     pub height: u32,
     /// The colour format, recorded for the RGBA/BGRA conversion.
     pub format: wgpu::TextureFormat,
+    /// The off-thread readback worker. One per target; recreated on resize.
+    pub(crate) readback: LayeredReadback,
+}
+
+/// One `map_async` job handed to the readback worker.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct ReadbackJob {
+    /// The device the copy was submitted to.
+    pub device: std::sync::Arc<wgpu::Device>,
+    /// The staging buffer holding the copied frame.
+    pub buffer: wgpu::Buffer,
+    /// Frame width.
+    pub width: u32,
+    /// Frame height.
+    pub height: u32,
+    /// Whether the format stores BGRA rather than RGBA.
+    pub bgra: bool,
+}
+
+/// Maps popup readbacks on a worker thread so the event loop never waits for
+/// the device queue.
+///
+/// A layered popup has to hand CPU pixels to `UpdateLayeredWindow`, and polling
+/// the device on the UI thread makes a menu repaint wait behind whatever the
+/// main window queued (a heavy 3D viewport in Motioner). This worker blocks on
+/// `Maintain::Wait` on its own thread instead; the UI thread drains finished
+/// frames with [`Self::try_take`] and keeps the previous popup image until one
+/// arrives.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct LayeredReadback {
+    jobs: std::sync::mpsc::Sender<ReadbackJob>,
+    results: std::sync::mpsc::Receiver<crate::screenshot::Screenshot>,
+    in_flight: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl LayeredReadback {
+    /// Spawns the worker and wakes `window` after every finished job.
+    ///
+    /// The wake turns into the popup's `RedrawRequested`, where the mapped frame
+    /// is uploaded. A failure to spawn leaves a disconnected channel, so every
+    /// later submit is a no-op rather than a panic.
+    #[must_use]
+    pub fn new(window: Option<std::sync::Arc<winit::window::Window>>) -> Self {
+        let (jobs, job_rx) = std::sync::mpsc::channel::<ReadbackJob>();
+        let (result_tx, results) = std::sync::mpsc::channel();
+        let in_flight = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let worker_in_flight = std::sync::Arc::clone(&in_flight);
+        let _ = std::thread::Builder::new()
+            .name("popup-readback".to_owned())
+            .spawn(move || {
+                while let Ok(job) = job_rx.recv() {
+                    let frame = crate::screenshot::read_capture(
+                        &job.device,
+                        &job.buffer,
+                        job.width,
+                        job.height,
+                        job.bgra,
+                    );
+                    worker_in_flight.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                    if let Some(frame) = frame {
+                        // A closed receiver means the popup is gone; stop.
+                        if result_tx.send(frame).is_err() {
+                            break;
+                        }
+                    }
+                    // Present on the next callback, even when the job failed:
+                    // the popup keeps its previous image either way.
+                    if let Some(window) = window.as_ref() {
+                        window.request_redraw();
+                    }
+                }
+            });
+        Self {
+            jobs,
+            results,
+            in_flight,
+        }
+    }
+
+    /// Queues one readback. The job owns its staging buffer until it is mapped.
+    pub(crate) fn submit(&self, job: ReadbackJob) {
+        self.in_flight
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        if self.jobs.send(job).is_err() {
+            self.in_flight
+                .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        }
+    }
+
+    /// Whether a copy is still being mapped.
+    #[must_use]
+    pub(crate) fn has_pending(&self) -> bool {
+        self.in_flight.load(std::sync::atomic::Ordering::Acquire) > 0
+    }
+
+    /// The newest finished frame, dropping any older ones.
+    #[must_use]
+    pub(crate) fn try_take(&self) -> Option<crate::screenshot::Screenshot> {
+        let mut latest = None;
+        while let Ok(frame) = self.results.try_recv() {
+            latest = Some(frame);
+        }
+        latest
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Default for LayeredReadback {
+    fn default() -> Self {
+        Self::new(None)
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -793,6 +903,7 @@ impl OffscreenTarget {
         width: u32,
         height: u32,
         format: wgpu::TextureFormat,
+        window: Option<std::sync::Arc<winit::window::Window>>,
     ) -> Self {
         let width = width.max(1);
         let height = height.max(1);
@@ -811,14 +922,13 @@ impl OffscreenTarget {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let staging = crate::screenshot::capture_buffer(device, width, height);
         Self {
             texture,
             view,
-            staging,
             width,
             height,
             format,
+            readback: LayeredReadback::new(window),
         }
     }
 
@@ -1077,6 +1187,11 @@ pub struct PopupWindow {
     pub frames: u64,
     /// Copy the next presented frame back to CPU (evidence capture).
     pub capture_next: bool,
+    /// The main-frame generation whose overlay batch this popup last rendered.
+    ///
+    /// A readback worker wakes the popup to present its finished frame; at the
+    /// same generation that is a flush, never a second render of the same batch.
+    pub rendered_generation: u64,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1107,7 +1222,13 @@ impl PopupWindow {
             target.width == width && target.height == height && target.format == format
         });
         if !matches {
-            self.offscreen = Some(OffscreenTarget::new(&self.device, width, height, format));
+            self.offscreen = Some(OffscreenTarget::new(
+                &self.device,
+                width,
+                height,
+                format,
+                Some(std::sync::Arc::clone(&self.window)),
+            ));
         }
         self.offscreen.is_some()
     }
@@ -1689,6 +1810,7 @@ impl PopupBackend for WinitPopups {
             first_frame_at: None,
             frames: 0,
             capture_next: false,
+            rendered_generation: u64::MAX,
         }));
         if let Some(window) = self.window_mut(handle) {
             if present == PopupPresent::Layered {

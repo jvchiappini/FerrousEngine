@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GUIMaker comparison run",
+  "type": "object",
+  "required": [
+    "library",
+    "run",
+    "startup_ms",
+    "idle_cpu_pct",
+    "idle_frames",
+    "rss_bytes",
+    "binary_bytes",
+    "features"
+  ],
+  "properties": {
+    "library": { "type": "string", "enum": ["guimaker", "egui", "iced", "slint", "imgui", "webview2"] },
+    "run": { "type": "integer", "minimum": 1 },
+    "startup_ms": { "type": "number", "minimum": 0 },
+    "idle_cpu_pct": { "type": "number", "minimum": 0 },
+    "idle_frames": { "type": "integer", "minimum": 0 },
+    "hover_cpu_pct": { "type": "number", "minimum": 0 },
+    "typing_cpu_pct": { "type": "number", "minimum": 0 },
+    "rss_bytes": { "type": "integer", "minimum": 0 },
+    "gpu_bytes": { "type": "integer", "minimum": 0 },
+    "binary_bytes": { "type": "integer", "minimum": 0 },
+    "features": {
+      "type": "object",
+      "required": ["cjk", "emoji", "popups_outside_window", "per_monitor_dpi", "ime"],
+      "properties": {
+        "cjk": { "type": "boolean" },
+        "emoji": { "type": "boolean" },
+        "popups_outside_window": { "type": "boolean" },
+        "per_monitor_dpi": { "type": "boolean" },
+        "ime": { "type": "boolean" }
+      }
+    }
+  }
+}

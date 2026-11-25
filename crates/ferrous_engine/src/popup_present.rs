@@ -26,6 +26,9 @@ pub struct PresentOutcome {
     pub screenshot: Option<Screenshot>,
     /// This frame was the first after the popup opened or was reopened.
     pub first_frame: bool,
+    /// A layered readback is still in flight; ask the runner to flush it on a
+    /// short timer. The swapchain path never sets it.
+    pub needs_flush: bool,
 }
 
 /// Prepares, renders, submits and presents one popup frame.
@@ -37,40 +40,99 @@ pub fn present_frame(
     batch: &GuiBatch,
     position: (i32, i32),
     capture: bool,
+    render: bool,
 ) -> PresentOutcome {
-    let Some(mut gui) = target.gui.take() else {
-        return PresentOutcome::default();
-    };
     let device = target.device.clone();
     let queue = target.queue.clone();
     let handle = target.handle;
-    let present = target.present;
     let width = target.config.width.max(1);
     let height = target.config.height.max(1);
     let format = target.config.format;
     let transparent = target.transparent();
-
-    gui.prepare(&queue, batch);
-    // A batch larger than the initial capacity grows the buffers; keep the
-    // `popups` memory entries truthful after the growth.
-    register_popup_gui(handle, &gui);
-
     let clear = if transparent {
         wgpu::Color::TRANSPARENT
     } else {
         wgpu::Color::BLACK
     };
 
-    let outcome = match present {
-        PopupPresent::Swapchain => present_swapchain(
-            target, &device, &queue, &gui, batch, clear, position, capture, width, height, format,
-        ),
-        PopupPresent::Layered => present_layered(
-            target, &device, &queue, &gui, batch, clear, position, capture, width, height,
-        ),
+    let outcome = match (target.present, render) {
+        (PopupPresent::Swapchain, true) => {
+            let Some(mut gui) = target.gui.take() else {
+                return PresentOutcome::default();
+            };
+            gui.prepare(&queue, batch);
+            // A batch larger than the initial capacity grows the buffers; keep
+            // the `popups` memory entries truthful after the growth.
+            register_popup_gui(handle, &gui);
+            let outcome = present_swapchain(
+                target, &device, &queue, &gui, batch, clear, position, capture, width, height,
+                format,
+            );
+            target.gui = Some(gui);
+            outcome
+        }
+        (PopupPresent::Swapchain, false) => PresentOutcome::default(),
+        (PopupPresent::Layered, true) => {
+            let Some(mut gui) = target.gui.take() else {
+                return PresentOutcome::default();
+            };
+            gui.prepare(&queue, batch);
+            register_popup_gui(handle, &gui);
+            let outcome = present_layered(
+                target, &device, &queue, &gui, batch, clear, position, capture, width, height,
+            );
+            target.gui = Some(gui);
+            outcome
+        }
+        (PopupPresent::Layered, false) => flush_layered(target, position),
     };
 
-    target.gui = Some(gui);
+    if outcome.presented {
+        target.frames += 1;
+        if target.first_frame_at.is_none() {
+            target.first_frame_at = Some(std::time::Instant::now());
+        }
+    }
+    outcome
+}
+
+/// Presents a finished layered readback without rendering a new frame.
+///
+/// The runner calls this on a short timer while [`PresentOutcome::needs_flush`]
+/// is set, so the newest mapped frame reaches `UpdateLayeredWindow` on the next
+/// callback and the popup keeps its previous image until then.
+#[cfg(target_os = "windows")]
+fn flush_layered(target: &mut PopupWindow, position: (i32, i32)) -> PresentOutcome {
+    let Some(offscreen) = target.offscreen.as_ref() else {
+        return PresentOutcome::default();
+    };
+    let Some(layered) = target.layered.as_mut() else {
+        return PresentOutcome::default();
+    };
+    let frame = offscreen.readback.try_take();
+    let presented = frame.is_some_and(|frame| {
+        layered.upload(&frame.rgba);
+        layered.update(position)
+    });
+    PresentOutcome {
+        presented,
+        needs_flush: offscreen.readback.has_pending(),
+        ..PresentOutcome::default()
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn flush_layered(_target: &mut PopupWindow, _position: (i32, i32)) -> PresentOutcome {
+    PresentOutcome::default()
+}
+
+/// Presents a finished layered readback without rendering a new frame.
+///
+/// The readback worker wakes the popup after a copy finishes; the runner calls
+/// this when the main-frame generation has not advanced, so the same overlay
+/// batch is never encoded twice.
+pub fn flush_frame(target: &mut PopupWindow, position: (i32, i32)) -> PresentOutcome {
+    let outcome = flush_layered(target, position);
     if outcome.presented {
         target.frames += 1;
         if target.first_frame_at.is_none() {
@@ -157,22 +219,21 @@ fn present_swapchain(
         presented: true,
         screenshot,
         first_frame,
+        needs_flush: false,
     }
 }
 
-/// Renders `batch` into `offscreen`, reads it back and presents it through
-/// `layered`.
+/// Renders `batch` into `offscreen`, then either reads it back synchronously
+/// (`sync`) or hands the staging buffer to the readback worker.
 ///
-/// This is the whole layered frame: it always copies the texture back because
-/// `UpdateLayeredWindow` needs CPU pixels. On success it returns the same
-/// tightly packed premultiplied RGBA frame, so an evidence capture costs no
-/// second readback.
-///
-/// Windows only; the caller never receives a layered popup elsewhere.
+/// The previous mapped frame is presented first, so a repaint never blocks on
+/// the device queue: the popup keeps its last image until the new one is ready.
+/// `sync` is used for the first frame and for evidence captures, where the
+/// caller needs the current pixels in this callback.
 #[cfg(target_os = "windows")]
 #[allow(clippy::too_many_arguments)] // reason: one linear presentation call
 pub fn present_offscreen(
-    device: &wgpu::Device,
+    device: &std::sync::Arc<wgpu::Device>,
     queue: &wgpu::Queue,
     gui: &ferrous_ui_render::GuiRenderer,
     batch: &GuiBatch,
@@ -180,9 +241,22 @@ pub fn present_offscreen(
     layered: &mut LayeredSurface,
     position: (i32, i32),
     clear: wgpu::Color,
+    sync: bool,
 ) -> Option<Screenshot> {
     let width = offscreen.width.max(1);
     let height = offscreen.height.max(1);
+
+    // Present a frame that finished since the last callback. The DIB keeps the
+    // previous pixels when there is none, which is the whole point of the async
+    // path.
+    let mut presented = offscreen.readback.try_take();
+    if let Some(frame) = &presented {
+        layered.upload(&frame.rgba);
+        if !layered.update(position) {
+            presented = None;
+        }
+    }
+
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("Popup offscreen frame"),
     });
@@ -194,6 +268,7 @@ pub fn present_offscreen(
         wgpu::LoadOp::Clear(clear),
     );
     let padded = screenshot::padded_bytes_per_row(width);
+    let buffer = screenshot::capture_buffer(device, width, height);
     encoder.copy_texture_to_buffer(
         wgpu::ImageCopyTexture {
             texture: &offscreen.texture,
@@ -202,7 +277,7 @@ pub fn present_offscreen(
             aspect: wgpu::TextureAspect::All,
         },
         wgpu::ImageCopyBuffer {
-            buffer: &offscreen.staging,
+            buffer: &buffer,
             layout: wgpu::ImageDataLayout {
                 offset: 0,
                 bytes_per_row: Some(padded),
@@ -217,20 +292,38 @@ pub fn present_offscreen(
     );
     queue.submit(Some(encoder.finish()));
 
-    // The readback polls the device, so the DIB upload only sees finished
-    // pixels. The offscreen target is BGRA, so `read_capture` swaps to RGBA for
-    // the screenshot; `upload` swaps back for the DIB.
     let bgra = screenshot::is_bgra(offscreen.format);
-    let frame = screenshot::read_capture(device, &offscreen.staging, width, height, bgra)?;
-    layered.upload(&frame.rgba);
-    layered.update(position).then_some(frame)
+    if sync {
+        // First frame and evidence: the caller needs this frame now.
+        let frame = screenshot::read_capture(device, &buffer, width, height, bgra)?;
+        layered.upload(&frame.rgba);
+        return layered.update(position).then_some(frame);
+    }
+
+    // Async: the worker blocks on the device queue, not the event loop.
+    offscreen.readback.submit(crate::windows::ReadbackJob {
+        device: std::sync::Arc::clone(device),
+        buffer,
+        width,
+        height,
+        bgra,
+    });
+    presented
+}
+
+/// Whether `FERROUS_POPUP_SYNC_READBACK=1` forces the pre-Phase-9B blocking
+/// readback. It exists for the A/B measurement only; the default is off.
+#[cfg(target_os = "windows")]
+fn force_sync_readback() -> bool {
+    static FORCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FORCE.get_or_init(|| std::env::var_os("FERROUS_POPUP_SYNC_READBACK").is_some())
 }
 
 #[cfg(target_os = "windows")]
 #[allow(clippy::too_many_arguments)] // reason: one linear presentation path
 fn present_layered(
     target: &mut PopupWindow,
-    device: &wgpu::Device,
+    device: &std::sync::Arc<wgpu::Device>,
     queue: &wgpu::Queue,
     gui: &ferrous_ui_render::GuiRenderer,
     batch: &GuiBatch,
@@ -243,23 +336,26 @@ fn present_layered(
     if !target.ensure_offscreen() || !target.ensure_layered(position) {
         return PresentOutcome::default();
     }
+    let first = target.first_frame_at.is_none();
+    // The first frame is synchronous so the window never appears empty; every
+    // later repaint maps off-thread. An evidence capture is synchronous too.
+    // `FERROUS_POPUP_SYNC_READBACK=1` forces the old blocking path for an A/B
+    // measurement of the stall behind a heavy main-window queue.
+    let sync = capture || first || force_sync_readback();
     let PopupWindow {
         offscreen, layered, ..
     } = target;
     let (Some(offscreen), Some(layered)) = (offscreen.as_ref(), layered.as_mut()) else {
         return PresentOutcome::default();
     };
-    let Some(frame) = present_offscreen(
-        device, queue, gui, batch, offscreen, layered, position, clear,
-    ) else {
-        log::warn!("popup {}: UpdateLayeredWindow failed", target.handle);
-        return PresentOutcome::default();
-    };
-    let first_frame = target.first_frame_at.is_none();
+    let frame = present_offscreen(
+        device, queue, gui, batch, offscreen, layered, position, clear, sync,
+    );
     PresentOutcome {
-        presented: true,
-        screenshot: capture.then_some(frame),
-        first_frame,
+        presented: frame.is_some(),
+        screenshot: capture.then_some(frame).flatten(),
+        first_frame: first && sync,
+        needs_flush: offscreen.readback.has_pending(),
     }
 }
 

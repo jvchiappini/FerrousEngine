@@ -1,0 +1,38 @@
+{
+  "library": "iced",
+  "run": 1,
+  "startup_ms": 764.4457000424154,
+  "startup_stage": "harness-wall",
+  "idle_cpu_pct": 0.163,
+  "tail_cpu_pct": 0.463,
+  "top_threads_cpu": [
+    [
+      32016,
+      0.015625
+    ],
+    [
+      4016,
+      0.0
+    ],
+    [
+      7868,
+      0.0
+    ],
+    [
+      29020,
+      0.0
+    ],
+    [
+      17732,
+      0.0
+    ]
+  ],
+  "ui_thread_id": 4016,
+  "ui_thread_cpu_seconds": 0.0,
+  "idle_frames": 1,
+  "rss_bytes": 238100480,
+  "wall_seconds": 30.174,
+  "hover_moves": 0,
+  "memory": null,
+  "features": {}
+}

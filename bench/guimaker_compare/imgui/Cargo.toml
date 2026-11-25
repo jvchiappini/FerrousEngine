@@ -1,0 +1,21 @@
+[package]
+name = "guimaker-compare-imgui"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "guimaker-compare-imgui"
+path = "src/main.rs"
+
+[dependencies]
+# Mutually compatible set (verified from crates.io metadata):
+#   imgui-wgpu 0.28 -> wgpu ^29, imgui ^0.12
+#   imgui-winit-support 0.13 -> winit ^0.30, imgui ^0.12
+# so: imgui 0.12, wgpu 29, winit 0.30, plus pollster for block_on.
+imgui = "0.12"
+imgui-wgpu = "0.28"
+imgui-winit-support = "0.13"
+winit = "0.30"
+wgpu = "29"
+pollster = "0.4"

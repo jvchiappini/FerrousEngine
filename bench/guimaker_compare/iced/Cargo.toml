@@ -1,0 +1,14 @@
+[package]
+name = "guimaker-compare-iced"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "guimaker-compare-iced"
+path = "src/main.rs"
+
+[dependencies]
+# iced 0.13.1. Default features give the wgpu renderer, bundled Fira Sans and
+# auto theme detection.
+iced = "0.13"

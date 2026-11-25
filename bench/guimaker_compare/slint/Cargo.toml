@@ -1,0 +1,14 @@
+[package]
+name = "guimaker-compare-slint"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "guimaker-compare-slint"
+path = "src/main.rs"
+
+[dependencies]
+# Pinned to the 1.7 line on purpose (not 1.8+): the UI is written with the
+# `slint!` macro, so there is no build.rs and no .slint file to compile.
+slint = "~1.7.2"

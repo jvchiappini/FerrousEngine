@@ -1,0 +1,12 @@
+{
+  "library": "iced",
+  "run": 2,
+  "startup_ms": null,
+  "startup_stage": null,
+  "idle_cpu_pct": 44.317,
+  "idle_frames": 5389,
+  "rss_bytes": 242454528,
+  "wall_seconds": 6.248,
+  "hover_moves": 0,
+  "features": {}
+}

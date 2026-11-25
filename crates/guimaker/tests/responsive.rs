@@ -328,7 +328,7 @@ fn sidebar_pattern() -> Element<Msg> {
             .key("app_body")
             .align(Align::Stretch)
             .gap(Spacing::S3)
-            .grow(1.0)
+            .grow()
             .direction(resp![Xs: Direction::Column, Md: Direction::Row])
             .child(collapsing_sidebar([
                 nav_item("[]", "Files", Msg::Action(1)),
@@ -338,7 +338,7 @@ fn sidebar_pattern() -> Element<Msg> {
             .child(
                 Element::column()
                     .key("content")
-                    .grow(1.0)
+                    .grow()
                     .bg(ColorRole::Surface)
                     .pad(Spacing::S3)
                     .child(text::<Msg>("Canvas")),
@@ -361,7 +361,7 @@ fn the_drawer_is_the_narrow_alternative() {
     let view = shell(
         Element::stack()
             .key("overlay")
-            .grow(1.0)
+            .grow()
             .child(sidebar_drawer([
                 nav_item("[]", "Files", Msg::Action(1)),
                 nav_item("()", "Search", Msg::Action(2)),

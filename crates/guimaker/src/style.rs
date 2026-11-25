@@ -267,11 +267,67 @@ pub struct FluidText {
 }
 
 impl FluidText {
+    /// The share of the container the design system uses for display type.
+    ///
+    /// It is the slope behind [`FluidText::between`]; an app that wants a
+    /// different feel can still call [`FluidText::new`] with its own fraction.
+    pub const DEFAULT_SLOPE: f32 = 0.012;
+
+    /// A clamp between two type roles at the design-system slope.
+    ///
+    /// ```
+    /// use guimaker::prelude::*;
+    /// let fluid = FluidText::between(TypeRole::Heading, TypeRole::Display);
+    /// assert_eq!(fluid.fraction, FluidText::DEFAULT_SLOPE);
+    /// ```
+    #[must_use]
+    pub const fn between(min: TypeRole, max: TypeRole) -> Self {
+        Self::new(min, Self::DEFAULT_SLOPE, max)
+    }
+
     /// A clamp between two type roles.
     #[must_use]
     pub const fn new(min: TypeRole, fraction: f32, max: TypeRole) -> Self {
         Self { min, fraction, max }
     }
+}
+
+/// The two priority weights an app names when it labels a row.
+///
+/// [`Element::priority`](crate::view::Element::priority) takes a number from 0 to 9. These constants name the
+/// two ends so a view never spells the number: [`Priority::SHRINK`] is the
+/// least important label (it ellipsises first) and [`Priority::KEEP`] is the
+/// most important (it keeps its size).
+pub struct Priority;
+
+impl Priority {
+    /// The least important label in a row; it gives up width first.
+    pub const SHRINK: u8 = 1;
+    /// The most important label in a row; it keeps its size longest.
+    pub const KEEP: u8 = 9;
+}
+
+/// Named line caps for [`Element::lines`](crate::view::Element::lines).
+pub struct Lines;
+
+impl Lines {
+    /// A single line, ellipsised at the end.
+    pub const ONE: u16 = 1;
+    /// Two lines, ellipsised at the end.
+    pub const TWO: u16 = 2;
+}
+
+/// Named two-column split ratios for [`SizeSpec::Fraction`].
+///
+/// The start-screen body is a 55/45 split: the recent-project list leads and
+/// the new-project form trails. The pair sums to one, so it fills the row.
+pub struct Split;
+
+impl Split {
+    /// The leading share of a two-column row.
+    pub const LEADING: f32 = 0.55;
+    /// The trailing share of a two-column row.
+    pub const TRAILING: f32 = 0.45;
 }
 
 /// A value that can change with the container's breakpoint class.

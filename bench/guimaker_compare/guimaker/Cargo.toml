@@ -1,0 +1,14 @@
+[package]
+name = "guimaker-compare-guimaker"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "guimaker-compare-guimaker"
+path = "src/main.rs"
+
+[dependencies]
+guimaker = { path = "../../../crates/guimaker" }
+guimaker_gallery = { path = "../../../crates/guimaker_gallery" }
+ferrous_engine = { path = "../../../crates/ferrous_engine" }

@@ -1,0 +1,38 @@
+{
+  "library": "egui-wgpu",
+  "run": 3,
+  "startup_ms": 560.9642000054009,
+  "startup_stage": "harness-wall",
+  "idle_cpu_pct": 1.212,
+  "tail_cpu_pct": 1.555,
+  "top_threads_cpu": [
+    [
+      38204,
+      0.0
+    ],
+    [
+      39108,
+      0.0
+    ],
+    [
+      37012,
+      0.0
+    ],
+    [
+      17780,
+      0.0
+    ],
+    [
+      9612,
+      0.0
+    ]
+  ],
+  "ui_thread_id": 38204,
+  "ui_thread_cpu_seconds": 0.0,
+  "idle_frames": 5,
+  "rss_bytes": 354861056,
+  "wall_seconds": 6.712,
+  "hover_moves": 0,
+  "memory": null,
+  "features": {}
+}

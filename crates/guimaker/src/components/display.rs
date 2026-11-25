@@ -17,7 +17,7 @@ use glam::Vec2;
 
 use crate::components::{icon_box, label_text, ControlSize, StateSpec, Status};
 use crate::icons::Icon;
-use crate::style::{Align, Cursor, Justify, SizeSpec, Tone};
+use crate::style::{Align, Cursor, FluidText, Justify, Lines, Priority, SizeSpec, Tone};
 use crate::text::Ellipsis;
 use crate::theme::{BorderWidth, ColorRole, ContentWidth, Duration, Radius, Spacing, TypeRole};
 use crate::view::Element;
@@ -82,6 +82,131 @@ pub fn paragraph<Msg: Clone>(
         .ellipsis(Ellipsis::End)
 }
 
+/// An app brand block: a product name over a tagline.
+///
+/// The name is `Display`, sized fluidly between `Heading` and `Display`, so it
+/// grows on a wide screen and stays readable in a narrow one; the tagline is a
+/// one-line muted `Caption` that ellipsises. It is the left half of a page
+/// header, next to [`nav_link`](crate::components::nav_link) actions.
+///
+/// ```
+/// use guimaker::prelude::*;
+/// let logo: Element<()> = brand("Motioner", "Code-driven motion graphics");
+/// assert_eq!(logo.children.len(), 2);
+/// ```
+#[must_use]
+pub fn brand<Msg: Clone>(
+    name: impl Into<std::sync::Arc<str>>,
+    tagline: impl Into<std::sync::Arc<str>>,
+) -> Element<Msg> {
+    Element::column()
+        .key("brand")
+        .gap(Spacing::S1)
+        .child(
+            label_text::<Msg>(name, TypeRole::Display, StateSpec::tone(Tone::Default))
+                .key("title")
+                .fluid_text(FluidText::between(TypeRole::Heading, TypeRole::Display))
+                .priority(Priority::KEEP),
+        )
+        .child(
+            label_text::<Msg>(tagline, TypeRole::Caption, StateSpec::tone(Tone::Muted))
+                .priority(Priority::SHRINK)
+                .lines(Lines::ONE)
+                .ellipsis(Ellipsis::End),
+        )
+}
+
+/// A labelled, read-only field: a caption label above a sunken value well.
+///
+/// It is the display half of a form control, for a form that is filled in
+/// elsewhere (a dialog that mirrors settings, a summary, an inspector). An
+/// editable field uses [`text_field`](crate::components::text_field) instead.
+/// The label is `Caption`/muted, the value `Body`/faint and both ellipsise, so
+/// a narrow column never overflows.
+///
+/// ```
+/// use guimaker::prelude::*;
+/// let pair: Element<()> = field("Name", "Untitled");
+/// assert_eq!(pair.children.len(), 2);
+/// ```
+#[must_use]
+pub fn field<Msg: Clone>(
+    label: impl Into<std::sync::Arc<str>>,
+    value: impl Into<std::sync::Arc<str>>,
+) -> Element<Msg> {
+    Element::column()
+        .gap(Spacing::S1)
+        .child(label_text::<Msg>(
+            label,
+            TypeRole::Caption,
+            StateSpec::tone(Tone::Muted),
+        ))
+        .child(
+            Element::row()
+                .pad(Spacing::S3)
+                .min_height(Spacing::S10)
+                .width(SizeSpec::Fill)
+                .bg(ColorRole::SurfaceSunken)
+                .border(ColorRole::Border)
+                .radius(Radius::Sm)
+                .child(
+                    label_text::<Msg>(value, TypeRole::Body, StateSpec::tone(Tone::Faint))
+                        .priority(Priority::SHRINK)
+                        .ellipsis(Ellipsis::End)
+                        .lines(Lines::ONE),
+                ),
+        )
+}
+
+/// A card row: a bold title over a muted subtitle, with a trailing caption.
+///
+/// This is the list item behind recents, files, members and search results.
+/// The caller owns identity and the action, so the same row works for a
+/// non-interactive summary or a clickable item:
+/// `.key_id(i).on_click(Msg::Open(i))`. The title ellipsises first because it
+/// is the least important label; the trailing caption keeps its size.
+///
+/// ```
+/// use guimaker::prelude::*;
+/// let row: Element<()> = list_row("Project 1", "Edited recently", "11:42");
+/// assert_eq!(row.children.len(), 2);
+/// ```
+#[must_use]
+pub fn list_row<Msg: Clone>(
+    title: impl Into<std::sync::Arc<str>>,
+    subtitle: impl Into<std::sync::Arc<str>>,
+    trailing: impl Into<std::sync::Arc<str>>,
+) -> Element<Msg> {
+    Element::row()
+        .gap(crate::resp![Xs: Spacing::S2, Md: Spacing::S3])
+        .align(Align::Center)
+        .pad(crate::resp![Xs: Spacing::S2, Md: Spacing::S3])
+        .bg(ColorRole::Surface)
+        .border(ColorRole::Border)
+        .radius(Radius::Md)
+        .child(
+            Element::column()
+                .gap(Spacing::S1)
+                .width(SizeSpec::Fill)
+                .child(
+                    label_text::<Msg>(title, TypeRole::Label, StateSpec::tone(Tone::Default))
+                        .priority(Priority::SHRINK)
+                        .ellipsis(Ellipsis::End)
+                        .lines(Lines::ONE),
+                )
+                .child(
+                    label_text::<Msg>(subtitle, TypeRole::Caption, StateSpec::tone(Tone::Muted))
+                        .ellipsis(Ellipsis::End)
+                        .lines(Lines::ONE),
+                ),
+        )
+        .child(
+            label_text::<Msg>(trailing, TypeRole::Caption, StateSpec::tone(Tone::Faint))
+                .priority(Priority::KEEP)
+                .tabular(),
+        )
+}
+
 /// A heading at level `1`, `2` or `3`, with an optional overline above it.
 ///
 /// Level 1 maps to [`TypeRole::Display`], 2 to [`TypeRole::Title`] and 3 to
@@ -116,6 +241,36 @@ pub fn heading<Msg: Clone>(
             .child(heading),
         None => heading,
     }
+}
+
+/// A one-line caption in the faint tone.
+///
+/// Captions are metadata (a version, a licence, a timestamp), quieter than the
+/// muted body text. Pair it with [`list_row`] or [`field`] for the small print.
+///
+/// ```
+/// use guimaker::prelude::*;
+/// let version: Element<()> = caption("FerrousEngine 0.1");
+/// assert_eq!(version.style.tone, Tone::Faint);
+/// ```
+#[must_use]
+pub fn caption<Msg: Clone>(content: impl Into<Arc<str>>) -> Element<Msg> {
+    label_text::<Msg>(content, TypeRole::Caption, StateSpec::tone(Tone::Faint))
+}
+
+/// A section heading at the library's section level.
+///
+/// Sections sit under a page title, so the role is `Heading` in the default
+/// tone. Use it instead of spelling a heading level at every call site.
+///
+/// ```
+/// use guimaker::prelude::*;
+/// let title: Element<()> = section_heading("Recent projects");
+/// assert_eq!(title.style.text_role, TypeRole::Heading);
+/// ```
+#[must_use]
+pub fn section_heading<Msg: Clone>(content: impl Into<Arc<str>>) -> Element<Msg> {
+    heading(content, 3, None)
 }
 
 /// A pill badge in a semantic status wash.

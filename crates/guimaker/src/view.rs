@@ -455,9 +455,22 @@ impl<Msg> Element<Msg> {
         self
     }
 
-    /// Sets the flex grow factor.
+    /// Fills the remaining main-axis space (a grow factor of one).
+    ///
+    /// This is the common case, so the weight has no argument. Use
+    /// [`Element::grow_by`] when a row has to share the space unevenly.
     #[must_use]
-    pub fn grow(mut self, grow: f32) -> Self {
+    pub fn grow(mut self) -> Self {
+        self.style.grow = 1.0;
+        self
+    }
+
+    /// Sets an explicit flex grow factor.
+    ///
+    /// A factor of one fills the remaining space; two takes twice the share of
+    /// a sibling at one. Most rows want [`Element::grow`] instead.
+    #[must_use]
+    pub fn grow_by(mut self, grow: f32) -> Self {
         self.style.grow = grow;
         self
     }

@@ -1,0 +1,202 @@
+{
+  "library": "guimaker",
+  "run": 2,
+  "startup_ms": 558.8705000118352,
+  "startup_stage": "harness-wall",
+  "idle_cpu_pct": 10.674,
+  "tail_cpu_pct": 11.159,
+  "top_threads_cpu": [
+    [
+      7452,
+      0.265625
+    ],
+    [
+      8160,
+      0.109375
+    ],
+    [
+      38016,
+      0.0
+    ],
+    [
+      20432,
+      0.0
+    ],
+    [
+      6228,
+      0.0
+    ]
+  ],
+  "ui_thread_id": 7452,
+  "ui_thread_cpu_seconds": 0.265625,
+  "idle_frames": 680,
+  "rss_bytes": 237166592,
+  "wall_seconds": 6.219,
+  "hover_moves": 0,
+  "memory": {
+    "gpu_bytes": 8000364,
+    "cpu_bytes": 185858,
+    "total_bytes": 8186222,
+    "by_subsystem": [
+      {
+        "subsystem": "fonts",
+        "gpu_bytes": 5308416,
+        "cpu_bytes": 185858,
+        "total_bytes": 5494274
+      },
+      {
+        "subsystem": "gui",
+        "gpu_bytes": 2326588,
+        "cpu_bytes": 0,
+        "total_bytes": 2326588
+      },
+      {
+        "subsystem": "renderer_2d",
+        "gpu_bytes": 365360,
+        "cpu_bytes": 0,
+        "total_bytes": 365360
+      }
+    ],
+    "largest": [
+      {
+        "label": "font:atlas 64px#0 texture",
+        "bytes": 5308416,
+        "subsystem": "Fonts",
+        "cpu": false
+      },
+      {
+        "label": "gui:svg vertices",
+        "bytes": 1835008,
+        "subsystem": "Gui",
+        "cpu": false
+      },
+      {
+        "label": "gui:svg indices",
+        "bytes": 262144,
+        "subsystem": "Gui",
+        "cpu": false
+      },
+      {
+        "label": "font:1f9c5030e9d1a7a911a021f2b4a67115#0 gpos kerning",
+        "bytes": 126860,
+        "subsystem": "Fonts",
+        "cpu": true
+      },
+      {
+        "label": "2d:text instances",
+        "bytes": 118784,
+        "subsystem": "Renderer2d",
+        "cpu": false
+      },
+      {
+        "label": "2d:sprite instances",
+        "bytes": 114688,
+        "subsystem": "Renderer2d",
+        "cpu": false
+      },
+      {
+        "label": "gui:instance instances",
+        "bytes": 98304,
+        "subsystem": "Gui",
+        "cpu": false
+      },
+      {
+        "label": "2d:shape instances",
+        "bytes": 69632,
+        "subsystem": "Renderer2d",
+        "cpu": false
+      },
+      {
+        "label": "gui:icon instances",
+        "bytes": 57344,
+        "subsystem": "Gui",
+        "cpu": false
+      },
+      {
+        "label": "gui:text instances",
+        "bytes": 57344,
+        "subsystem": "Gui",
+        "cpu": false
+      },
+      {
+        "label": "font:1f9c5030e9d1a7a911a021f2b4a67115#0 kern pairs",
+        "bytes": 32768,
+        "subsystem": "Fonts",
+        "cpu": true
+      },
+      {
+        "label": "2d:mesh vertices",
+        "bytes": 28672,
+        "subsystem": "Renderer2d",
+        "cpu": false
+      },
+      {
+        "label": "2d:mesh indices",
+        "bytes": 24576,
+        "subsystem": "Renderer2d",
+        "cpu": false
+      },
+      {
+        "label": "font:1f9c5030e9d1a7a911a021f2b4a67115#0 glyph metrics",
+        "bytes": 21960,
+        "subsystem": "Fonts",
+        "cpu": true
+      },
+      {
+        "label": "gui:segment uniforms",
+        "bytes": 16384,
+        "subsystem": "Gui",
+        "cpu": false
+      },
+      {
+        "label": "2d:camera uniform",
+        "bytes": 8800,
+        "subsystem": "Renderer2d",
+        "cpu": false
+      },
+      {
+        "label": "font:1f9c5030e9d1a7a911a021f2b4a67115#0 glyph indices",
+        "bytes": 4270,
+        "subsystem": "Fonts",
+        "cpu": true
+      },
+      {
+        "label": "2d:grid uniform",
+        "bytes": 208,
+        "subsystem": "Renderer2d",
+        "cpu": false
+      },
+      {
+        "label": "gui:quad vertices",
+        "bytes": 32,
+        "subsystem": "Gui",
+        "cpu": false
+      },
+      {
+        "label": "gui:quad indices",
+        "bytes": 12,
+        "subsystem": "Gui",
+        "cpu": false
+      },
+      {
+        "label": "gui:uniform",
+        "bytes": 8,
+        "subsystem": "Gui",
+        "cpu": false
+      },
+      {
+        "label": "gui:dummy texture",
+        "bytes": 4,
+        "subsystem": "Gui",
+        "cpu": false
+      },
+      {
+        "label": "gui:id staging",
+        "bytes": 4,
+        "subsystem": "Gui",
+        "cpu": false
+      }
+    ]
+  },
+  "features": {}
+}

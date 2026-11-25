@@ -1264,7 +1264,7 @@ fn app_shell_story() -> Element<()> {
         false,
         None,
     )
-    .grow(1.0);
+    .grow();
     let inspector = card(
         [
             display_text::<()>("Inspector", TypeRole::Label, Tone::Default),
@@ -1420,7 +1420,7 @@ fn dialog_story() -> Element<()> {
     for (role, title, body) in panels {
         cards.push(
             Element::column()
-                .grow(1.0)
+                .grow()
                 .min_width(Spacing::S0)
                 .height(SizeSpec::Fill)
                 .align(Align::Stretch)

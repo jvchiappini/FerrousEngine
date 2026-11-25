@@ -36,44 +36,22 @@ same builder the Phase 3 start story renders: story `launcher`, goldens
 `goldens/launcher-dark-1280x800-1.5.png`.
 
 ```rust
-/// Builds the start screen at the injected clock instant, in milliseconds.
-#[must_use]
 pub fn start_screen(now_ms: f64) -> Element<StartMsg> {
-    let time = clock_label(now_ms);
+    let time = crate::format::clock_hh_mm(now_ms);
     let header = Element::row()
         .key("header")
         .gap(resp![Xs: Spacing::S2, Md: Spacing::S3])
         .align(Align::Center)
         .justify(Justify::SpaceBetween)
         .flow_wrap()
-        .child(
-            Element::column()
-                .key("brand")
-                .gap(Spacing::S1)
-                .child(
-                    text::<StartMsg>("Motioner")
-                        .key("title")
-                        .text_role(TypeRole::Display)
-                        .fluid_text(FluidText::new(TypeRole::Heading, 0.012, TypeRole::Display))
-                        .tone(Tone::Default)
-                        .priority(9),
-                )
-                .child(
-                    text::<StartMsg>("Code-driven motion graphics")
-                        .text_role(TypeRole::Caption)
-                        .tone(Tone::Muted)
-                        .priority(1)
-                        .lines(1)
-                        .ellipsis(Ellipsis::End),
-                ),
-        )
+        .child(brand("Motioner", "Code-driven motion graphics"))
         .child(
             Element::row()
                 .key("header_actions")
                 .gap(Spacing::S1)
                 .align(Align::Center)
-                .child(link("Settings", StartMsg::Settings))
-                .child(link("Docs", StartMsg::Docs)),
+                .child(nav_link("Settings", StartMsg::Settings))
+                .child(nav_link("Docs", StartMsg::Docs)),
         );
 
     let mut recent = Element::column()
@@ -82,13 +60,17 @@ pub fn start_screen(now_ms: f64) -> Element<StartMsg> {
         .gap(resp![Xs: Spacing::S2, Md: Spacing::S3])
         .width(SizeSpec::Fill)
         .max_width(ContentWidth::Lg)
-        .child(
-            text::<StartMsg>("Recent projects")
-                .text_role(TypeRole::Heading)
-                .tone(Tone::Default),
+        .child(section_heading::<StartMsg>("Recent projects"));
+    for index in RECENT_INDICES {
+        recent = recent.child(
+            list_row(
+                format!("Project {index}"),
+                "Edited recently",
+                time.clone(),
+            )
+            .key_id(index)
+            .on_click(StartMsg::OpenRecent(index)),
         );
-    for index in 0..5u64 {
-        recent = recent.child(recent_row(index, time.clone()));
     }
 
     let mut fields = Element::column()
@@ -97,25 +79,23 @@ pub fn start_screen(now_ms: f64) -> Element<StartMsg> {
         .gap(resp![Xs: Spacing::S3, Md: Spacing::S4])
         .width(SizeSpec::Fill)
         .max_width(ContentWidth::Md)
+        .child(section_heading::<StartMsg>("New project"))
         .child(
-            text::<StartMsg>("New project")
-                .text_role(TypeRole::Heading)
-                .tone(Tone::Default),
-        )
-        .child(
-            text::<StartMsg>("Start with a prompt, an example, or an empty composition")
-                .text_role(TypeRole::Body)
-                .tone(Tone::Muted)
-                .lines(2)
-                .priority(1),
+            paragraph::<StartMsg>(
+                "Start with a prompt, an example, or an empty composition",
+                TypeRole::Body,
+                Tone::Muted,
+                Lines::TWO,
+            )
+            .priority(Priority::SHRINK),
         );
-    for (key, label, placeholder) in [
-        ("field_name", "Name", "Untitled"),
-        ("field_size", "Size", "1920 x 1080"),
-        ("field_rate", "Frame rate", "60 fps"),
-        ("field_engine", "Engine", "FerrousEngine"),
+    for (label, value) in [
+        ("Name", "Untitled"),
+        ("Size", "1920 x 1080"),
+        ("Frame rate", "60 fps"),
+        ("Engine", "FerrousEngine"),
     ] {
-        fields = fields.child(field(key, label, placeholder));
+        fields = fields.child(field(label, value));
     }
     fields = fields.child(
         Element::row()
@@ -170,9 +150,9 @@ pub fn start_screen(now_ms: f64) -> Element<StartMsg> {
                     Xs: crate::style::Direction::Column,
                     Lg: crate::style::Direction::Row
                 ])
-                .grow(1.0)
-                .child(content_column(recent, SizeSpec::Fraction(0.55)))
-                .child(content_column(fields, SizeSpec::Fraction(0.45))),
+                .grow()
+                .child(content_column(recent, SizeSpec::Fraction(Split::LEADING)))
+                .child(content_column(fields, SizeSpec::Fraction(Split::TRAILING))),
         )
         .child(
             Element::row()
@@ -180,25 +160,25 @@ pub fn start_screen(now_ms: f64) -> Element<StartMsg> {
                 .gap(Spacing::S2)
                 .align(Align::Center)
                 .child(
-                    text::<StartMsg>("FerrousEngine 0.1")
-                        .text_role(TypeRole::Caption)
-                        .tone(Tone::Faint)
-                        .priority(1),
+                    caption::<StartMsg>("FerrousEngine 0.1")
+                        .priority(Priority::SHRINK),
                 )
                 .child(Element::spacer())
                 .child(
-                    text::<StartMsg>("Apache-2.0")
-                        .text_role(TypeRole::Caption)
-                        .tone(Tone::Faint)
-                        .priority(9),
+                    caption::<StartMsg>("Apache-2.0")
+                        .priority(Priority::KEEP),
                 ),
         )
 }
 ```
 
-Its private helpers (`content_column`, `link`, `recent_row`, `clock_label` and
-`field`) are in `crates/guimaker/src/recipe.rs:207-305`; copy them with the
-function.
+The view calls the general library builders `brand`, `section_heading`,
+`paragraph`, `caption`, `field`, `list_row`, `nav_link` and `content_column`,
+and `format::clock_hh_mm`; they live in `crates/guimaker/src/components/` and
+`crates/guimaker/src/format.rs` and are documented for every app. The view
+spells no numeric literal: priorities are `Priority::KEEP`/`Priority::SHRINK`,
+line caps `Lines::ONE`/`Lines::TWO`, the split `Split::LEADING`/`Split::TRAILING`
+and the fluid slope `FluidText::between`.
 
 ## New item
 

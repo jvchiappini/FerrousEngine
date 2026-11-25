@@ -20,13 +20,40 @@ use crate::components::{icon_box, label_text, ControlSize, StateSpec};
 use crate::icons::Icon;
 use crate::input::virtual_list::VirtualList;
 use crate::resp;
-use crate::style::{Align, ColumnTrack, Columns, Cursor, Direction, ScrollAxes, SizeSpec, Tone};
+use crate::style::{
+    Align, ColumnTrack, Columns, Cursor, Direction, Justify, ScrollAxes, SizeSpec, Tone,
+};
 use crate::text::Ellipsis;
 use crate::theme::{ColorRole, ContentWidth, Duration, ElevationLevel, Radius, Spacing, TypeRole};
 use crate::view::{text, Element};
 
 /// The uniform row height used by the virtualised table, in spacing tokens.
 const TABLE_ROW_HEIGHT: f32 = Spacing::S6.px();
+
+/// A full-width centring slot whose child is capped by its own `max_width`.
+///
+/// Stacked, the slot is full width and the content column centres inside it;
+/// side by side, the slot takes a fraction of the parent row. Above the cap the
+/// column stops growing, which is what keeps prose and forms readable on a 4K
+/// screen. Pass the fraction as `SizeSpec::Fraction(Split::LEADING)` and let the
+/// child carry its own `max_width`.
+///
+/// ```
+/// use guimaker::prelude::*;
+/// let slot: Element<()> = content_column(
+///     text::<()>("Hello").max_width(ContentWidth::Prose),
+///     SizeSpec::Fraction(Split::LEADING),
+/// );
+/// assert_eq!(slot.kind, NodeKind::Row);
+/// ```
+#[must_use]
+pub fn content_column<Msg>(content: Element<Msg>, width: SizeSpec) -> Element<Msg> {
+    Element::row()
+        .justify(Justify::Center)
+        .align(Align::Start)
+        .width(resp![Xs: SizeSpec::Fill, Lg: width])
+        .child(content)
+}
 
 /// The stable key id of the table's single header background element.
 ///
@@ -971,7 +998,7 @@ pub fn app_shell<Msg: Clone>(
                 .lines(1)
                 .ellipsis(Ellipsis::End),
         )
-        .child(toolbar.grow(1.0));
+        .child(toolbar.grow());
     let mut body = Element::row()
         .key("app_body")
         .align(Align::Stretch)
@@ -982,9 +1009,9 @@ pub fn app_shell<Msg: Clone>(
             Md: ScrollAxes::None
         ])
         .width(SizeSpec::Fill)
-        .grow(1.0)
+        .grow()
         .child(sidebar.width(resp![Xs: SizeSpec::Fill, Md: SizeSpec::Auto]))
-        .child(content.grow(1.0).width(SizeSpec::Fill));
+        .child(content.grow().width(SizeSpec::Fill));
     if let Some(inspector) = inspector {
         body = body.child(inspector.width(resp![Xs: SizeSpec::Fill, Md: SizeSpec::Auto]));
     }

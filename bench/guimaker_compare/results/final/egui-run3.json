@@ -1,0 +1,38 @@
+{
+  "library": "egui",
+  "run": 3,
+  "startup_ms": 256.47869997192174,
+  "startup_stage": "harness-wall",
+  "idle_cpu_pct": 0.325,
+  "tail_cpu_pct": 0.954,
+  "top_threads_cpu": [
+    [
+      25684,
+      0.0
+    ],
+    [
+      36256,
+      0.0
+    ],
+    [
+      4636,
+      0.0
+    ],
+    [
+      24684,
+      0.0
+    ],
+    [
+      9560,
+      0.0
+    ]
+  ],
+  "ui_thread_id": 25684,
+  "ui_thread_cpu_seconds": 0.0,
+  "idle_frames": 5,
+  "rss_bytes": 144625664,
+  "wall_seconds": 6.355,
+  "hover_moves": 0,
+  "memory": null,
+  "features": {}
+}

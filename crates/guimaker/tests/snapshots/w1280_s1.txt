@@ -40,22 +40,22 @@ column start rect=0.0,0.0,1280.0,800.0 pad=32.0/32.0/32.0/32.0 gap=24.0 bg=role 
       column start/body/#1/new_project rect=715.0,117.0,533.0,402.0 gap=16.0 text=body
         text start/body/#1/new_project/#0 rect=715.0,117.0,533.0,20.0 text=heading text="New project"
         text start/body/#1/new_project/#1 rect=715.0,153.0,533.0,16.0 text=body text="Start with a prompt, an example, or an e…"
-        column start/body/#1/new_project/field_name rect=715.0,185.0,533.0,58.0 gap=4.0 text=body
-          text start/body/#1/new_project/field_name/#0 rect=715.0,185.0,31.0,14.0 text=caption text="Name"
-          row start/body/#1/new_project/field_name/#1 rect=715.0,203.0,533.0,40.0 pad=12.0/12.0/12.0/12.0 bg=role radius=sm border=hairline text=body
-            text start/body/#1/new_project/field_name/#1/#0 rect=727.0,215.0,44.0,16.0 text=body text="Untitled"
-        column start/body/#1/new_project/field_size rect=715.0,259.0,533.0,58.0 gap=4.0 text=body
-          text start/body/#1/new_project/field_size/#0 rect=715.0,259.0,22.0,14.0 text=caption text="Size"
-          row start/body/#1/new_project/field_size/#1 rect=715.0,277.0,533.0,40.0 pad=12.0/12.0/12.0/12.0 bg=role radius=sm border=hairline text=body
-            text start/body/#1/new_project/field_size/#1/#0 rect=727.0,289.0,68.0,16.0 text=body text="1920 x 1080"
-        column start/body/#1/new_project/field_rate rect=715.0,333.0,533.0,58.0 gap=4.0 text=body
-          text start/body/#1/new_project/field_rate/#0 rect=715.0,333.0,56.0,14.0 text=caption text="Frame rate"
-          row start/body/#1/new_project/field_rate/#1 rect=715.0,351.0,533.0,40.0 pad=12.0/12.0/12.0/12.0 bg=role radius=sm border=hairline text=body
-            text start/body/#1/new_project/field_rate/#1/#0 rect=727.0,363.0,37.0,16.0 text=body text="60 fps"
-        column start/body/#1/new_project/field_engine rect=715.0,407.0,533.0,58.0 gap=4.0 text=body
-          text start/body/#1/new_project/field_engine/#0 rect=715.0,407.0,36.0,14.0 text=caption text="Engine"
-          row start/body/#1/new_project/field_engine/#1 rect=715.0,425.0,533.0,40.0 pad=12.0/12.0/12.0/12.0 bg=role radius=sm border=hairline text=body
-            text start/body/#1/new_project/field_engine/#1/#0 rect=727.0,437.0,83.0,16.0 text=body text="FerrousEngine"
+        column start/body/#1/new_project/#2 rect=715.0,185.0,533.0,58.0 gap=4.0 text=body
+          text start/body/#1/new_project/#2/#0 rect=715.0,185.0,31.0,14.0 text=caption text="Name"
+          row start/body/#1/new_project/#2/#1 rect=715.0,203.0,533.0,40.0 pad=12.0/12.0/12.0/12.0 bg=role radius=sm border=hairline text=body
+            text start/body/#1/new_project/#2/#1/#0 rect=727.0,215.0,44.0,16.0 text=body text="Untitled"
+        column start/body/#1/new_project/#3 rect=715.0,259.0,533.0,58.0 gap=4.0 text=body
+          text start/body/#1/new_project/#3/#0 rect=715.0,259.0,22.0,14.0 text=caption text="Size"
+          row start/body/#1/new_project/#3/#1 rect=715.0,277.0,533.0,40.0 pad=12.0/12.0/12.0/12.0 bg=role radius=sm border=hairline text=body
+            text start/body/#1/new_project/#3/#1/#0 rect=727.0,289.0,68.0,16.0 text=body text="1920 x 1080"
+        column start/body/#1/new_project/#4 rect=715.0,333.0,533.0,58.0 gap=4.0 text=body
+          text start/body/#1/new_project/#4/#0 rect=715.0,333.0,56.0,14.0 text=caption text="Frame rate"
+          row start/body/#1/new_project/#4/#1 rect=715.0,351.0,533.0,40.0 pad=12.0/12.0/12.0/12.0 bg=role radius=sm border=hairline text=body
+            text start/body/#1/new_project/#4/#1/#0 rect=727.0,363.0,37.0,16.0 text=body text="60 fps"
+        column start/body/#1/new_project/#5 rect=715.0,407.0,533.0,58.0 gap=4.0 text=body
+          text start/body/#1/new_project/#5/#0 rect=715.0,407.0,36.0,14.0 text=caption text="Engine"
+          row start/body/#1/new_project/#5/#1 rect=715.0,425.0,533.0,40.0 pad=12.0/12.0/12.0/12.0 bg=role radius=sm border=hairline text=body
+            text start/body/#1/new_project/#5/#1/#0 rect=727.0,437.0,83.0,16.0 text=body text="FerrousEngine"
         row start/body/#1/new_project/new_project_actions rect=715.0,481.0,533.0,38.0 gap=8.0 text=body
           text start/body/#1/new_project/new_project_actions/create rect=715.0,481.0,59.0,38.0 pad=12.0/12.0/12.0/12.0 bg=role radius=sm text=label text="Create"
           text start/body/#1/new_project/new_project_actions/browse rect=782.0,481.0,73.0,38.0 pad=12.0/12.0/12.0/12.0 bg=role radius=sm border=hairline text=label text="Browse…"

@@ -1,0 +1,12 @@
+{
+  "library": "iced",
+  "run": 1,
+  "startup_ms": 1063.6441000388004,
+  "startup_stage": "harness-wall",
+  "idle_cpu_pct": 0.635,
+  "idle_frames": 1,
+  "rss_bytes": 237789184,
+  "wall_seconds": 6.418,
+  "hover_moves": 0,
+  "features": {}
+}

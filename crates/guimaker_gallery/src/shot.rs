@@ -146,88 +146,186 @@ fn render_display_list_with_atlas(
     scale: f32,
     solid_atlas: Option<[u8; 4]>,
 ) -> Result<RenderedImage> {
+    let mut target = StoryTarget::new(logical, scale)?;
+    target.render(display_list, theme, logical, scale, solid_atlas)
+}
+
+/// A reusable headless device and GUI renderer for a batch of stories.
+///
+/// The golden suite renders around 150 cases at the same size, and creating a
+/// `Pure2dHarness` (adapter, device, pipelines, target) per case dominated its
+/// runtime. Create one target per physical size and reuse it: each
+/// [`StoryTarget::render`] only uploads its batch, draws and reads back. The
+/// per-story font atlas is still rebuilt from the glyphs that list draws, so a
+/// story with CJK or emoji cannot leak into the next one's atlas.
+pub struct StoryTarget {
+    harness: Pure2dHarness,
+    renderer: GuiRenderer,
+    width: u32,
+    height: u32,
+}
+
+impl StoryTarget {
+    /// Creates the device, GUI renderer and target for one physical size.
+    ///
+    /// # Errors
+    ///
+    /// [`GalleryError::Usage`] for a degenerate viewport or scale and
+    /// [`GalleryError::Gpu`] when no headless adapter can be created.
+    pub fn new(logical: Size, scale: f32) -> Result<Self> {
+        let (width, height) = physical_size(logical, scale)?;
+        let harness = Pure2dHarness::new(width, height, DEFAULT_FORMAT).map_err(|error| {
+            GalleryError::Gpu(format!("could not create the headless device: {error}"))
+        })?;
+        let renderer = GuiRenderer::new(
+            harness.renderer().context.device.clone(),
+            DEFAULT_FORMAT,
+            4096,
+            width,
+            height,
+            1,
+            None,
+        );
+        Ok(Self {
+            harness,
+            renderer,
+            width,
+            height,
+        })
+    }
+
+    /// The physical target size.
+    #[must_use]
+    pub fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// Renders one display list into the reused target.
+    ///
+    /// `logical` and `scale` must resolve to the size the target was created
+    /// for; a mismatched request is a usage error rather than a silent resize.
+    ///
+    /// # Errors
+    ///
+    /// [`GalleryError::Usage`] for a size mismatch and [`GalleryError::Gpu`]
+    /// when the encode, draw or readback fails.
+    pub fn render(
+        &mut self,
+        display_list: &guimaker::display_list::DisplayList,
+        theme: &Theme,
+        logical: Size,
+        scale: f32,
+        solid_atlas: Option<[u8; 4]>,
+    ) -> Result<RenderedImage> {
+        let (width, height) = physical_size(logical, scale)?;
+        if (width, height) != (self.width, self.height) {
+            return Err(GalleryError::Usage(format!(
+                "this target is {}x{}, not {width}x{height}",
+                self.width, self.height
+            )));
+        }
+        let device = self.harness.renderer().context.device.clone();
+        let queue = self.harness.renderer().context.queue.clone();
+        let font = story_font(device.as_ref(), queue.as_ref(), display_list);
+        let solid_atlas =
+            solid_atlas.map(|colour| solid_atlas_texture(device.as_ref(), queue.as_ref(), colour));
+        match &solid_atlas {
+            Some((_texture, view, sampler)) => self.renderer.set_font_atlas(view, sampler),
+            None => self
+                .renderer
+                .set_font_atlas(&font.atlas.view, &font.atlas.sampler),
+        }
+        let target = &self.harness.target().view;
+
+        if let Some(split) = backdrop_split(&display_list.commands) {
+            // Pass 1: paint everything below the overlay, then submit so the
+            // target holds a complete scene the blur can sample.
+            let mut first = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("guimaker_gallery backdrop source encoder"),
+            });
+            let lower = encode_commands(&display_list.commands[..split], logical, scale, &font);
+            self.renderer.prepare(queue.as_ref(), &lower);
+            self.renderer.render(
+                &mut first,
+                target,
+                None,
+                &lower,
+                wgpu::LoadOp::Clear(clear_color(theme)),
+            );
+            queue.submit(Some(first.finish()));
+
+            // The blur must read the layers already painted, never the
+            // overlay's own shadow: hand it the target we just filled, then draw
+            // the suffix on top with `Load`.
+            self.renderer.set_backdrop_source(target, width, height);
+            let mut second = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("guimaker_gallery overlay encoder"),
+            });
+            let overlay = encode_commands(&display_list.commands[split..], logical, scale, &font);
+            self.renderer.prepare(queue.as_ref(), &overlay);
+            self.renderer
+                .render(&mut second, target, None, &overlay, wgpu::LoadOp::Load);
+            queue.submit(Some(second.finish()));
+        } else {
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("guimaker_gallery screenshot encoder"),
+            });
+            let batch = encode_commands(&display_list.commands, logical, scale, &font);
+            self.renderer.prepare(queue.as_ref(), &batch);
+            self.renderer.render(
+                &mut encoder,
+                target,
+                None,
+                &batch,
+                wgpu::LoadOp::Clear(clear_color(theme)),
+            );
+            queue.submit(Some(encoder.finish()));
+        }
+
+        let mut rgba = Vec::new();
+        self.harness
+            .read_pixels_into(&mut rgba)
+            .map_err(|error| GalleryError::Gpu(format!("readback failed: {error}")))?;
+
+        Ok(RenderedImage {
+            width,
+            height,
+            rgba,
+        })
+    }
+
+    /// Renders a story into the reused target.
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::render`].
+    pub fn render_story(
+        &mut self,
+        story: Story,
+        theme: &Theme,
+        logical: Size,
+        scale: f32,
+    ) -> Result<RenderedImage> {
+        let display_list = story.display_list(theme, logical, scale);
+        self.render(&display_list, theme, logical, scale, None)
+    }
+}
+
+/// The physical target size for a logical viewport and scale.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+// reason: the viewport and scale are validated positive and finite, then rounded
+// and floored at one pixel, so the physical dimensions fit `u32`.
+fn physical_size(logical: Size, scale: f32) -> Result<(u32, u32)> {
     if !(logical.width > 0.0 && logical.height > 0.0 && scale.is_finite() && scale > 0.0) {
         return Err(GalleryError::Usage(format!(
             "invalid render request: viewport {}x{} at scale {scale}",
             logical.width, logical.height
         )));
     }
-
-    let width = (logical.width * scale).round().max(1.0) as u32;
-    let height = (logical.height * scale).round().max(1.0) as u32;
-
-    let harness = Pure2dHarness::new(width, height, DEFAULT_FORMAT).map_err(|error| {
-        GalleryError::Gpu(format!("could not create the headless device: {error}"))
-    })?;
-    let device = harness.renderer().context.device.clone();
-    let queue = harness.renderer().context.queue.clone();
-
-    let font = story_font(device.as_ref(), queue.as_ref(), display_list);
-
-    let mut renderer =
-        GuiRenderer::new(device.clone(), DEFAULT_FORMAT, 4096, width, height, 1, None);
-    let solid_atlas =
-        solid_atlas.map(|colour| solid_atlas_texture(device.as_ref(), queue.as_ref(), colour));
-    match &solid_atlas {
-        Some((_texture, view, sampler)) => renderer.set_font_atlas(view, sampler),
-        None => renderer.set_font_atlas(&font.atlas.view, &font.atlas.sampler),
-    }
-    let target = &harness.target().view;
-
-    if let Some(split) = backdrop_split(&display_list.commands) {
-        // Pass 1: paint everything below the overlay, then submit so the
-        // target holds a complete scene the blur can sample.
-        let mut first = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("guimaker_gallery backdrop source encoder"),
-        });
-        let lower = encode_commands(&display_list.commands[..split], logical, scale, &font);
-        renderer.prepare(queue.as_ref(), &lower);
-        renderer.render(
-            &mut first,
-            target,
-            None,
-            &lower,
-            wgpu::LoadOp::Clear(clear_color(theme)),
-        );
-        queue.submit(Some(first.finish()));
-
-        // The blur must read the layers already painted, never the overlay's
-        // own shadow: hand it the target we just filled, then draw the suffix
-        // on top with `Load`.
-        renderer.set_backdrop_source(target, width, height);
-        let mut second = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("guimaker_gallery overlay encoder"),
-        });
-        let overlay = encode_commands(&display_list.commands[split..], logical, scale, &font);
-        renderer.prepare(queue.as_ref(), &overlay);
-        renderer.render(&mut second, target, None, &overlay, wgpu::LoadOp::Load);
-        queue.submit(Some(second.finish()));
-    } else {
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("guimaker_gallery screenshot encoder"),
-        });
-        let batch = encode_commands(&display_list.commands, logical, scale, &font);
-        renderer.prepare(queue.as_ref(), &batch);
-        renderer.render(
-            &mut encoder,
-            target,
-            None,
-            &batch,
-            wgpu::LoadOp::Clear(clear_color(theme)),
-        );
-        queue.submit(Some(encoder.finish()));
-    }
-
-    let mut rgba = Vec::new();
-    harness
-        .read_pixels_into(&mut rgba)
-        .map_err(|error| GalleryError::Gpu(format!("readback failed: {error}")))?;
-
-    Ok(RenderedImage {
-        width,
-        height,
-        rgba,
-    })
+    Ok((
+        (logical.width * scale).round().max(1.0) as u32,
+        (logical.height * scale).round().max(1.0) as u32,
+    ))
 }
 
 /// Builds the font atlas for a display list, with fallback faces for glyphs the

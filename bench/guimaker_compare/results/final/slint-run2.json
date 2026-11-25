@@ -1,0 +1,38 @@
+{
+  "library": "slint",
+  "run": 2,
+  "startup_ms": 328.22480000322685,
+  "startup_stage": "harness-wall",
+  "idle_cpu_pct": 0.338,
+  "tail_cpu_pct": 0.885,
+  "top_threads_cpu": [
+    [
+      11104,
+      0.0
+    ],
+    [
+      37904,
+      0.0
+    ],
+    [
+      29224,
+      0.0
+    ],
+    [
+      1212,
+      0.0
+    ],
+    [
+      9120,
+      0.0
+    ]
+  ],
+  "ui_thread_id": 11104,
+  "ui_thread_cpu_seconds": 0.0,
+  "idle_frames": 1,
+  "rss_bytes": 144576512,
+  "wall_seconds": 6.175,
+  "hover_moves": 0,
+  "memory": null,
+  "features": {}
+}

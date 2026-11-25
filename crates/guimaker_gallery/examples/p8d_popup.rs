@@ -136,6 +136,9 @@ mod win {
         new_ms: Vec<f64>,
         pooled_ms: Vec<f64>,
         main_frames: u64,
+        /// The `memory-report` entries whose label ends in `:offscreen`,
+        /// captured every frame so the summary reports the real popup target.
+        offscreen_entries: Vec<(String, u64)>,
     }
 
     impl Default for Demo {
@@ -150,6 +153,7 @@ mod win {
                 new_ms: Vec::new(),
                 pooled_ms: Vec::new(),
                 main_frames: 0,
+                offscreen_entries: Vec::new(),
             }
         }
     }
@@ -1957,8 +1961,30 @@ mod win {
             let instances = 1024 * (quad + text * 2);
             let svg = 4096 * 28 + 4096 * 4;
             let (popup_w, popup_h) = self.popup_size;
+            // The real number is what the renderer's memory inventory says for
+            // `popup:{h}:offscreen`; the old swapchain arithmetic is kept only
+            // as a labelled reference, never as the reported figure.
+            let offscreen_entries: Vec<(String, u64)> = self
+                .host
+                .app()
+                .offscreen_entries
+                .iter()
+                .map(|(label, bytes)| (label.clone(), *bytes))
+                .collect();
+            let offscreen_bytes: u64 = offscreen_entries.iter().map(|(_, bytes)| *bytes).sum();
+            let vram_from_report = offscreen_bytes > 0;
             let swapchain = u64::from(3 * popup_w.max(1) * popup_h.max(1) * 4);
-            let vram = instances + svg + swapchain;
+            let computed = instances + svg + swapchain;
+            let vram = if vram_from_report {
+                offscreen_bytes
+            } else {
+                computed
+            };
+            let vram_source = if vram_from_report {
+                "memory_report"
+            } else {
+                "computed_fallback"
+            };
             self.check(
                 new_ms.len() == NEW_RUNS,
                 format!(
@@ -1979,8 +2005,12 @@ mod win {
                  \"pooled_ms\":{:?},\"pooled_median_ms\":{pooled_median:.3},\
                  \"pooled_min_ms\":{pooled_min:.3},\"pooled_max_ms\":{pooled_max:.3},\
                  \"rss_delta_bytes\":{rss_delta},\"rss_per_popup_bytes\":{rss_per_popup},\
-                 \"popup_vram_bytes\":{vram},\"vram_instances\":{instances},\
-                 \"vram_svg\":{svg},\"vram_swapchain\":{swapchain},\"vram_computed\":true,\
+                 \"popup_vram_bytes\":{vram},\"vram_source\":\"{vram_source}\",\
+                 \"vram_offscreen_entries\":{offscreen_entries:?},\
+                 \"vram_offscreen_bytes\":{offscreen_bytes},\
+                 \"vram_computed_bytes\":{computed},\"vram_instances\":{instances},\
+                 \"vram_svg\":{svg},\"vram_swapchain_computed\":{swapchain},\
+                 \"vram_from_memory_report\":{vram_from_report},\
                  \"popup_physical\":[{popup_w},{popup_h}],\
                  \"idle_popup_frames\":{},\"idle_main_frames\":{},\
                  \"popup_frames_during_main_hover\":{},\"main_frames_during_hover\":{},\
@@ -2018,6 +2048,16 @@ mod win {
 
         fn draw_ui(&mut self, dc: &mut ferrous_engine::DrawContext<'_, '_>) {
             self.host.draw_ui(dc);
+            let entries: Vec<(String, u64)> = dc
+                .ctx
+                .render
+                .renderer()
+                .memory_entries()
+                .into_iter()
+                .filter(|entry| entry.label.ends_with(":offscreen"))
+                .map(|entry| (entry.label, entry.bytes))
+                .collect();
+            self.host.app_mut().offscreen_entries = entries;
         }
 
         fn draw_popup(

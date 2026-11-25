@@ -224,6 +224,23 @@ pub fn report_json(largest_count: usize) -> String {
         .unwrap_or_else(|_| "{\"gpu_bytes\":0,\"cpu_bytes\":0,\"total_bytes\":0}".to_owned())
 }
 
+/// Every registered resource, sorted by label then subsystem.
+///
+/// [`report`] truncates its `largest` list, which is right for a summary but
+/// hides a small entry behind bigger neighbours. A caller that needs one named
+/// resource (a popup's offscreen target, a specific atlas) reads the full,
+/// deterministic inventory here instead.
+#[must_use]
+pub fn inventory() -> Vec<Entry> {
+    let mut all: Vec<Entry> = lock_entries().values().cloned().collect();
+    all.sort_by(|a, b| {
+        a.label
+            .cmp(&b.label)
+            .then_with(|| a.subsystem.name().cmp(b.subsystem.name()))
+    });
+    all
+}
+
 /// Clears the registry.  Tests only.
 pub fn clear() {
     lock_entries().clear();
@@ -277,6 +294,25 @@ mod tests {
         assert_eq!(report.by_subsystem.len(), 1);
         assert_eq!(report.by_subsystem[0].subsystem, "popups");
         assert_eq!(report.by_subsystem[0].gpu_bytes, 3072);
+        clear();
+    }
+
+    #[test]
+    fn the_inventory_keeps_small_named_entries() {
+        let _lock = test_lock();
+        clear();
+        register_gpu("big", 1_000_000, Subsystem::Gui);
+        register_gpu("popup:3:offscreen", 512, Subsystem::Popups);
+        let small = report(1);
+        assert_eq!(small.largest.len(), 1);
+        assert_eq!(small.largest[0].label, "big");
+        let inventory = inventory();
+        let offscreen = inventory
+            .iter()
+            .find(|entry| entry.label == "popup:3:offscreen")
+            .expect("the small offscreen entry is in the inventory");
+        assert_eq!(offscreen.bytes, 512);
+        assert_eq!(offscreen.subsystem, Subsystem::Popups);
         clear();
     }
 }

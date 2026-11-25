@@ -13,8 +13,9 @@ carry does not.
 | G-0003 | Theme file format | accepted |
 | G-0004 | Grapheme segmentation for the text editor | accepted |
 | G-0010 | Popup present backend (swapchain vs layered) | accepted |
+| G-0011 | Main-window backend default (Vulkan vs DX12) | accepted |
 
-Next expected: G-0011.
+Next expected: G-0012.
 
 Rules:
 

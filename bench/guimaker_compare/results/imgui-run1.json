@@ -1,0 +1,12 @@
+{
+  "library": "imgui",
+  "run": 1,
+  "startup_ms": 1018.5325000202283,
+  "startup_stage": "harness-wall",
+  "idle_cpu_pct": 1.275,
+  "idle_frames": 1,
+  "rss_bytes": 198488064,
+  "wall_seconds": 6.42,
+  "hover_moves": 0,
+  "features": {}
+}

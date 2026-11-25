@@ -226,7 +226,7 @@ fn field_value<Msg: Clone>(
         let mut text = text::<Msg>(placeholder)
             .text_role(size.label_role())
             .tone(Tone::Faint)
-            .grow(1.0);
+            .grow();
         if let Some(caret) = caret {
             text = text.caret(caret);
         }
@@ -235,7 +235,7 @@ fn field_value<Msg: Clone>(
     let safe = safe_selection(value, selection);
     let mut field = spec
         .apply_tone(text::<Msg>(value).text_role(size.label_role()))
-        .grow(1.0);
+        .grow();
     if let Some((start, end)) = safe {
         field = field.selection(start, end);
     }

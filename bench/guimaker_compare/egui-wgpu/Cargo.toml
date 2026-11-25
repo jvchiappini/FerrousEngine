@@ -1,0 +1,15 @@
+[package]
+name = "guimaker-compare-egui-wgpu"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "guimaker-compare-egui-wgpu"
+path = "src/main.rs"
+
+[dependencies]
+# Same app as `egui`, but eframe renders through wgpu instead of glow, so the
+# comparison against GUIMaker/iced uses the same GPU API family.
+eframe = { version = "0.29", default-features = false, features = ["wgpu", "default_fonts"] }
+egui = "0.29"

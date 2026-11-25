@@ -90,6 +90,7 @@
 pub mod components;
 pub mod debug;
 pub mod display_list;
+pub mod format;
 pub mod frame;
 pub mod geom;
 pub mod hash;
@@ -135,8 +136,8 @@ pub mod prelude {
     pub use crate::resp;
     pub use crate::store::{NodeState, RepaintReason};
     pub use crate::style::{
-        Align, Columns, Direction, Edges, Fluid, FluidText, Justify, Responsive, ScrollAxes,
-        SizeSpec, Span, Style, TextSpec, Tone,
+        Align, Columns, Direction, Edges, Fluid, FluidText, Justify, Lines, Priority, Responsive,
+        ScrollAxes, SizeSpec, Span, Split, Style, TextSpec, Tone,
     };
     pub use crate::text::{Ellipsis, MetricsTextSystem, TextShape, TextSystem};
     pub use crate::theme::{

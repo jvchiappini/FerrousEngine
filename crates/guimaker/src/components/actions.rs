@@ -16,7 +16,7 @@ use crate::components::{
 };
 use crate::icons::Icon;
 use crate::style::{Align, Cursor, Justify, Tone};
-use crate::theme::{ColorRole, Duration, Radius, Spacing};
+use crate::theme::{ColorRole, Duration, Radius, Spacing, TypeRole};
 use crate::view::Element;
 
 /// A labelled action in one variant at the default size.
@@ -30,6 +30,26 @@ use crate::view::Element;
 #[must_use]
 pub fn button<Msg: Clone>(label: &str, variant: ButtonVariant, message: Msg) -> Element<Msg> {
     button_with(label, variant, None, ControlSize::Md, false, message)
+}
+
+/// A quiet inline navigation action for a header, footer or toolbar.
+///
+/// It is a `Label` in the muted tone with a small padding and a hover surface,
+/// so it reads as navigation rather than as a filled button. The caller passes
+/// the message; the keyed store owns hover and focus.
+///
+/// ```
+/// use guimaker::prelude::*;
+/// let link: Element<()> = nav_link("Settings", ());
+/// assert!(link.action.is_some());
+/// ```
+#[must_use]
+pub fn nav_link<Msg: Clone>(label: &'static str, message: Msg) -> Element<Msg> {
+    label_text::<Msg>(label, TypeRole::Label, StateSpec::tone(Tone::Muted))
+        .pad_x(Spacing::S3)
+        .pad_y(Spacing::S2)
+        .radius(Radius::Sm)
+        .on_click(message)
 }
 
 /// A labelled action with an optional leading icon, a size and a loading state.

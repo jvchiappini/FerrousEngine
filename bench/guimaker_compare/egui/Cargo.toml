@@ -1,0 +1,15 @@
+[package]
+name = "guimaker-compare-egui"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "guimaker-compare-egui"
+path = "src/main.rs"
+
+[dependencies]
+# eframe 0.29 pulls egui 0.29; the direct dep below is the exact same crate
+# version, so there is only one `egui` in the graph.
+eframe = "0.29"
+egui = "0.29"

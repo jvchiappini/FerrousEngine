@@ -156,7 +156,7 @@ pub fn settings_screen() -> Element<RecipeMsg> {
         .key("settings_content")
         .align(Align::Stretch)
         .width(SizeSpec::Fill)
-        .grow(1.0)
+        .grow()
         .gap(Spacing::S6)
         .scroll_axes(ScrollAxes::Vertical)
         .child(section(
@@ -254,7 +254,7 @@ pub fn settings_screen() -> Element<RecipeMsg> {
             Md: ScrollAxes::None
         ])
         .width(SizeSpec::Fill)
-        .grow(1.0)
+        .grow()
         .child(nav)
         .child(content);
 
@@ -289,7 +289,7 @@ pub fn file_browser() -> Element<RecipeMsg> {
         .child(
             Element::column()
                 .gap(Spacing::S1)
-                .grow(1.0)
+                .grow()
                 .child(
                     text::<RecipeMsg>("Files")
                         .text_role(TypeRole::Title)
@@ -328,7 +328,7 @@ pub fn file_browser() -> Element<RecipeMsg> {
         .key("file_browser_body")
         .align(Align::Stretch)
         .width(SizeSpec::Fill)
-        .grow(1.0)
+        .grow()
         .pad(resp![Xs: Spacing::S4, Md: Spacing::S5])
         .gap(Spacing::S4)
         .scroll_axes(ScrollAxes::Vertical)
@@ -361,7 +361,7 @@ pub fn empty_first_run() -> Element<RecipeMsg> {
         .align(Align::Center)
         .justify(Justify::Center)
         .width(SizeSpec::Fill)
-        .grow(1.0)
+        .grow()
         .pad(resp![Xs: Spacing::S4, Md: Spacing::S6])
         .child(empty_state(
             Icon::FolderOpen,
@@ -457,7 +457,7 @@ pub fn editor_shell() -> Element<RecipeMsg> {
             Element::row()
                 .key("editor_canvas")
                 .width(SizeSpec::Fill)
-                .grow(1.0)
+                .grow()
                 .bg(ColorRole::SurfaceSunken)
                 .border(ColorRole::Border)
                 .radius(Radius::Md)
@@ -472,7 +472,7 @@ pub fn editor_shell() -> Element<RecipeMsg> {
         false,
         None,
     )
-    .grow(1.0);
+    .grow();
 
     let inspector = Element::column()
         .key("inspector")
@@ -713,7 +713,7 @@ fn header_row<const N: usize>(
         .child(
             Element::column()
                 .gap(Spacing::S1)
-                .grow(1.0)
+                .grow()
                 .child(
                     text::<RecipeMsg>(title)
                         .text_role(TypeRole::Title)

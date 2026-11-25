@@ -1,0 +1,12 @@
+{
+  "library": "slint",
+  "run": 1,
+  "startup_ms": 547.252300020773,
+  "startup_stage": "harness-wall",
+  "idle_cpu_pct": 0.651,
+  "idle_frames": 1,
+  "rss_bytes": 216256512,
+  "wall_seconds": 6.303,
+  "hover_moves": 0,
+  "features": {}
+}

@@ -1,0 +1,12 @@
+{
+  "library": "egui-wgpu",
+  "run": 1,
+  "startup_ms": 837.2861000243574,
+  "startup_stage": "harness-wall",
+  "idle_cpu_pct": 1.71,
+  "idle_frames": 5,
+  "rss_bytes": 396181504,
+  "wall_seconds": 7.039,
+  "hover_moves": 0,
+  "features": {}
+}

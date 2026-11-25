@@ -515,7 +515,7 @@ fn latency_table(
             let (width, height) = target.size();
             let mut batch = std::mem::take(&mut target.batch);
             fill_demo(&mut batch, width, height, DEMO_COLOR);
-            let outcome = present_frame(target, &batch, spec.position, false);
+            let outcome = present_frame(target, &batch, spec.position, false, true);
             if !outcome.presented {
                 eprintln!("P8E\tlatency_new\tpresent={tag}\trun={run_index}\tnot_presented");
             }
@@ -549,7 +549,7 @@ fn latency_table(
         let (width, height) = target.size();
         let mut batch = std::mem::take(&mut target.batch);
         fill_demo(&mut batch, width, height, DEMO_COLOR);
-        let _ = present_frame(target, &batch, spec.position, false);
+        let _ = present_frame(target, &batch, spec.position, false, true);
         target.batch = batch;
     }
     let _ = gpu.device.poll(wgpu::Maintain::Wait);
@@ -569,7 +569,7 @@ fn latency_table(
             let (width, height) = target.size();
             let mut batch = std::mem::take(&mut target.batch);
             fill_demo(&mut batch, width, height, DEMO_COLOR);
-            let _ = present_frame(target, &batch, spec.position, false);
+            let _ = present_frame(target, &batch, spec.position, false, true);
             target.batch = batch;
         }
         let elapsed = start.elapsed().as_secs_f64() * 1000.0;
@@ -596,7 +596,7 @@ fn latency_table(
             let hover = 0.2 + 0.6 * (run_index as f32 / REPAINT_RUNS as f32);
             fill_demo(&mut batch, width, height, [0.15, hover, 0.85, 1.0]);
             let start = Instant::now();
-            let outcome = present_frame(target, &batch, spec.position, false);
+            let outcome = present_frame(target, &batch, spec.position, false, true);
             let elapsed = start.elapsed().as_secs_f64() * 1_000.0;
             if outcome.presented {
                 repaints.push(elapsed);
@@ -690,7 +690,7 @@ fn prewarm_table(
         let (width, height) = target.size();
         let mut batch = std::mem::take(&mut target.batch);
         fill_demo(&mut batch, width, height, DEMO_COLOR);
-        let _ = present_frame(target, &batch, spec.position, false);
+        let _ = present_frame(target, &batch, spec.position, false, true);
         target.batch = batch;
     }
     let first_open_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -749,7 +749,7 @@ fn layered_step_table(
         // (b) offscreen texture + staging + DIB (no surface, no swapchain).
         let start = Instant::now();
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
-        let offscreen = OffscreenTarget::new(&gpu.device, POPUP_WIDTH, POPUP_HEIGHT, format);
+        let offscreen = OffscreenTarget::new(&gpu.device, POPUP_WIDTH, POPUP_HEIGHT, format, None);
         let mut layered =
             LayeredSurface::new(hwnd_of(&window), POPUP_WIDTH, POPUP_HEIGHT, (160, 160))
                 .ok_or_else(|| anyhow::anyhow!("layered DIB"))?;
@@ -788,6 +788,7 @@ fn layered_step_table(
             &mut layered,
             (160, 160),
             wgpu::Color::TRANSPARENT,
+            true,
         )
         .is_some();
         let after_present = start.elapsed().as_secs_f64() * 1000.0;

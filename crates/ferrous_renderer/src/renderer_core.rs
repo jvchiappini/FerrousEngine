@@ -2164,6 +2164,16 @@ impl Renderer {
         ferrous_core::memory::report_json(24)
     }
 
+    /// Every registered resource, sorted by label, without the report's
+    /// `largest` truncation.
+    ///
+    /// Use it when one named entry matters (a popup's offscreen target, an
+    /// atlas) and it is too small to reach [`Self::memory_report`]'s top list.
+    #[must_use]
+    pub fn memory_entries(&self) -> Vec<ferrous_core::memory::Entry> {
+        ferrous_core::memory::inventory()
+    }
+
     /// Registers (or refreshes) the swapchain-sized render-target attachments.
     ///
     /// Labels are stable, so a resize replaces each byte count instead of

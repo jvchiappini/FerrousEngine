@@ -96,6 +96,11 @@ pub(crate) struct Runner<A: FerrousApp + 'static> {
     pub(super) waker: Waker,
     /// Opt-in persistent off-screen UI present path (prompt 18 P7).
     pub(super) ui_presenter: Option<ferrous_ui_render::UiPresenter>,
+    /// Monotonic main-frame counter. A popup renders its overlay batch once per
+    /// generation; a readback worker's wake at the same generation only flushes
+    /// the mapped frame.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) main_frame_generation: u64,
 }
 
 impl<A: FerrousApp + 'static> Runner<A> {
@@ -167,6 +172,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
             redraw: Scheduler::new(redraw_policy),
             waker: Waker::from_proxy(proxy),
             ui_presenter: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            main_frame_generation: 0,
         }
     }
 

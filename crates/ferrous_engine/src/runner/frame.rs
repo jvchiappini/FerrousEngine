@@ -167,6 +167,13 @@ impl<A: FerrousApp + 'static> Runner<A> {
         #[cfg(not(target_arch = "wasm32"))]
         let _ = self.poll_startup(event_loop);
 
+        // A new main frame means a new popup overlay batch. A popup redraw at
+        // the same generation is a readback flush, not a second render.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.main_frame_generation = self.main_frame_generation.wrapping_add(1);
+        }
+
         // wasm32: drain async GPU init result before anything else.
         #[cfg(target_arch = "wasm32")]
         {

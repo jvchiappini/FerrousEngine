@@ -1,0 +1,14 @@
+# A separate workspace: the comparison apps must never leak their dependencies
+# into the engine or GUIMaker. Run everything from this directory.
+#
+# WebView2 is excluded because tao/wry pull a gdk-sys `links` conflict even on
+# Windows; its app is standalone (`cd webview2; cargo build --release`) and
+# best-effort per the Phase 9B plan.
+[workspace]
+resolver = "2"
+members = ["guimaker", "egui", "egui-wgpu", "iced", "slint", "imgui"]
+exclude = ["webview2"]
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

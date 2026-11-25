@@ -82,6 +82,31 @@ impl<A: FerrousApp + 'static> Runner<A> {
         else {
             return false;
         };
+        // A readback worker wakes the popup after a copy finishes. If the main
+        // window has not produced a new frame, this callback only presents the
+        // mapped image; re-encoding the same batch would start another readback
+        // and loop.
+        let current = self.main_frame_generation;
+        let flush_only = self
+            .windows
+            .as_ref()
+            .and_then(|windows| windows.backend().window(handle))
+            .is_some_and(|target| target.rendered_generation == current);
+        if flush_only {
+            let position = self
+                .windows
+                .as_ref()
+                .and_then(|windows| windows.spec(popup))
+                .map_or((0, 0), |spec| spec.position);
+            let Some(target) = self
+                .windows
+                .as_mut()
+                .and_then(|windows| windows.backend_mut().window_mut(handle))
+            else {
+                return false;
+            };
+            return crate::popup_present::flush_frame(target, position).presented;
+        }
         let time = self.clock.peek();
         // A popup can sit on another monitor: its own factor, not the main
         // window's, decides the buffer and the text size.
@@ -172,7 +197,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
         let Some(target) = windows.backend_mut().window_mut(handle) else {
             return false;
         };
-        let outcome = crate::popup_present::present_frame(target, &batch, position, capture);
+        target.rendered_generation = current;
+        let outcome = crate::popup_present::present_frame(target, &batch, position, capture, true);
         target.batch = batch;
         if let Some(shot) = outcome.screenshot {
             self.app.on_popup_screenshot(crate::traits::PopupCapture {
