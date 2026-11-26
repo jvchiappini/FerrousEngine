@@ -18,7 +18,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use imgui::{Condition, FontConfig, FontId, FontSource, StyleColor, Ui};
+use imgui::{Condition, FontConfig, FontId, FontSource, StyleColor, StyleVar, Ui};
 use imgui_wgpu::{Renderer, RendererConfig};
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
 use pollster::block_on;
@@ -281,7 +281,7 @@ fn form(ui: &Ui, fonts: &Fonts, scale: f32) {
     }
 }
 
-fn draw_start(ui: &Ui, fonts: &Fonts, scale: f32) {
+fn draw_start(ui: &Ui, fonts: &Fonts, scale: f32, bench: &mut String) {
     let full = ui.io().display_size;
 
     ui.window("##root")
@@ -354,10 +354,35 @@ fn draw_start(ui: &Ui, fonts: &Fonts, scale: f32) {
             let license_width = ui.calc_text_size(license)[0];
             ui.set_cursor_pos([right - license_width, footer_y]);
             text(ui, fonts.small, FAINT, license);
+
+            // Bench-only control strip below the start screen. These are raw
+            // logical coordinates (imgui works in logical units and the
+            // renderer applies the framebuffer scale), so the strip lands at
+            // the same place as in the other apps.
+            ui.set_cursor_screen_pos([40.0, 704.0]);
+            text(ui, fonts.small, MUTED, "Bench input");
+
+            ui.set_cursor_screen_pos([40.0, 724.0]);
+            ui.set_next_item_width(320.0);
+            {
+                let _font = ui.push_font(fonts.body);
+                let _pad = ui.push_style_var(StyleVar::FramePadding([6.0, 6.0]));
+                ui.input_text("##bench_input", bench).build();
+            }
+
+            ui.set_cursor_screen_pos([380.0, 724.0]);
+            {
+                let _font = ui.push_font(fonts.body);
+                let _b = ui.push_style_color(StyleColor::Button, RAISED);
+                let _bh = ui.push_style_color(StyleColor::ButtonHovered, BORDER);
+                let _ba = ui.push_style_color(StyleColor::ButtonActive, BORDER);
+                let _t = ui.push_style_color(StyleColor::Text, TEXT);
+                ui.button_with_size("Bench button", [140.0, 36.0]);
+            }
         });
 }
 
-fn render_frame(gfx: &mut Gfx) {
+fn render_frame(gfx: &mut Gfx, bench: &mut String) {
     let now = Instant::now();
     gfx.context.io_mut().update_delta_time(now - gfx.last_frame);
     gfx.last_frame = now;
@@ -381,7 +406,7 @@ fn render_frame(gfx: &mut Gfx) {
         .expect("prepare_frame");
 
     let ui = gfx.context.frame();
-    draw_start(&*ui, &gfx.fonts, gfx.scale);
+    draw_start(&*ui, &gfx.fonts, gfx.scale, bench);
     if gfx.last_cursor != ui.mouse_cursor() {
         gfx.last_cursor = ui.mouse_cursor();
         gfx.platform.prepare_render(&*ui, &*gfx.window);
@@ -426,22 +451,34 @@ struct App {
     gfx: Option<Gfx>,
     started: Instant,
     frames: Arc<AtomicU64>,
+    bench_input: String,
 }
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        self.gfx = Some(create(event_loop));
+        let gfx = create(event_loop);
+        gfx.window.request_redraw();
+        self.gfx = Some(gfx);
     }
 
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
-        _window_id: WindowId,
+        window_id: WindowId,
         event: WindowEvent,
     ) {
         let Some(gfx) = self.gfx.as_mut() else {
             return;
         };
+
+        // Forward every event to imgui so the bench text input and button get
+        // hover, focus and typing.
+        let forwarded: winit::event::Event<()> = winit::event::Event::WindowEvent {
+            window_id,
+            event: event.clone(),
+        };
+        gfx.platform
+            .handle_event(gfx.context.io_mut(), &*gfx.window, &forwarded);
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
@@ -449,6 +486,7 @@ impl ApplicationHandler for App {
                 gfx.config.width = size.width;
                 gfx.config.height = size.height;
                 gfx.surface.configure(&gfx.device, &gfx.config);
+                gfx.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
                 let frame = self.frames.fetch_add(1, Ordering::Relaxed) + 1;
@@ -459,13 +497,27 @@ impl ApplicationHandler for App {
                     );
                     let _ = std::io::stdout().flush();
                 }
-                render_frame(gfx);
+                render_frame(gfx, &mut self.bench_input);
+                if frame == 1 {
+                    println!("bench_ready");
+                    let _ = std::io::stdout().flush();
+                }
+            }
+            // Event-driven repaint: hover/typing stay visible, but an idle
+            // window presents no extra frames.
+            WindowEvent::CursorMoved { .. }
+            | WindowEvent::CursorEntered { .. }
+            | WindowEvent::CursorLeft { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::KeyboardInput { .. }
+            | WindowEvent::ModifiersChanged(..)
+            | WindowEvent::Ime(..) => {
+                gfx.window.request_redraw();
             }
             _ => {}
         }
     }
-
-
 }
 
 fn parse_seconds() -> f64 {
@@ -495,6 +547,7 @@ fn main() {
         gfx: None,
         started: Instant::now(),
         frames,
+        bench_input: String::new(),
     };
 
     event_loop.run_app(&mut app).unwrap();

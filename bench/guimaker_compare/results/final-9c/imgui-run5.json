@@ -1,0 +1,43 @@
+{
+  "library": "imgui",
+  "run": 5,
+  "mode": "idle",
+  "startup_ms": 763.7901999987662,
+  "startup_stage": "harness-wall",
+  "idle_cpu_pct": 1.022,
+  "tail_cpu_pct": 1.65,
+  "typing_cpu_pct": null,
+  "button_cpu_pct": null,
+  "typing_chars": 0,
+  "bench_text_chars": null,
+  "top_threads_cpu": [
+    [
+      9280,
+      0.0
+    ],
+    [
+      23424,
+      0.0
+    ],
+    [
+      20632,
+      0.0
+    ],
+    [
+      20412,
+      0.0
+    ],
+    [
+      20900,
+      0.0
+    ]
+  ],
+  "ui_thread_id": 9280,
+  "ui_thread_cpu_seconds": 0.0,
+  "idle_frames": 1,
+  "rss_bytes": 190337024,
+  "wall_seconds": 6.179,
+  "hover_moves": 0,
+  "memory": null,
+  "features": {}
+}

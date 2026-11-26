@@ -90,8 +90,13 @@ slint::slint! {
         width: 1280px;
         height: 800px;
         background: #06080D;
+        in-out property <string> bench-text;
 
         VerticalLayout {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
             padding-left: 28px;
             padding-right: 28px;
             padding-top: 18px;
@@ -191,6 +196,66 @@ slint::slint! {
                 Text { text: "Apache-2.0"; color: #71757C; font-size: 12px; }
             }
         }
+
+        // Bench-only control strip below the start screen: one editable text
+        // field and one button whose background changes on hover. Same logical
+        // coordinates in every app so the harness can park the pointer.
+        Text {
+            x: 40px;
+            y: parent.height - 92px;
+            text: "Bench input";
+            color: #ADB1B9;
+            font-size: 12px;
+        }
+
+        HorizontalLayout {
+            x: 40px;
+            y: parent.height - 76px;
+            width: 480px;
+            height: 36px;
+            spacing: 20px;
+
+            Rectangle {
+                width: 320px;
+                height: 36px;
+                background: #0B0D13;
+                border-radius: 6px;
+                border-width: 1px;
+                border-color: #26292F;
+
+                TextInput {
+                    x: 10px;
+                    y: 0px;
+                    width: parent.width - 20px;
+                    height: parent.height;
+                    text <=> root.bench-text;
+                    single-line: true;
+                    color: #F1F5FE;
+                    font-size: 14px;
+                    vertical-alignment: center;
+                }
+            }
+
+            Rectangle {
+                width: 140px;
+                height: 36px;
+                background: bench-btn.has-hover ? #26292F : #181B20;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: #26292F;
+
+                Text {
+                    text: "Bench button";
+                    color: #F1F5FE;
+                    font-size: 14px;
+                    width: parent.width;
+                    height: parent.height;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                bench-btn := TouchArea { }
+            }
+        }
     }
 }
 
@@ -219,6 +284,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let first = started;
     slint::Timer::single_shot(Duration::from_millis(1), move || {
         println!("startup_ms {}", first.elapsed().as_secs_f64() * 1000.0);
+        println!("bench_ready");
         let _ = std::io::stdout().flush();
     });
     std::thread::spawn(move || {

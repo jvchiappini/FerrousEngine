@@ -1,0 +1,43 @@
+{
+  "library": "egui",
+  "run": 2,
+  "mode": "idle",
+  "startup_ms": 256.4641000353731,
+  "startup_stage": "harness-wall",
+  "idle_cpu_pct": 0.0,
+  "tail_cpu_pct": 0.617,
+  "typing_cpu_pct": null,
+  "button_cpu_pct": null,
+  "typing_chars": 0,
+  "bench_text_chars": null,
+  "top_threads_cpu": [
+    [
+      6800,
+      0.0
+    ],
+    [
+      37720,
+      0.0
+    ],
+    [
+      28128,
+      0.0
+    ],
+    [
+      38692,
+      0.0
+    ],
+    [
+      25412,
+      0.0
+    ]
+  ],
+  "ui_thread_id": 6800,
+  "ui_thread_cpu_seconds": 0.0,
+  "idle_frames": 4,
+  "rss_bytes": 141828096,
+  "wall_seconds": 6.357,
+  "hover_moves": 0,
+  "memory": null,
+  "features": {}
+}

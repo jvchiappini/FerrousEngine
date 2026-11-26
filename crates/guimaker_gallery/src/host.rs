@@ -123,6 +123,13 @@ pub trait GuiApp {
     /// the next frame. The default does nothing.
     fn tick(&mut self, _ctx: &mut ferrous_engine::AppContext<'_>) {}
 
+    /// Receives committed text for the app's focused editable control.
+    ///
+    /// The host calls it for every `InputEvent::Text` before the frame's
+    /// routing (and for popup text too). The app forwards it to its own
+    /// `TextFieldModel` while its field is focused; the default ignores it.
+    fn on_text(&mut self, _text: &str) {}
+
     /// The injected clock instant in milliseconds.
     ///
     /// Returning `None` makes the adapter use the engine's frame clock
@@ -704,6 +711,9 @@ impl<A: GuiApp> FerrousApp for GuiHost<A> {
             return;
         }
         for event in events {
+            if let InputEvent::Text(text) = &event {
+                self.app.on_text(text);
+            }
             self.ui.push_event(event);
         }
         // Popup input does not go through the main window's event loop path, so
@@ -753,8 +763,24 @@ impl<A: GuiApp> FerrousApp for GuiHost<A> {
             }
         }
         let events = self.translate_event(event);
+        if events.is_empty() {
+            return;
+        }
+        // A pointer move that keeps the same target, cursor, tooltip, drag and
+        // scroll state changes nothing: do not ask for a frame. Every other
+        // event still asks (a click, a key, a wheel, a focus change).
+        let pointer_only = events
+            .iter()
+            .all(|event| matches!(event, InputEvent::PointerMoved { .. }));
+        let needs_frame = !pointer_only || self.ui.pointer_move_changes(self.pointer);
         for event in events {
+            if let InputEvent::Text(text) = &event {
+                self.app.on_text(text);
+            }
             self.ui.push_event(event);
+        }
+        if needs_frame {
+            ctx.request_redraw();
         }
     }
 }

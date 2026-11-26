@@ -1,24 +1,27 @@
 //! WebView2 side of the Phase 9B comparison (best-effort, Windows only).
-//! Run with `--seconds N` (default 8); `frames N` is printed to stdout on exit.
+//! Run with `--seconds N` (default 8); `frames N` is printed on exit.
 //!
-//! Versions: wry 0.57 + tao 0.38 (tao with the `rwh_06` feature so `Window`
-//! implements `HasWindowHandle`, which wry 0.57 requires).
+//! Hosted on winit 0.30 (no tao). wry 0.57's default `x11` feature pulls
+//! `tao/x11`; tao's GTK dependency collides with wry's on the `gdk-sys`
+//! `links = "gdk-3"` key during Cargo resolution even on Windows (the resolver
+//! walks the whole target-independent graph). Disabling default features drops
+//! tao while `os-webview` keeps the target-gated webkit backend.
 //!
-//! Caveats: wry 0.57's dev-dependency is tao 0.37; tao 0.38 is source- and
-//! raw-window-handle-compatible but not the exact pairing wry CI builds with.
-//! tao/wry expose no per-window DPI override, so the window is 1280x800 logical
-//! and the scale factor follows Windows. "frames" counts RedrawRequested ticks
-//! driven by a ~60 Hz tao deadline, not WebView2's internal compositor frames.
+//! DPI: winit creates a 1280x800 logical window; the webview fills it and
+//! follows the monitor scale factor. "frames" counts the ~60 Hz RedrawRequested
+//! ticks we schedule, not WebView2's internal compositor frames.
 
-use std::cell::Cell;
 use std::io::Write;
 use std::time::{Duration, Instant};
 
-use tao::dpi::LogicalSize;
-use tao::event::{Event, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoop, EventLoopExtRunReturn};
-use tao::window::WindowBuilder;
-use wry::WebViewBuilder;
+use dpi::{LogicalPosition, LogicalSize};
+use winit::application::ApplicationHandler;
+use winit::event::WindowEvent;
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::window::{Window, WindowId};
+use wry::{Rect, WebViewBuilder};
+
+const TICK: Duration = Duration::from_millis(16);
 
 const HTML: &str = r#"<!doctype html>
 <html>
@@ -65,6 +68,26 @@ const HTML: &str = r#"<!doctype html>
   .create { background: #2750C7; }
   .browse { background: #181B20; border: 1px solid #26292F; }
   footer { display: flex; justify-content: space-between; font-size: 12px; color: #71757C; }
+  /* Bench-only strip: same logical coordinates as the native apps. */
+  .bench-label {
+    position: fixed; left: 40px; top: calc(100vh - 92px);
+    font-size: 12px; color: #ADB1B9;
+  }
+  .bench-row {
+    position: fixed; left: 40px; top: calc(100vh - 76px);
+    display: flex; gap: 20px;
+  }
+  .bench-input {
+    width: 320px; height: 36px; padding: 0 10px;
+    background: #0B0D13; border: 1px solid #26292F; border-radius: 6px;
+    color: #F1F5FE; font-size: 14px; outline: none;
+  }
+  .bench-button {
+    width: 140px; height: 36px;
+    background: #181B20; border: 1px solid #26292F; border-radius: 8px;
+    color: #F1F5FE; font-size: 14px; cursor: pointer;
+  }
+  .bench-button:hover { background: #26292F; }
 </style>
 </head>
 <body>
@@ -96,6 +119,11 @@ const HTML: &str = r#"<!doctype html>
     </section>
   </main>
   <footer><span>FerrousEngine 0.1</span><span>Apache-2.0</span></footer>
+  <div class="bench-label">Bench input</div>
+  <div class="bench-row">
+    <input class="bench-input" id="bench-input" type="text">
+    <button class="bench-button" id="bench-button">Bench button</button>
+  </div>
 </body>
 </html>"#;
 
@@ -107,50 +135,112 @@ fn parse_seconds() -> f64 {
         .unwrap_or(8.0)
 }
 
+struct State {
+    // Declared before `window` so the webview controller is dropped first.
+    webview: Option<wry::WebView>,
+    window: Option<Window>,
+    started: Instant,
+    seconds: f64,
+    frames: u64,
+    first_frame: bool,
+    next_tick: Instant,
+}
+
+impl State {
+    fn new(seconds: f64) -> Self {
+        let now = Instant::now();
+        Self {
+            webview: None,
+            window: None,
+            started: now,
+            seconds,
+            frames: 0,
+            first_frame: false,
+            next_tick: now,
+        }
+    }
+
+    fn set_bounds(&self) {
+        let (Some(window), Some(webview)) = (&self.window, &self.webview) else {
+            return;
+        };
+        let size = window.inner_size().to_logical::<u32>(window.scale_factor());
+        let _ = webview.set_bounds(Rect {
+            position: LogicalPosition::new(0, 0).into(),
+            size: LogicalSize::new(size.width, size.height).into(),
+        });
+    }
+}
+
+impl ApplicationHandler for State {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        let attributes = Window::default_attributes()
+            .with_title("guimaker-compare-webview2")
+            .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0))
+            .with_resizable(false);
+        let window = event_loop.create_window(attributes).unwrap();
+
+        let webview = WebViewBuilder::new()
+            .with_html(HTML)
+            .build_as_child(&window)
+            .unwrap();
+
+        self.window = Some(window);
+        self.webview = Some(webview);
+        self.set_bounds();
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        match event {
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Resized(_) => self.set_bounds(),
+            WindowEvent::RedrawRequested => {
+                if !self.first_frame {
+                    self.first_frame = true;
+                    println!(
+                        "startup_ms {}",
+                        self.started.elapsed().as_secs_f64() * 1000.0
+                    );
+                    println!("bench_ready");
+                    let _ = std::io::stdout().flush();
+                }
+                self.frames = self.frames.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.started.elapsed().as_secs_f64() >= self.seconds {
+            event_loop.exit();
+            return;
+        }
+        let now = Instant::now();
+        if now >= self.next_tick {
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+            self.next_tick = now + TICK;
+        }
+        event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_tick));
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let seconds = parse_seconds();
 
-    let mut event_loop = EventLoop::new();
-    let window = WindowBuilder::new()
-        .with_title("guimaker-compare-webview2")
-        .with_inner_size(LogicalSize::new(1280.0, 800.0))
-        .with_resizable(false)
-        .build(&event_loop)?;
+    let event_loop = EventLoop::new()?;
+    event_loop.set_control_flow(ControlFlow::Wait);
 
-    // Kept alive for the whole loop, and dropped before `window` at the end of
-    // main (declaration order), so the WebView2 controller never outlives its
-    // parent HWND.
-    let _webview = WebViewBuilder::new()
-        .with_background_color((6, 8, 13, 255))
-        .with_html(HTML)
-        .build(&window)?;
+    let mut state = State::new(seconds);
+    event_loop.run_app(&mut state)?;
 
-    let started = Instant::now();
-    let frames = Cell::new(0u64);
-
-    let _code = event_loop.run_return(|event, _target, control_flow| match event {
-        Event::WindowEvent {
-            event: WindowEvent::CloseRequested,
-            ..
-        } => {
-            *control_flow = ControlFlow::Exit;
-        }
-        Event::MainEventsCleared => {
-            if started.elapsed().as_secs_f64() >= seconds {
-                *control_flow = ControlFlow::Exit;
-            } else {
-                window.request_redraw();
-                *control_flow =
-                    ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(16));
-            }
-        }
-        Event::RedrawRequested(_) => {
-            frames.set(frames.get() + 1);
-        }
-        _ => {}
-    });
-
-    println!("frames {}", frames.get());
+    println!("frames {}", state.frames);
     let _ = std::io::stdout().flush();
     Ok(())
 }

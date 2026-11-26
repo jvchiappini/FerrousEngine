@@ -92,6 +92,10 @@ pub(crate) struct Runner<A: FerrousApp + 'static> {
     pub(super) init: Option<super::show::InitJob>,
     /// Continuous vs on-demand frame scheduling (prompt 18 P1).
     pub(super) redraw: Scheduler,
+    /// The next `RedrawRequested` is the one the OS sends when the hidden
+    /// window is first shown; the first frame is already on the swapchain.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) skip_show_redraw: bool,
     /// Wakes the loop from background workers.
     pub(super) waker: Waker,
     /// Opt-in persistent off-screen UI present path (prompt 18 P7).
@@ -170,6 +174,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
             #[cfg(not(target_arch = "wasm32"))]
             init: None,
             redraw: Scheduler::new(redraw_policy),
+            #[cfg(not(target_arch = "wasm32"))]
+            skip_show_redraw: false,
             waker: Waker::from_proxy(proxy),
             ui_presenter: None,
             #[cfg(not(target_arch = "wasm32"))]

@@ -58,6 +58,9 @@ pub(crate) struct GpuInit {
     pub(crate) sample_count: u32,
     pub(crate) hdri_path: Option<String>,
     pub(crate) backends: Vec<wgpu::Backends>,
+    /// DX12 shader compiler for the instance (wgpu 23 puts it on
+    /// [`wgpu::InstanceDescriptor`], not on the device descriptor).
+    pub(crate) dx12_compiler: wgpu::Dx12Compiler,
     pub(crate) power_preference: wgpu::PowerPreference,
     pub(crate) pipeline_cache: Option<PipelineCacheConfig>,
     pub(crate) background: wgpu::Color,
@@ -80,6 +83,7 @@ impl GpuInit {
             sample_count: config.sample_count,
             hdri_path: config.hdri_path.clone(),
             backends: config.backends.clone(),
+            dx12_compiler: config.effective_dx12_compiler(),
             power_preference: config.power_preference,
             pipeline_cache: config.pipeline_cache.clone(),
             background: config.background_color.to_wgpu(),
@@ -321,12 +325,14 @@ impl GpuProbeHandle {
     pub(crate) fn start(init: &GpuInit) -> Self {
         let order = init.backend_order();
         let power = init.power_preference();
+        let dx12_compiler = init.dx12_compiler.clone();
         let thread = std::thread::Builder::new()
             .name("ferrous-gpu".to_owned())
             .spawn(move || {
                 for backends in order {
                     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
                         backends,
+                        dx12_shader_compiler: dx12_compiler.clone(),
                         ..Default::default()
                     });
                     let Ok(adapter) = pollster::block_on(EngineContext::request_adapter_with(
@@ -450,6 +456,7 @@ impl GraphicsState {
             for backends in init.backend_order() {
                 let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
                     backends,
+                    dx12_shader_compiler: init.dx12_compiler.clone(),
                     ..Default::default()
                 });
                 startup::mark("engine: instance");
@@ -894,6 +901,7 @@ mod tests {
             sample_count: 1,
             hdri_path: None,
             backends,
+            dx12_compiler: wgpu::Dx12Compiler::Fxc,
             power_preference: wgpu::PowerPreference::HighPerformance,
             pipeline_cache: None,
             background: wgpu::Color::BLACK,

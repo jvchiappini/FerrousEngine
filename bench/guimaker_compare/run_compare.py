@@ -67,6 +67,7 @@ def hover_sweep(title: str, duration: float) -> int:
             time.sleep(0.05)
         if rect is None:
             return 0
+        raise_window(title)
         left, top, right, bottom = rect
         moves = 0
         deadline = time.monotonic() + duration
@@ -160,6 +161,32 @@ def thread_snapshot(ps) -> dict[int, float]:
     except psutil.Error:
         return {}
 
+
+def raise_window(title: str) -> None:
+    """Bring the bench window above the terminal and give it the keyboard."""
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        hwnd = user32.FindWindowW(None, title)
+        if not hwnd:
+            return
+        # HWND_TOPMOST = -1; SWP_NOSIZE | SWP_NOMOVE.
+        user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002)
+        # SetForegroundWindow is restricted to the foreground process; attach
+        # this thread to the current foreground thread to satisfy the lock.
+        foreground = user32.GetForegroundWindow()
+        foreground_tid = user32.GetWindowThreadProcessId(foreground, None)
+        current_tid = kernel32.GetCurrentThreadId()
+        user32.AttachThreadInput(current_tid, foreground_tid, True)
+        user32.SetForegroundWindow(hwnd)
+        user32.SetFocus(hwnd)
+        user32.AttachThreadInput(current_tid, foreground_tid, False)
+    except Exception:
+        pass
+
+
 def park_cursor() -> None:
     try:
         import ctypes
@@ -168,7 +195,212 @@ def park_cursor() -> None:
         pass
 
 
-def run_once(lib: str, seconds: float, hover: bool) -> dict:
+# Bench strip geometry, in the same logical coordinates every app uses.
+BENCH_INPUT = (200.0, 742.0)  # centre of x=40 w=320, y=height-76 h=36
+BENCH_BUTTON = (450.0, 742.0)  # centre of x=380 w=140, y=height-76 h=36
+WINDOW_LOGICAL_WIDTH = 1280.0
+
+_SEND_INPUT_CACHE: dict = {}
+
+
+def _send_input() -> dict:
+    """Build and cache the Win32 INPUT/SendInput plumbing (Windows only)."""
+    if _SEND_INPUT_CACHE:
+        return _SEND_INPUT_CACHE
+    import ctypes
+    from ctypes import wintypes
+
+    class KEYBDINPUT(ctypes.Structure):
+        _fields_ = [
+            ("wVk", wintypes.WORD),
+            ("wScan", wintypes.WORD),
+            ("dwFlags", wintypes.DWORD),
+            ("time", wintypes.DWORD),
+            ("dwExtraInfo", ctypes.c_void_p),
+        ]
+
+    class MOUSEINPUT(ctypes.Structure):
+        _fields_ = [
+            ("dx", wintypes.LONG),
+            ("dy", wintypes.LONG),
+            ("mouseData", wintypes.DWORD),
+            ("dwFlags", wintypes.DWORD),
+            ("time", wintypes.DWORD),
+            ("dwExtraInfo", ctypes.c_void_p),
+        ]
+
+    class HARDWAREINPUT(ctypes.Structure):
+        _fields_ = [
+            ("uMsg", wintypes.DWORD),
+            ("wParamL", wintypes.WORD),
+            ("wParamH", wintypes.WORD),
+        ]
+
+    class INPUTUNION(ctypes.Union):
+        _fields_ = [("ki", KEYBDINPUT), ("mi", MOUSEINPUT), ("hi", HARDWAREINPUT)]
+
+    class INPUT(ctypes.Structure):
+        _anonymous_ = ("u",)
+        _fields_ = [("type", wintypes.DWORD), ("u", INPUTUNION)]
+
+    user32 = ctypes.windll.user32
+    user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
+    user32.SendInput.restype = wintypes.UINT
+    _SEND_INPUT_CACHE.update({"ctypes": ctypes, "INPUT": INPUT, "user32": user32})
+    return _SEND_INPUT_CACHE
+
+
+def enable_dpi_awareness() -> None:
+    try:
+        import ctypes
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+
+def client_geometry(title: str):
+    """Client origin, physical/logical scale and logical height.
+
+    ``scale`` is the client width over the 1280 logical width; the apps that
+    force 1.5 give 1.5, the GUIMaker app follows the monitor (1.25 here). The
+    logical height lets the strip's bottom position be computed instead of
+    assuming an 800-high window.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        hwnd = user32.FindWindowW(None, title)
+        if not hwnd:
+            return None
+        rect = wintypes.RECT()
+        if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
+            return None
+        origin = wintypes.POINT(0, 0)
+        if not user32.ClientToScreen(hwnd, ctypes.byref(origin)):
+            return None
+        width = int(rect.right - rect.left)
+        height = int(rect.bottom - rect.top)
+        if width <= 0 or height <= 0:
+            return None
+        scale = width / WINDOW_LOGICAL_WIDTH
+        if scale <= 0:
+            return None
+        return (int(origin.x), int(origin.y), scale, height / scale)
+    except Exception:
+        return None
+
+
+def wait_for_ready(title: str, out_path: str, timeout: float = 7.0):
+    """Wait for the window and the app's `bench_ready` line."""
+    deadline = time.monotonic() + timeout
+    geometry = None
+    ready = False
+    while time.monotonic() < deadline:
+        if geometry is None:
+            geometry = client_geometry(title)
+        if not ready:
+            try:
+                text = Path(out_path).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                text = ""
+            ready = "bench_ready" in text
+        if geometry is not None and ready:
+            return geometry
+        time.sleep(0.05)
+    return geometry
+
+
+def click_at(x: float, y: float) -> None:
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        user32.SetCursorPos(int(round(x)), int(round(y)))
+        time.sleep(0.03)
+        user32.mouse_event(0x0002, 0, 0, 0, 0)  # MOUSEEVENTF_LEFTDOWN
+        time.sleep(0.03)
+        user32.mouse_event(0x0004, 0, 0, 0, 0)  # MOUSEEVENTF_LEFTUP
+    except Exception:
+        pass
+
+
+def send_unicode(ch: str) -> bool:
+    """Type one character into the focused control via SendInput."""
+    try:
+        api = _send_input()
+        ctypes = api["ctypes"]
+        INPUT = api["INPUT"]
+        user32 = api["user32"]
+        inputs = (INPUT * 2)()
+        for index, flags in ((0, 0x0004), (1, 0x0004 | 0x0002)):
+            inputs[index].type = 1  # INPUT_KEYBOARD
+            inputs[index].ki.wVk = 0
+            inputs[index].ki.wScan = ord(ch)
+            inputs[index].ki.dwFlags = flags  # KEYEVENTF_UNICODE (+ KEYUP)
+            inputs[index].ki.time = 0
+            inputs[index].ki.dwExtraInfo = 0
+        sent = user32.SendInput(2, inputs, ctypes.sizeof(INPUT))
+        return int(sent) == 2
+    except Exception:
+        return False
+
+
+def typing_worker(title: str, out_path: str, duration: float, chars_per_sec: float, holder: list) -> None:
+    """Click the bench input and type `duration` seconds at a steady rate."""
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        geometry = wait_for_ready(title, out_path)
+        if geometry is None:
+            return
+        origin_x, origin_y, scale, logical_height = geometry
+        raise_window(title)
+        strip_y = logical_height - 58.0
+        click_at(origin_x + scale * BENCH_INPUT[0], origin_y + scale * strip_y)
+        time.sleep(0.2)
+
+        alphabet = "abcdefghij"
+        interval = 1.0 / max(1.0, chars_per_sec)
+        deadline = time.monotonic() + duration
+        typed = 0
+        index = 0
+        while time.monotonic() < deadline:
+            if send_unicode(alphabet[index % len(alphabet)]):
+                typed += 1
+            holder[0] = typed
+            index += 1
+            time.sleep(interval)
+    except Exception:
+        return
+
+
+def button_hover_worker(title: str, out_path: str, duration: float) -> None:
+    """Park the pointer on the bench button and keep it there."""
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        geometry = wait_for_ready(title, out_path)
+        if geometry is None:
+            return
+        raise_window(title)
+        origin_x, origin_y, scale, logical_height = geometry
+        x = int(round(origin_x + scale * BENCH_BUTTON[0]))
+        y = int(round(origin_y + scale * (logical_height - 58.0)))
+        deadline = time.monotonic() + duration
+        while time.monotonic() < deadline:
+            user32.SetCursorPos(x, y)
+            time.sleep(0.25)
+    except Exception:
+        return
+
+
+def run_once(
+    lib: str, seconds: float, hover: bool, typing: bool, button: bool
+) -> dict:
     global TARGET_DIR
     exe = TARGET_DIR / "release" / f"guimaker-compare-{lib}.exe"
     if not exe.is_file():
@@ -176,8 +408,18 @@ def run_once(lib: str, seconds: float, hover: bool) -> dict:
     env = dict(**__import__("os").environ)
     env.setdefault("FERROUS_TRACE_STARTUP", "1")
     env.setdefault("FERROUS_TRACE_STARTUP_JSON", "1")
-    if not hover:
+    if not (hover or typing or button):
         park_cursor()
+    if typing:
+        mode = "typing"
+    elif button:
+        mode = "button-hover"
+    elif hover:
+        mode = "hover"
+    else:
+        mode = "idle"
+    # Typing needs 5 s of input after the first frame; give it room to finish.
+    effective_seconds = max(seconds, 9.0) if typing else seconds
     started = time.monotonic()
     # Redirect to files, not pipes: the engine's closing report is large and a
     # full pipe buffer would block the child before it exits.
@@ -189,7 +431,7 @@ def run_once(lib: str, seconds: float, hover: bool) -> dict:
         "w", suffix=".err", prefix=f"{lib}-", delete=False, encoding="utf-8"
     )
     proc = subprocess.Popen(
-        [str(exe), "--seconds", str(seconds)],
+        [str(exe), "--seconds", str(effective_seconds)],
         stdout=out_file,
         stderr=err_file,
         text=True,
@@ -199,13 +441,31 @@ def run_once(lib: str, seconds: float, hover: bool) -> dict:
     ps.cpu_percent(None)
     samples: list[float] = []
     rss: list[int] = []
-    moves = 0
-    hover_thread = None
-    if hover:
-        hover_thread = threading.Thread(
-            target=hover_sweep, args=(TITLE[lib], seconds), daemon=True
+    moves_holder = [0]
+    typed_holder = [0]
+    worker = None
+    if typing:
+        worker = threading.Thread(
+            target=typing_worker,
+            args=(TITLE[lib], out_file.name, 5.0, 10.0, typed_holder),
+            daemon=True,
         )
-        hover_thread.start()
+        worker.start()
+    elif button:
+        worker = threading.Thread(
+            target=button_hover_worker,
+            args=(TITLE[lib], out_file.name, effective_seconds),
+            daemon=True,
+        )
+        worker.start()
+    elif hover:
+        worker = threading.Thread(
+            target=lambda: moves_holder.__setitem__(
+                0, hover_sweep(TITLE[lib], effective_seconds)
+            ),
+            daemon=True,
+        )
+        worker.start()
     first_frame_wall = None
     warmup_end = started + 1.0
     snap_start: dict[int, float] = {}
@@ -229,14 +489,14 @@ def run_once(lib: str, seconds: float, hover: bool) -> dict:
                 break
         if not snap_start and now >= warmup_end:
             snap_start = thread_snapshot(ps)
-        if not snap_end and now >= started + max(1.0, seconds - 1.0):
+        if not snap_end and now >= started + max(1.0, effective_seconds - 1.0):
             snap_end = thread_snapshot(ps)
             ui_tid = window_thread_id(TITLE[lib])
         time.sleep(0.05)
-    if hover_thread is not None:
-        hover_thread.join(timeout=1.0)
+    if worker is not None:
+        worker.join(timeout=2.0)
     try:
-        proc.wait(timeout=seconds + 20)
+        proc.wait(timeout=effective_seconds + 20)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
@@ -255,10 +515,16 @@ def run_once(lib: str, seconds: float, hover: bool) -> dict:
             except ValueError:
                 pass
     frames = None
+    bench_text_chars = None
     for line in out.splitlines():
         line = line.strip()
         if line.startswith("frames "):
             frames = int(line.split(" ", 1)[1])
+        elif line.startswith("bench_text_chars "):
+            try:
+                bench_text_chars = int(line.split(" ", 1)[1])
+            except ValueError:
+                pass
         elif line.startswith("startup_ms ") and startup is None:
             try:
                 startup = float(line.split(" ", 1)[1])
@@ -283,17 +549,22 @@ def run_once(lib: str, seconds: float, hover: bool) -> dict:
     return {
         "library": lib,
         "run": 0,
+        "mode": mode,
         "startup_ms": startup,
         "startup_stage": stage,
         "idle_cpu_pct": round(cpu, 3),
         "tail_cpu_pct": round(tail_cpu, 3),
+        "typing_cpu_pct": round(cpu, 3) if typing else None,
+        "button_cpu_pct": round(cpu, 3) if button else None,
+        "typing_chars": typed_holder[0] if typing else 0,
+        "bench_text_chars": bench_text_chars,
         "top_threads_cpu": threads,
         "ui_thread_id": ui_tid,
         "ui_thread_cpu_seconds": ui_thread_cpu,
         "idle_frames": frames,
         "rss_bytes": max(rss) if rss else 0,
         "wall_seconds": round(time.monotonic() - started, 3),
-        "hover_moves": moves,
+        "hover_moves": moves_holder[0],
         "memory": memory,
         "features": {},
     }
@@ -307,11 +578,22 @@ def main() -> int:
     parser.add_argument("--only", nargs="*", default=LIBS)
     parser.add_argument("--build", action="store_true")
     parser.add_argument("--hover", action="store_true")
+    parser.add_argument(
+        "--typing",
+        action="store_true",
+        help="click the bench input and type 10 chars/s for 5 s",
+    )
+    parser.add_argument(
+        "--button-hover",
+        action="store_true",
+        help="park the pointer on the bench button",
+    )
     parser.add_argument("--target-dir", type=Path, default=ROOT / "target")
     args = parser.parse_args()
     global TARGET_DIR
     TARGET_DIR = args.target_dir
 
+    enable_dpi_awareness()
     if args.build:
         subprocess.run(
             ["cargo", "build", "--release", "--workspace"],
@@ -324,11 +606,11 @@ def main() -> int:
     for lib in args.only:
         rows = []
         for run in range(1, args.runs + 1):
-            row = run_once(lib, args.seconds, args.hover)
+            row = run_once(lib, args.seconds, args.hover, args.typing, args.button_hover)
             row["run"] = run
             rows.append(row)
             path = args.out / f"{lib}-run{run}.json"
-            with path.open("w", encoding="utf-8", newline="\\n") as handle:
+            with path.open("w", encoding="utf-8", newline="\n") as handle:
                 handle.write(json.dumps(row, indent=2))
             print(f"{lib} run {run}: {row}")
         summary[lib] = rows

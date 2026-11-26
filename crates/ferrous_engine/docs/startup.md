@@ -140,7 +140,75 @@ adapter is selected in ~1 ms.
 exactly those backends. A backend whose adapter lacks
 `TEXTURE_BINDING_ARRAY | SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING`
 (the GUI image pass) is skipped with a warning instead of panicking later in
-pipeline validation; GL in wgpu 23 is such a backend.
+pipeline validation; GL in wgpu 23 is such a backend. See
+[GL is rejected for Flat2D](#gl-is-rejected-for-flat2d) below.
+
+### GL is rejected for Flat2D
+
+`WGPU_BACKEND=gl` is accepted by the configuration path (it becomes a
+one-element backend list), but it cannot run the Flat2D renderer today:
+
+- The probe's adapter is checked by `adapter_is_usable` in
+  `crates/ferrous_engine/src/graphics.rs:218-227` against
+  `ENGINE_ADAPTER_FEATURES` (`graphics.rs:175-183`). With the default `assets`
+  feature that set is
+  `TEXTURE_BINDING_ARRAY | SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING`.
+- wgpu 23's GL adapter does not expose those features, so the probe logs
+  `adapter ... cannot run the engine: missing ...` and the re-probe rejects it
+  too; the run then panics with `no usable wgpu adapter`.
+- That is a capability limit of the GUI image path, not a bug in the backend
+  request. GL is therefore **not** a Flat2D startup measurement option; do not
+  report a GL number unless the engine drops the texture-array requirement.
+
+To confirm the rejection on a machine:
+
+```powershell
+$env:WGPU_BACKEND = "gl"
+$env:FERROUS_TRACE_STARTUP = "1"
+cargo run --release -p guimaker-compare-guimaker -- --seconds 8 2>&1 |
+    Select-String "adapter|no usable wgpu adapter"
+```
+
+### DX12 shader compiler (FXC vs DXC)
+
+DX12 compiles its 2D pipelines with a shader compiler chosen when the
+`wgpu::Instance` is created. wgpu 23 puts that choice on
+`wgpu::InstanceDescriptor::dx12_shader_compiler` (**not** the device
+descriptor), so the engine threads it into both the probe worker and the
+event-loop re-probe. `AppConfig::dx12_compiler` (or
+`App::with_dx12_compiler`) selects it from code; the
+`FERROUS_DX12_COMPILER=fxc|dxc|dynamic_dxc` environment variable wins at
+runtime.
+
+- `fxc` (default): the legacy compiler, no extra DLLs, and the slow renderer
+  build recorded by `G-0011`.
+- `dxc` / `dynamic_dxc`: wgpu loads `dxcompiler.dll` and `dxil.dll` at runtime
+  (standard DLL search rules) and falls back to Fxc with a logged warning when
+  either is missing. Both values need the `dxc` cargo feature on
+  `ferrous_engine` so the default build keeps Fxc; wgpu 23 needs no extra
+  dependency (its default `dx12` feature already includes DXC support).
+  `dynamic_dxc` is the future wgpu name for the same runtime-loaded choice.
+  Put both DLLs next to the executable or on `PATH`; when either is missing
+  wgpu logs a warning and compiles with Fxc, so that DXC run is really an FXC
+  run.
+
+A/B run (PowerShell, from the workspace root, one process per line):
+
+```powershell
+# DX12 + FXC (default build)
+$env:WGPU_BACKEND = "dx12"; $env:FERROUS_DX12_COMPILER = "fxc"
+$env:FERROUS_TRACE_STARTUP = "1"; $env:FERROUS_TRACE_STARTUP_JSON = "1"
+cargo run --release -p guimaker-compare-guimaker -- --seconds 8
+
+# DX12 + DXC (runtime-loaded dxcompiler.dll/dxil.dll)
+$env:FERROUS_DX12_COMPILER = "dynamic_dxc"
+cargo run --release -p guimaker-compare-guimaker --features ferrous_engine/dxc -- --seconds 8
+```
+
+Read `engine: renderer built` (the pipeline compile) and `engine: first frame
+presented` from the trace. DX12 ignores wgpu's pipeline cache in wgpu 23, so a
+warm run only benefits from the OS file cache; keep the two runs identical and
+alternate them.
 
 ### Overlap
 
@@ -171,7 +239,9 @@ recompile. Only backends that expose `PIPELINE_CACHE` use it (Vulkan in wgpu
 On the reference machine (Vulkan, NVIDIA) the cache takes `Renderer::new`
 from ~68 ms to ~48 ms. DX12 has no cache and takes ~7.3 s in `Renderer::new`
 (shader compilation), so it stays a fallback: a machine with Vulkan never
-pays it.
+pays it. Selecting DXC (see
+[DX12 shader compiler](#dx12-shader-compiler-fxc-vs-dxc)) is the lever for
+that DX12 build cost; the backend order itself is unchanged.
 
 ### Show the window when it is ready
 

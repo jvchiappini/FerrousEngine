@@ -15,8 +15,8 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use iced::widget::{button, column, container, horizontal_space, row, text, Space};
-use iced::{Alignment, Background, Border, Color, Element, Length, Task, Theme};
+use iced::widget::{button, column, container, horizontal_space, row, stack, text, text_input, Space};
+use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Task, Theme};
 
 const PAGE: Color = Color {
     r: 6.0 / 255.0,
@@ -76,6 +76,7 @@ const ACCENT: Color = Color {
 struct App {
     started: Instant,
     frames: Arc<AtomicU64>,
+    bench_input: String,
 }
 
 #[derive(Debug, Clone)]
@@ -84,11 +85,18 @@ enum Message {
     Docs,
     Create,
     Browse,
+    BenchInput(String),
+    BenchButton,
 }
 
-fn update(_state: &mut App, message: Message) {
+fn update(state: &mut App, message: Message) {
     match message {
-        Message::Settings | Message::Docs | Message::Create | Message::Browse => {}
+        Message::BenchInput(value) => state.bench_input = value,
+        Message::Settings
+        | Message::Docs
+        | Message::Create
+        | Message::Browse
+        | Message::BenchButton => {}
     }
 }
 
@@ -158,6 +166,73 @@ fn raised_button(_: &Theme, _status: button::Status) -> button::Style {
         },
         ..Default::default()
     }
+}
+
+fn bench_button(_: &Theme, status: button::Status) -> button::Style {
+    let background = match status {
+        button::Status::Hovered | button::Status::Pressed => BORDER,
+        _ => RAISED,
+    };
+    button::Style {
+        background: Some(Background::Color(background)),
+        text_color: TEXT,
+        border: Border {
+            color: BORDER,
+            width: 1.0,
+            radius: 8.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
+/// Bench-only control strip: the same logical coordinates in every app, so the
+/// harness can park the pointer on a known point.
+fn bench_label() -> Element<'static, Message> {
+    container(text("Bench input").size(12).style(tc(MUTED)))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(Alignment::Start)
+        .align_y(Alignment::Start)
+        .padding(Padding {
+            top: 704.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: 40.0,
+        })
+        .into()
+}
+
+fn bench_strip(state: &App) -> Element<'_, Message> {
+    container(
+        row![
+            container(
+                text_input("", &state.bench_input)
+                    .on_input(Message::BenchInput)
+                    .width(Length::Fill)
+                    .padding(10),
+            )
+            .width(Length::Fixed(320.0))
+            .height(Length::Fixed(36.0))
+            .style(well_style),
+            button(text("Bench button").size(14))
+                .width(Length::Fixed(140.0))
+                .height(Length::Fixed(36.0))
+                .style(bench_button)
+                .on_press(Message::BenchButton),
+        ]
+        .spacing(20),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .align_x(Alignment::Start)
+    .align_y(Alignment::End)
+    .padding(Padding {
+        top: 0.0,
+        right: 0.0,
+        bottom: 40.0,
+        left: 40.0,
+    })
+    .into()
 }
 
 fn divider() -> Element<'static, Message> {
@@ -288,6 +363,7 @@ fn view(state: &App) -> Element<'_, Message> {
             "startup_ms {}",
             state.started.elapsed().as_secs_f64() * 1000.0
         );
+        println!("bench_ready");
         let _ = std::io::stdout().flush();
     }
     let body = row![
@@ -305,7 +381,7 @@ fn view(state: &App) -> Element<'_, Message> {
     .spacing(20)
     .height(Length::Fill);
 
-    container(
+    let page: Element<'_, Message> = container(
         column![header(), divider(), body, footer()]
             .spacing(14)
             .height(Length::Fill),
@@ -314,7 +390,9 @@ fn view(state: &App) -> Element<'_, Message> {
     .height(Length::Fill)
     .padding(24)
     .style(page_style)
-    .into()
+    .into();
+
+    stack([page, bench_label(), bench_strip(state)]).into()
 }
 
 fn parse_seconds() -> f64 {
@@ -349,6 +427,7 @@ pub fn main() -> iced::Result {
                 App {
                     started: Instant::now(),
                     frames,
+                    bench_input: String::new(),
                 },
                 Task::none(),
             )

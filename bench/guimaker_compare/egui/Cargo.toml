@@ -11,5 +11,5 @@ path = "src/main.rs"
 [dependencies]
 # eframe 0.29 pulls egui 0.29; the direct dep below is the exact same crate
 # version, so there is only one `egui` in the graph.
-eframe = "0.29"
+eframe = { version = "0.29", default-features = false, features = ["glow", "default_fonts"] }
 egui = "0.29"

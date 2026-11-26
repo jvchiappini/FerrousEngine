@@ -11,7 +11,13 @@ name = "guimaker-compare-webview2"
 path = "src/main.rs"
 
 [dependencies]
-# Best-effort: most recent wry + tao. `rwh_06` makes tao's Window implement
-# `HasWindowHandle`, which is what wry 0.57's WebViewBuilder::build expects.
-wry = "0.57"
-tao = { version = "0.38", features = ["rwh_06"] }
+# Host the WebView2 on winit (no tao). wry 0.57's default `x11` feature is
+# `["x11-dl", "gdkx11", "tao/x11"]`: on Windows it drags in `tao`, whose GTK
+# stack claims the same `links = "gdk-3"` key as wry's `webkit2gtk` GTK stack,
+# which Cargo rejects during resolution even though neither is built on
+# Windows. Disabling default features drops `tao`; `os-webview` keeps the
+# (target-gated) webkit backend for non-Windows targets.
+wry = { version = "0.57", default-features = false, features = ["os-webview"] }
+winit = "0.30"
+# `wry::Rect` takes `dpi` types; this is the same ^0.1 crate wry depends on.
+dpi = "0.1"

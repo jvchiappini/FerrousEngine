@@ -1,0 +1,44 @@
+{
+  "library": "guimaker",
+  "run": 1,
+  "mode": "typing",
+  "startup_ms": 567.4910999950953,
+  "startup_stage": "harness-wall",
+  "idle_cpu_pct": 0.819,
+  "tail_cpu_pct": 1.111,
+  "typing_cpu_pct": 0.819,
+  "button_cpu_pct": null,
+  "typing_chars": 50,
+  "bench_text_chars": 0,
+  "app_out_tail": "bench_ready\nframes 1\nbench_text_chars 0\n",
+  "top_threads_cpu": [
+    [
+      29908,
+      0.0
+    ],
+    [
+      14024,
+      0.0
+    ],
+    [
+      28548,
+      0.0
+    ],
+    [
+      30032,
+      0.0
+    ],
+    [
+      33548,
+      0.0
+    ]
+  ],
+  "ui_thread_id": 29908,
+  "ui_thread_cpu_seconds": 0.0,
+  "idle_frames": 1,
+  "rss_bytes": 233459712,
+  "wall_seconds": 9.2,
+  "hover_moves": 0,
+  "memory": null,
+  "features": {}
+}

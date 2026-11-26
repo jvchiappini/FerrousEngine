@@ -30,6 +30,7 @@ struct CompareApp {
     started: Instant,
     seconds: f64,
     frames: Arc<AtomicU64>,
+    bench_input: String,
 }
 
 impl CompareApp {
@@ -48,7 +49,46 @@ impl CompareApp {
             started: Instant::now(),
             seconds,
             frames,
+            bench_input: String::new(),
         }
+    }
+
+    /// Bench-only control strip: the same logical coordinates in every app, so
+    /// the harness can park the pointer on a known point.
+    fn bench_strip(&mut self, ctx: &egui::Context) {
+        egui::Area::new(egui::Id::new("bench_input_label"))
+            .fixed_pos(egui::pos2(40.0, 700.0))
+            .interactable(false)
+            .show(ctx, |ui| {
+                ui.label(RichText::new("Bench input").size(12.0).color(MUTED));
+            });
+
+        egui::Area::new(egui::Id::new("bench_strip"))
+            .fixed_pos(egui::pos2(40.0, 724.0))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    // Exact placement: no implicit item spacing between widgets.
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    let edit = egui::TextEdit::singleline(&mut self.bench_input)
+                        .desired_width(320.0)
+                        .text_color(TEXT);
+                    ui.add_sized([320.0, 36.0], edit);
+                    ui.add_space(20.0);
+                    let (rect, response) =
+                        ui.allocate_exact_size(Vec2::new(140.0, 36.0), egui::Sense::click());
+                    let bg = if response.hovered() { BORDER } else { RAISED };
+                    ui.painter().rect_filled(rect, 8.0, bg);
+                    ui.painter()
+                        .rect_stroke(rect, 8.0, Stroke::new(1.0, BORDER));
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "Bench button",
+                        egui::FontId::proportional(14.0),
+                        TEXT,
+                    );
+                });
+            });
     }
 }
 
@@ -60,6 +100,7 @@ impl eframe::App for CompareApp {
                 "startup_ms {}",
                 self.started.elapsed().as_secs_f64() * 1000.0
             );
+            println!("bench_ready");
         }
 
         if self.started.elapsed().as_secs_f64() >= self.seconds {
@@ -83,6 +124,8 @@ impl eframe::App for CompareApp {
                     }),
             )
             .show(ctx, |ui| start_screen(ui));
+
+        self.bench_strip(ctx);
     }
 }
 
@@ -264,6 +307,7 @@ fn main() -> eframe::Result<()> {
             .with_title("guimaker-compare-egui")
             .with_inner_size([1280.0, 800.0])
             .with_resizable(false),
+        renderer: eframe::Renderer::Glow,
         vsync: true,
         ..Default::default()
     };

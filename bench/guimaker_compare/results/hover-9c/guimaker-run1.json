@@ -1,0 +1,42 @@
+{
+  "library": "guimaker",
+  "run": 1,
+  "mode": "hover",
+  "startup_ms": 588.2947000209242,
+  "startup_stage": "harness-wall",
+  "idle_cpu_pct": 0.341,
+  "tail_cpu_pct": 0.854,
+  "typing_cpu_pct": null,
+  "button_cpu_pct": null,
+  "typing_chars": 0,
+  "top_threads_cpu": [
+    [
+      34176,
+      0.0
+    ],
+    [
+      38112,
+      0.0
+    ],
+    [
+      38556,
+      0.0
+    ],
+    [
+      31320,
+      0.0
+    ],
+    [
+      37448,
+      0.0
+    ]
+  ],
+  "ui_thread_id": 34176,
+  "ui_thread_cpu_seconds": 0.0,
+  "idle_frames": 1,
+  "rss_bytes": 218812416,
+  "wall_seconds": 6.198,
+  "hover_moves": 689,
+  "memory": null,
+  "features": {}
+}

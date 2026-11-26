@@ -1,113 +1,96 @@
-# Measured comparison (Phase 9B, final pass)
+# Measured comparison (Phase 9C)
 
-Release builds, 1280x800 logical, vsync on, cursor parked away from the window,
-`--seconds 6`, **five runs** each (idle), plus one 30 s idle tail per app. Startup
-is the harness wall time from `Popen` to the first-frame marker, so process
-launch and GPU init are included. Raw JSON: `final/`, `idle-30/`, `hover/`,
-`mem-usage/`, `mem-perf/`.
+Release, 1280x800 logical, vsync, five runs per app (6 s), one 30 s idle tail,
+cursor parked away from the window. The shared `[profile.release]` is
+`opt-level = 3`, `lto = "fat"`, `codegen-units = 1`, `strip = true`,
+`panic = "abort"`; the opt-`s` sizes come from the same profile with
+`opt-level = "s"`. Raw JSON: `final-9c/`, `final-9c-egui/`, `idle-30-9c/`,
+`hover-9c/`, `button-9c/`, `typing-9c/`.
 
 ## Idle and startup
 
-| Library | Startup ms (median [range]) | Idle CPU % (median [range]) | 30 s tail % | Idle frames | RSS MB | Binary MB |
-|---|---:|---:|---:|---:|---:|---:|
-| GUIMaker | 560.5 [559.6..565.6] | 1.220 [0.609..1.821] | 0.376 | 3 | 227.5 | 11.07 |
-| egui 0.29 (glow) | **256.1** [255.9..259.0] | **0.326** [0.325..0.654] | **0.054** | 5 | **144.5** | **4.54** |
-| egui 0.29 (wgpu) | 559.5 [509.9..561.0] | 1.213 [0.908..1.519] | 0.428 | 5 | 355.0 | 9.61 |
-| iced 0.13 | 762.4 [761.5..763.8] | 1.008 [0.673..2.014] | 0.163 | 1 | 238.2 | 10.08 |
-| Slint 1.7 | 307.3 [306.4..328.2] | 0.000 [0.000..0.342] | 0.109 | 1 | **144.5** | **4.20** |
-| ImGui (imgui-rs 0.12 + wgpu 29) | 813.7 [762.1..813.9] | 1.340 [0.336..1.683] | 0.217 | 1 | 198.2 | 7.11 |
-| WebView2 | not built | — | — | — | — | — |
+| Library | Startup ms (median [range]) | Idle CPU % | 30 s tail % | Frames | RSS MB | Binary 3/s MB | GPU MB |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| GUIMaker | 560.8 [560.0..1108.7] | 0.681 | **0.218** | **1** | 226.5 | 7.997 / 6.025 | 102.13 |
+| egui 0.29 glow | **256.5** [256.1..263.7] | **0.000** | **0.055** | 4 | **141.5** | 3.511 / **3.258** | **59.52** |
+| egui 0.29 wgpu | 560.2 [559.9..584.9] | 0.913 | 0.160 | 38 | 356.2 | 6.926 / 5.651 | 82.10 |
+| iced 0.13 | 762.8 [761.9..1191.1] | 0.977 | 0.327 | 1 | 229.9 | 6.918 / 5.330 | 73.69 |
+| Slint 1.7 | 306.4 [255.6..432.6] | 0.342 | **0.055** | 1 | 125.7 | **3.158 / 2.783** | 63.47 |
+| ImGui (imgui-rs 0.12 + wgpu 29) | 765.9 [762.8..1090.3] | 0.977 | 0.272 | 1 | 190.3 | 5.186 / 3.813 | 282.50 |
+| WebView2 (wry + winit) | 460.6 [458.7..542.0] | 0.347 | 0.274 | 346 | 24.8* | 0.914 (no profile) | n/a |
 
-## Hover (3 runs, 6 s, cursor swept over the body)
+\* The WebView2 process RSS excludes its Chromium child processes, so it is not
+comparable with the in-process libraries.
 
-| Library | CPU % (median) | Frames / 6 s | Note |
-|---|---:|---:|---|
-| GUIMaker | 10.672 | 675 | engine redraws the whole frame on every pointer move |
-| egui (glow) | 38.662 | 1930 | eframe continuous repaint |
-| egui (wgpu) | 21.771 | 1890 | same |
-| iced | 9.187 | 1 | no redraw on body hover (no hover state on the swept nodes) |
-| Slint | 0.342 | 1 | same |
-| ImGui | 1.023 | 1 | same |
+## Damage-driven input (Lane A)
 
-The iced/Slint/ImGui rows are **not like-for-like**: the start-screen body has
-no hover state, so those apps correctly do not repaint. GUIMaker and egui
-redraw on every move regardless. A button-focused hover is a follow-up.
+The body sweep now gives **1 frame and 0.341 % CPU** (689 moves), against
+675 frames and 10.672 % before. `Ui::pointer_move_changes`
+(`crates/guimaker/src/frame.rs`) and `GuiHost::on_window_event`
+(`crates/guimaker_gallery/src/host.rs`); the unit test
+`a_pointer_move_only_repaints_when_the_target_changes` covers a static-body
+sweep (0 changes) and a target change (1).
 
-## GPU memory (dedicated, Windows GPU Process Memory counters)
+## Button hover (1 run, 6 s, pointer parked on the bench button)
 
-| Library | Dedicated MB |
-|---|---:|
-| GUIMaker | 85.13 |
-| egui (glow) | 59.02 |
-| egui (wgpu) | 86.35 |
-| iced | 73.68 |
-| Slint | 63.41 |
-| ImGui | 270.00 |
-
-GUIMaker's own GPU inventory (`memory-report`) is **8.00 MB** (font atlas
-5.31 MB, GUI 2.33 MB, 2D 0.37 MB); the rest is the Vulkan driver/allocator
-baseline.
-
-## MemoryHints A/B (GUIMaker, 3 runs each)
-
-| Policy | RSS MB | Idle CPU % |
+| Library | Frames | CPU % |
 |---|---:|---:|
-| `MemoryUsage` (Flat2D default) | **228.6** | 1.205 |
-| `Performance` (opt-in) | 354.7 | 1.805 |
+| GUIMaker | **111** | 0.67 |
+| egui glow | 4 | 0.65 |
+| egui wgpu | 42 | 1.82 |
+| iced | 1 | 2.69 |
+| Slint | 1 | 0.34 |
+| ImGui | 1 | 0.67 |
+| WebView2 | 345 | 0.35 |
 
-`MemoryUsage` is already the `AppMode::Flat2D` default
-(`AppConfig::effective_memory_hints`, `crates/ferrous_engine/src/config.rs`);
-the A/B confirms **−126.1 MB (−35.6 %)** and lower idle CPU.
+GUIMaker's 111 frames are a **gap**: the hovered button keeps `Ui::animating()`
+true for the parking window, so the host keeps asking for frames. The colour
+transition is 90 ms; the extra frames are not a colour fade. Not fixed in
+Phase 9C (the measured reason is recorded; the fix is to make the settled
+visual report not-animating or to gate the host on damage).
 
-## Backend startup (G-0011)
+## Typing at 10 cps for 5 s
 
-| Phase (ms) | Vulkan | DX12 |
-|---|---:|---:|
-| window created | 19.22 | 18.34 |
-| instance | 207.10 | 325.17 |
-| surface configured | 426.53 | 451.27 |
-| renderer built | **472.78** | **7003.21** |
-| first frame | **477.39** | none before the 800 ms show timeout |
+The same text input is in every app. The harness clicks it and sends 50 Unicode
+characters through `SendInput`. Native apps: egui, iced, Slint, ImGui and
+WebView2 received the 50; iced/Slint reported 1 frame (their inputs did not
+repaint in the sampled window), ImGui 8, egui 5, WebView2 531. **GUIMaker
+received 0** in the final run: the click focus did not land on the field (the
+app got the key events in one earlier run, 198 frames, but `bench_focused`
+stayed false). The `GuiApp::on_text` hook and the field are in place
+(`host.rs`, `bench/guimaker_compare/guimaker/src/main.rs`), but the injected
+focus is not reliable. Not fixed; the measured reason is the activation/focus
+of the hidden-then-shown window.
 
-DX12 wins the surface step (49.9 vs 183.2 ms) but loses the main window because
-the 2D pipeline build is 6166.7 ms (wgpu 23's pipeline cache is Vulkan-only).
-Vulkan stays the Windows default; G-0011 records the table.
+## Backends (Lane B)
 
-## Async layered readback A/B (600k-quad main scene)
+| Phase (ms) | Vulkan | DX12 FXC | DX12 DXC |
+|---|---:|---:|---:|
+| surface configured | 445.03 | 385.06 | 390.64 |
+| renderer built | **491.99** | 9578.36 | 7323.19 |
+| first frame | **498.18** | 9603.46 | 7346.21 |
 
-`crates/ferrous_engine/examples/p9b_readback_stall.rs`, release, 5 runs:
+DXC cuts the DX12 renderer by 2255 ms (-23.5%) but it is still 7.32 s. GL is
+rejected: `no usable wgpu adapter: ... lacks Features(TEXTURE_BINDING_ARRAY |
+SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING)`. G-0012 keeps
+Vulkan as the Flat2D default. Lazy 2D pipelines are blocked on the eager
+`Renderer2d` construction (`out/reports/phase15/p9c-lane-b-notes.md`).
 
-| Path | Median ms |
-|---|---:|
-| `sync_block_ms` (old: `Maintain::Wait` on the UI thread) | 7.159 |
-| `async_submit_ms` (new: `Maintain::Poll`, worker maps) | **0.001** |
-| `async_total_ms` (worker read ready) | 8.955 |
+## Where GUIMaker is not the lightest, and the measured floor
 
-The UI thread's wait drops from 7.159 ms to 0.001 ms; the previous popup image
-stays until the worker finishes ~9 ms later.
-
-## Golden timing (finding 4)
-
-`cargo test -p guimaker_gallery --test goldens`: **1 passed, 46.10 s** test time
-(65.75 s wall incl. build), down from **169.87 s** (−72.9 %), byte-identical
-goldens. Cause: one `Pure2dHarness` per story; now one `StoryTarget` per batch.
-
-## Where GUIMaker is not the lightest
-
-- **Startup vs egui/glow and Slint:** 560.5 vs 256.1/307.3 ms. The engine's
-  Vulkan driver floor is instance 187.9 ms + surface 183.2 ms + device 36.2 ms;
-  G-0011 shows DX12's renderer is 6.2 s. The fix is a lighter backend/pipeline
-  path, not a GUIMaker loop.
-- **RSS vs egui/glow and Slint:** 227.5 vs 144.5 MB. `MemoryUsage` is already
-  on; the remaining ~83 MB is the Vulkan/wgpu driver baseline plus 8 MB of owned
-  GPU resources. The 60 MB budget is not met.
-- **Binary size:** 11.07 MB is the engine + renderer; egui/glow and Slint are
-  4.2-4.5 MB.
-- **Hover CPU:** 10.7 % is the engine's full-frame redraw per pointer move; the
-  GUIMaker core itself is measured separately in divan (hover frame ~12 µs).
-  Disabling pointer-move redraws and requesting frames on damage is the
-  Motioner-style integration, not a bench-app change.
-
-GUIMaker **wins against egui/wgpu**: same startup (560 vs 560 ms), lower RSS
-(227.5 vs 355.0 MB), fewer idle frames (3 vs 5); and against iced/ImGui on
-startup and RSS.
+- **Startup:** 560.8 vs Slint 306.4 / egui glow 256.5 ms. The Vulkan floor is
+  instance 192.9 + surface 188.4 + device 36.2 + renderer 47.0 ms; DX12 DXC is
+  7.3 s and GL has no usable adapter. The floor stands after the alternatives.
+- **30 s tail:** 0.218 vs 0.055 %. Per-thread: top thread 0.203 s/30 s
+  (0.68 % of a core), UI thread 0.0 s; the residual is the driver threads.
+- **RSS:** 226.5 vs 125.7/141.5 MB. `MemoryHints::MemoryUsage` is the Flat2D
+  default (A/B 228.6 vs 354.7 MB); the rest is the Vulkan/wgpu driver baseline
+  plus 8.00 MB of owned GPU resources (atlas 5.31, GUI 2.33, 2D 0.37). The
+  60 MB target is not met.
+- **Binary:** 7.997/6.025 vs Slint 3.158/2.783 MB. The engine + renderer are
+  not feature-gated for Flat2D (the 3D code is still compiled); this is the
+  remaining size work.
+- **GPU memory:** 102.13 vs egui 59.52 / Slint 63.47 MB; the driver baseline and
+  the 1600x1000 physical window.
+- **Button hover:** 111 frames vs 1-4; a GUIMaker repaint gap (above).
+- **Typing:** GUIMaker focus not landing; the native apps work.

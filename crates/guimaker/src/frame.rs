@@ -329,6 +329,34 @@ impl<Msg: Clone> Ui<Msg> {
         &self.store
     }
 
+    /// Whether a pointer move to `position` would change what the user sees.
+    ///
+    /// A host calls this before requesting a frame for a pointer move: moving
+    /// inside the same interactive target, with no drag or scroll in flight,
+    /// changes nothing, so an idle body does not repaint. A layout that has not
+    /// been painted yet, a different hovered target, a pressed/captured pointer
+    /// and a moving scroll all ask for a frame.
+    pub fn pointer_move_changes(&mut self, position: glam::Vec2) -> bool {
+        if self.layout_needed {
+            return true;
+        }
+        let generation = self.index.generation();
+        self.index.set_generation(generation);
+        let hit = self
+            .index
+            .pick(position, generation)
+            .filter(|id| self.tree.node(*id).is_some_and(|node| !node.style.disabled));
+        if hit != self.input.hovered {
+            return true;
+        }
+        if self.input.dragging || self.input.scroll.is_moving() {
+            return true;
+        }
+        // A move while a button is down can cross the drag threshold or change
+        // the pressed visual on the next routed move; be conservative.
+        self.input.pressed.is_some() || self.input.captured.is_some()
+    }
+
     /// The keyed store, mutably (an app may set a scroll offset or focus).
     pub fn store_mut(&mut self) -> &mut Store {
         &mut self.store
@@ -1411,6 +1439,48 @@ mod state_tests {
         ui.set_time_ms(500.0);
         ui.paint(&view, &mut frame, &mut text);
         assert!(!ui.animating(), "the fade finished");
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+    // reason: the sweep uses a 400x120 logical viewport, whose coordinates are
+    // exact in f32 and in the positive i32 range.
+    fn a_pointer_move_only_repaints_when_the_target_changes() {
+        let view = hover_view();
+        let mut ui: Ui<()> = Ui::new(Theme::dark());
+        ui.set_viewport(Size::new(400.0, 120.0), 1.0);
+        let mut frame = Frame::new();
+        let mut text = MetricsTextSystem::new();
+        ui.paint(&view, &mut frame, &mut text);
+        let id = ui.tree().find_key("target").expect("target");
+        let rect = ui.layout().rect(id);
+
+        // A sweep over the static body below the target changes nothing.
+        for x in (0..400).step_by(20) {
+            let point = Vec2::new(x as f32, rect.bottom() + 20.0);
+            assert!(
+                !ui.pointer_move_changes(point),
+                "the static body at {point:?} must not repaint"
+            );
+        }
+
+        // Entering the target asks for one frame.
+        let inside = Vec2::new(rect.x + 8.0, rect.y + rect.height * 0.5);
+        assert!(ui.pointer_move_changes(inside));
+        ui.push_event(InputEvent::PointerMoved { position: inside });
+        ui.paint(&view, &mut frame, &mut text);
+
+        // Sweeping inside the same target asks for no further frames.
+        for offset in (0..(rect.width as i32 - 8)).step_by(16) {
+            let point = Vec2::new(rect.x + 8.0 + offset as f32, rect.y + rect.height * 0.5);
+            assert!(
+                !ui.pointer_move_changes(point),
+                "inside the same target at {point:?} must not repaint"
+            );
+        }
+
+        // Leaving it asks for one.
+        assert!(ui.pointer_move_changes(Vec2::new(rect.x + 8.0, rect.bottom() + 20.0)));
     }
 
     #[test]

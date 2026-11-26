@@ -13,6 +13,16 @@ use crate::traits::FerrousApp;
 /// [`AppConfig::vsync`] alias; see [`PresentMode`] and `docs/present.md`.
 pub const PRESENT_MODE_ENV: &str = "FERROUS_PRESENT_MODE";
 
+/// Environment variable that selects the DX12 shader compiler at runtime.
+///
+/// Accepted values are `fxc`, `dxc` and `dynamic_dxc` (surrounding whitespace
+/// and case are ignored).  An explicit value wins over
+/// [`AppConfig::dx12_compiler`].  `dxc` and `dynamic_dxc` need the
+/// `ferrous_engine/dxc` cargo feature because wgpu 23 loads
+/// `dxcompiler.dll`/`dxil.dll` dynamically and falls back to Fxc when they are
+/// missing; see [`AppConfig::effective_dx12_compiler`].
+pub const DX12_COMPILER_ENV: &str = "FERROUS_DX12_COMPILER";
+
 /// How the swapchain presents a finished frame.
 ///
 /// Three sources choose the mode, in decreasing precedence:
@@ -114,6 +124,51 @@ pub fn resolve_present_mode(
     } else {
         PresentMode::AutoNoVsync
     })
+}
+
+/// Parses a `FERROUS_DX12_COMPILER` value.
+///
+/// `dynamic_dxc` and `dxc` both mean "load dxcompiler.dll/dxil.dll at runtime",
+/// which is wgpu's `Dx12Compiler::Dxc { dxc_path: None, dxil_path: None }`.
+/// The `dxc`/`dynamic_dxc` arms are compiled in only with the `dxc` feature;
+/// without it the value is reported as unavailable so the caller can log the
+/// reason and keep Fxc instead of silently changing compilers.
+fn parse_dx12_compiler(value: &str) -> Option<wgpu::Dx12Compiler> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "fxc" => Some(wgpu::Dx12Compiler::Fxc),
+        #[cfg(feature = "dxc")]
+        "dxc" | "dynamic_dxc" | "dxc_dynamic" => Some(wgpu::Dx12Compiler::Dxc {
+            dxc_path: None,
+            dxil_path: None,
+        }),
+        _ => None,
+    }
+}
+
+/// Reads [`DX12_COMPILER_ENV`], logging an actionable warning on a bad value.
+fn dx12_compiler_from_env() -> Option<wgpu::Dx12Compiler> {
+    let raw = std::env::var_os(DX12_COMPILER_ENV)?;
+    let value = raw.to_string_lossy();
+    match parse_dx12_compiler(&value) {
+        Some(compiler) => Some(compiler),
+        None => {
+            let lower = value.trim().to_ascii_lowercase();
+            if matches!(lower.as_str(), "dxc" | "dynamic_dxc" | "dxc_dynamic") {
+                log::warn!(
+                    "{}={value:?} needs the `dxc` cargo feature on ferrous_engine; \
+                     building without it keeps Fxc",
+                    DX12_COMPILER_ENV
+                );
+            } else {
+                log::warn!(
+                    "{}={value:?} is not a DX12 compiler; expected fxc, dxc or \
+                     dynamic_dxc (leaving the configured compiler)",
+                    DX12_COMPILER_ENV
+                );
+            }
+            None
+        }
+    }
 }
 
 /// Selects which engine subsystems the runner initialises and which frame
@@ -255,6 +310,23 @@ pub struct AppConfig {
     /// Windows; Metal on macOS; Vulkan, then GL elsewhere.  `WGPU_BACKEND`, when
     /// set, replaces the list with exactly those backends.
     pub backends: Vec<wgpu::Backends>,
+    /// Which DX12 shader compiler wgpu uses, when the selected backend is DX12.
+    ///
+    /// `None` (the default) uses wgpu's default, [`wgpu::Dx12Compiler::Fxc`],
+    /// which needs no extra DLLs.  `Some(wgpu::Dx12Compiler::Dxc { .. })`
+    /// selects the maintained compiler; with `dxc_path`/`dxil_path` set to
+    /// `None` wgpu loads `dxcompiler.dll` and `dxil.dll` at runtime and falls
+    /// back to Fxc (with a logged warning) when they are absent.
+    ///
+    /// Wgpu 23 selects the compiler when the `wgpu::Instance` is created
+    /// (`wgpu::InstanceDescriptor::dx12_shader_compiler`, **not** the device
+    /// descriptor), so this value is threaded into every instance the engine
+    /// creates for the probe and the re-probe.
+    ///
+    /// `FERROUS_DX12_COMPILER=fxc|dxc|dynamic_dxc` overrides this field at
+    /// runtime.  The `dxc`/`dynamic_dxc` values require the crate's `dxc`
+    /// cargo feature; without it they log a warning and keep Fxc.
+    pub dx12_compiler: Option<wgpu::Dx12Compiler>,
     /// Which GPU to prefer.  Default: [`wgpu::PowerPreference::HighPerformance`].
     ///
     /// `LowPower` selects the integrated GPU on a hybrid laptop; `WGPU_POWER_PREF`
@@ -488,6 +560,7 @@ impl Default for AppConfig {
             startup_trace: false,
             font_cache: None,
             backends: default_backends(),
+            dx12_compiler: None,
             power_preference: wgpu::PowerPreference::HighPerformance,
             pipeline_cache: None,
             memory_hints: None,
@@ -511,6 +584,30 @@ impl AppConfig {
     #[must_use]
     pub fn effective_present_mode(&self) -> PresentMode {
         resolve_present_mode(PresentMode::from_env(), self.present_mode, self.vsync)
+    }
+
+    /// The DX12 shader compiler this configuration resolves to.
+    ///
+    /// Precedence: `FERROUS_DX12_COMPILER` > [`Self::dx12_compiler`] >
+    /// wgpu's default (Fxc).  Kept separate from the field so the decision is
+    /// testable without touching the process environment.
+    #[must_use]
+    pub fn effective_dx12_compiler(&self) -> wgpu::Dx12Compiler {
+        dx12_compiler_from_env()
+            .or_else(|| self.dx12_compiler.clone())
+            .unwrap_or_default()
+    }
+
+    /// Selects the DX12 shader compiler explicitly (see [`Self::dx12_compiler`]).
+    ///
+    /// `FERROUS_DX12_COMPILER` still wins at runtime.  DXC needs
+    /// `dxcompiler.dll`/`dxil.dll` at run time (wgpu falls back to Fxc when
+    /// they are missing) and the crate's `dxc` feature for the env override;
+    /// the explicit `Dxc { .. }` value compiles regardless of that feature.
+    #[must_use]
+    pub fn with_dx12_compiler(mut self, compiler: wgpu::Dx12Compiler) -> Self {
+        self.dx12_compiler = Some(compiler);
+        self
     }
 
     /// Selects an explicit present mode, overriding [`Self::vsync`].
@@ -844,6 +941,28 @@ impl<A: FerrousApp + 'static> App<A> {
         self
     }
 
+    /// Selects the DX12 shader compiler (see [`AppConfig::dx12_compiler`]).
+    ///
+    /// In wgpu 23 this is an *instance* setting
+    /// (`InstanceDescriptor::dx12_shader_compiler`), so it applies to the probe
+    /// worker and the event-loop re-probe. `FERROUS_DX12_COMPILER` still wins.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// App::new(MyApp)
+    ///     .with_backends([wgpu::Backends::DX12])
+    ///     .with_dx12_compiler(wgpu::Dx12Compiler::Dxc {
+    ///         dxc_path: None,
+    ///         dxil_path: None,
+    ///     })
+    ///     .run();
+    /// ```
+    pub fn with_dx12_compiler(mut self, compiler: wgpu::Dx12Compiler) -> Self {
+        self.config.dx12_compiler = Some(compiler);
+        self
+    }
+
     /// Prefers the discrete GPU ([`wgpu::PowerPreference::HighPerformance`],
     /// the default) or the integrated one ([`wgpu::PowerPreference::LowPower`]).
     ///
@@ -995,5 +1114,52 @@ mod tests {
 
         let app = App::new(TestApp).with_present_mode(PresentMode::Mailbox);
         assert_eq!(app.config.present_mode, Some(PresentMode::Mailbox));
+    }
+
+    #[test]
+    fn dx12_compiler_names_parse() {
+        assert!(matches!(
+            parse_dx12_compiler("fxc"),
+            Some(wgpu::Dx12Compiler::Fxc)
+        ));
+        assert!(matches!(
+            parse_dx12_compiler(" FXC "),
+            Some(wgpu::Dx12Compiler::Fxc)
+        ));
+        assert!(parse_dx12_compiler("bogus").is_none());
+        assert!(parse_dx12_compiler("").is_none());
+
+        #[cfg(feature = "dxc")]
+        for name in ["dxc", "DXC", "dynamic_dxc", "dxc_dynamic"] {
+            assert!(
+                matches!(
+                    parse_dx12_compiler(name),
+                    Some(wgpu::Dx12Compiler::Dxc { .. })
+                ),
+                "{name}"
+            );
+        }
+        #[cfg(not(feature = "dxc"))]
+        for name in ["dxc", "dynamic_dxc"] {
+            assert!(
+                parse_dx12_compiler(name).is_none(),
+                "{name} needs the feature"
+            );
+        }
+    }
+
+    #[test]
+    fn app_builder_forwards_the_dx12_compiler() {
+        struct TestApp;
+        impl FerrousApp for TestApp {}
+
+        let app = App::new(TestApp).with_dx12_compiler(wgpu::Dx12Compiler::Dxc {
+            dxc_path: None,
+            dxil_path: None,
+        });
+        assert!(matches!(
+            app.config.dx12_compiler,
+            Some(wgpu::Dx12Compiler::Dxc { .. })
+        ));
     }
 }

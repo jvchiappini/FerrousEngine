@@ -5,6 +5,10 @@ edition = "2021"
 
 [features]
 default = ["text", "assets"]
+# Accepts FERROUS_DX12_COMPILER=dxc|dynamic_dxc (DX12 shader compiler A/B).
+# wgpu 23 loads dxcompiler.dll/dxil.dll at runtime from its default `dx12`
+# feature, so this adds no dependency; without it the engine stays on Fxc.
+dxc = []
 gpu-driven = ["ferrous_renderer/gpu-driven"]
 bindless = ["ferrous_renderer/bindless"]
 text = ["ferrous_ui_render/text"]

@@ -347,8 +347,25 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
         // Prompt 18 P3: enter/leave are pointer events too. They change
         // nothing visible unless the app's hover actually changes, so they
         // follow the same opt-out as a move instead of forcing a frame.
-        let requests_frame =
-            crate::redraw::event_requests_frame(&event, self.config.redraw_on_pointer_move);
+        // A show/resize that does not change the physical size (the hidden
+        // window already has it) must not draw a second startup frame.
+        let requests_frame = match &event {
+            WindowEvent::Resized(size) => {
+                (size.width, size.height) != self.window_size
+                    && crate::redraw::event_requests_frame(
+                        &event,
+                        self.config.redraw_on_pointer_move,
+                    )
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                (*scale_factor - self.scale_factor).abs() > f64::EPSILON
+                    && crate::redraw::event_requests_frame(
+                        &event,
+                        self.config.redraw_on_pointer_move,
+                    )
+            }
+            _ => crate::redraw::event_requests_frame(&event, self.config.redraw_on_pointer_move),
+        };
         if let WindowEvent::CursorMoved { position, .. } = &event {
             #[cfg(target_arch = "wasm32")]
             let (mx, my) = (
@@ -366,6 +383,11 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
 
         match event {
             WindowEvent::RedrawRequested => {
+                #[cfg(not(target_arch = "wasm32"))]
+                if self.skip_show_redraw {
+                    self.skip_show_redraw = false;
+                    return;
+                }
                 let current_t = self.clock.peek().elapsed;
                 let _ = self.render_frame(Some(event_loop), current_t);
                 return;

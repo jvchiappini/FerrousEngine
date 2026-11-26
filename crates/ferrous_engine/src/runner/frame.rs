@@ -604,6 +604,9 @@ impl<A: FerrousApp + 'static> Runner<A> {
                         startup::mark("engine: first frame presented");
                         if self.config.visible && !gate.is_shown() {
                             crate::window_style::show_ready(&window);
+                            // The OS sends a RedrawRequested for the newly shown
+                            // window; the first frame is already on the swapchain.
+                            self.skip_show_redraw = true;
                             startup::mark("engine: window visible");
                             first_frame_shown = true;
                         }

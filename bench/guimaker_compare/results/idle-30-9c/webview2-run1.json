@@ -1,0 +1,43 @@
+{
+  "library": "webview2",
+  "run": 1,
+  "mode": "idle",
+  "startup_ms": 459.91550001781434,
+  "startup_stage": "harness-wall",
+  "idle_cpu_pct": 0.274,
+  "tail_cpu_pct": 0.155,
+  "typing_cpu_pct": null,
+  "button_cpu_pct": null,
+  "typing_chars": 0,
+  "bench_text_chars": null,
+  "top_threads_cpu": [
+    [
+      34080,
+      0.09375
+    ],
+    [
+      34244,
+      0.0
+    ],
+    [
+      6436,
+      0.0
+    ],
+    [
+      24244,
+      0.0
+    ],
+    [
+      8788,
+      0.0
+    ]
+  ],
+  "ui_thread_id": 34080,
+  "ui_thread_cpu_seconds": 0.09375,
+  "idle_frames": 1829,
+  "rss_bytes": 23064576,
+  "wall_seconds": 30.096,
+  "hover_moves": 0,
+  "memory": null,
+  "features": {}
+}

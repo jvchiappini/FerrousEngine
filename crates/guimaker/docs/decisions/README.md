@@ -14,8 +14,9 @@ carry does not.
 | G-0004 | Grapheme segmentation for the text editor | accepted |
 | G-0010 | Popup present backend (swapchain vs layered) | accepted |
 | G-0011 | Main-window backend default (Vulkan vs DX12) | accepted |
+| G-0012 | Flat2D Windows backend and DX12 compiler | accepted |
 
-Next expected: G-0012.
+Next expected: G-0013.
 
 Rules:
 
