@@ -21,7 +21,7 @@ pub struct HdrTexture {
 }
 
 impl HdrTexture {
-    pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+    pub const FORMAT: wgpu::TextureFormat = super::HDR_FORMAT;
 
     pub fn new(device: &wgpu::Device, width: u32, height: u32, sample_count: u32) -> Self {
         let (multisampled_texture, multisampled_view) = if sample_count > 1 {

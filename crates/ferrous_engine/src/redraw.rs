@@ -163,7 +163,9 @@ pub(crate) fn is_input_event(event: &WindowEvent) -> bool {
 ///
 /// While the show-paint guard is armed these events must not request a frame:
 /// the frame is already on the swapchain and the event changes nothing visible,
-/// so asking for one makes the OS paint a redundant second frame.
+/// so asking for one makes the OS paint a redundant second frame. A `Resized`
+/// or `ScaleFactorChanged` only qualifies when it is a no-op (see
+/// [`settle_changes_nothing`]): a real size or scale change must still draw.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn is_show_settling(event: &WindowEvent) -> bool {
     matches!(
@@ -173,6 +175,37 @@ pub(crate) fn is_show_settling(event: &WindowEvent) -> bool {
             | WindowEvent::Resized(_)
             | WindowEvent::ScaleFactorChanged { .. }
     )
+}
+
+/// Whether a DPI scale change is a real one.
+///
+/// Winit reports an unchanged factor on some platforms; reconfiguring a surface
+/// for it costs a frame, so the runner compares with the cached factor first.
+pub(crate) fn scale_changed(new: f64, current: f64) -> bool {
+    (new - current).abs() > f64::EPSILON
+}
+
+/// Whether a show-settling event changes nothing the surface needs to redraw.
+///
+/// `Focused` and `Moved` never change the drawable, so they are no-op settles
+/// while the guard is armed. A `Resized` is a no-op only when the physical size
+/// is the one the surface already has, and a `ScaleFactorChanged` only when the
+/// factor did not move: a real resize or DPI change that arrives during the
+/// show settling must reconfigure the surface and draw (review of Phase 9D
+/// finding 1).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn settle_changes_nothing(
+    event: &WindowEvent,
+    window_size: (u32, u32),
+    scale_factor: f64,
+) -> bool {
+    match event {
+        WindowEvent::Resized(size) => (size.width, size.height) == window_size,
+        WindowEvent::ScaleFactorChanged {
+            scale_factor: new, ..
+        } => !scale_changed(*new, scale_factor),
+        _ => true,
+    }
 }
 
 /// Whether the OS paint that follows showing the window may be swallowed.
@@ -587,5 +620,44 @@ mod tests {
             "a request after the show must be visible to the guard"
         );
         assert!(!swallow_show_paint(true, mark, scheduler.requests()));
+    }
+
+    #[test]
+    fn a_real_settle_resize_or_scale_still_draws_while_the_guard_is_armed() {
+        let size = (1600, 900);
+        let scale = 1.25;
+
+        // The show's own focus/move never changes the drawable.
+        assert!(settle_changes_nothing(
+            &WindowEvent::Focused(true),
+            size,
+            scale
+        ));
+        assert!(settle_changes_nothing(
+            &WindowEvent::Moved(winit::dpi::PhysicalPosition::new(120, 80)),
+            size,
+            scale
+        ));
+
+        // A resize the hidden window already had is the OS settling the show:
+        // it may be swallowed.
+        assert!(settle_changes_nothing(
+            &WindowEvent::Resized(winit::dpi::PhysicalSize::new(size.0, size.1)),
+            size,
+            scale
+        ));
+        // A real resize must reconfigure the surface and draw; it must not be
+        // swallowed as a settle (review of Phase 9D finding 1).
+        assert!(!settle_changes_nothing(
+            &WindowEvent::Resized(winit::dpi::PhysicalSize::new(1280, 720)),
+            size,
+            scale
+        ));
+
+        // The scale branch uses the same comparison the runner uses for
+        // `ScaleFactorChanged`: equal is a settle, moved is a real frame.
+        assert!(!scale_changed(scale, scale));
+        assert!(scale_changed(1.5, scale));
+        assert!(scale_changed(scale, 1.5));
     }
 }

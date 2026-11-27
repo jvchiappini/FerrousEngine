@@ -8,6 +8,10 @@
 //! This runs on any adapter (Vulkan included), so it pins the fallback without
 //! needing GL hardware; it skips cleanly when no adapter exists.
 
+// The GUI stack (and `ferrous_ui_render`) is optional: without it this test
+// has nothing to build.
+#![cfg(feature = "gui")]
+
 use std::sync::{Arc, Mutex};
 
 use ferrous_ui_render::{GuiBatch, GuiRenderer, ImageBindingMode};

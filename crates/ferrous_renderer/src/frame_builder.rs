@@ -38,8 +38,7 @@ use crate::render_stats::RenderStats;
 use crate::resources::InstanceBuffer;
 #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::scene::Frustum;
-#[cfg(feature = "gui")]
-use ferrous_ui_render::GuiBatch;
+use crate::GuiBatch;
 
 /// All per-frame scratch state that `WorldBuilder` needs to track between calls.
 #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
@@ -863,7 +862,6 @@ impl WorldBuilder {
 /// `WorldBuilder`.
 #[derive(Default)]
 pub struct FrameBuilder {
-    #[cfg(feature = "gui")]
     ui_batch_scratch: Option<GuiBatch>,
 }
 
@@ -875,13 +873,11 @@ impl FrameBuilder {
     }
 
     /// Takes the empty GUI batch reclaimed from the previous frame.
-    #[cfg(feature = "gui")]
     pub fn take_ui_batch(&mut self) -> Option<GuiBatch> {
         self.ui_batch_scratch.take()
     }
 
     /// Stores an emptied GUI batch for the next frame.
-    #[cfg(feature = "gui")]
     pub fn store_ui_batch(&mut self, batch: GuiBatch) {
         self.ui_batch_scratch = Some(batch);
     }

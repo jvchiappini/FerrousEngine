@@ -5,6 +5,10 @@
 //! headless context cannot be created (the same convention as
 //! `tests/scene_target.rs`).
 
+// The GUI stack (and `ferrous_ui_render`) is optional: without it these tests
+// have nothing to build, like the `png` gate on the gallery golden tests.
+#![cfg(feature = "gui")]
+
 use std::sync::Mutex;
 use std::time::Instant;
 

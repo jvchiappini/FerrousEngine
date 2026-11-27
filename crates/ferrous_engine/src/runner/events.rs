@@ -157,6 +157,12 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
         let window = Arc::new(event_loop.create_window(attributes).unwrap());
         ferrous_core::startup::mark("engine: window created");
         self.window_size = window_size;
+        // The window already knows its monitor DPI. Record it now so the
+        // `ScaleFactorChanged` winit sends for the initial state is a no-op
+        // settle (the cached `1.0` it replaces is not a real change) instead of
+        // a genuine change that draws a second startup frame. A later monitor
+        // switch still differs and draws. (Review of Phase 9D finding 1.)
+        self.scale_factor = window.scale_factor();
         self.viewport = ferrous_core::Viewport {
             x: 0,
             y: 0,
@@ -368,7 +374,7 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
                     )
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                (*scale_factor - self.scale_factor).abs() > f64::EPSILON
+                crate::redraw::scale_changed(*scale_factor, self.scale_factor)
                     && crate::redraw::event_requests_frame(
                         &event,
                         self.config.redraw_on_pointer_move,
@@ -376,12 +382,17 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
             }
             _ => crate::redraw::event_requests_frame(&event, self.config.redraw_on_pointer_move),
         };
-        // While the show-paint guard is armed, the show's own focus/move/resize
-        // events must not request a frame: the frame is already on screen, and
-        // a request would move the scheduler's count so the OS paint draws a
-        // redundant second frame (review of Phase 9D finding 1).
+        // While the show-paint guard is armed, the show's own focus/move events
+        // must not request a frame: the frame is already on screen, and a
+        // request would move the scheduler's count so the OS paint draws a
+        // redundant second frame (review of Phase 9D finding 1). A `Resized` or
+        // `ScaleFactorChanged` is skipped only when it changes nothing: a real
+        // size or DPI change still reconfigures the surface below and draws.
         #[cfg(not(target_arch = "wasm32"))]
-        let requests_frame = if self.skip_show_redraw && crate::redraw::is_show_settling(&event) {
+        let requests_frame = if self.skip_show_redraw
+            && crate::redraw::is_show_settling(&event)
+            && crate::redraw::settle_changes_nothing(&event, self.window_size, self.scale_factor)
+        {
             false
         } else {
             requests_frame
@@ -520,6 +531,16 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
                         (physical.width.max(1), physical.height.max(1))
                     })
                     .unwrap_or(self.window_size);
+                // A genuine DPI change must reconfigure the surface even while
+                // the show-paint guard is armed (the `Resized` that follows is
+                // usually the one that does it; this makes it unconditional and
+                // the no-op skip inside `resize` keeps it free).
+                #[cfg(not(target_arch = "wasm32"))]
+                if crate::redraw::scale_changed(scale_factor, self.scale_factor) {
+                    if let Some(gfx) = &mut self.graphics {
+                        gfx.resize(size.0, size.1);
+                    }
+                }
                 self.scale_factor = scale_factor;
                 self.deliver_scale_change(scale_factor, size);
             }

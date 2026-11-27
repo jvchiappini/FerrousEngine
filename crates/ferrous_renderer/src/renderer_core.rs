@@ -59,6 +59,7 @@ pub struct UiBatch;
 pub use crate::passes::CullPass;
 
 // Internal imports needed for method implementations
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::materials::MaterialRegistry;
 #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::resources::SsaoResources;
@@ -80,6 +81,7 @@ use crate::render_config::Render2dConfig;
 use crate::static_2d::{Static2dBatch, Static2dBatchId, Static2dBatchSlot};
 
 use crate::graph::frame_packet::CameraPacket;
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::scene::culling::Frustum;
 use crate::scene::scene_data::SceneData;
 use ferrous_core::context::EngineContext;
@@ -1165,11 +1167,13 @@ impl std::ops::DerefMut for Renderer2dSlot {
 /// A UI-only `Flat2D` app never creates the bind-group and pipeline layouts the
 /// 3-D passes need; `Deref` materializes them on the first 3-D access and the
 /// startup mark makes the (layout-only) cost visible.
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub struct PipelineLayoutsSlot {
     device: Arc<wgpu::Device>,
     cell: std::sync::OnceLock<Box<PipelineLayouts>>,
 }
 
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 impl PipelineLayoutsSlot {
     fn new(device: Arc<wgpu::Device>) -> Self {
         Self {
@@ -1208,6 +1212,7 @@ impl PipelineLayoutsSlot {
     }
 }
 
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 impl std::ops::Deref for PipelineLayoutsSlot {
     type Target = PipelineLayouts;
 
@@ -1216,6 +1221,7 @@ impl std::ops::Deref for PipelineLayoutsSlot {
     }
 }
 
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 impl std::ops::DerefMut for PipelineLayoutsSlot {
     fn deref_mut(&mut self) -> &mut PipelineLayouts {
         self.materialize();
@@ -1374,7 +1380,9 @@ pub struct Renderer {
     /// Storage buffer for instanced World entities.
     #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     instance_buf: Option<InstanceBuffer>,
-    /// The million-particle system. `None` until the first 3-D use.
+    /// The million-particle system. `None` until the first 3-D use; absent
+    /// entirely in a Flat2D build.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub particle_system: Option<ParticleSystem>,
     /// A copy of the pipeline bind-group layouts; needed when creating
     /// new materials or other GPU resources that rely on them.
@@ -1408,6 +1416,7 @@ pub struct Renderer {
 
     // -- Deferred 3-D state (prompt 17 S4) -------------------------------------
     /// HDRI path kept so the deferred world pass can build its IBL resources.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     hdri_path: Option<std::path::PathBuf>,
     /// Clear colour of the 2-D clear paths, mirrored into the world pass.
     clear_color: wgpu::Color,
@@ -1462,6 +1471,7 @@ pub struct Renderer {
     #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     skinning_pass: Option<SkinningPass>,
     /// When true, SSAO is computed and applied to the IBL ambient term.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub ssao_enabled: bool,
     /// SSAO parameters kept while the resources are not built yet.
     #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
@@ -1713,12 +1723,13 @@ impl Renderer {
         // a UI-only `Flat2D` renderer builds neither.  They materialize with a
         // startup mark on the first 3-D/Pure2D access.
         let camera_system = CameraSlot::new(context.device.clone(), width, height);
+        #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
         let pipeline_layouts = PipelineLayoutsSlot::new(context.device.clone());
         // Prompt 17 S4: the 3-D passes (world pass, shadow map, SSAO,
         // prepass, skinning, gizmos, particles, post-process and post-AA) are
         // built by `ensure_three_d` on the first 3-D use. The 2-D resources
         // the UI and Pure2D paths need stay here.
-        let hdr_format = crate::render_target::HdrTexture::FORMAT;
+        let hdr_format = crate::render_target::HDR_FORMAT;
         // The GUI target format depends on the mode: Full3D composites on the
         // HDR/MSAA world, the 2-D modes present to the swapchain.  Building the
         // matching pipelines once avoids an HDR build+rebuild at start-up (and
@@ -1787,6 +1798,8 @@ impl Renderer {
         );
         let shape_batcher = ShapeBatcher::default();
 
+        #[cfg(all(not(feature = "render-3d"), feature = "flat2d"))]
+        let _ = hdri_path;
         let mut renderer = Self {
             context,
             render_target: rt,
@@ -1815,6 +1828,7 @@ impl Renderer {
             material_registry: None,
             format,
             sample_count,
+            #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
             hdri_path: hdri_path.map(std::path::Path::to_path_buf),
             clear_color: wgpu::Color {
                 r: 0.1,
@@ -1863,6 +1877,7 @@ impl Renderer {
             outline_pass: None,
             #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
             flat_pass: None,
+            #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
             pipeline_layouts,
             #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
             current_dir_light: crate::resources::DirectionalLightUniform::default(),
@@ -1934,8 +1949,21 @@ impl Renderer {
         renderer.register_render_target_memory();
         // Build the 3-D resources now in `Full3D` (the pre-S4 behaviour); in
         // the 2-D modes they stay `None` until `ensure_three_d`.
+        #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
         if mode == RendererMode::Full3D {
             renderer.ensure_three_d();
+        } else {
+            renderer.set_mode(mode);
+        }
+        // A Flat2D build has no 3-D group to build; `Full3D` degrades to the
+        // GUI-only path instead of leaving the renderer in a mode it cannot
+        // draw.
+        #[cfg(all(not(feature = "render-3d"), feature = "flat2d"))]
+        if mode == RendererMode::Full3D {
+            log::warn!(
+                "ferrous_renderer was built without the 3-D renderer; Full3D falls back to Flat2D"
+            );
+            renderer.set_mode(RendererMode::Flat2D);
         } else {
             renderer.set_mode(mode);
         }
@@ -1951,12 +1979,14 @@ impl Renderer {
     }
 
     /// Whether the lazily created 3-D resources exist.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     #[must_use]
     pub fn three_d_ready(&self) -> bool {
         self.world_pass.is_some()
     }
 
     /// Whether the material registry (part of the 3-D group) exists.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     #[must_use]
     pub fn material_registry_ready(&self) -> bool {
         self.material_registry.is_some()
@@ -1991,6 +2021,7 @@ impl Renderer {
     /// Whether the 3-D [`PipelineLayouts`] have been built.
     ///
     /// `false` for a UI-only `Flat2D` app until the first 3-D use.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     #[must_use]
     pub fn pipeline_layouts_ready(&self) -> bool {
         self.pipeline_layouts.is_ready()
@@ -2003,6 +2034,7 @@ impl Renderer {
     /// that touches PBR/instancing pipelines, the world pass and shadow map, the
     /// material registry, SSAO + prepass, skinning, gizmos, post-process/AA and
     /// the particle system (prompt 17 S4).
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn ensure_three_d(&mut self) {
         if self.world_pass.is_some() {
             return;
@@ -2125,6 +2157,7 @@ impl Renderer {
     }
 
     /// Creates the material registry if it does not exist yet.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     fn ensure_material_registry(&mut self) {
         if self.material_registry.is_some() {
             return;
@@ -2140,6 +2173,7 @@ impl Renderer {
     /// Mutable access to the material registry, creating it on first use.
     ///
     /// A 2-D application that never creates a 3-D material never allocates it.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn material_registry(&mut self) -> &mut MaterialRegistry {
         self.ensure_material_registry();
         self.material_registry
@@ -2148,15 +2182,17 @@ impl Renderer {
     }
 
     /// The active antialiasing mode, even while the 3-D AA pass is not built.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     #[must_use]
     pub fn antialiasing_mode(&self) -> crate::passes::AntialiasingMode {
         self.render_2d_config.antialiasing.to_mode()
     }
 
     /// Rebuilds the render-style passes for the current [`Self::render_style`].
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     fn apply_style_passes(&mut self) {
         let style = self.render_style;
-        let hdr_format = crate::render_target::HdrTexture::FORMAT;
+        let hdr_format = crate::render_target::HDR_FORMAT;
         let Some(instance_buf) = self.instance_buf.as_ref() else {
             return;
         };
@@ -2254,6 +2290,7 @@ impl Renderer {
         Self::unregister_layer_memory();
 
         // 3-D passes, only when they were built (prompt 17 S4).
+        #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
         if let Some(world_pass) = self.world_pass.as_mut() {
             world_pass.on_resize(
                 &self.context.device,
@@ -2262,6 +2299,7 @@ impl Renderer {
                 new_height,
             );
         }
+        #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
         if let Some(prepass) = self.prepass.as_mut() {
             prepass.on_resize(
                 &self.context.device,
@@ -2270,13 +2308,16 @@ impl Renderer {
                 new_height,
             );
         }
+        #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
         if let Some(ssao_pass) = self.ssao_pass.as_mut() {
             ssao_pass.on_resize(&self.context.device, new_width, new_height);
         }
+        #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
         if let Some(ssao_blur_pass) = self.ssao_blur_pass.as_mut() {
             ssao_blur_pass.on_resize(&self.context.device, new_width, new_height);
         }
         // post-process pass owns bloom textures which also depend on size
+        #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
         if let Some(post_process_pass) = self.post_process_pass.as_mut() {
             post_process_pass.on_resize(
                 &self.context.device,
@@ -2285,6 +2326,7 @@ impl Renderer {
                 new_height,
             );
         }
+        #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
         if let Some(aa_pass) = self.aa_pass.as_mut() {
             aa_pass.on_resize(&self.context.device, new_width, new_height);
         }
@@ -2295,7 +2337,7 @@ impl Renderer {
                 if self.mode == RendererMode::Pure2D || self.mode == RendererMode::Flat2D {
                     (self.format, 1)
                 } else {
-                    (crate::render_target::HdrTexture::FORMAT, self.sample_count)
+                    (crate::render_target::HDR_FORMAT, self.sample_count)
                 };
             self.ui_pass.update_output_config(
                 &self.context.queue,
@@ -2337,6 +2379,7 @@ impl Renderer {
         }
 
         self.register_render_target_memory();
+        #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
         if self.world_pass.is_some() {
             self.register_three_d_memory();
         }
@@ -2350,12 +2393,22 @@ impl Renderer {
     /// `world_pass.clear_color` instead of compositing on top of a rendered
     /// scene, so the background colour is preserved.
     pub fn set_mode(&mut self, mode: RendererMode) {
+        // A Flat2D build cannot draw a 3-D frame; keep the state machine on a
+        // mode `render_internal` can actually encode.
+        #[cfg(all(not(feature = "render-3d"), feature = "flat2d"))]
+        let mode = if mode == RendererMode::Full3D {
+            log::warn!("3-D renderer compiled out; Full3D requested, using Flat2D");
+            RendererMode::Flat2D
+        } else {
+            mode
+        };
         if self.mode == mode {
             return;
         }
         self.mode = mode;
         // Switching to 3-D builds the deferred resources right away; the 2-D
         // modes never allocate them (prompt 17 S4).
+        #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
         if mode == RendererMode::Full3D {
             self.ensure_three_d();
         }
@@ -2374,7 +2427,7 @@ impl Renderer {
                 if mode == RendererMode::Pure2D || mode == RendererMode::Flat2D {
                     (self.format, 1)
                 } else {
-                    (crate::render_target::HdrTexture::FORMAT, self.sample_count)
+                    (crate::render_target::HDR_FORMAT, self.sample_count)
                 };
             self.ui_pass.update_output_config(
                 &self.context.queue,
@@ -2443,6 +2496,7 @@ impl Renderer {
         self.render_style = style;
         // Until the 3-D resources exist the style is only recorded; the passes
         // are built by `ensure_three_d` (prompt 17 S4).
+        #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
         if self.world_pass.is_some() {
             self.apply_style_passes();
         }
@@ -2484,6 +2538,7 @@ impl Renderer {
     pub fn set_background_color(&mut self, color: wgpu::Color) {
         self.set_clear_color(color);
         self.sky_solid = Some(color);
+        #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
         if let Some(world_pass) = self.world_pass.as_mut() {
             world_pass.sky_mode = SkyMode::Solid(color);
         }
@@ -2491,6 +2546,7 @@ impl Renderer {
     }
 
     /// Set the global ambient light for the scene.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn set_ambient_light(&mut self, color: [f32; 3], intensity: f32) {
         crate::renderer_api::set_ambient_light(
             &mut self.camera_system,
@@ -2514,6 +2570,7 @@ impl Renderer {
     /// // Disabled " fastest, no blur
     /// renderer.set_antialiasing(AntialiasingMode::None);
     /// ```
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn set_antialiasing(&mut self, mode: crate::passes::AntialiasingMode) {
         if let Some(aa_pass) = self.aa_pass.as_mut() {
             aa_pass.set_mode(mode);
@@ -2540,6 +2597,7 @@ impl Renderer {
     /// the Pure2D pass each frame.
     pub fn set_render_2d_config(&mut self, config: Render2dConfig) {
         self.render_2d_config = config;
+        #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
         if let Some(aa_pass) = self.aa_pass.as_mut() {
             aa_pass.set_mode(config.antialiasing.to_mode());
         }
@@ -2778,6 +2836,7 @@ impl Renderer {
     /// calling [`Self::ensure_three_d`] twice or resizing cannot double count.
     /// Resources without a persistent GPU allocation (skinning and gizmos
     /// create their vertex buffers per frame) have nothing to register.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     fn register_three_d_memory(&self) {
         use ferrous_core::memory::{register_gpu, unregister_gpu, Subsystem};
         let Some(world_pass) = self.world_pass.as_ref() else {
@@ -3400,6 +3459,7 @@ impl Renderer {
         (n, dir)
     }
 
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn queue_gizmo(&mut self, gizmo: crate::scene::GizmoDraw) {
         // A gizmo is a 3-D draw: build the deferred resources on first use.
         self.ensure_three_d();
@@ -3471,6 +3531,7 @@ impl Renderer {
     }
 
     /// Sets the background sky mode (Solid, Cubemap, or Procedural).
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn set_sky_mode(&mut self, mode: SkyMode) {
         if let SkyMode::Solid(color) = &mode {
             // A solid sky needs no GPU resources; keep it for `ensure_three_d`.
@@ -3488,6 +3549,7 @@ impl Renderer {
     }
 
     /// Convenience helper to switch to the procedural atmospheric HDR sky.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn set_sky_procedural(&mut self) {
         self.ensure_three_d();
         let sky = ProceduralSkyPass::new(
@@ -3507,6 +3569,7 @@ impl Renderer {
         self.mark_dirty();
     }
 
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn sync_world(&mut self, world: &ferrous_core::scene::World) {
         // World/ECS synchronisation is a 3-D path; a Flat2D/Pure2D frame must
         // not build the deferred resources (prompt 17 S4).
@@ -3701,6 +3764,37 @@ impl Renderer {
         self.render_internal(encoder, RenderDest::Target, ui_batch);
     }
 
+    /// Returns the packet's buffers to the frame scratch and keeps the GUI
+    /// batch warm.
+    ///
+    /// A 3-D build hands the packet back to `WorldBuilder` (its instanced
+    /// caches); a Flat2D build has no world caches and only reclaims the GUI
+    /// batch.
+    fn reclaim_frame_packet(&mut self, packet: crate::graph::FramePacket) {
+        #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
+        {
+            if let Some(batch) = self.world_builder.reclaim(packet) {
+                self.frame_builder.store_ui_batch(batch);
+            }
+        }
+        #[cfg(all(
+            not(any(feature = "render-3d", not(feature = "flat2d"))),
+            feature = "gui"
+        ))]
+        {
+            let mut packet = packet;
+            if let Some(mut batch) = packet.remove::<UiBatch>() {
+                batch.clear();
+                self.frame_builder.store_ui_batch(batch);
+            }
+        }
+        #[cfg(all(
+            not(any(feature = "render-3d", not(feature = "flat2d"))),
+            not(feature = "gui")
+        ))]
+        let _ = packet;
+    }
+
     fn render_internal(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -3766,11 +3860,24 @@ impl Renderer {
             }
         };
         let _batch = frame_trace::stage(Stage::BatchBuild);
-        let (mut packet, stats) = self.world_builder.build(self.viewport, camera_packet);
+        // A 3-D build gets the world draw commands from `WorldBuilder`; a
+        // Flat2D build only needs an empty packet to carry the GUI batch and
+        // the camera/viewport, so no 3-D cache or mesh module is involved.
+        #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
+        let (packet, stats) = self.world_builder.build(self.viewport, camera_packet);
+        #[cfg(all(not(feature = "render-3d"), feature = "flat2d"))]
+        let (packet, stats) = (
+            crate::graph::FramePacket::new(Some(self.viewport), camera_packet),
+            RenderStats::default(),
+        );
         drop(_batch);
 
         self.render_stats = stats;
 
+        #[cfg(feature = "gui")]
+        let mut packet = packet;
+        #[cfg(not(feature = "gui"))]
+        let packet = packet;
         #[cfg(feature = "gui")]
         if let Some(b) = ui_batch {
             packet.insert(b);
@@ -4459,9 +4566,7 @@ impl Renderer {
 
             self.merge_gpu_frame_stats();
             self.gpu_timings.end_frame(encoder);
-            if let Some(batch) = self.world_builder.reclaim(packet) {
-                self.frame_builder.store_ui_batch(batch);
-            }
+            self.reclaim_frame_packet(packet);
             return;
         }
 
@@ -4501,15 +4606,31 @@ impl Renderer {
             }
             self.merge_gpu_frame_stats();
             self.gpu_timings.end_frame(encoder);
-            if let Some(batch) = self.world_builder.reclaim(packet) {
-                self.frame_builder.store_ui_batch(batch);
-            }
+            self.reclaim_frame_packet(packet);
             return;
         }
 
-        // Reaching here means a 3-D frame: build the deferred resources on
-        // first use (prompt 17 S4) and propagate the current instance buffer
-        // and material table to every pass that draws geometry.
+        // Reaching here means a 3-D frame: hand it to the 3-D encoder. A
+        // Flat2D build compiles that method out, so the two 2-D paths above are
+        // the entire renderer.
+        #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
+        self.render_three_d(encoder, target_view, packet);
+        #[cfg(all(not(feature = "render-3d"), feature = "flat2d"))]
+        let _ = (encoder, target_view, packet);
+    }
+
+    /// Encodes a full 3-D frame (prepass, SSAO, world, style passes, UI
+    /// overlay, AA, tone mapping and post-process) into `target_view`.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
+    fn render_three_d(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        target_view: &wgpu::TextureView,
+        mut packet: crate::graph::FramePacket,
+    ) {
+        // Build the deferred resources on first use (prompt 17 S4) and
+        // propagate the current instance buffer and material table to every
+        // pass that draws geometry.
         self.ensure_three_d();
         {
             let bg = self
@@ -4978,11 +5099,10 @@ impl Renderer {
 
         self.merge_gpu_frame_stats();
         self.gpu_timings.end_frame(encoder);
-        if let Some(batch) = self.world_builder.reclaim(packet) {
-            self.frame_builder.store_ui_batch(batch);
-        }
+        self.reclaim_frame_packet(packet);
     }
 
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn register_texture_linear(
         &mut self,
         w: u32,
@@ -5003,6 +5123,7 @@ impl Renderer {
         handle
     }
 
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn register_texture(
         &mut self,
         w: u32,
@@ -5023,6 +5144,7 @@ impl Renderer {
         handle
     }
 
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn create_material(
         &mut self,
         desc: &ferrous_core::scene::MaterialDescriptor,
@@ -5041,6 +5163,7 @@ impl Renderer {
         handle
     }
 
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn update_material_params(
         &mut self,
         handle: ferrous_core::scene::MaterialHandle,
@@ -5052,6 +5175,7 @@ impl Renderer {
         self.mark_dirty();
     }
 
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn register_mesh(&mut self, key: &str, mesh: crate::geometry::Mesh) {
         // Unconditional " routes to procedural_mesh_cache (always available).
         crate::renderer_api::register_mesh(&mut self.world_builder, key, mesh);
@@ -5071,6 +5195,7 @@ impl Renderer {
 
     pub fn set_clear_color(&mut self, color: wgpu::Color) {
         self.clear_color = color;
+        #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
         if let Some(world_pass) = self.world_pass.as_mut() {
             world_pass.clear_color = color;
         }
@@ -5082,16 +5207,19 @@ impl Renderer {
     }
 
     /// Configure global atmosphere settings (fog and exposure).
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn set_exposure(&mut self, exposure: f32) {
         crate::renderer_api::set_exposure(&mut self.camera_system, &self.context.queue, exposure);
         self.mark_dirty();
     }
 
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn set_fog(&mut self, color: [f32; 3], density: f32) {
         crate::renderer_api::set_fog(&mut self.camera_system, &self.context.queue, color, density);
         self.mark_dirty();
     }
 
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn set_ssao_params(&mut self, radius: f32, bias: f32, intensity: f32, power: f32) {
         self.ssao_params = [radius, bias, intensity, power];
         if let Some(ssao_resources) = self.ssao_resources.as_mut() {
@@ -5135,6 +5263,7 @@ impl Renderer {
         self.mark_dirty();
     }
 
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn set_directional_light(&mut self, direction: [f32; 3], color: [f32; 3], intensity: f32) {
         if let Some(world_pass) = self.world_pass.as_mut() {
             crate::renderer_api::set_directional_light(
@@ -5369,34 +5498,44 @@ impl Renderer {
 
     /// Push a fully-assembled SceneData to the renderer for this frame.
     pub fn set_scene(&mut self, scene: &SceneData) {
-        if let Some(cam) = &scene.camera {
-            self.camera_system.camera.eye = cam.eye;
-            self.camera_system.camera.target = cam.target;
-            self.camera_system
-                .camera
-                .set_fov_degrees(cam.fov_y.to_degrees());
-            self.camera_system
-                .camera
-                .set_near_far(cam.z_near, cam.z_far);
-        }
+        #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
+        {
+            if let Some(cam) = &scene.camera {
+                self.camera_system.camera.eye = cam.eye;
+                self.camera_system.camera.target = cam.target;
+                self.camera_system
+                    .camera
+                    .set_fov_degrees(cam.fov_y.to_degrees());
+                self.camera_system
+                    .camera
+                    .set_near_far(cam.z_near, cam.z_far);
+            }
 
-        if let Some(light) = &scene.directional_light {
-            self.set_directional_light(
-                light.direction.to_array(),
-                light.color.to_array(),
-                light.intensity,
-            );
-        }
+            if let Some(light) = &scene.directional_light {
+                self.set_directional_light(
+                    light.direction.to_array(),
+                    light.color.to_array(),
+                    light.intensity,
+                );
+            }
 
-        if !scene.instances.is_empty() {
-            self.world_builder.scene_dirty = true;
+            if !scene.instances.is_empty() {
+                self.world_builder.scene_dirty = true;
+            }
         }
+        // A Flat2D build has no 3-D scene to sync; the parameter is accepted so
+        // the API stays identical across feature sets.
+        #[cfg(all(not(feature = "render-3d"), feature = "flat2d"))]
+        let _ = scene;
         self.mark_dirty();
     }
 
     /// Forces the next frame to completely rebuild from the ECS world.
     pub fn mark_dirty(&mut self) {
-        self.world_builder.scene_dirty = true;
+        #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
+        {
+            self.world_builder.scene_dirty = true;
+        }
     }
 }
 
@@ -5439,6 +5578,7 @@ impl Renderer {
     /// This is kept independent from `camera_system` on purpose: in Full3D the
     /// camera holds a perspective projection which the 2D shader cannot use to
     /// derive `world_pixel_size`.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     fn overlay_2d_view_proj(&self) -> ferrous_core::glam::Mat4 {
         use ferrous_core::glam::{Mat4, Vec3};
 
@@ -8046,6 +8186,7 @@ fn texture_bytes(texture: &wgpu::Texture) -> u64 {
 
 /// Bytes of a single-mip, single-layer 2-D texture with the given texel size
 /// and sample count.
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 fn sized_texture_bytes(width: u32, height: u32, block_bytes: u64, sample_count: u32) -> u64 {
     u64::from(width)
         .saturating_mul(u64::from(height))

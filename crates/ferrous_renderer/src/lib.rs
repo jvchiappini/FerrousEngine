@@ -134,6 +134,14 @@ pub use ferrous_core::input::{KeyCode, MouseButton};
 // Re-export GUI types when gui feature is enabled
 #[cfg(feature = "gui")]
 pub use ferrous_ui_render::{GuiBatch, GuiQuad};
+/// Placeholder GUI batch used when the `gui` feature is disabled.
+///
+/// The 3-D `FrameBuilder`/`WorldBuilder` hand a GUI batch back to the frame
+/// scratch; without the GUI stack there is never one to hand back, but the
+/// type must still be nameable so those paths compile unchanged.
+#[cfg(not(feature = "gui"))]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct GuiBatch;
 
 // -- 2D Technical Rendering Re-exports ----------------------------------------
 pub mod render_2d {

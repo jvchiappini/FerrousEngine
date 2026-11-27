@@ -8,23 +8,28 @@ use crate::camera::controller::OrbitState;
 use crate::camera::Camera;
 #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::camera_system::CameraSystem;
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::context::EngineContext;
 #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::geometry::Mesh;
 #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::gizmo_system::GizmoSystem;
 use crate::graph::frame_packet::Viewport;
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::graph::RenderPass;
 #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::materials::MaterialRegistry;
 #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::pipeline::PipelineLayouts;
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::render_target::RenderTarget;
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::resources::texture_registry::TextureHandle;
 #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::resources::InstanceBuffer;
 #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::scene::{GizmoDraw, SceneData};
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::RendererMode;
 #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use ferrous_core::input::InputState;
@@ -544,6 +549,7 @@ pub fn queue_gizmo(gizmo_system: &mut GizmoSystem, gizmo: GizmoDraw) {
 
 /// Recreates GPU textures when the window changes size.
 /// Notifies every pass via `on_resize` -- no downcast needed.
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 #[allow(clippy::too_many_arguments)]
 // Resize fans out to every pass and every size mirror.
 pub fn resize(

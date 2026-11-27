@@ -10,5 +10,8 @@ path = "src/main.rs"
 
 [dependencies]
 guimaker = { path = "../../../crates/guimaker" }
-guimaker_gallery = { path = "../../../crates/guimaker_gallery" }
-ferrous_engine = { path = "../../../crates/ferrous_engine" }
+# Phase 9D Lane C: the compare app is the minimal Flat2D bundle (no 3-D
+# renderer, no SVG parser, no PNG codec), the same treatment egui's bench gets
+# with `glow` + `default_fonts` only.
+guimaker_gallery = { path = "../../../crates/guimaker_gallery", default-features = false, features = ["flat2d"] }
+ferrous_engine = { path = "../../../crates/ferrous_engine", default-features = false, features = ["flat2d"] }
