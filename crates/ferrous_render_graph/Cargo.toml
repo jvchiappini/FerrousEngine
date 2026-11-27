@@ -5,6 +5,6 @@ edition = "2021"
 description = "RenderPass trait and FramePacket for FerrousEngine — used by the renderer and by external pass implementors"
 
 [dependencies]
-wgpu    = "23.0"
+wgpu    = { workspace = true }
 glam    = "0.29"
 ferrous_core = { path = "../ferrous_core" }

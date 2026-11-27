@@ -9,6 +9,11 @@ name = "guimaker-compare-slint"
 path = "src/main.rs"
 
 [dependencies]
-# Pinned to the 1.7 line on purpose (not 1.8+): the UI is written with the
-# `slint!` macro, so there is no build.rs and no .slint file to compile.
-slint = "~1.7.2"
+# Pinned exactly to 1.7.2 on purpose (not 1.8+): the UI is written with the
+# `slint!` macro (no build.rs, no .slint file to compile), and the runtime font
+# registration below must use the same i-slint-common version as the renderer.
+slint = "=1.7.2"
+# Runtime font registration (the same Roboto bytes every app loads). Slint 1.7
+# does not re-export this, and the `slint!` macro cannot import a font file
+# relative to the binary, so the bench calls the shared fontdb directly.
+i-slint-common = { version = "=1.7.2", features = ["shared-fontdb"] }

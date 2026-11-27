@@ -6,13 +6,24 @@
 //! `<polyline>`) by reducing them to path commands first. Anything else is a
 //! typed error instead of a guessed placeholder shape.
 
+// Phase 9D Lane C: every `lyon_*` import below is only used by the SVG parser
+// and the tessellator, both of which live behind the `parser` feature.  The
+// public mesh types above do not depend on them, so a consumer that disables
+// `parser` still compiles.
+#[cfg(feature = "parser")]
 use std::fmt::Write as _;
 
+#[cfg(feature = "parser")]
 use lyon_svg::parser::path::{Token, Tokenizer};
+#[cfg(feature = "parser")]
 use lyon_svg::parser::xmlparser::FromSpan;
+#[cfg(feature = "parser")]
 use lyon_tessellation::path::builder::SvgPathBuilder;
+#[cfg(feature = "parser")]
 use lyon_tessellation::path::math::{point, vector, Angle, Point, Vector};
+#[cfg(feature = "parser")]
 use lyon_tessellation::path::{ArcFlags, Path};
+#[cfg(feature = "parser")]
 use lyon_tessellation::{
     FillOptions, FillRule, FillTessellator, FillVertex, FillVertexConstructor, VertexBuffers,
 };
@@ -86,12 +97,24 @@ impl SvgMesh {
     /// data is malformed, or when the resulting path covers no area.
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(svg_content: &str) -> Result<Self, String> {
-        let paths = collect_path_data(svg_content)?;
-        tessellate(&paths)
+        #[cfg(feature = "parser")]
+        {
+            let paths = collect_path_data(svg_content)?;
+            tessellate(&paths)
+        }
+        // Phase 9D Lane C: without the `parser` feature the API is kept so
+        // callers (an icon mapper, a widget) compile unchanged and degrade to
+        // their documented fallback instead of failing to link `lyon_svg`.
+        #[cfg(not(feature = "parser"))]
+        {
+            let _ = svg_content;
+            Err("SVG parser disabled: enable the `parser` feature of ferrous_svg".to_string())
+        }
     }
 }
 
 /// Extracts every supported path `d` string from `svg_content`.
+#[cfg(feature = "parser")]
 fn collect_path_data(svg_content: &str) -> Result<Vec<String>, String> {
     let mut paths = Vec::new();
 
@@ -145,6 +168,7 @@ fn collect_path_data(svg_content: &str) -> Result<Vec<String>, String> {
     Err("no supported SVG geometry found (expected a path, rect, circle, ellipse, polygon or polyline)".to_string())
 }
 
+#[cfg(feature = "parser")]
 fn starts_with_path_command(text: &str) -> bool {
     matches!(
         text.as_bytes().first().copied(),
@@ -175,6 +199,7 @@ fn starts_with_path_command(text: &str) -> bool {
 /// Returns the contents of every `<tag ...>` element (without the angle
 /// brackets). Matching is case-insensitive and requires a tag boundary, so
 /// `<path>` does not match `<paths>`.
+#[cfg(feature = "parser")]
 fn find_elements<'a>(source: &'a str, tag: &str) -> Vec<&'a str> {
     let mut out = Vec::new();
     let mut rest = source;
@@ -200,6 +225,7 @@ fn find_elements<'a>(source: &'a str, tag: &str) -> Vec<&'a str> {
 }
 
 /// Attribute lookup on an element body (e.g. `rect x="1" width="2"`).
+#[cfg(feature = "parser")]
 fn attribute<'a>(element: &'a str, name: &str) -> Option<&'a str> {
     let bytes = element.as_bytes();
     let mut index = 0;
@@ -245,18 +271,22 @@ fn attribute<'a>(element: &'a str, name: &str) -> Option<&'a str> {
     None
 }
 
+#[cfg(feature = "parser")]
 fn is_name_start(byte: u8) -> bool {
     byte.is_ascii_alphabetic() || byte == b'_' || byte == b':'
 }
 
+#[cfg(feature = "parser")]
 fn is_name_char(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b':' | b'.')
 }
 
+#[cfg(feature = "parser")]
 fn number(element: &str, name: &str) -> Option<f32> {
     attribute(element, name).and_then(|value| value.trim().parse::<f32>().ok())
 }
 
+#[cfg(feature = "parser")]
 fn rect_path_data(element: &str) -> Option<String> {
     let x = number(element, "x").unwrap_or(0.0);
     let y = number(element, "y").unwrap_or(0.0);
@@ -287,6 +317,7 @@ fn rect_path_data(element: &str) -> Option<String> {
     ))
 }
 
+#[cfg(feature = "parser")]
 fn ellipse_path_data(element: &str, circle: bool) -> Option<String> {
     let cx = number(element, "cx").unwrap_or(0.0);
     let cy = number(element, "cy").unwrap_or(0.0);
@@ -306,6 +337,7 @@ fn ellipse_path_data(element: &str, circle: bool) -> Option<String> {
     ))
 }
 
+#[cfg(feature = "parser")]
 fn polygon_path_data(element: &str, close: bool) -> Option<String> {
     let points = attribute(element, "points")?;
     let mut coordinates = points.split(|c: char| c.is_ascii_whitespace() || c == ',');
@@ -340,6 +372,7 @@ fn polygon_path_data(element: &str, close: bool) -> Option<String> {
 /// `svgparser` exposes the commands as `f64`, while the renderer geometry is
 /// `f32`; the cast down to `f32` is the documented geometry precision, not an
 /// accidental truncation.
+#[cfg(feature = "parser")]
 #[allow(clippy::cast_possible_truncation)]
 fn parse_path(data: &str) -> Path {
     fn p(x: f64, y: f64) -> Point {
@@ -441,6 +474,7 @@ fn parse_path(data: &str) -> Path {
     builder.build()
 }
 
+#[cfg(feature = "parser")]
 fn tessellate(paths: &[String]) -> Result<SvgMesh, String> {
     let mut buffers: VertexBuffers<SvgVertex, u32> = VertexBuffers::new();
     let mut fill_tessellator = FillTessellator::new();
@@ -484,7 +518,9 @@ fn tessellate(paths: &[String]) -> Result<SvgMesh, String> {
     })
 }
 
+#[cfg(feature = "parser")]
 struct VertexCtor;
+#[cfg(feature = "parser")]
 impl FillVertexConstructor<SvgVertex> for VertexCtor {
     fn new_vertex(&mut self, vertex: FillVertex) -> SvgVertex {
         SvgVertex {
@@ -495,7 +531,7 @@ impl FillVertexConstructor<SvgVertex> for VertexCtor {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "parser"))]
 mod tests {
     use super::*;
 

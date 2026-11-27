@@ -38,6 +38,25 @@ const MUTED: [f32; 4] = [173.0 / 255.0, 177.0 / 255.0, 185.0 / 255.0, 1.0];
 const FAINT: [f32; 4] = [113.0 / 255.0, 117.0 / 255.0, 124.0 / 255.0, 1.0];
 const ACCENT: [f32; 4] = [39.0 / 255.0, 80.0 / 255.0, 199.0 / 255.0, 1.0];
 
+const ROBOTO: &[u8] = include_bytes!("../../../../assets/fonts/Roboto-Regular.ttf");
+
+fn font_source(size_pixels: f32, roboto: bool) -> FontSource<'static> {
+    if roboto {
+        FontSource::TtfData {
+            data: ROBOTO,
+            size_pixels,
+            config: None,
+        }
+    } else {
+        FontSource::DefaultFontData {
+            config: Some(FontConfig {
+                size_pixels,
+                ..Default::default()
+            }),
+        }
+    }
+}
+
 const CLEAR: wgpu::Color = wgpu::Color {
     r: 6.0 / 255.0,
     g: 8.0 / 255.0,
@@ -63,13 +82,17 @@ struct Gfx {
     platform: WinitPlatform,
     renderer: Renderer,
     fonts: Fonts,
+    show_fallback: bool,
     last_frame: Instant,
     last_cursor: Option<imgui::MouseCursor>,
 }
 
-fn create(event_loop: &ActiveEventLoop) -> Gfx {
+fn create(event_loop: &ActiveEventLoop, roboto: bool) -> Gfx {
+    // wgpu 29 reads `WGPU_BACKEND` through `Backends::from_env` (the older
+    // `util::backend_bits_from_env` helper no longer exists).
+    let backends = wgpu::Backends::from_env().unwrap_or(wgpu::Backends::PRIMARY);
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::PRIMARY,
+        backends,
         ..wgpu::InstanceDescriptor::new_with_display_handle(Box::new(
             event_loop.owned_display_handle(),
         ))
@@ -123,30 +146,18 @@ fn create(event_loop: &ActiveEventLoop) -> Gfx {
     context.set_ini_filename(None::<std::path::PathBuf>);
     context.io_mut().font_global_scale = 1.0;
 
-    let title = context.fonts().add_font(&[FontSource::DefaultFontData {
-        config: Some(FontConfig {
-            size_pixels: 26.0 * scale,
-            ..Default::default()
-        }),
-    }]);
-    let heading = context.fonts().add_font(&[FontSource::DefaultFontData {
-        config: Some(FontConfig {
-            size_pixels: 19.0 * scale,
-            ..Default::default()
-        }),
-    }]);
-    let body = context.fonts().add_font(&[FontSource::DefaultFontData {
-        config: Some(FontConfig {
-            size_pixels: 15.0 * scale,
-            ..Default::default()
-        }),
-    }]);
-    let small = context.fonts().add_font(&[FontSource::DefaultFontData {
-        config: Some(FontConfig {
-            size_pixels: 12.0 * scale,
-            ..Default::default()
-        }),
-    }]);
+    let title = context
+        .fonts()
+        .add_font(&[font_source(26.0 * scale, roboto)]);
+    let heading = context
+        .fonts()
+        .add_font(&[font_source(19.0 * scale, roboto)]);
+    let body = context
+        .fonts()
+        .add_font(&[font_source(15.0 * scale, roboto)]);
+    let small = context
+        .fonts()
+        .add_font(&[font_source(12.0 * scale, roboto)]);
     let fonts = Fonts {
         title,
         heading,
@@ -190,6 +201,7 @@ fn create(event_loop: &ActiveEventLoop) -> Gfx {
         platform,
         renderer,
         fonts,
+        show_fallback: !roboto,
         last_frame: Instant::now(),
         last_cursor: None,
     }
@@ -281,7 +293,14 @@ fn form(ui: &Ui, fonts: &Fonts, scale: f32) {
     }
 }
 
-fn draw_start(ui: &Ui, fonts: &Fonts, scale: f32, bench: &mut String) {
+fn draw_start(
+    ui: &Ui,
+    fonts: &Fonts,
+    scale: f32,
+    bench: &mut String,
+    menu_open: &mut bool,
+    show_fallback: bool,
+) {
     let full = ui.io().display_size;
 
     ui.window("##root")
@@ -362,6 +381,11 @@ fn draw_start(ui: &Ui, fonts: &Fonts, scale: f32, bench: &mut String) {
             ui.set_cursor_screen_pos([40.0, 704.0]);
             text(ui, fonts.small, MUTED, "Bench input");
 
+            if show_fallback {
+                ui.set_cursor_screen_pos([40.0, 676.0]);
+                text(ui, fonts.small, MUTED, "漢字 🎬 ✨");
+            }
+
             ui.set_cursor_screen_pos([40.0, 724.0]);
             ui.set_next_item_width(320.0);
             {
@@ -379,10 +403,35 @@ fn draw_start(ui: &Ui, fonts: &Fonts, scale: f32, bench: &mut String) {
                 let _t = ui.push_style_color(StyleColor::Text, TEXT);
                 ui.button_with_size("Bench button", [140.0, 36.0]);
             }
+
+            ui.set_cursor_screen_pos([540.0, 724.0]);
+            {
+                let _font = ui.push_font(fonts.body);
+                let _b = ui.push_style_color(StyleColor::Button, RAISED);
+                let _bh = ui.push_style_color(StyleColor::ButtonHovered, BORDER);
+                let _ba = ui.push_style_color(StyleColor::ButtonActive, BORDER);
+                let _t = ui.push_style_color(StyleColor::Text, TEXT);
+                if ui.button_with_size("Bench menu", [140.0, 36.0]) {
+                    *menu_open = !*menu_open;
+                }
+            }
+
+            if *menu_open {
+                ui.set_cursor_screen_pos([540.0, 600.0]);
+                let _bg = ui.push_style_color(StyleColor::ChildBg, CARD);
+                ui.child_window("##bench_menu")
+                    .size([180.0, 96.0])
+                    .border(true)
+                    .build(|| {
+                        text(ui, fonts.body, TEXT, "Bench item 1");
+                        text(ui, fonts.body, TEXT, "Bench item 2");
+                        text(ui, fonts.body, TEXT, "Bench item 3");
+                    });
+            }
         });
 }
 
-fn render_frame(gfx: &mut Gfx, bench: &mut String) {
+fn render_frame(gfx: &mut Gfx, bench: &mut String, menu_open: &mut bool) {
     let now = Instant::now();
     gfx.context.io_mut().update_delta_time(now - gfx.last_frame);
     gfx.last_frame = now;
@@ -406,7 +455,14 @@ fn render_frame(gfx: &mut Gfx, bench: &mut String) {
         .expect("prepare_frame");
 
     let ui = gfx.context.frame();
-    draw_start(&*ui, &gfx.fonts, gfx.scale, bench);
+    draw_start(
+        &*ui,
+        &gfx.fonts,
+        gfx.scale,
+        bench,
+        menu_open,
+        gfx.show_fallback,
+    );
     if gfx.last_cursor != ui.mouse_cursor() {
         gfx.last_cursor = ui.mouse_cursor();
         gfx.platform.prepare_render(&*ui, &*gfx.window);
@@ -452,11 +508,13 @@ struct App {
     started: Instant,
     frames: Arc<AtomicU64>,
     bench_input: String,
+    menu_open: bool,
+    roboto: bool,
 }
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let gfx = create(event_loop);
+        let gfx = create(event_loop, self.roboto);
         gfx.window.request_redraw();
         self.gfx = Some(gfx);
     }
@@ -497,7 +555,7 @@ impl ApplicationHandler for App {
                     );
                     let _ = std::io::stdout().flush();
                 }
-                render_frame(gfx, &mut self.bench_input);
+                render_frame(gfx, &mut self.bench_input, &mut self.menu_open);
                 if frame == 1 {
                     println!("bench_ready");
                     let _ = std::io::stdout().flush();
@@ -520,16 +578,18 @@ impl ApplicationHandler for App {
     }
 }
 
-fn parse_seconds() -> f64 {
-    std::env::args()
-        .skip_while(|arg| arg != "--seconds")
-        .nth(1)
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(8.0)
+fn parse_arg(name: &str) -> Option<String> {
+    std::env::args().skip_while(|arg| arg != name).nth(1)
 }
 
 fn main() {
-    let seconds = parse_seconds();
+    let seconds = parse_arg("--seconds")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(8.0);
+    let fonts = parse_arg("--fonts").unwrap_or_else(|| "roboto".to_string());
+    println!("backend wgpu");
+    println!("present_mode fifo");
+    println!("fonts {}", fonts);
 
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Wait);
@@ -548,6 +608,8 @@ fn main() {
         started: Instant::now(),
         frames,
         bench_input: String::new(),
+        menu_open: false,
+        roboto: fonts != "default",
     };
 
     event_loop.run_app(&mut app).unwrap();

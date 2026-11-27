@@ -2,22 +2,33 @@
 //!
 //! This module contains the public API methods for the Renderer.
 //! These methods provide high-level control over rendering operations.
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::camera::controller::OrbitState;
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::camera::Camera;
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::camera_system::CameraSystem;
 use crate::context::EngineContext;
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::geometry::Mesh;
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::gizmo_system::GizmoSystem;
 use crate::graph::frame_packet::Viewport;
 use crate::graph::RenderPass;
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::materials::MaterialRegistry;
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::pipeline::PipelineLayouts;
 use crate::render_target::RenderTarget;
 use crate::resources::texture_registry::TextureHandle;
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::resources::InstanceBuffer;
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::scene::{GizmoDraw, SceneData};
 use crate::RendererMode;
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use ferrous_core::input::InputState;
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use ferrous_core::scene::{MaterialDescriptor, MaterialHandle, RenderStyle};
 use wgpu;
 
@@ -25,18 +36,21 @@ use wgpu;
 
 /// Direct reference to the CPU camera state (read-only).
 #[inline]
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub fn camera(camera_system: &CameraSystem) -> &Camera {
     &camera_system.camera
 }
 
 /// Mutable reference to the CPU camera state.
 #[inline]
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub fn camera_mut(camera_system: &mut CameraSystem) -> &mut Camera {
     &mut camera_system.camera
 }
 
 /// Mutable reference to the orbit controller.
 #[inline]
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub fn orbit_mut(camera_system: &mut CameraSystem) -> &mut OrbitState {
     &mut camera_system.orbit
 }
@@ -45,6 +59,7 @@ pub fn orbit_mut(camera_system: &mut CameraSystem) -> &mut OrbitState {
 
 /// Create a material using a full descriptor. Returns a
 /// [`MaterialHandle`] that may be stored by the application.
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub fn create_material(
     material_registry: &mut MaterialRegistry,
     device: &wgpu::Device,
@@ -65,6 +80,7 @@ pub fn create_material(
 /// [`MATERIAL_DEFAULT`], ensuring that any draw commands referencing the
 /// old handle will simply render using the default material instead of
 /// crashing the GPU.
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub fn free_material(
     material_registry: &mut MaterialRegistry,
     world_pass: &mut crate::passes::WorldPass,
@@ -78,6 +94,7 @@ pub fn free_material(
 /// uniform buffer is rewritten; texture handles are assumed to remain
 /// constant. This is useful for tweaking colour/roughness/etc without
 /// reallocating the material.
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub fn update_material_params(
     material_registry: &mut MaterialRegistry,
     queue: &wgpu::Queue,
@@ -97,8 +114,9 @@ pub fn update_material_params(
 /// If a mesh already existed at that key it is overwritten; any
 /// `ElementKind::Mesh` entities that reference it will pick up the new
 /// geometry on the very next `sync_world` call.
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub fn register_mesh(
-    frame_builder: &mut crate::frame_builder::FrameBuilder,
+    frame_builder: &mut crate::frame_builder::WorldBuilder,
     key: &str,
     mesh: Mesh,
 ) {
@@ -111,15 +129,17 @@ pub fn register_mesh(
 ///
 /// Any world elements still referring to the key will fall back to the cube
 /// primitive when the next `sync_world` runs.
-pub fn free_mesh(frame_builder: &mut crate::frame_builder::FrameBuilder, key: &str) {
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
+pub fn free_mesh(frame_builder: &mut crate::frame_builder::WorldBuilder, key: &str) {
     frame_builder.procedural_mesh_cache.remove(key);
 }
 
 /// Register an asset-file-loaded mesh under a string key.
 /// Only available with the `assets` feature.
 #[cfg(feature = "assets")]
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub fn register_asset_mesh(
-    frame_builder: &mut crate::frame_builder::FrameBuilder,
+    frame_builder: &mut crate::frame_builder::WorldBuilder,
     key: &str,
     mesh: Mesh,
 ) {
@@ -128,7 +148,8 @@ pub fn register_asset_mesh(
 
 /// Remove a previously-registered asset-file mesh.
 #[cfg(feature = "assets")]
-pub fn free_asset_mesh(frame_builder: &mut crate::frame_builder::FrameBuilder, key: &str) {
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
+pub fn free_asset_mesh(frame_builder: &mut crate::frame_builder::WorldBuilder, key: &str) {
     frame_builder.mesh_cache.remove(key);
 }
 
@@ -136,6 +157,7 @@ pub fn free_asset_mesh(frame_builder: &mut crate::frame_builder::FrameBuilder, k
 
 /// Register a GPU texture from raw RGBA8 bytes and return a
 /// [`TextureHandle`]. Use this for color data such as albedo textures.
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub fn register_texture(
     material_registry: &mut MaterialRegistry,
     device: &wgpu::Device,
@@ -158,6 +180,7 @@ pub fn register_texture(
 /// [`TextureHandle`]. Use this for non-color data such as normal maps,
 /// metallic-roughness and AO textures — the GPU will NOT apply gamma
 /// correction when sampling these.
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub fn register_texture_linear(
     material_registry: &mut MaterialRegistry,
     device: &wgpu::Device,
@@ -177,6 +200,7 @@ pub fn register_texture_linear(
 /// the provided handle corresponds to one of the three built-in
 /// fallbacks this function is a no-op. Freed slots are recycled by the
 /// registry on future registrations.
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub fn free_texture(material_registry: &mut MaterialRegistry, handle: TextureHandle) {
     material_registry.free_texture(handle);
 }
@@ -185,6 +209,7 @@ pub fn free_texture(material_registry: &mut MaterialRegistry, handle: TextureHan
 /// is the hot-reload API; it does not allocate a new GPU texture but
 /// instead writes directly into the existing one. Materials already
 /// pointing at the handle will observe the update automatically.
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub fn update_texture_data(
     material_registry: &mut MaterialRegistry,
     queue: &wgpu::Queue,
@@ -203,6 +228,7 @@ pub fn update_texture_data(
 /// The direction should be a normalized vector pointing *from* the light
 /// toward the scene. Colour is linear RGB and `intensity` is a scalar
 /// multiplier.
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub fn set_directional_light(
     world_pass: &mut crate::passes::WorldPass,
     queue: &wgpu::Queue,
@@ -230,6 +256,7 @@ pub fn set_directional_light(
 ///
 /// Call this if you manage lights outside of the `World` ECS (e.g. from a
 /// custom system). For the automatic path see `sync_world`.
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub fn set_point_lights(
     world_pass: &mut crate::passes::WorldPass,
     device: &wgpu::Device,
@@ -240,10 +267,12 @@ pub fn set_point_lights(
 }
 
 /// Configure global atmosphere settings (fog and exposure).
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub fn set_exposure(camera_system: &mut CameraSystem, queue: &wgpu::Queue, exposure: f32) {
     camera_system.set_exposure(queue, exposure);
 }
 
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub fn set_fog(
     camera_system: &mut CameraSystem,
     queue: &wgpu::Queue,
@@ -253,6 +282,7 @@ pub fn set_fog(
     camera_system.set_fog(queue, color, density);
 }
 
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub fn set_ambient_light(
     camera_system: &mut CameraSystem,
     queue: &wgpu::Queue,
@@ -266,6 +296,7 @@ pub fn set_ambient_light(
 
 /// Appends a custom pass after the built-in ones.
 /// `on_attach` is called immediately with the current surface format.
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub fn add_pass<P: RenderPass>(
     extra_passes: &mut Vec<Box<dyn RenderPass>>,
     pass: P,
@@ -279,6 +310,7 @@ pub fn add_pass<P: RenderPass>(
 }
 
 /// Removes all user-supplied passes. Built-in passes are NOT removed.
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub fn clear_extra_passes(extra_passes: &mut Vec<Box<dyn RenderPass>>) {
     extra_passes.clear();
 }
@@ -295,6 +327,7 @@ pub fn clear_extra_passes(extra_passes: &mut Vec<Box<dyn RenderPass>>) {
 /// newly-created passes immediately so they are ready to draw on the next frame.
 #[allow(clippy::too_many_arguments)]
 // Pass handles are passed explicitly to avoid a borrow of the whole Renderer.
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub fn set_render_style(
     render_style: &mut RenderStyle,
     cel_pass: &mut Option<crate::passes::CelShadedPass>,
@@ -380,6 +413,7 @@ pub fn set_render_style(
 /// post-process pass are all skipped. The UI pass clears the surface to
 /// `world_pass.clear_color` instead of compositing on top of a rendered
 /// scene, so the background colour is preserved.
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub fn set_mode(
     mode: &mut RendererMode,
     new_mode: RendererMode,
@@ -413,6 +447,7 @@ pub fn set_mode(
 ///
 /// Disabling reverts to the CPU `draw_indexed` path using `instance_buf`.
 #[cfg(feature = "gpu-driven")]
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub fn enable_gpu_culling(
     gpu_culling_enabled: &mut bool,
     cull_pass: &mut Option<crate::passes::CullPass>,
@@ -437,6 +472,7 @@ pub fn enable_gpu_culling(
 ///
 /// Returns an empty `Vec` if GPU culling is disabled or no batches were drawn.
 #[cfg(feature = "gpu-driven")]
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub fn cull_visible_counts(
     cull_pass: &Option<crate::passes::CullPass>,
     device: &wgpu::Device,
@@ -459,12 +495,13 @@ pub fn cull_visible_counts(
 ///
 /// `sync_world` is kept for backward compatibility; it converts ECS state
 /// into an equivalent `SceneData` and delegates here.
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub fn set_scene(
     scene: &SceneData,
     camera_system: &mut CameraSystem,
     world_pass: &mut crate::passes::WorldPass,
     current_dir_light: &mut crate::resources::DirectionalLightUniform,
-    frame_builder: &mut crate::frame_builder::FrameBuilder,
+    frame_builder: &mut crate::frame_builder::WorldBuilder,
     queue: &wgpu::Queue,
 ) {
     // 1. Apply camera if provided
@@ -498,6 +535,7 @@ pub fn set_scene(
 // -- Gizmo Management --------------------------------------------------------
 
 /// Queue a gizmo for rendering this frame.
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub fn queue_gizmo(gizmo_system: &mut GizmoSystem, gizmo: GizmoDraw) {
     gizmo_system.queue(gizmo);
 }
@@ -564,6 +602,7 @@ pub fn set_viewport(viewport: &mut Viewport, new_viewport: Viewport) {
 // -- Configuration Helpers ----------------------------------------------------
 
 /// Sets the clear color for the render target.
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub fn set_clear_color(
     world_pass: &mut crate::passes::WorldPass,
     #[cfg(feature = "gui")] ui_pass: &mut crate::passes::UiPass,
@@ -592,6 +631,7 @@ pub fn set_font_atlas(
 // -- Input Handling ----------------------------------------------------------
 
 /// Handles input events for camera control and other interactions.
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub fn handle_input(camera_system: &mut CameraSystem, input: &mut InputState, dt: f32) {
     // Handle camera input through the camera system
     camera_system.handle_input(input, dt);

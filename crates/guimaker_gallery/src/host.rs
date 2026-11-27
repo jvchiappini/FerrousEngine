@@ -575,6 +575,31 @@ impl<A: GuiApp> GuiHost<A> {
         }
         events
     }
+
+    /// Whether the translated events of one window event should request a frame.
+    ///
+    /// A pointer-only move consults the UI: it asks for a frame only when the
+    /// hit under the pointer changes, a drag or scroll is in flight, or a
+    /// press/capture is active. Every other event asks for a frame. The check
+    /// and the router share one hit test (`Ui::pointer_move_changes` calls the
+    /// same `pick_interactive` the router does), so they cannot disagree about
+    /// what is hovered (prompt 15 Phase 9D finding 2). `on_window_event` and the
+    /// host-level test use this method.
+    pub fn events_need_frame(&mut self, events: &[InputEvent]) -> bool {
+        let mut pointer_only = true;
+        let mut changes = false;
+        for event in events {
+            match event {
+                InputEvent::PointerMoved { position } => {
+                    if self.ui.pointer_move_changes(*position) {
+                        changes = true;
+                    }
+                }
+                _ => pointer_only = false,
+            }
+        }
+        !pointer_only || changes
+    }
 }
 
 impl<A: GuiApp> FerrousApp for GuiHost<A> {
@@ -769,10 +794,7 @@ impl<A: GuiApp> FerrousApp for GuiHost<A> {
         // A pointer move that keeps the same target, cursor, tooltip, drag and
         // scroll state changes nothing: do not ask for a frame. Every other
         // event still asks (a click, a key, a wheel, a focus change).
-        let pointer_only = events
-            .iter()
-            .all(|event| matches!(event, InputEvent::PointerMoved { .. }));
-        let needs_frame = !pointer_only || self.ui.pointer_move_changes(self.pointer);
+        let needs_frame = self.events_need_frame(&events);
         for event in events {
             if let InputEvent::Text(text) = &event {
                 self.app.on_text(text);
@@ -868,7 +890,11 @@ mod tests {
     use super::{is_overlay_toggle, map_key, map_modifiers, GuiApp, GuiHost};
     use ferrous_engine::winit::event::ElementState;
     use ferrous_engine::winit::keyboard::{Key, ModifiersState, NamedKey};
-    use guimaker::theme::Theme;
+    use glam::Vec2;
+    use guimaker::geom::Size;
+    use guimaker::input::{InputEvent, PointerButton};
+    use guimaker::style::{SizeSpec, Tone};
+    use guimaker::theme::{ColorRole, Duration, Radius, Spacing, Theme};
     use guimaker::view::{text, Element};
 
     #[derive(Default)]
@@ -932,5 +958,72 @@ mod tests {
             ElementState::Pressed,
             &Key::Character("f".into())
         ));
+    }
+
+    /// An app whose only control is a hoverable target.
+    struct Hoverable;
+
+    impl GuiApp for Hoverable {
+        type Msg = ();
+        fn view(&self) -> Element<()> {
+            Element::column()
+                .width(SizeSpec::Fill)
+                .height(SizeSpec::Fill)
+                .child(
+                    Element::row()
+                        .key("target")
+                        .width(SizeSpec::Fill)
+                        .height(SizeSpec::Token(Spacing::S10))
+                        .bg(ColorRole::Surface)
+                        .hover_bg(ColorRole::SurfaceRaised)
+                        .pressed_bg(ColorRole::SurfaceSunken)
+                        .hover_tone(Tone::Accent)
+                        .radius(Radius::Sm)
+                        .interactive()
+                        .transition(Duration::Fast)
+                        .child(text::<()>("Hover me")),
+                )
+        }
+        fn update(&mut self, (): ()) {}
+        fn theme(&self) -> Theme {
+            Theme::dark()
+        }
+    }
+
+    /// The host asks the exact hit the router uses, so a move inside the same
+    /// target schedules nothing and entering or clicking does (prompt 15
+    /// Phase 9D finding 2). This goes through `GuiHost::events_need_frame`, not
+    /// only `Ui::pointer_move_changes`.
+    #[test]
+    fn the_host_checks_the_same_hit_the_router_uses() {
+        let mut host = GuiHost::new(Hoverable);
+        host.ui.set_viewport(Size::new(400.0, 120.0), 1.0);
+        let view = host.app.view();
+        host.ui.paint(&view, &mut host.frame, &mut host.text);
+        let id = host.ui.tree().find_key("target").expect("target");
+        let rect = host.ui.layout().rect(id);
+        let inside = Vec2::new(rect.x + 8.0, rect.y + rect.height * 0.5);
+        let still_inside = Vec2::new(rect.x + 24.0, rect.y + rect.height * 0.5);
+
+        // Entering the target asks for one frame.
+        assert!(host.events_need_frame(&[InputEvent::PointerMoved { position: inside }]));
+        host.ui
+            .push_event(InputEvent::PointerMoved { position: inside });
+        let view = host.app.view();
+        host.ui.paint(&view, &mut host.frame, &mut host.text);
+
+        // A move inside the same target asks for none.
+        assert!(
+            !host.events_need_frame(&[InputEvent::PointerMoved {
+                position: still_inside
+            }]),
+            "the host and the router must agree on the hovered target"
+        );
+
+        // A non-pointer event still asks for one.
+        assert!(host.events_need_frame(&[InputEvent::PointerDown {
+            position: still_inside,
+            button: PointerButton::Primary,
+        }]));
     }
 }

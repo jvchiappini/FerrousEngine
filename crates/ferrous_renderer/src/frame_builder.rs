@@ -1,4 +1,4 @@
-//! `FrameBuilder` — constructs the `FramePacket` per frame from ECS state,
+//! `WorldBuilder` — constructs the `FramePacket` per frame from ECS state,
 //! applying frustum culling and grouping instances.
 //!
 //! ## Responsibilities
@@ -8,12 +8,17 @@
 //! - Upload matrices to `InstanceBuffer`
 //! - Calculate `RenderStats` for the frame
 
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use std::collections::HashMap;
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use std::sync::Arc;
 
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use ferrous_core::scene::world::{Element, ElementKind, MaterialComponent};
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use ferrous_core::transform::Transform;
 
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::geometry::primitives::{
     capsule::capsule as create_capsule,
     circle::{circle as create_circle, ring as create_ring},
@@ -25,15 +30,20 @@ use crate::geometry::primitives::{
     sphere::sphere as create_sphere,
     torus::torus as create_torus,
 };
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::graph::frame_packet::{CameraPacket, FramePacket, InstancedDrawCommand, Viewport};
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::render_stats::RenderStats;
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::resources::InstanceBuffer;
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::scene::Frustum;
 #[cfg(feature = "gui")]
 use ferrous_ui_render::GuiBatch;
 
-/// All per-frame scratch state that `FrameBuilder` needs to track between calls.
-pub struct FrameBuilder {
+/// All per-frame scratch state that `WorldBuilder` needs to track between calls.
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
+pub struct WorldBuilder {
     // Reusable draw command lists (zeroed each frame, allocated once)
     pub instanced_commands_cache: Vec<InstancedDrawCommand>,
     pub instance_matrix_scratch: Vec<glam::Mat4>,
@@ -92,22 +102,19 @@ pub struct FrameBuilder {
     pub world_instance_matrices: Vec<glam::Mat4>,
     /// Scratch matrices for shadow instancing.
     world_shadow_matrices: Vec<glam::Mat4>,
-    /// Empty GUI batch reclaimed from the previous frame. Reusing it keeps
-    /// the quad, text, icon, SVG and segment `Vec` capacities warm, so the UI
-    /// path allocates nothing in the steady state.
-    #[cfg(feature = "gui")]
-    pub ui_batch_scratch: Option<GuiBatch>,
 }
 
-impl Default for FrameBuilder {
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
+impl Default for WorldBuilder {
     fn default() -> Self {
-        FrameBuilder::new()
+        WorldBuilder::new()
     }
 }
 
-impl FrameBuilder {
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
+impl WorldBuilder {
     pub fn new() -> Self {
-        FrameBuilder {
+        WorldBuilder {
             instanced_commands_cache: Vec::new(),
             instance_matrix_scratch: Vec::new(),
             shadow_instanced_cache: Vec::new(),
@@ -131,8 +138,6 @@ impl FrameBuilder {
             world_shadow_instanced: Vec::new(),
             world_instance_matrices: Vec::new(),
             world_shadow_matrices: Vec::new(),
-            #[cfg(feature = "gui")]
-            ui_batch_scratch: None,
         }
     }
 
@@ -810,22 +815,18 @@ impl FrameBuilder {
         (packet, stats)
     }
 
-    /// Takes the empty GUI batch reclaimed from the previous frame.
-    #[cfg(feature = "gui")]
-    pub fn take_ui_batch(&mut self) -> Option<GuiBatch> {
-        self.ui_batch_scratch.take()
-    }
-
-    /// Reclaim the internal caches from a used `FramePacket`.
+    /// Reclaim the 3D caches from a used `FramePacket`.
+    ///
+    /// Returns the UI batch if the packet carried one, so the always-compiled
+    /// `FrameBuilder` can keep its vectors warm (the 2D and 3D paths can share
+    /// one recycled batch without the 3D builder owning 2D state).
     #[inline]
-    pub fn reclaim(&mut self, mut packet: FramePacket) {
-        // The UI batch travels inside the packet. Clear it and keep it for the
-        // next frame so its primitive vectors never start from zero again.
+    pub fn reclaim(&mut self, mut packet: FramePacket) -> Option<GuiBatch> {
         #[cfg(feature = "gui")]
-        if let Some(mut batch) = packet.remove::<GuiBatch>() {
+        let batch = packet.remove::<GuiBatch>().map(|mut batch| {
             batch.clear();
-            self.ui_batch_scratch = Some(batch);
-        }
+            batch
+        });
         std::mem::swap(
             &mut self.instanced_commands_cache,
             &mut packet.instanced_objects,
@@ -834,6 +835,10 @@ impl FrameBuilder {
             &mut self.shadow_instanced_cache,
             &mut packet.shadow_instanced_objects,
         );
+        #[cfg(feature = "gui")]
+        return batch;
+        #[cfg(not(feature = "gui"))]
+        None
     }
 
     /// Internal helper to calculate statistics based on current caches.
@@ -846,5 +851,38 @@ impl FrameBuilder {
             stats.draw_calls += 1;
         }
         stats
+    }
+}
+
+/// The always-compiled half of the frame scratch: the recycled GUI batch.
+///
+/// The 3D `WorldBuilder` owns the mesh caches and instanced-command lists; this
+/// struct owns only the `GuiBatch` buffer the runner passes back every frame, so
+/// a Flat2D build (no 3D modules) still reuses its quad/text/icon capacities. It
+/// is compiled in every configuration, which is why it is separate from
+/// `WorldBuilder`.
+#[derive(Default)]
+pub struct FrameBuilder {
+    #[cfg(feature = "gui")]
+    ui_batch_scratch: Option<GuiBatch>,
+}
+
+impl FrameBuilder {
+    /// Builds an empty frame builder.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Takes the empty GUI batch reclaimed from the previous frame.
+    #[cfg(feature = "gui")]
+    pub fn take_ui_batch(&mut self) -> Option<GuiBatch> {
+        self.ui_batch_scratch.take()
+    }
+
+    /// Stores an emptied GUI batch for the next frame.
+    #[cfg(feature = "gui")]
+    pub fn store_ui_batch(&mut self, batch: GuiBatch) {
+        self.ui_batch_scratch = Some(batch);
     }
 }

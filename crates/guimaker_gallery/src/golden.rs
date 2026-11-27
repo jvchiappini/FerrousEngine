@@ -99,6 +99,9 @@ impl Comparison {
 /// Returns [`GalleryError::Io`] when the file cannot be read,
 /// [`GalleryError::Image`] when it is not an 8-bit RGBA PNG and
 /// [`GalleryError::Image`] when the decoded size disagrees with the header.
+// Phase 9D Lane C: PNG decoding is gated so a binary that never compares
+// goldens does not link the `png` codec.
+#[cfg(feature = "png")]
 pub fn load_png(path: impl AsRef<Path>) -> Result<RenderedImage> {
     let path = path.as_ref();
     let file = std::fs::File::open(path)?;
@@ -212,6 +215,7 @@ pub fn compare(
 /// # Errors
 ///
 /// Propagates [`load_png`] and [`compare`] errors.
+#[cfg(feature = "png")]
 pub fn compare_png(
     golden_path: impl AsRef<Path>,
     actual: &RenderedImage,

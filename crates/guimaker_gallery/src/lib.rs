@@ -42,10 +42,14 @@ pub mod shot;
 pub mod story;
 
 pub use components::Component;
-pub use golden::{compare, compare_png, load_png, Tolerance};
+pub use golden::{compare, Tolerance};
+#[cfg(feature = "png")]
+pub use golden::{compare_png, load_png};
 pub use host::{GuiApp, GuiHost};
 pub use overlay::DebugOverlay;
-pub use shot::{render_story, write_png, RenderedImage};
+#[cfg(feature = "png")]
+pub use shot::write_png;
+pub use shot::{render_story, RenderedImage};
 pub use story::Story;
 
 /// Everything that can go wrong in the gallery.

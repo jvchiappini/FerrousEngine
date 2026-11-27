@@ -26,7 +26,14 @@ resolver = "2"
 
 [workspace.dependencies]
 rustc-hash = "2.1.3"
-wgpu = { version = "23.0", features = ["webgpu", "webgl", "fragile-send-sync-non-atomic-wasm"] }
+# Canonical wgpu feature set for the whole workspace.  `default-features =
+# false` + the explicit list below is byte-for-byte equivalent to wgpu 23.0.1's
+# `default = ["wgsl", "dx12", "metal", "webgpu"]` plus the `webgl` (which pulls
+# `wgc/gles`) and `fragile-send-sync-non-atomic-wasm` features this workspace
+# already enabled.  Vulkan is NOT a wgpu feature: wgpu 23.0.1 always enables
+# `wgc/vulkan` for Windows and non-Apple Unix through a target-specific
+# dependency, so Windows/Linux keep Vulkan regardless of these features.
+wgpu = { version = "23.0", default-features = false, features = ["wgsl", "dx12", "metal", "webgpu", "webgl", "fragile-send-sync-non-atomic-wasm"] }
 glam = { version = "0.29", features = ["bytemuck", "serde"] }
 # el motor tendrá su propio sistema de UI; ya no dependemos de egui
 winit = "0.30"

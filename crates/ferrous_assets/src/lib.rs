@@ -31,8 +31,9 @@
 // font support has been extracted to the `ferrous_font` crate.  The old
 // module declaration is removed; consumers enable text support via the
 // `text` feature (see below).
+#[cfg(feature = "image")]
 pub mod gltf_loader;
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", feature = "image"))]
 pub mod texture;
 
 // ── Phase 5: asset pipeline ─────────────────────────────────────────────────
@@ -41,7 +42,9 @@ pub mod texture;
 // continue to work.  The implementation logic (importers, server,
 // etc.) still lives in this crate.
 pub mod font_importer;
+#[cfg(feature = "image")]
 pub mod gltf_importer;
+#[cfg(feature = "image")]
 pub mod image_importer;
 pub mod server;
 
@@ -56,11 +59,13 @@ pub use ferrous_font::inventory;
 // existing import paths continue to work.
 #[cfg(feature = "text")]
 pub use ferrous_font::Font;
+#[cfg(feature = "image")]
 pub use gltf_loader::{load_gltf, AssetMesh, AssetModel, RawMaterial};
-/// Content-keyed SVG raster cache (`svg` + `gpu`); see [`texture::SvgCache`].
-#[cfg(all(feature = "gpu", feature = "svg"))]
+/// Content-keyed SVG raster cache (`svg` + `gpu` + `image`); see
+/// [`texture::SvgCache`].
+#[cfg(all(feature = "gpu", feature = "svg", feature = "image"))]
 pub use texture::SvgCache;
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", feature = "image"))]
 pub use texture::Texture2d;
 
 // ── re-exports: Phase 5 API ──────────────────────────────────────────────────
@@ -68,20 +73,26 @@ pub use texture::Texture2d;
 pub use ferrous_asset_types::Asset;
 pub use ferrous_asset_types::{AssetHandle, AssetState};
 pub use font_importer::FontData;
+#[cfg(feature = "image")]
 pub use gltf_importer::GltfModel;
+#[cfg(feature = "image")]
 pub use image_importer::ImageData;
 pub use server::AssetServer;
 
 /// Convenience prelude — glob-import this in game/editor code.
 pub mod prelude {
-    pub use crate::{Asset, AssetHandle, AssetServer, AssetState, FontData, GltfModel, ImageData};
+    pub use crate::{Asset, AssetHandle, AssetServer, AssetState, FontData};
+    #[cfg(feature = "image")]
+    pub use crate::{GltfModel, ImageData};
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "image")]
     use std::path::Path;
 
+    #[cfg(feature = "image")]
     #[test]
     fn missing_file_returns_error() {
         let res = load_gltf(Path::new("this-file-does-not-exist.gltf"));
@@ -93,11 +104,13 @@ mod tests {
         let _server = AssetServer::new();
     }
 
+    #[cfg(feature = "image")]
     #[test]
     fn image_data_type_name() {
         assert_eq!(ImageData::type_name(), "ImageData");
     }
 
+    #[cfg(feature = "image")]
     #[test]
     fn gltf_model_type_name() {
         assert_eq!(GltfModel::type_name(), "GltfModel");

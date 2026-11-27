@@ -12,6 +12,9 @@
 pub mod exporter;
 pub mod renderer_api;
 pub mod renderer_core;
+// A dead, unwired duplicate of the pass coordination; it references every 3D
+// pass, so it is compiled only with the 3D renderer.
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub mod renderer_passes;
 pub mod renderer_resource;
 
@@ -25,7 +28,14 @@ pub mod headless;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod scene_target;
 
-// Support modules located in src/
+// Support modules located in src/.
+//
+// The CPU 3D modules (camera, geometry, pipeline, scene, materials,
+// gizmo_system) are lightweight type/setup code the lazy slots and the 2D
+// camera packet reuse, so they stay compiled in a Flat2D build. The *heavy*
+// 3D surface — the render passes (world/SSAO/sky/post/AA/cel/outline/flat/
+// skinning/particles) and the HDR render targets — is gated inside `passes`
+// and `render_target` (Phase 9D: a Flat2D binary does not link those shaders).
 pub mod camera;
 pub mod camera_system;
 pub mod context;
@@ -33,6 +43,9 @@ pub mod frame_builder;
 pub mod geometry;
 pub mod gizmo_system;
 pub mod gpu_timing;
+// The render-graph abstraction (`FramePacket`, `RenderPass`, `Viewport`) is a
+// thin re-export of `ferrous_render_graph` and is consumed by the 2D `ui_pass`,
+// so it stays available in Flat2D builds.  It owns no 3D resources.
 pub mod graph;
 pub mod materials;
 pub mod passes;
@@ -58,6 +71,7 @@ pub use renderer_api::*;
 
 // Re-export resource management types
 pub use renderer_resource::MaterialRegistry;
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub use resources::SsaoResources;
 
 // Re-export render pass types.  `RendererPasses` is a dead, unwired duplicate
@@ -65,17 +79,24 @@ pub use resources::SsaoResources;
 // the crate re-exports it publicly and an external consumer cannot be ruled
 // out from this workspace (see the type's deprecation note).  New code must
 // use `Renderer`.
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 #[allow(deprecated)]
 pub use renderer_passes::RendererPasses;
 
-// Re-export commonly used types from renderer_core
+// The UI-batch recycler is always compiled; the 3D builder and every 3D pass
+// type are re-exported only when the 3D renderer is compiled.
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub use renderer_core::{
-    Camera, CameraSystem, CelShadedPass, Controller, FlatShadedPass, FrameBuilder, GizmoSystem,
-    GpuCamera, InstanceBuffer, InstancingPipeline, OutlinePass, PostProcessPass, PrePass,
-    RenderPass, RenderStats, RenderTarget, RenderTargetHandle, SsaoBlurPass, SsaoPass,
-    TextureUpdateError, Viewport, WorldPass,
+    Camera, CameraSystem, CelShadedPass, Controller, FlatShadedPass, GizmoSystem, GpuCamera,
+    InstanceBuffer, InstancingPipeline, OutlinePass, PostProcessPass, PrePass, SsaoBlurPass,
+    SsaoPass, WorldBuilder, WorldPass,
+};
+pub use renderer_core::{
+    FrameBuilder, RenderPass, RenderStats, RenderTarget, RenderTargetHandle, TextureUpdateError,
+    Viewport,
 };
 // Antialiasing
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub use passes::{AntialiasingMode, AntialiasingPass, FxaaParams};
 
 // Runtime render/performance configuration (Part 1/2 of the 2D performance pass)
@@ -92,8 +113,10 @@ pub type Frame2dStats = Frame2dCounters;
 pub use static_2d::Static2dBatchId;
 
 // Re-export geometry types
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub use geometry::{Mesh, Vertex};
 // Re-export scene types
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub use scene::{Aabb, Frustum, GizmoDraw, SceneData};
 // Re-export material types from ferrous_core
 pub use ferrous_core::scene::{

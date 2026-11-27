@@ -14,6 +14,14 @@ use ferrous_core::Color;
 use winit::window::Window;
 
 /// Shows `window`: its content is the frame that was just presented.
+///
+/// After the show it takes the keyboard. A window created hidden is normally
+/// activated by `ShowWindow`, but Windows applies the process's `STARTUPINFO`
+/// show command to the *first* `ShowWindow`, so an app launched by a harness
+/// (or any launcher that asked for a hidden window) appears without focus and
+/// never receives typing. An app the user launched must take focus, so ask for
+/// it explicitly (prompt 15 Phase 9D finding 4). Popups are separate: they are
+/// created `WS_EX_NOACTIVATE` and never come through here.
 pub(crate) fn show_ready(window: &Window) {
     #[cfg(target_os = "windows")]
     if let Ok(handle) = window.window_handle() {
@@ -22,6 +30,7 @@ pub(crate) fn show_ready(window: &Window) {
         }
     }
     window.set_visible(true);
+    window.focus_window();
 }
 
 /// Shows `window` painted with `background` because the first frame is late.
@@ -78,6 +87,7 @@ pub(crate) fn show_timeout(window: &Window, background: Color) {
     }
     #[cfg(not(target_os = "windows"))]
     window.set_visible(true);
+    window.focus_window();
 }
 
 /// Sets the window class background brush to `background`, once per colour.

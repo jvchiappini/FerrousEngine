@@ -1,4 +1,4 @@
-#[cfg(not(target_arch = "wasm32"))]
+use crate::image_binding::{ImageBindingMode, SEPARATE_TEXTURE_SLOTS};
 use crate::MAX_TEXTURE_SLOTS;
 use std::num::NonZeroU64;
 use wgpu::{
@@ -8,6 +8,8 @@ use wgpu::{
 };
 
 pub struct Layouts {
+    /// Which image-binding strategy [`Self::image_layout`] implements.
+    pub image_mode: ImageBindingMode,
     pub uniform_layout: BindGroupLayout,
     pub font_layout: BindGroupLayout,
     pub image_layout: BindGroupLayout,
@@ -63,36 +65,35 @@ impl Layouts {
             ],
         });
 
-        #[cfg(not(target_arch = "wasm32"))]
-        let image_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("GUI Image Bind Group Layout"),
-            entries: &[
-                BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: ShaderStages::FRAGMENT,
-                    ty: BindingType::Texture {
-                        sample_type: TextureSampleType::Float { filterable: true },
-                        view_dimension: TextureViewDimension::D2,
-                        multisampled: false,
+        let image_mode = ImageBindingMode::for_features(device.features());
+        let image_layout = if image_mode.is_bindless() {
+            device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+                label: Some("GUI Image Bind Group Layout"),
+                entries: &[
+                    BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: ShaderStages::FRAGMENT,
+                        ty: BindingType::Texture {
+                            sample_type: TextureSampleType::Float { filterable: true },
+                            view_dimension: TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: std::num::NonZeroU32::new(MAX_TEXTURE_SLOTS),
                     },
-                    count: std::num::NonZeroU32::new(MAX_TEXTURE_SLOTS),
-                },
-                BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: ShaderStages::FRAGMENT,
-                    ty: BindingType::Sampler(SamplerBindingType::Filtering),
-                    count: std::num::NonZeroU32::new(MAX_TEXTURE_SLOTS),
-                },
-            ],
-        });
-
-        #[cfg(target_arch = "wasm32")]
-        let image_layout = {
+                    BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: ShaderStages::FRAGMENT,
+                        ty: BindingType::Sampler(SamplerBindingType::Filtering),
+                        count: std::num::NonZeroU32::new(MAX_TEXTURE_SLOTS),
+                    },
+                ],
+            })
+        } else {
             let mut entries = Vec::new();
-            // We use 8 slots on Web for better compatibility with binding limits (max 16 textures per stage usually).
-            for i in 0..8 {
+            // GL/WebGL2/older Android: one texture + sampler binding per slot.
+            for i in 0..SEPARATE_TEXTURE_SLOTS {
                 entries.push(BindGroupLayoutEntry {
-                    binding: (i * 2) as u32,
+                    binding: i * 2,
                     visibility: ShaderStages::FRAGMENT,
                     ty: BindingType::Texture {
                         sample_type: TextureSampleType::Float { filterable: true },
@@ -102,14 +103,14 @@ impl Layouts {
                     count: None,
                 });
                 entries.push(BindGroupLayoutEntry {
-                    binding: (i * 2 + 1) as u32,
+                    binding: i * 2 + 1,
                     visibility: ShaderStages::FRAGMENT,
                     ty: BindingType::Sampler(SamplerBindingType::Filtering),
                     count: None,
                 });
             }
             device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-                label: Some("GUI Image Bind Group Layout (Web)"),
+                label: Some("GUI Image Bind Group Layout (Separate)"),
                 entries: &entries,
             })
         };
@@ -202,6 +203,7 @@ impl Layouts {
         });
 
         Self {
+            image_mode,
             uniform_layout,
             font_layout,
             image_layout,

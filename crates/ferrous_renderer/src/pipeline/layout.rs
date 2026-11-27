@@ -84,6 +84,30 @@ pub struct PipelineLayouts {
     pub cull_params: Arc<wgpu::BindGroupLayout>,
 }
 
+/// The group(0) camera uniform bind-group layout used by every 3-D pipeline.
+///
+/// Exposed so a lazily built [`CameraSystem`](crate::CameraSystem) can create
+/// its bind group before the full 3-D [`PipelineLayouts`] exist; two layouts
+/// with these entries are mutually compatible.
+pub(crate) fn create_camera_bind_group_layout(device: &wgpu::Device) -> Arc<wgpu::BindGroupLayout> {
+    Arc::new(
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Layout: Camera"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                // eye_pos is read in the fragment shader for PBR view vector.
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        }),
+    )
+}
+
 impl PipelineLayouts {
     pub fn new(device: &wgpu::Device) -> Self {
         let _static_uniform_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
@@ -97,22 +121,7 @@ impl PipelineLayouts {
             count: None,
         };
 
-        let camera = Arc::new(
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Layout: Camera"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    // eye_pos is read in the fragment shader for PBR view vector.
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            }),
-        );
+        let camera = create_camera_bind_group_layout(device);
 
         // Model layout uses a dynamic offset so all per-object matrices live
         // in one buffer and we only switch the offset, not the bind group.
@@ -412,11 +421,7 @@ impl PipelineLayouts {
         let outline_lights = Arc::new(device.create_bind_group_layout(
             &wgpu::BindGroupLayoutDescriptor {
                 label: Some("Layout: Outline Lights"),
-                entries: &[
-                    dir_light_entry,
-                    cel_params_entry,
-                    outline_color_entry,
-                ],
+                entries: &[dir_light_entry, cel_params_entry, outline_color_entry],
             },
         ));
 

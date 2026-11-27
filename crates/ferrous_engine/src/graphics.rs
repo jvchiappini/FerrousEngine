@@ -210,16 +210,32 @@ pub fn pipeline_cache_key(info: &wgpu::AdapterInfo) -> String {
     format!("{hash:032x}")
 }
 
-/// Whether an adapter exposes everything the engine renderer needs.
+/// Adapter features a renderer in `mode` actually requires.
 ///
-/// A backend that cannot provide [`ENGINE_ADAPTER_FEATURES`] (GL in wgpu 23
-/// lacks texture binding arrays) is skipped with a warning instead of failing
-/// later inside a `create_bind_group_layout` validation.
-fn adapter_is_usable(adapter: &wgpu::Adapter) -> bool {
-    let missing = ENGINE_ADAPTER_FEATURES.difference(adapter.features());
+/// A UI-only `Flat2D` renderer (and a `Pure2D` one) draws the GUI with either
+/// the bindless descriptor array or the separate-binding fallback, so it can
+/// run on a GL adapter that has neither texture-array feature.  `Full3D` keeps
+/// the historical requirement because the 3-D materials/passes were built for
+/// the bindless path.
+#[must_use]
+fn required_adapter_features(mode: RendererMode) -> wgpu::Features {
+    match mode {
+        RendererMode::Flat2D | RendererMode::Pure2D => wgpu::Features::empty(),
+        RendererMode::Full3D => ENGINE_ADAPTER_FEATURES,
+    }
+}
+
+/// Whether an adapter exposes everything a renderer in `mode` needs.
+///
+/// A backend that cannot provide the mode's requirements is skipped with a
+/// warning instead of failing later inside a `create_bind_group_layout`
+/// validation.  `Flat2D` accepts GL because the GUI image pass now has a
+/// capability-selected separate-binding path.
+fn adapter_is_usable(adapter: &wgpu::Adapter, mode: RendererMode) -> bool {
+    let missing = required_adapter_features(mode).difference(adapter.features());
     if !missing.is_empty() {
         log::warn!(
-            "adapter {} cannot run the engine: missing {missing:?}",
+            "adapter {} cannot run a {mode:?} renderer: missing {missing:?}",
             adapter.get_info().name
         );
     }
@@ -435,7 +451,7 @@ impl GraphicsState {
                     // both and drops the GPU state last); wgpu requires the
                     // 'static surface form for this pattern.
                     let surface: wgpu::Surface<'static> = unsafe { std::mem::transmute(surface) };
-                    if adapter_is_usable(&probe.adapter)
+                    if adapter_is_usable(&probe.adapter, init.mode)
                         && probe.adapter.is_surface_supported(&surface)
                     {
                         chosen = Some((probe.instance, probe.adapter, surface));
@@ -474,7 +490,7 @@ impl GraphicsState {
                     Some(&surface),
                     power,
                 )) {
-                    Ok(adapter) if adapter_is_usable(&adapter) => {
+                    Ok(adapter) if adapter_is_usable(&adapter, init.mode) => {
                         startup::mark("engine: adapter");
                         chosen = Some((instance, adapter, surface));
                         break;
@@ -493,11 +509,24 @@ impl GraphicsState {
         }
 
         let Some((instance, adapter, surface)) = chosen else {
-            panic!(
-                "no usable wgpu adapter: every configured backend either had no adapter or \
-                 lacks {ENGINE_ADAPTER_FEATURES:?}; install a GPU driver or set WGPU_BACKEND \
-                 to Vulkan or DX12"
+            // Prompt 15 Phase 9D addendum: a developer who asked for one backend
+            // gets a named, actionable error instead of a Rust panic/backtrace.
+            let requested = init.backend_order();
+            let names = requested
+                .iter()
+                .map(|backend| format!("{backend:?}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let required = required_adapter_features(init.mode);
+            let message = format!(
+                "FerrousEngine cannot start: no usable GPU backend among [{names}]. Every \
+                 requested backend had no adapter or lacks {required:?}. \
+                 Install or update the GPU driver, or choose another backend with WGPU_BACKEND \
+                 (vulkan, dx12, gl) or App::with_backend/with_backends."
             );
+            log::error!("{message}");
+            eprintln!("{message}");
+            std::process::exit(2);
         };
 
         // Seed the pipeline cache from the previous run on the same adapter.

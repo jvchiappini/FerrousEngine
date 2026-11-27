@@ -6,6 +6,9 @@ edition = "2021"
 [dependencies]
 ferrous_2d = { path = "../ferrous_2d" }
 ferrous_font = { path = "../ferrous_font" }
+# Phase 9D Lane C: backend features are selected above; the `default-features`
+# switch belongs in the workspace root entry (edition 2021 members cannot
+# reliably override it).  The normal build is unchanged.
 wgpu = { workspace = true }
 anyhow = "1.0"
 thiserror = "1.0"
@@ -17,7 +20,9 @@ ferrous_gui = { path = "../ferrous_gui", optional = true }
 ferrous_ui_render = { path = "../ferrous_ui_render", optional = true }
 bytemuck = { version = "1.14", features = ["derive"] }
 glam = { workspace = true }
-image = { version = "0.25", optional = true, default-features = false, features = ["png", "jpeg"] }
+# Phase 9D Lane C: the decoder formats are selected by the `image-png` /
+# `image-jpeg` features below instead of being forced on with the dependency.
+image = { version = "0.25", optional = true, default-features = false }
 ferrous_assets = { path = "../ferrous_assets", optional = true }
 log = "0.4"
 fontmesh = "0.4.1"
@@ -50,9 +55,41 @@ name = "subsystems"
 harness = false
 
 [features]
-default = ["gui"]
+default = ["gui", "render-3d"]
 gui = ["dep:ferrous_gui", "dep:ferrous_ui_render"]
-image = ["dep:image"]
+
+# Phase 9D Lane C: the 3-D renderer (world/HDR/IBL/post pipelines and their
+# resources).  The runtime `RendererMode::Flat2D` path already skips *building*
+# them; this feature is the compile-time switch that removes them from a
+# UI-only binary.  It is on by default so the normal build is unchanged.
+# The module gates use `any(render-3d, not(flat2d))`, so the Pure2D harness and
+# Motioner's `motioner_render` (which build with `default-features = false`) keep
+# the 3D modules and stay behaviour-identical.  Only the opt-in `flat2d`
+# selection removes them:
+#   cargo build -p ferrous_renderer --no-default-features --features flat2d,gui
+render-3d = []
+flat2d = []
+
+# Image decoders.  `image` keeps the previous behaviour (PNG + JPEG); a
+# minimal build can pick only the format it actually loads.
+image = ["image-png", "image-jpeg"]
+image-png = ["dep:image", "image/png"]
+image-jpeg = ["dep:image", "image/jpeg"]
+
+# Phase 9D Lane C: wgpu backend selection, forwarded to the workspace `wgpu`
+# dependency.  These are additive; the default build keeps wgpu's current
+# backend set because the workspace dependency still enables default features.
+# A minimal Flat2D binary selects only the backends its target uses.
+# wgpu 23 has no `vulkan` feature: Windows/Linux enable it through wgpu-core's
+# target dependency, so this is a marker that keeps the name explicit.
+wgpu-vulkan = []
+wgpu-dx12 = ["wgpu/dx12"]
+# wgpu 23's GLES backend is `wgpu-core/gles`, exposed by wgpu as `webgl`.
+wgpu-gl = ["wgpu/webgl"]
+wgpu-metal = ["wgpu/metal"]
+wgpu-webgpu = ["wgpu/webgpu"]
+wgpu-webgl = ["wgpu/webgl"]
+wgpu-wgsl = ["wgpu/wgsl"]
 
 # Enable GPU-driven indirect draw path.  When disabled the renderer compiles
 # only the legacy CPU-driven `draw_indexed` path.

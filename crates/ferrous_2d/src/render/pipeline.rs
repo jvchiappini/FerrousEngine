@@ -216,7 +216,10 @@ fn build_blend_bank<'a>(
 }
 
 /// Shared bind-group layout for the 2D camera uniform (group 0).
-fn create_camera_bind_group_layout(device: &wgpu::Device, label: &str) -> wgpu::BindGroupLayout {
+pub(crate) fn create_camera_bind_group_layout(
+    device: &wgpu::Device,
+    label: &str,
+) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some(label),
         entries: &[wgpu::BindGroupLayoutEntry {
@@ -270,6 +273,118 @@ pub(crate) fn create_shader(
         label: Some(label),
         source: wgpu::ShaderSource::Wgsl(source.into()),
     })
+}
+
+/// Device and target parameters used to build a 2-D pipeline set later.
+///
+/// Stored by [`LazyPipeline`]; the engine's Pure2D renderer builds its
+/// pipeline banks on first use instead of at construction.
+#[derive(Clone)]
+pub struct PipelineConfig {
+    /// Device the pipelines belong to.
+    pub device: Arc<wgpu::Device>,
+    /// Colour target format.
+    pub output_format: wgpu::TextureFormat,
+    /// Depth attachment format, if the path uses one.
+    pub depth_format: Option<wgpu::TextureFormat>,
+    /// MSAA sample count.
+    pub sample_count: u32,
+    /// Optional shared pipeline cache (Vulkan).
+    pub cache: Option<Arc<wgpu::PipelineCache>>,
+}
+
+/// A 2-D pipeline bank built on first use.
+///
+/// `Renderer2d` stores one per kind (sprite, shape, text, mesh, grid).  Reading
+/// the field materializes the bank through the stored builder and records one
+/// `pipeline: <label> (<ms>)` startup mark, so a UI that only draws shapes never
+/// compiles the sprite, text or mesh banks.  The existing `Renderer2d::new*`
+/// constructors keep building eagerly by pre-filling the cell.
+pub struct LazyPipeline<T> {
+    cell: std::sync::OnceLock<T>,
+    config: PipelineConfig,
+    builder: fn(&PipelineConfig) -> T,
+    label: &'static str,
+}
+
+impl<T> LazyPipeline<T> {
+    /// Creates a pipeline bank that is built on first access.
+    pub fn lazy(
+        config: PipelineConfig,
+        builder: fn(&PipelineConfig) -> T,
+        label: &'static str,
+    ) -> Self {
+        Self {
+            cell: std::sync::OnceLock::new(),
+            config,
+            builder,
+            label,
+        }
+    }
+
+    /// Creates a pre-built bank (the eager `Renderer2d::new*` path).
+    pub fn ready(
+        config: PipelineConfig,
+        builder: fn(&PipelineConfig) -> T,
+        value: T,
+        label: &'static str,
+    ) -> Self {
+        let cell = std::sync::OnceLock::new();
+        let _ = cell.set(value);
+        Self {
+            cell,
+            config,
+            builder,
+            label,
+        }
+    }
+
+    /// Whether the bank has been built.
+    #[must_use]
+    pub fn is_ready(&self) -> bool {
+        self.cell.get().is_some()
+    }
+
+    /// Builds the bank if needed and returns it.
+    pub fn ensure(&self) -> &T {
+        std::ops::Deref::deref(self)
+    }
+}
+
+impl<T> std::ops::Deref for LazyPipeline<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        if let Some(value) = self.cell.get() {
+            return value;
+        }
+        let builder = self.builder;
+        let config = &self.config;
+        let label = self.label;
+        self.cell.get_or_init(|| {
+            let start = std::time::Instant::now();
+            let value = builder(config);
+            ferrous_core::startup::mark(&format!(
+                "pipeline: {label} ({:.1} ms)",
+                start.elapsed().as_secs_f64() * 1000.0
+            ));
+            value
+        })
+    }
+}
+
+impl<T> std::ops::DerefMut for LazyPipeline<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        if self.cell.get().is_none() {
+            let builder = self.builder;
+            let config = &self.config;
+            let value = (builder)(config);
+            let _ = self.cell.set(value);
+        }
+        self.cell
+            .get_mut()
+            .expect("the pipeline bank was just materialized")
+    }
 }
 
 /// Render pipelines and bind-group layouts for textured 2D sprites.

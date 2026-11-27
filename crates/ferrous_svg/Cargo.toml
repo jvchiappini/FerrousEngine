@@ -4,6 +4,17 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-lyon_tessellation = "1.0"
-lyon_svg = "0.13" # The more common SVG parser for lyon
 bytemuck = { version = "1.16", features = ["derive"] }
+# Phase 9D Lane C: the SVG parser (`lyon_svg`) and the tessellator
+# (`lyon_tessellation`) are optional so a build that never parses SVG does not
+# link them.  The `SvgMesh` / `SvgVertex` / `SvgRect` types stay available
+# unconditionally; only `SvgMesh::from_str` needs the `parser` feature.
+lyon_tessellation = { version = "1.0", optional = true }
+lyon_svg = { version = "0.13", optional = true } # The more common SVG parser for lyon
+
+[features]
+# `parser` is on by default so the normal build is behaviour-identical.
+# Disable it with `default-features = false` on a consumer that renders icons
+# from pre-built meshes instead of SVG/path strings.
+default = ["parser"]
+parser = ["dep:lyon_tessellation", "dep:lyon_svg"]

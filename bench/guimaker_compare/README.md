@@ -10,10 +10,16 @@ binary size, plus a feature table. Where GUIMaker is not the lightest, the
 result is either a profile and a fix in the engine/GUIMaker or a precise
 measured reason.
 
+**The enforceable rules are in `PROTOCOL.md`.** This README only describes the
+apps. The harness measures presents from the OS (PresentMon, else `wpr` ETW),
+captures each app's own window with `PrintWindow`, names every top thread, and
+requires the raw-API floor apps (`floor-wgpu-vulkan`, `floor-wgpu-dx12`,
+`floor-wgpu-gl`, `floor-glow`) in every backend tier.
+
 ## The start screen (one spec, every app)
 
-`1280 x 800` logical, DPI scale `1.5`, dark palette. The structure is the
-`start_screen` recipe:
+`1280 x 800` logical, monitor DPI (nothing forces a scale), dark palette. The
+structure is the `start_screen` recipe:
 
 1. A wrapping header: brand "Motioner" + tagline "Code-driven motion graphics"
    on the left; "Settings" and "Docs" links on the right.
@@ -30,23 +36,18 @@ The colours are the GUIMaker dark theme: `#06080D` page, `#0F1217` cards,
 `#0B0D13` input wells, `#181B20` raised, `#26292F` borders, `#F1F5FE` text,
 `#ADB1B9` muted, `#71757C` faint, `#2750C7` accent.
 
-Each binary takes `--measure` and, after the first frame, samples for a fixed
-window and prints one JSON object on stdout with the schema in
-`results/schema.json`. The harness (`run_compare.py`, written with the
-measurement lane) runs five release runs per app, keeps the raw JSON and
-reports median and range.
+Each binary takes `--seconds N` and `--fonts roboto|default`. The harness
+(`run_compare.py`) runs five release runs per scenario, keeps the raw JSON and
+reports median and range. Self-reported counters are cross-checks only.
 
-## Measurement rules (do not relax)
+## Measurement rules
 
-- Release builds, on this machine, with the same vsync mode (Fifo), window
-  size and DPI for every app.
-- Five runs per app; report median and range, never a single sample.
-- **Stop before measuring and ask the user to free the host.** Close other
-  apps, then run the baseline perf sweep and the comparison. Resume only after
-  the user confirms.
-- Raw JSON goes to `results/`, one file per library and run, so a later phase
-  can detect a regression.
-- C: must stay above 5 GB; if it drops below, stop and report; delete nothing.
+See `PROTOCOL.md` for the complete list. In short: external presents, no file
+polling, `PrintWindow` on the app's own HWND only, the same Roboto bytes and
+monitor DPI everywhere, one table per backend tier with a clear-only floor,
+five alternating runs, named threads, ETW wakeups, GPU memory from one source,
+and **ask the user to free the host before measuring** (C: stays above 5 GB;
+delete nothing).
 
 ## Feature table (fill from the apps, not from marketing)
 
@@ -62,33 +63,22 @@ reports median and range.
 
 ## Results schema
 
-```json
-{
-  "library": "guimaker",
-  "run": 1,
-  "startup_ms": 0.0,
-  "idle_cpu_pct": 0.0,
-  "idle_frames": 0,
-  "hover_cpu_pct": 0.0,
-  "typing_cpu_pct": 0.0,
-  "rss_bytes": 0,
-  "gpu_bytes": 0,
-  "binary_bytes": 0,
-  "features": {
-    "cjk": true,
-    "emoji": true,
-    "popups_outside_window": true,
-    "per_monitor_dpi": true,
-    "ime": true
-  }
-}
-```
+`results/schema.json` is the machine-readable schema. The Phase 9D additions
+(external frames/startup, named threads, ETW wakeups, GPU source, pixel diff,
+backend/present mode, versions, fonts) are listed in `PROTOCOL.md` section 8.
+The old field names (`startup_ms`, `idle_cpu_pct`, `idle_frames`, `rss_bytes`,
+`gpu_bytes`) are still written; `idle_frames` is an alias of the external
+present count.
 
 ## Build and run (from this directory)
 
 ```powershell
 cargo build --release --workspace
-python run_compare.py --runs 5 --out results
+python run_compare.py --dry-run
+# after the user frees the host:
+python run_compare.py --confirmed-host-free --runs 5 --out results
+# refresh the marked Performance sections in both READMEs from results/
+python run_compare.py --render-only     # or pass --write-readme to the run above
 ```
 
 ## Status

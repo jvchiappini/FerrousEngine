@@ -18,7 +18,7 @@ use std::sync::Arc;
 use wgpu::CommandEncoder;
 use wgpu::TextureView;
 
-use crate::frame_builder::FrameBuilder;
+use crate::frame_builder::WorldBuilder;
 use crate::gizmo_system::GizmoSystem;
 #[cfg(feature = "gui")]
 use crate::graph::frame_packet::CameraPacket;
@@ -77,7 +77,7 @@ pub struct RendererPasses {
     pub camera_system: CameraSystem,
 
     // Frame building and statistics
-    pub frame_builder: FrameBuilder,
+    pub frame_builder: WorldBuilder,
     pub render_stats: RenderStats,
 
     // Built-in passes (references)

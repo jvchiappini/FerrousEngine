@@ -6,7 +6,7 @@ edition = "2021"
 # core types depend on simple math utilities; use the workspace version of glam
  [dependencies]
  glam = { workspace = true }
- wgpu = { version = "23.0", optional = true }
+ wgpu = { workspace = true, optional = true }
  anyhow = "1.0"
  thiserror = "1.0"
  # needed for input types and later editor/event loop

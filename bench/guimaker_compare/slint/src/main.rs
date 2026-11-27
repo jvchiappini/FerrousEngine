@@ -3,9 +3,9 @@
 //!
 //! The whole UI lives in the `slint!` macro (no build.rs). Slint only repaints
 //! on demand, so a 60 Hz Rust `Timer` requests a redraw and counts view ticks;
-//! that tick count is the reported "frames". `SLINT_SCALE_FACTOR=1.5` is
-//! Slint's documented-but-unstable scale override (see slint-ui/slint#4418),
-//! and the window is 1280x800 logical.
+//! that tick count is the reported "frames". No forced scale factor: the window
+//! is 1280x800 logical and Slint follows the monitor DPI. `--fonts roboto`
+//! (default) registers the shared Roboto bytes before the window is created.
 
 use std::io::Write;
 use std::sync::{
@@ -90,7 +90,10 @@ slint::slint! {
         width: 1280px;
         height: 800px;
         background: #06080D;
+        default-font-family: "Roboto";
         in-out property <string> bench-text;
+        in-out property <bool> bench-menu-open;
+        in property <bool> show-fallback;
 
         VerticalLayout {
             x: 0;
@@ -208,6 +211,15 @@ slint::slint! {
             font-size: 12px;
         }
 
+        Text {
+            x: 40px;
+            y: parent.height - 112px;
+            visible: root.show-fallback;
+            text: "漢字 🎬 ✨";
+            color: #ADB1B9;
+            font-size: 13px;
+        }
+
         HorizontalLayout {
             x: 40px;
             y: parent.height - 76px;
@@ -255,26 +267,84 @@ slint::slint! {
                 }
                 bench-btn := TouchArea { }
             }
+
+            Rectangle {
+                width: 140px;
+                height: 36px;
+                background: bench-menu-btn.has-hover ? #26292F : #181B20;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: #26292F;
+
+                Text {
+                    text: "Bench menu";
+                    color: #F1F5FE;
+                    font-size: 14px;
+                    width: parent.width;
+                    height: parent.height;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                bench-menu-btn := TouchArea {
+                    clicked => {
+                        root.bench-menu-open = !root.bench-menu-open;
+                    }
+                }
+            }
+        }
+
+        // Toggleable bench menu, same logical position in every app.
+        Rectangle {
+            x: 540px;
+            y: parent.height - 200px;
+            width: 180px;
+            height: 96px;
+            visible: root.bench-menu-open;
+            background: #0F1217;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: #26292F;
+
+            VerticalLayout {
+                x: 10px;
+                y: 8px;
+                width: parent.width - 20px;
+                spacing: 6px;
+                Text { text: "Bench item 1"; color: #F1F5FE; font-size: 14px; }
+                Text { text: "Bench item 2"; color: #F1F5FE; font-size: 14px; }
+                Text { text: "Bench item 3"; color: #F1F5FE; font-size: 14px; }
+            }
         }
     }
 }
 
-fn parse_seconds() -> f64 {
-    std::env::args()
-        .skip_while(|arg| arg != "--seconds")
-        .nth(1)
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(8.0)
+fn parse_arg(name: &str) -> Option<String> {
+    std::env::args().skip_while(|arg| arg != name).nth(1)
+}
+
+fn register_roboto() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../assets/fonts/Roboto-Regular.ttf");
+    if let Err(error) = i_slint_common::sharedfontdb::register_font_from_path(&path) {
+        eprintln!("roboto registration failed: {error}");
+    }
 }
 
 fn main() -> Result<(), slint::PlatformError> {
-    // Undocumented (but supported) Slint override; must be set before the
-    // window is created.
-    std::env::set_var("SLINT_SCALE_FACTOR", "1.5");
+    let seconds = parse_arg("--seconds")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(8.0);
+    let fonts = parse_arg("--fonts").unwrap_or_else(|| "roboto".to_string());
+    println!("backend gl");
+    println!("present_mode fifo");
+    println!("fonts {}", fonts);
+    if fonts != "default" {
+        register_roboto();
+    }
 
-    let seconds = parse_seconds();
     let started = Instant::now();
     let ui = AppWindow::new()?;
+    ui.set_show_fallback(fonts == "default");
 
     // Slint paints on demand: no repeated timer, so an idle window is idle.
     // One single-shot reports the first frame; a watchdog prints the frame

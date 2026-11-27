@@ -143,6 +143,154 @@ exactly those backends. A backend whose adapter lacks
 pipeline validation; GL in wgpu 23 is such a backend. See
 [GL is rejected for Flat2D](#gl-is-rejected-for-flat2d) below.
 
+### Choosing a backend from code
+
+The automatic per-OS order above is only the **default**. A developer can pick
+any backend the engine was compiled with:
+
+```rust
+use ferrous_engine::{App, Backend};
+
+// One backend, readable shorthand:
+App::new(MyApp).with_backend(Backend::Dx12).run();
+
+// A custom ordered fallback list:
+App::new(MyApp)
+    .with_backends([wgpu::Backends::GL, wgpu::Backends::VULKAN])
+    .run();
+```
+
+`Backend` is `Vulkan`, `Dx12`, `Gl`, `Metal`, `WebGpu`; `Backend::parse` reads
+the same names as `WGPU_BACKEND`. At run time `WGPU_BACKEND` wins over both
+methods, so a shipped choice can be overridden without a rebuild.
+
+Every backend the engine is compiled with runs the same app. If the machine has
+no adapter for the requested one, the engine stops with a named error that lists
+the requested backends and how to change them (exit code 2), instead of a panic
+or a silent fallback:
+
+```text
+FerrousEngine cannot start: no usable GPU backend among [GL]. Every requested
+backend had no adapter or lacks TEXTURE_BINDING_ARRAY | ... . Install or update
+the GPU driver, or choose another backend with WGPU_BACKEND (vulkan, dx12, gl)
+or App::with_backend/with_backends.
+```
+
+A per-backend smoke run on this host (the app must reach its first frame):
+
+```powershell
+foreach ($b in "vulkan","dx12","gl") {
+    $env:WGPU_BACKEND = $b
+    $env:FERROUS_TRACE_STARTUP = "1"
+    cargo run --release -p guimaker-compare-guimaker -- --seconds 4 2>&1 |
+        Select-String "engine: first frame presented|no usable GPU backend"
+}
+Remove-Item Env:WGPU_BACKEND,Env:FERROUS_TRACE_STARTUP
+```
+
+GL reaches the first frame only after the non-bindless GUI image path lands
+(prompt 15 Phase 9D Lane A); until then it stops with the named error above.
+
+### Measuring the per-backend startup breakdown
+
+The trace is the measurement tool for the backend decision (`G-0013`). Keep the
+binary and the scenario identical across backends; change only `WGPU_BACKEND`
+(and, for DX12, `FERROUS_DX12_COMPILER`). Read these marks and their deltas:
+
+| Mark | What it isolates |
+|---|---|
+| `engine: entry` | process entry to `App::run` (loader/Defender are outside) |
+| `engine: window created` | winit window creation, overlaps the GPU probe |
+| `engine: instance` | `wgpu::Instance` creation for that one backend |
+| `engine: adapter` | adapter enumeration and selection |
+| `engine: device` | `request_device` and the pipeline cache load |
+| `engine: surface configured` | swapchain creation/configure |
+| `engine: renderer built` | every pipeline compile (the DX12 cost) |
+| `engine: first frame presented` | the first full frame, the headline number |
+| `engine: window visible` | the first composed frame the user sees |
+
+`engine: renderer build (worker)` is the same `Renderer::new` span on the
+worker. The start of the run to `engine: entry` is not traced; call
+`startup::begin_from_env()` as the first statement of `main` if the loader cost
+matters.
+
+#### Cold and warm
+
+`Renderer::new` is the phase that changes most between runs. Measure both:
+
+- **Cold:** point the pipeline cache at a **fresh directory under `out/`**, e.g.
+  `out/pipeline-cache-cold-vulkan-1`, for every cold run. wgpu's Vulkan cache is
+  the only one that speeds this up in wgpu 23, so a cold run is the honest
+  pipeline-build cost. Do **not** delete `%LOCALAPPDATA%\<app>\cache\pipelines`
+  (or any existing cache): leave prior caches in place and give the cold run its
+  own directory.
+- **Warm:** immediately repeat the same binary with the same cache directory the
+  cold run just populated. A warm run after a rebuild is not warm.
+
+A harness that owns `AppConfig` sets it with
+`PipelineCacheConfig { directory: Some(PathBuf::from("out/pipeline-cache-...")),
+..PipelineCacheConfig::for_app("guimaker-compare-guimaker") }`; when the
+compare app does not expose the directory, the default is
+`%LOCALAPPDATA%\guimaker-compare-guimaker\cache\pipelines` and a cold run needs
+a fresh OS account or a copied-out cache directory rather than a deletion.
+
+#### Five runs, alternating
+
+Run every backend five times, alternating cold then warm, and alternate the
+backends as well so driver/Defender drift shows up:
+
+```
+vulkan cold, vulkan warm, dx12 cold, dx12 warm, gl cold, gl warm,
+vulkan cold, vulkan warm, dx12 cold, dx12 warm, ...
+```
+
+Keep one process per launch and a clean environment per run (clear
+`WGPU_BACKEND`, `FERROUS_DX12_COMPILER`, `VK_LOADER_*` before setting the next
+run's values). Record the median and the min/max; a single run is not evidence.
+The DX12 renderer build is longer than the 3 s bench watchdog, so pass
+`--seconds 15` (as `G-0012` did). DX12 ignores wgpu's pipeline cache in wgpu 23,
+so its warm run only benefits from the OS file cache; keep cold and warm labelled
+correctly anyway.
+
+#### Proving DXC actually loaded (DX12)
+
+`FERROUS_DX12_COMPILER=dynamic_dxc` (or `dxc`, with the `dxc` feature) only
+measures DXC if `dxcompiler.dll` and `dxil.dll` are found. wgpu-hal logs the
+decision at debug level:
+
+```powershell
+$env:RUST_LOG = "wgpu_hal=debug"
+$env:WGPU_BACKEND = "dx12"
+$env:FERROUS_DX12_COMPILER = "dynamic_dxc"
+$env:FERROUS_TRACE_STARTUP = "1"
+cargo run --release -p guimaker-compare-guimaker --features ferrous_engine/dxc -- --seconds 15
+```
+
+A DXC run prints `Using DXC for shader compilation`; an FXC run prints
+`Using FXC for shader compilation`. If `dxcompiler.dll` or `dxil.dll` is missing
+wgpu logs `Failed to load dxcompiler.dll. Defaulting to FXC instead` (same for
+`dxil.dll`) and then the FXC line, so that launch measured FXC. The application
+must initialise a logger for these lines to appear (the compare apps do). A run
+without the DXC line is an FXC sample, not a DXC sample.
+
+#### Vulkan loader layers
+
+`VK_LOADER_DEBUG=layer` makes the Vulkan loader print the layers it enumerates
+and enables, which is how a measurement explains an instance/adapter outlier
+caused by an implicit layer (Steam, RTSS, a vendor overlay).
+`VK_LOADER_LAYERS_DISABLE=~implicit~` disables every implicit layer for one
+run, so the same binary can be compared with and without them:
+
+```powershell
+$env:VK_LOADER_DEBUG = "layer"
+$env:VK_LOADER_LAYERS_DISABLE = "~implicit~"   # diagnostic only
+```
+
+This is diagnostic only. The engine must **never** set `VK_LOADER_LAYERS_DISABLE`
+(or any other loader switch) by default: a user's implicit layers are the user's
+choice, and silently disabling them hides validation and tooling. Report the
+before/after numbers; do not change the app's default environment.
+
 ### GL is rejected for Flat2D
 
 `WGPU_BACKEND=gl` is accepted by the configuration path (it becomes a
@@ -155,10 +303,14 @@ one-element backend list), but it cannot run the Flat2D renderer today:
   `TEXTURE_BINDING_ARRAY | SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING`.
 - wgpu 23's GL adapter does not expose those features, so the probe logs
   `adapter ... cannot run the engine: missing ...` and the re-probe rejects it
-  too; the run then panics with `no usable wgpu adapter`.
+  too; the run then stops with the named `no usable GPU backend` error (exit
+  code 2, no panic).
 - That is a capability limit of the GUI image path, not a bug in the backend
-  request. GL is therefore **not** a Flat2D startup measurement option; do not
-  report a GL number unless the engine drops the texture-array requirement.
+  request. Until the non-bindless image path lands (prompt 15 Phase 9D Lane A),
+  GL is **not** a Flat2D startup measurement option; do not report a GL number
+  before it does. Once it lands, `WGPU_BACKEND=gl` (or
+  `App::with_backend(Backend::Gl)`) runs the same GUIMaker app and joins the GL
+  tier.
 
 To confirm the rejection on a machine:
 

@@ -5,6 +5,7 @@
 
 use crate::gpu_types::{GuiQuad, TextQuad};
 use crate::gui_batch::GuiBatch;
+use crate::image_binding::ImageBindingMode;
 use crate::pipelines::{
     blur::{create_blur_pipeline_with_shader, create_downsample_pipeline_with_shader},
     id::create_id_pipeline_with_shader,
@@ -793,45 +794,40 @@ impl GuiRenderer {
             view_formats: &[],
         });
         let dummy_view = dummy_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        #[cfg(not(target_arch = "wasm32"))]
-        let dummy_views: Vec<&wgpu::TextureView> =
-            std::iter::repeat_n(&dummy_view, crate::MAX_TEXTURE_SLOTS as usize).collect();
-        #[cfg(not(target_arch = "wasm32"))]
-        let dummy_samplers: Vec<&wgpu::Sampler> =
-            std::iter::repeat_n(dummy_sampler.as_ref(), crate::MAX_TEXTURE_SLOTS as usize)
-                .collect();
-
-        #[cfg(not(target_arch = "wasm32"))]
-        let image_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("GUI Image Bind Group (dummy)"),
-            layout: &layouts.image_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureViewArray(&dummy_views),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::SamplerArray(&dummy_samplers),
-                },
-            ],
-        });
-
-        #[cfg(target_arch = "wasm32")]
-        let image_bind_group = {
+        let image_bind_group = if layouts.image_mode.is_bindless() {
+            let slots = layouts.image_mode.slots() as usize;
+            let dummy_views: Vec<&wgpu::TextureView> =
+                std::iter::repeat_n(&dummy_view, slots).collect();
+            let dummy_samplers: Vec<&wgpu::Sampler> =
+                std::iter::repeat_n(dummy_sampler.as_ref(), slots).collect();
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("GUI Image Bind Group (dummy, bindless)"),
+                layout: &layouts.image_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureViewArray(&dummy_views),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::SamplerArray(&dummy_samplers),
+                    },
+                ],
+            })
+        } else {
             let mut entries = Vec::new();
-            for i in 0..8 {
+            for i in 0..layouts.image_mode.slots() {
                 entries.push(wgpu::BindGroupEntry {
-                    binding: (i * 2) as u32,
+                    binding: i * 2,
                     resource: wgpu::BindingResource::TextureView(&dummy_view),
                 });
                 entries.push(wgpu::BindGroupEntry {
-                    binding: (i * 2 + 1) as u32,
+                    binding: i * 2 + 1,
                     resource: wgpu::BindingResource::Sampler(&dummy_sampler),
                 });
             }
             device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("GUI Image Bind Group (Web dummy)"),
+                label: Some("GUI Image Bind Group (dummy, separate)"),
                 layout: &layouts.image_layout,
                 entries: &entries,
             })
@@ -1645,6 +1641,16 @@ impl GuiRenderer {
         self.image_bind_group_cache
     }
 
+    /// The image-binding strategy this renderer built and binds.
+    ///
+    /// [`ImageBindingMode::Bindless`] when the device enabled both descriptor
+    /// array features (Vulkan/DX12/Metal), [`ImageBindingMode::Separate`] on
+    /// GL/WebGL2/older Android.
+    #[must_use]
+    pub fn image_binding_mode(&self) -> ImageBindingMode {
+        self.layouts.image_mode
+    }
+
     /// True when the stored key describes exactly `textures` (same views,
     /// samplers and `Arc` identities, in the same order).
     #[cfg(feature = "assets")]
@@ -1757,20 +1763,24 @@ impl GuiRenderer {
         if !batch.textures.is_empty()
             && (!self.image_bind_group_cache || !self.texture_key_matches(&batch.textures))
         {
-            let mut views = Vec::with_capacity(batch.textures.len());
-            let mut samplers = Vec::with_capacity(batch.textures.len());
-            for tex in &batch.textures {
-                views.push(&tex.view);
-                samplers.push(&tex.sampler);
+            let mode = self.layouts.image_mode;
+            let slots = mode.slots() as usize;
+            let mut views: Vec<&wgpu::TextureView> =
+                batch.textures.iter().map(|tex| &tex.view).collect();
+            let mut samplers: Vec<&wgpu::Sampler> =
+                batch.textures.iter().map(|tex| &tex.sampler).collect();
+            // Pad to the layout's slot count with the last real texture; a batch
+            // with more distinct textures than the separate path exposes keeps
+            // the first `slots` (documented web/GL limitation).
+            views.truncate(slots.max(1));
+            samplers.truncate(slots.max(1));
+            while views.len() < slots {
+                views.push(*views.last().unwrap());
+                samplers.push(*samplers.last().unwrap());
             }
-            while views.len() < crate::MAX_TEXTURE_SLOTS as usize {
-                views.push(views.last().unwrap());
-                samplers.push(samplers.last().unwrap());
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                self.image_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("GUI Image Bind Group Update"),
+            self.image_bind_group = if mode.is_bindless() {
+                self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("GUI Image Bind Group Update (bindless)"),
                     layout: &self.layouts.image_layout,
                     entries: &[
                         wgpu::BindGroupEntry {
@@ -1782,37 +1792,27 @@ impl GuiRenderer {
                             resource: wgpu::BindingResource::SamplerArray(&samplers),
                         },
                     ],
-                });
-            }
-            #[cfg(target_arch = "wasm32")]
-            {
-                let mut entries = Vec::new();
-                for i in 0..8 {
-                    let v = if i < views.len() {
-                        views[i]
-                    } else {
-                        views.last().unwrap()
-                    };
-                    let s = if i < samplers.len() {
-                        samplers[i]
-                    } else {
-                        samplers.last().unwrap()
-                    };
+                })
+            } else {
+                let mut entries = Vec::with_capacity(slots * 2);
+                for i in 0..slots {
+                    let view: &wgpu::TextureView = views[i];
+                    let sampler: &wgpu::Sampler = samplers[i];
                     entries.push(wgpu::BindGroupEntry {
                         binding: (i * 2) as u32,
-                        resource: wgpu::BindingResource::TextureView(v),
+                        resource: wgpu::BindingResource::TextureView(view),
                     });
                     entries.push(wgpu::BindGroupEntry {
                         binding: (i * 2 + 1) as u32,
-                        resource: wgpu::BindingResource::Sampler(s),
+                        resource: wgpu::BindingResource::Sampler(sampler),
                     });
                 }
-                self.image_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("GUI Image Bind Group Update (Web)"),
+                self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("GUI Image Bind Group Update (separate)"),
                     layout: &self.layouts.image_layout,
                     entries: &entries,
-                });
-            }
+                })
+            };
 
             self.store_texture_key(&batch.textures);
         }

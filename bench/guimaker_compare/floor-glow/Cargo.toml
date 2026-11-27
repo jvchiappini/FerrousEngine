@@ -1,0 +1,16 @@
+[package]
+name = "floor-glow"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "floor-glow"
+path = "src/main.rs"
+
+[dependencies]
+# The same OpenGL stack eframe uses for its glow backend on this workspace.
+glow = "0.13"
+glutin = "0.32"
+glutin-winit = "0.5"
+winit = "0.30"

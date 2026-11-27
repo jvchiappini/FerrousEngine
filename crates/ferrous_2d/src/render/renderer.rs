@@ -1,6 +1,7 @@
 use crate::render::{
-    BlendMode2d, Grid2dParams, GridPipeline, MeshVertex2d, ShapeGpu, ShapePipeline, SpriteBatcher,
-    SpriteInstance, SpritePipeline, Text2dPipeline, TextInstance, TexturedMeshPipeline,
+    BlendMode2d, Grid2dParams, GridPipeline, LazyPipeline, MeshVertex2d, PipelineConfig, ShapeGpu,
+    ShapePipeline, SpriteBatcher, SpriteInstance, SpritePipeline, Text2dPipeline, TextInstance,
+    TexturedMeshPipeline,
 };
 use ferrous_core::memory::{self, Subsystem};
 use glam::Mat4;
@@ -171,14 +172,14 @@ impl DrawState2d {
 /// with `render*` inside a render pass.
 pub struct Renderer2d {
     device: Arc<wgpu::Device>,
-    /// Sprite pipeline and its texture bind-group layout.
-    pub pipeline: SpritePipeline,
-    /// Shape (SDF) pipeline and its camera bind-group layout.
-    pub shape_pipeline: ShapePipeline,
-    /// MSDF text pipeline and its font-atlas bind-group layout.
-    pub text_pipeline: Text2dPipeline,
-    /// Generic textured triangle mesh pipeline.
-    pub mesh_pipeline: TexturedMeshPipeline,
+    /// Sprite pipeline bank, built on first sprite draw.
+    pub pipeline: LazyPipeline<SpritePipeline>,
+    /// Shape (SDF) pipeline bank, built on first shape draw.
+    pub shape_pipeline: LazyPipeline<ShapePipeline>,
+    /// MSDF text pipeline bank, built on first text draw.
+    pub text_pipeline: LazyPipeline<Text2dPipeline>,
+    /// Generic textured triangle mesh pipeline, built on first mesh draw.
+    pub mesh_pipeline: LazyPipeline<TexturedMeshPipeline>,
 
     // Buffers
     instance_buffer: wgpu::Buffer,
@@ -192,6 +193,24 @@ pub struct Renderer2d {
     shape_camera_bind_group: wgpu::BindGroup,
     text_camera_bind_group: wgpu::BindGroup,
     mesh_camera_bind_group: wgpu::BindGroup,
+
+    // Bind-group layouts for group 0 (camera).  Created eagerly (a layout costs
+    // no shader compile) so per-view camera bind groups never force a pipeline
+    // bank to materialize.
+    sprite_camera_layout: wgpu::BindGroupLayout,
+    shape_camera_layout: wgpu::BindGroupLayout,
+    text_camera_layout: wgpu::BindGroupLayout,
+    // Kept so the three per-kind banks share the same camera-layout contract;
+    // the lazy mesh bank currently reuses the shape camera bind group, so this
+    // handle has no reader yet.
+    #[allow(dead_code)] // reason: reserved for the lazy mesh bank's own camera layout
+    mesh_camera_layout: wgpu::BindGroupLayout,
+    /// Bind-group layout for group 1 (sprite texture).  Exposed so the engine can
+    /// register a texture without building the sprite pipeline bank.
+    sprite_texture_layout: wgpu::BindGroupLayout,
+    /// Bind-group layout for group 1 (font atlas).  Exposed so registering a
+    /// font never builds the text pipeline bank.
+    text_texture_layout: wgpu::BindGroupLayout,
 
     // Capacity
     max_instances: u32,
@@ -247,10 +266,11 @@ pub struct Renderer2d {
     /// Per-frame gradient table, written into every view uniform (see `GradientTable2d`).
     gradient_table: Mutex<Vec<[f32; 4]>>,
 
-    /// Procedural background grid (optional).
-    pub grid_pipeline: GridPipeline,
+    /// Procedural background grid (optional), built on first grid draw.
+    pub grid_pipeline: LazyPipeline<GridPipeline>,
     grid_uniform_buffer: wgpu::Buffer,
     grid_bind_group: wgpu::BindGroup,
+    grid_camera_layout: wgpu::BindGroupLayout,
     grid_params: Option<Grid2dParams>,
 
     /// Per-view camera/grid resources for the multi-viewport Pure2D path.
@@ -261,6 +281,127 @@ pub struct Renderer2d {
     view_text_bgs: Vec<wgpu::BindGroup>,
     view_grid_buffers: Vec<wgpu::Buffer>,
     view_grid_bgs: Vec<wgpu::BindGroup>,
+}
+
+fn build_sprite_pipeline(config: &PipelineConfig) -> SpritePipeline {
+    SpritePipeline::new_with_cache(
+        config.device.clone(),
+        config.output_format,
+        config.depth_format,
+        config.sample_count,
+        config.cache.as_deref(),
+    )
+}
+
+fn build_shape_pipeline(config: &PipelineConfig) -> ShapePipeline {
+    ShapePipeline::new_with_cache(
+        config.device.clone(),
+        config.output_format,
+        config.depth_format,
+        config.sample_count,
+        config.cache.as_deref(),
+    )
+}
+
+fn build_text_pipeline(config: &PipelineConfig) -> Text2dPipeline {
+    Text2dPipeline::new_with_cache(
+        config.device.clone(),
+        config.output_format,
+        config.depth_format,
+        config.sample_count,
+        config.cache.as_deref(),
+    )
+}
+
+fn build_mesh_pipeline(config: &PipelineConfig) -> TexturedMeshPipeline {
+    TexturedMeshPipeline::new_with_cache(
+        config.device.clone(),
+        config.output_format,
+        config.depth_format,
+        config.sample_count,
+        config.cache.as_deref(),
+    )
+}
+
+fn build_grid_pipeline(config: &PipelineConfig) -> GridPipeline {
+    GridPipeline::new_with_cache(
+        config.device.clone(),
+        config.output_format,
+        config.sample_count,
+        config.cache.as_deref(),
+    )
+}
+
+fn create_vertex_buffer<T>(device: &wgpu::Device, count: u32, label: &str) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size: (count as usize * std::mem::size_of::<T>()) as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+fn create_camera_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    buffer: &wgpu::Buffer,
+    label: &str,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: buffer.as_entire_binding(),
+        }],
+        label: Some(label),
+    })
+}
+
+#[allow(clippy::too_many_arguments)] // one label/keep per registered 2-D buffer
+fn register_buffer_memory(
+    instance_buffer: &wgpu::Buffer,
+    shape_instance_buffer: &wgpu::Buffer,
+    text_instance_buffer: &wgpu::Buffer,
+    mesh_vertex_buffer: &wgpu::Buffer,
+    mesh_index_buffer: &wgpu::Buffer,
+    camera_buffer: &wgpu::Buffer,
+    grid_uniform_buffer: &wgpu::Buffer,
+) {
+    memory::register_gpu(
+        "2d:sprite instances",
+        instance_buffer.size(),
+        Subsystem::Renderer2d,
+    );
+    memory::register_gpu(
+        "2d:shape instances",
+        shape_instance_buffer.size(),
+        Subsystem::Renderer2d,
+    );
+    memory::register_gpu(
+        "2d:text instances",
+        text_instance_buffer.size(),
+        Subsystem::Renderer2d,
+    );
+    memory::register_gpu(
+        "2d:mesh vertices",
+        mesh_vertex_buffer.size(),
+        Subsystem::Renderer2d,
+    );
+    memory::register_gpu(
+        "2d:mesh indices",
+        mesh_index_buffer.size(),
+        Subsystem::Renderer2d,
+    );
+    memory::register_gpu(
+        "2d:camera uniform",
+        camera_buffer.size(),
+        Subsystem::Renderer2d,
+    );
+    memory::register_gpu(
+        "2d:grid uniform",
+        grid_uniform_buffer.size(),
+        Subsystem::Renderer2d,
+    );
 }
 
 impl Renderer2d {
@@ -295,36 +436,99 @@ impl Renderer2d {
         initial_capacity: u32,
         cache: Option<&wgpu::PipelineCache>,
     ) -> Self {
-        let pipeline = SpritePipeline::new_with_cache(
-            device.clone(),
+        // The public `new*` constructors keep the historical eager behaviour;
+        // the engine uses `new_lazy` so a Pure2D app pays only for the kinds it
+        // draws.  Both paths share the buffer/bind-group setup below.
+        let config = PipelineConfig {
+            device: device.clone(),
             output_format,
             depth_format,
             sample_count,
-            cache,
+            cache: None,
+        };
+        let pipeline = LazyPipeline::ready(
+            config.clone(),
+            build_sprite_pipeline,
+            SpritePipeline::new_with_cache(
+                device.clone(),
+                output_format,
+                depth_format,
+                sample_count,
+                cache,
+            ),
+            "2D sprite",
         );
-        let shape_pipeline = ShapePipeline::new_with_cache(
-            device.clone(),
-            output_format,
-            depth_format,
-            sample_count,
-            cache,
+        let shape_pipeline = LazyPipeline::ready(
+            config.clone(),
+            build_shape_pipeline,
+            ShapePipeline::new_with_cache(
+                device.clone(),
+                output_format,
+                depth_format,
+                sample_count,
+                cache,
+            ),
+            "2D shape",
         );
-        let text_pipeline = Text2dPipeline::new_with_cache(
-            device.clone(),
-            output_format,
-            depth_format,
-            sample_count,
-            cache,
+        let text_pipeline = LazyPipeline::ready(
+            config.clone(),
+            build_text_pipeline,
+            Text2dPipeline::new_with_cache(
+                device.clone(),
+                output_format,
+                depth_format,
+                sample_count,
+                cache,
+            ),
+            "2D text",
         );
-        let mesh_pipeline = TexturedMeshPipeline::new_with_cache(
-            device.clone(),
-            output_format,
-            depth_format,
-            sample_count,
-            cache,
+        let mesh_pipeline = LazyPipeline::ready(
+            config.clone(),
+            build_mesh_pipeline,
+            TexturedMeshPipeline::new_with_cache(
+                device.clone(),
+                output_format,
+                depth_format,
+                sample_count,
+                cache,
+            ),
+            "2D mesh",
         );
-        let grid_pipeline =
-            GridPipeline::new_with_cache(device.clone(), output_format, sample_count, cache);
+        let grid_pipeline = LazyPipeline::ready(
+            config.clone(),
+            build_grid_pipeline,
+            GridPipeline::new_with_cache(device.clone(), output_format, sample_count, cache),
+            "2D grid",
+        );
+
+        let sprite_camera_layout = crate::render::pipeline::create_camera_bind_group_layout(
+            &device,
+            "Sprite Camera Bind Group Layout",
+        );
+        let shape_camera_layout = crate::render::pipeline::create_camera_bind_group_layout(
+            &device,
+            "Shape Camera Bind Group Layout",
+        );
+        let text_camera_layout = crate::render::pipeline::create_camera_bind_group_layout(
+            &device,
+            "Text Camera Bind Group Layout",
+        );
+        let mesh_camera_layout = crate::render::pipeline::create_camera_bind_group_layout(
+            &device,
+            "Mesh Camera Bind Group Layout",
+        );
+        let grid_camera_layout = crate::render::pipeline::create_camera_bind_group_layout(
+            &device,
+            "Grid Uniform Bind Group Layout",
+        );
+        let sprite_texture_layout = crate::render::pipeline::create_texture_bind_group_layout(
+            &device,
+            "Sprite Texture Bind Group Layout",
+        );
+        let text_texture_layout = crate::render::pipeline::create_texture_bind_group_layout(
+            &device,
+            "Text Texture Bind Group Layout",
+        );
 
         let max_instances = initial_capacity.max(128);
 
@@ -371,7 +575,7 @@ impl Renderer2d {
         });
 
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &pipeline.camera_bind_group_layout,
+            layout: &sprite_camera_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: camera_buffer.as_entire_binding(),
@@ -380,7 +584,7 @@ impl Renderer2d {
         });
 
         let shape_camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &shape_pipeline.camera_bind_group_layout,
+            layout: &shape_camera_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: camera_buffer.as_entire_binding(),
@@ -389,7 +593,7 @@ impl Renderer2d {
         });
 
         let text_camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &text_pipeline.camera_bind_group_layout,
+            layout: &text_camera_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: camera_buffer.as_entire_binding(),
@@ -398,7 +602,7 @@ impl Renderer2d {
         });
 
         let mesh_camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &mesh_pipeline.camera_bind_group_layout,
+            layout: &mesh_camera_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: camera_buffer.as_entire_binding(),
@@ -413,7 +617,7 @@ impl Renderer2d {
             mapped_at_creation: false,
         });
         let grid_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &grid_pipeline.camera_bind_group_layout,
+            layout: &grid_camera_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: grid_uniform_buffer.as_entire_binding(),
@@ -473,6 +677,12 @@ impl Renderer2d {
             shape_camera_bind_group,
             text_camera_bind_group,
             mesh_camera_bind_group,
+            sprite_camera_layout,
+            shape_camera_layout,
+            text_camera_layout,
+            mesh_camera_layout,
+            sprite_texture_layout,
+            text_texture_layout,
             max_instances,
             max_shape_instances: max_instances,
             max_text_instances: max_instances,
@@ -503,6 +713,7 @@ impl Renderer2d {
             grid_pipeline,
             grid_uniform_buffer,
             grid_bind_group,
+            grid_camera_layout,
             grid_params: None,
             view_camera_buffers: Vec::new(),
             view_shape_bgs: Vec::new(),
@@ -513,9 +724,230 @@ impl Renderer2d {
         }
     }
 
-    /// Sets the device-pixels-per-logical-pixel ratio used by the shader to
-    /// resolve per-instance `min_px` (logical) into world units.
+    /// Creates a [`Renderer2d`] whose pipeline banks are built on first use.
     ///
+    /// This is the engine's Pure2D path: only the kinds the first frames draw
+    /// are compiled, and each records a `pipeline: 2D <kind> (<ms>)` startup
+    /// mark.  Buffers and camera bind groups are created now (they cost no
+    /// shader compile); the pipeline banks materialize on their first draw.
+    pub fn new_lazy(
+        device: Arc<wgpu::Device>,
+        output_format: wgpu::TextureFormat,
+        depth_format: Option<wgpu::TextureFormat>,
+        sample_count: u32,
+        initial_capacity: u32,
+        cache: Option<Arc<wgpu::PipelineCache>>,
+    ) -> Self {
+        let config = PipelineConfig {
+            device: device.clone(),
+            output_format,
+            depth_format,
+            sample_count,
+            cache,
+        };
+        let max_instances = initial_capacity.max(128);
+        let instance_buffer = create_vertex_buffer::<SpriteInstance>(
+            &device,
+            max_instances,
+            "Sprite Instance Buffer",
+        );
+        let shape_instance_buffer =
+            create_vertex_buffer::<ShapeGpu>(&device, max_instances, "Shape Instance Buffer");
+        let text_instance_buffer =
+            create_vertex_buffer::<TextInstance>(&device, max_instances, "Text Instance Buffer");
+        let mesh_vertex_buffer =
+            create_vertex_buffer::<MeshVertex2d>(&device, max_instances, "Mesh Vertex Buffer");
+        let mesh_index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Mesh Index Buffer"),
+            size: (max_instances as usize * 6 * std::mem::size_of::<u32>()) as u64,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Sprite Camera Uniform Buffer"),
+            size: std::mem::size_of::<crate::render::types::Uniform2d>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let sprite_camera_layout = crate::render::pipeline::create_camera_bind_group_layout(
+            &device,
+            "Sprite Camera Bind Group Layout",
+        );
+        let shape_camera_layout = crate::render::pipeline::create_camera_bind_group_layout(
+            &device,
+            "Shape Camera Bind Group Layout",
+        );
+        let text_camera_layout = crate::render::pipeline::create_camera_bind_group_layout(
+            &device,
+            "Text Camera Bind Group Layout",
+        );
+        let mesh_camera_layout = crate::render::pipeline::create_camera_bind_group_layout(
+            &device,
+            "Mesh Camera Bind Group Layout",
+        );
+        let grid_camera_layout = crate::render::pipeline::create_camera_bind_group_layout(
+            &device,
+            "Grid Uniform Bind Group Layout",
+        );
+        let sprite_texture_layout = crate::render::pipeline::create_texture_bind_group_layout(
+            &device,
+            "Sprite Texture Bind Group Layout",
+        );
+        let text_texture_layout = crate::render::pipeline::create_texture_bind_group_layout(
+            &device,
+            "Text Texture Bind Group Layout",
+        );
+
+        let camera_bind_group = create_camera_bind_group(
+            &device,
+            &sprite_camera_layout,
+            &camera_buffer,
+            "Sprite Camera Bind Group",
+        );
+        let shape_camera_bind_group = create_camera_bind_group(
+            &device,
+            &shape_camera_layout,
+            &camera_buffer,
+            "Shape Camera Bind Group",
+        );
+        let text_camera_bind_group = create_camera_bind_group(
+            &device,
+            &text_camera_layout,
+            &camera_buffer,
+            "Text Camera Bind Group",
+        );
+        let mesh_camera_bind_group = create_camera_bind_group(
+            &device,
+            &mesh_camera_layout,
+            &camera_buffer,
+            "Mesh Camera Bind Group",
+        );
+
+        let grid_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Grid Uniform Buffer"),
+            size: std::mem::size_of::<crate::render::types::Grid2dUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let grid_bind_group = create_camera_bind_group(
+            &device,
+            &grid_camera_layout,
+            &grid_uniform_buffer,
+            "Grid Bind Group",
+        );
+
+        register_buffer_memory(
+            &instance_buffer,
+            &shape_instance_buffer,
+            &text_instance_buffer,
+            &mesh_vertex_buffer,
+            &mesh_index_buffer,
+            &camera_buffer,
+            &grid_uniform_buffer,
+        );
+
+        Self {
+            device,
+            pipeline: LazyPipeline::lazy(config.clone(), build_sprite_pipeline, "2D sprite"),
+            shape_pipeline: LazyPipeline::lazy(config.clone(), build_shape_pipeline, "2D shape"),
+            text_pipeline: LazyPipeline::lazy(config.clone(), build_text_pipeline, "2D text"),
+            mesh_pipeline: LazyPipeline::lazy(config.clone(), build_mesh_pipeline, "2D mesh"),
+            instance_buffer,
+            shape_instance_buffer,
+            text_instance_buffer,
+            mesh_vertex_buffer,
+            mesh_index_buffer,
+            camera_buffer,
+            camera_bind_group,
+            shape_camera_bind_group,
+            text_camera_bind_group,
+            mesh_camera_bind_group,
+            sprite_camera_layout,
+            shape_camera_layout,
+            text_camera_layout,
+            mesh_camera_layout,
+            sprite_texture_layout,
+            text_texture_layout,
+            max_instances,
+            max_shape_instances: max_instances,
+            max_text_instances: max_instances,
+            max_mesh_vertices: max_instances,
+            max_mesh_indices: max_instances * 6,
+            counters_draw_calls: AtomicU32::new(0),
+            counters_shape_draw_calls: AtomicU32::new(0),
+            counters_sprite_draw_calls: AtomicU32::new(0),
+            counters_text_draw_calls: AtomicU32::new(0),
+            counters_mesh_draw_calls: AtomicU32::new(0),
+            counters_bytes_uploaded: AtomicU64::new(0),
+            counters_instances_uploaded: AtomicU32::new(0),
+            counters_buffer_reallocations: AtomicU32::new(0),
+            counters_culled_instances: AtomicU32::new(0),
+            counters_static_batches_drawn: AtomicU32::new(0),
+            counters_static_instances_drawn: AtomicU32::new(0),
+            counters_pipeline_binds: AtomicU32::new(0),
+            counters_bind_group_binds: AtomicU32::new(0),
+            counters_buffer_binds: AtomicU32::new(0),
+            counters_passes: AtomicU32::new(0),
+            scratch_sprites: Vec::new(),
+            scratch_shapes: Vec::new(),
+            scratch_reuse: true,
+            pixel_ratio_bits: AtomicU32::new(1.0f32.to_bits()),
+            legacy_2d: AtomicU32::new(0),
+            dash_table: Mutex::new([[0.0; 8]; 16]),
+            gradient_table: Mutex::new(Vec::new()),
+            grid_pipeline: LazyPipeline::lazy(config, build_grid_pipeline, "2D grid"),
+            grid_uniform_buffer,
+            grid_bind_group,
+            grid_camera_layout,
+            grid_params: None,
+            view_camera_buffers: Vec::new(),
+            view_shape_bgs: Vec::new(),
+            view_sprite_bgs: Vec::new(),
+            view_text_bgs: Vec::new(),
+            view_grid_buffers: Vec::new(),
+            view_grid_bgs: Vec::new(),
+        }
+    }
+
+    /// Bind-group layout for group 1 of the sprite pipeline (texture + sampler).
+    ///
+    /// Available before the sprite pipeline bank is built, so registering a
+    /// texture never forces the sprite shaders to compile.
+    #[must_use]
+    pub fn sprite_texture_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.sprite_texture_layout
+    }
+
+    /// Bind-group layout for group 1 of the text pipeline (font atlas + sampler).
+    ///
+    /// Available before the text pipeline bank is built, so registering a font
+    /// never forces the text shaders to compile.
+    #[must_use]
+    pub fn text_texture_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.text_texture_layout
+    }
+
+    /// How many of the five pipeline banks have been built (0..=5).
+    ///
+    /// Test/diagnostic helper: a freshly constructed `new_lazy` renderer reports
+    /// `0`; each bank adds one when its first draw materializes it.
+    #[must_use]
+    pub fn built_pipeline_banks(&self) -> usize {
+        [
+            self.pipeline.is_ready(),
+            self.shape_pipeline.is_ready(),
+            self.text_pipeline.is_ready(),
+            self.mesh_pipeline.is_ready(),
+            self.grid_pipeline.is_ready(),
+        ]
+        .into_iter()
+        .filter(|ready| *ready)
+        .count()
+    }
+
+    /// Sets the device-pixels-per-logical-pixel ratio used by the shader to
+    /// resolve a per-instance `min_px` (logical) into world units.
     /// Values below `1.0` are accepted but the shader clamps the ratio to
     /// `>= 1.0`, so a minimum width always covers at least one device pixel.
     pub fn set_pixel_ratio(&self, ratio: f32) {
@@ -659,7 +1091,7 @@ impl Renderer2d {
                 mapped_at_creation: false,
             });
             let shape_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &self.shape_pipeline.camera_bind_group_layout,
+                layout: &self.shape_camera_layout,
                 entries: &[wgpu::BindGroupEntry {
                     binding: 0,
                     resource: camera_buffer.as_entire_binding(),
@@ -667,7 +1099,7 @@ impl Renderer2d {
                 label: Some("View Shape Camera Bind Group"),
             });
             let sprite_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &self.pipeline.camera_bind_group_layout,
+                layout: &self.sprite_camera_layout,
                 entries: &[wgpu::BindGroupEntry {
                     binding: 0,
                     resource: camera_buffer.as_entire_binding(),
@@ -675,7 +1107,7 @@ impl Renderer2d {
                 label: Some("View Sprite Camera Bind Group"),
             });
             let text_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &self.text_pipeline.camera_bind_group_layout,
+                layout: &self.text_camera_layout,
                 entries: &[wgpu::BindGroupEntry {
                     binding: 0,
                     resource: camera_buffer.as_entire_binding(),
@@ -689,7 +1121,7 @@ impl Renderer2d {
                 mapped_at_creation: false,
             });
             let grid_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &self.grid_pipeline.camera_bind_group_layout,
+                layout: &self.grid_camera_layout,
                 entries: &[wgpu::BindGroupEntry {
                     binding: 0,
                     resource: grid_buffer.as_entire_binding(),
@@ -775,7 +1207,7 @@ impl Renderer2d {
         if self.grid_params.is_none() {
             return;
         }
-        rpass.set_pipeline(&self.grid_pipeline.wgpu_pipeline);
+        rpass.set_pipeline(&self.grid_pipeline.ensure().wgpu_pipeline);
         rpass.set_bind_group(0, bg, &[]);
         rpass.draw(0..3, 0..1);
         self.record_grid_draw();
@@ -835,7 +1267,7 @@ impl Renderer2d {
         if self.grid_params.is_none() {
             return;
         }
-        rpass.set_pipeline(&self.grid_pipeline.wgpu_pipeline);
+        rpass.set_pipeline(&self.grid_pipeline.ensure().wgpu_pipeline);
         rpass.set_bind_group(0, &self.grid_bind_group, &[]);
         rpass.draw(0..3, 0..1);
         self.record_grid_draw();

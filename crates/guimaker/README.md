@@ -53,6 +53,33 @@ mapping is `crates/guimaker_ferrous/docs/backend.md`.
 - popups and popup pre-warming are opt-in; the library never opens a window on
   its own.
 
+## Choosing a backend
+
+The engine picks a per-OS default (Vulkan first on Windows today; the measured
+choice is `G-0013`). A host can override it without touching GUIMaker:
+
+```rust
+use ferrous_engine::{App, Backend};
+
+App::new(GuiHost::new(app))
+    .with_backend(Backend::Dx12)          // one backend
+    // .with_backends([wgpu::Backends::GL, wgpu::Backends::VULKAN])  // ordered fallback
+    .run();
+```
+
+`WGPU_BACKEND=vulkan|dx12|gl|metal|webgpu` wins at run time, so a shipped
+choice is overridable without a rebuild. Every compiled backend runs the same
+view; a machine without an adapter for the requested backend stops with a named
+`no usable GPU backend` error (exit 2), never a panic or a silent fallback.
+
+DX12 uses FXC by default. `AppConfig::dx12_compiler` / `App::with_dx12_compiler`
+select DXC from code and `FERROUS_DX12_COMPILER=fxc|dxc|dynamic_dxc` at run
+time; DXC needs `dxcompiler.dll`/`dxil.dll` and the `dxc` cargo feature. See
+`crates/ferrous_engine/docs/startup.md#choosing-a-backend-from-code`.
+
+GL needs the non-bindless GUI image path (Phase 9D Lane A) before it can run a
+GUIMaker view.
+
 ## Verify
 
 ```text
@@ -62,3 +89,11 @@ cargo test -p guimaker
 cargo test -p guimaker_ferrous
 cargo test -p guimaker_gallery
 ```
+
+<!-- PHASE9D-PERFORMANCE:START -->
+
+## Performance (Phase 9D)
+
+Not measured yet; run `python bench/guimaker_compare/run_compare.py --confirmed-host-free --runs 5 --scenario idle6 --scenario idle30 --scenario hover_body --scenario hover_button --scenario typing --scenario resize --scenario menu --tier vulkan --tier dx12 --tier gl --interactive-tier vulkan --write-readme` (see [PROTOCOL.md](../../bench/guimaker_compare/PROTOCOL.md)) to fill this section.
+
+<!-- PHASE9D-PERFORMANCE:END -->

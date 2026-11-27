@@ -41,6 +41,7 @@ pub enum Antialiasing2d {
 
 impl Antialiasing2d {
     /// Convert to the internal [`crate::passes::AntialiasingMode`].
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn to_mode(self) -> crate::passes::AntialiasingMode {
         use crate::passes::AntialiasingMode;
         match self {
@@ -51,6 +52,7 @@ impl Antialiasing2d {
     }
 
     /// Collapse the internal [`crate::passes::AntialiasingMode`] to this enum.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn from_mode(mode: crate::passes::AntialiasingMode) -> Self {
         use crate::passes::AntialiasingMode;
         match mode {

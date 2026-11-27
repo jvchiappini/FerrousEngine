@@ -430,20 +430,32 @@ pub struct RouteContext<'a, Msg> {
     pub messages: &'a mut Vec<Msg>,
 }
 
+/// The interactive node under `point`: the spatial index's topmost hit with
+/// disabled nodes filtered out.
+///
+/// This is the single hit-test decision. Both the input router
+/// ([`RouteContext::pick`]) and `Ui::pointer_move_changes` call it, so a host
+/// that asks whether a move changes anything and the router that delivers it
+/// can never disagree about the target (prompt 15 Phase 9D finding 2).
+///
+/// The last-hit cache is keyed by the layout generation (the index rebuild
+/// count), not by interaction state: a hover change must not invalidate a hit
+/// that is still geometrically valid.
+pub(crate) fn pick_interactive<Msg>(
+    index: &mut HitIndex,
+    tree: &Tree<Msg>,
+    point: Vec2,
+) -> Option<NodeId> {
+    let generation = index.generation();
+    index.set_generation(generation);
+    index
+        .pick(point, generation)
+        .filter(|id| !tree.node(*id).is_some_and(|node| node.style.disabled))
+}
+
 impl<Msg: Clone> RouteContext<'_, Msg> {
     fn pick(&mut self, position: Vec2) -> Option<NodeId> {
-        // The last-hit cache is keyed by the layout generation (the index
-        // rebuild count), not by interaction state: a hover change must not
-        // invalidate a hit that is still geometrically valid.
-        let generation = self.index.generation();
-        self.index.set_generation(generation);
-        self.index
-            .pick(position, generation)
-            .filter(|id| !self.is_disabled(*id))
-    }
-
-    fn is_disabled(&self, id: NodeId) -> bool {
-        self.tree.node(id).is_some_and(|node| node.style.disabled)
+        pick_interactive(self.index, self.tree, position)
     }
 
     fn set_hovered(&mut self, hit: Option<NodeId>) {

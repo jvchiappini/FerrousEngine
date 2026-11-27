@@ -9,7 +9,16 @@ repository = "https://github.com/jvchiappini/FerrousEngine"
 
 [dependencies]
 guimaker = { path = "../guimaker" }
-ferrous_ui_render = { path = "../ferrous_ui_render", features = ["text", "assets"] }
+# `text`/`assets` are essential to this crate; `svg` is forwarded below so the
+# parser can be dropped without disabling text or textures.
+ferrous_ui_render = { path = "../ferrous_ui_render", default-features = false, features = ["text", "assets"] }
 ferrous_font = { path = "../ferrous_font" }
-ferrous_svg = { path = "../ferrous_svg" }
+# Phase 9D Lane C: the SVG parser is optional; without it icons fall back to
+# the mapper's plain-rectangle path.
+ferrous_svg = { path = "../ferrous_svg", default-features = false }
 glam = { workspace = true }
+
+[features]
+# `svg` is on by default so the normal build parses icon paths as before.
+default = ["svg"]
+svg = ["ferrous_svg/parser"]

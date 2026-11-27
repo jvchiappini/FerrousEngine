@@ -40,8 +40,13 @@ impl EngineContext {
     /// Crea un `EngineContext` headless (sin surface), útil para tests y
     /// contextos de render-to-texture puros.
     pub async fn new() -> anyhow::Result<Self> {
+        // `WGPU_BACKEND` selects a single backend for headless contexts too
+        // (the golden harness and the examples use this context).  Without the
+        // variable the historical "every backend, driver order" behaviour is
+        // unchanged.
+        let backends = wgpu::util::backend_bits_from_env().unwrap_or(wgpu::Backends::all());
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
+            backends,
             ..Default::default()
         });
         Self::new_with_instance(instance, None).await
@@ -178,8 +183,17 @@ impl EngineContext {
         // El GL de escritorio (OpenGL 4.3+) sí soporta storage buffers; solo
         // WebGL2 carece de ellos (prompt 17 S3: los límites de webgl2 hacían
         // fallar la creación del bind group de instancias).
-        let mut limits = if backend == wgpu::Backend::Gl && cfg!(target_arch = "wasm32") {
-            wgpu::Limits::downlevel_webgl2_defaults()
+        let mut limits = if backend == wgpu::Backend::Gl {
+            if cfg!(target_arch = "wasm32") {
+                // WebGL2 lacks storage buffers and exposes much lower limits.
+                wgpu::Limits::downlevel_webgl2_defaults()
+            } else {
+                // Desktop GL 4.3 has storage buffers but not the full
+                // `Limits::default()` set (e.g. the 128 MB storage binding);
+                // requesting the adapter's own limits lets a Flat2D app run on
+                // a GL-only machine instead of failing device creation.
+                adapter.limits()
+            }
         } else {
             wgpu::Limits::default()
         };

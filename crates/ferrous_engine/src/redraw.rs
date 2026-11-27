@@ -134,6 +134,20 @@ pub(crate) fn event_requests_frame(event: &WindowEvent, redraw_on_pointer_move: 
     !is_cursor || redraw_on_pointer_move
 }
 
+/// Whether the OS paint that follows showing the window may be swallowed.
+///
+/// The first frame is already on the swapchain when the window is shown, so the
+/// paint the OS sends for the newly visible window is redundant. It may only be
+/// dropped when nothing has asked for a frame since that first present: `mark`
+/// is the scheduler's request count captured at the show and `current` is the
+/// count when the paint arrives. A request made in the first `tick` (an
+/// animation, a spinner, a `redraw_at` wake) is a real frame; winit merges
+/// redraw requests, so swallowing that paint would stall the app until the next
+/// input event (prompt 15 Phase 9D finding 1).
+pub(crate) fn swallow_show_paint(skip: bool, mark: u64, current: u64) -> bool {
+    skip && mark == current
+}
+
 /// The runner's redraw state.
 ///
 /// Kept separate from the event loop so the decision is a pure function of
@@ -151,6 +165,12 @@ pub(crate) struct Scheduler {
     /// coalesces these, but tracking it keeps the scheduler's answer stable
     /// if `about_to_wait` runs again before the redraw.
     pending: bool,
+    /// Monotonic count of the frames this scheduler has been asked for (an app
+    /// request, an input event, a scheduled wake that fired). The runner
+    /// snapshots it when the first frame is shown: if it moved before the OS
+    /// sends its show paint, that paint is a real frame for the app and must
+    /// not be swallowed (prompt 15 Phase 9D finding 1).
+    requests: u64,
 }
 
 impl Scheduler {
@@ -161,7 +181,14 @@ impl Scheduler {
             input: false,
             deadline: None,
             pending: false,
+            requests: 0,
         }
+    }
+
+    /// How many frames have been asked for so far. Read by the runner's
+    /// show-paint guard; a request made after the first present bumps it.
+    pub(crate) fn requests(&self) -> u64 {
+        self.requests
     }
 
     pub(crate) fn policy(&self) -> RedrawPolicy {
@@ -171,6 +198,7 @@ impl Scheduler {
     /// The app asked for the next frame (animation, a state change).
     pub(crate) fn request(&mut self) {
         self.requested = true;
+        self.requests = self.requests.wrapping_add(1);
     }
 
     /// Schedule a one-shot wake at `when`.
@@ -183,11 +211,13 @@ impl Scheduler {
             Some(current) if current <= when => current,
             _ => when,
         });
+        self.requests = self.requests.wrapping_add(1);
     }
 
     /// An input event arrived. On-demand apps get one frame to process it.
     pub(crate) fn on_input(&mut self) {
         self.input = true;
+        self.requests = self.requests.wrapping_add(1);
     }
 
     /// A frame is starting: any redraw request that was already answered by
@@ -460,5 +490,39 @@ mod tests {
         let mut scheduler = Scheduler::new(RedrawPolicy::Continuous);
         assert_eq!(scheduler.next(start, None), NextFrame::Draw);
         assert_eq!(scheduler.next(start, None), NextFrame::Wait);
+    }
+
+    #[test]
+    fn the_show_paint_is_swallowed_only_when_nothing_asked_since_the_present() {
+        // The window is shown after the first present; the scheduler snapshot
+        // is `mark`.
+        assert!(swallow_show_paint(true, 7, 7), "the redundant OS paint");
+
+        // An app requests a frame in its first `tick` (an animation, a
+        // spinner, a scheduled wake). winit may merge that request with the OS
+        // show paint into one `RedrawRequested`; that frame is real and must
+        // render.
+        assert!(
+            !swallow_show_paint(true, 7, 8),
+            "a request after the first present must not be eaten"
+        );
+        // Once the show paint has been consumed the flag is cleared, so a later
+        // redraw is never swallowed either.
+        assert!(!swallow_show_paint(false, 7, 7));
+    }
+
+    #[test]
+    fn an_app_request_in_the_first_tick_moves_the_request_count() {
+        let mut scheduler = on_demand();
+        let mark = scheduler.requests();
+        // `request` is what `AppContext::request_redraw` does during the first
+        // `update`/`tick`, after the first present and the show.
+        scheduler.request();
+        assert_ne!(
+            scheduler.requests(),
+            mark,
+            "a request after the show must be visible to the guard"
+        );
+        assert!(!swallow_show_paint(true, mark, scheduler.requests()));
     }
 }

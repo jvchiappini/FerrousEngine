@@ -13,6 +13,8 @@
 //! `--size` is the logical viewport; the PNG is the physical target, i.e.
 //! `round(logical * scale)` per axis.
 
+// Phase 9D Lane C: only `write_png` takes a path; keep the import tied to it.
+#[cfg(feature = "png")]
 use std::path::Path;
 
 use ferrous_renderer::headless::{Pure2dHarness, DEFAULT_FORMAT};
@@ -473,6 +475,9 @@ fn encode_commands(commands: &[DrawCommand], logical: Size, scale: f32, font: &F
 /// # Errors
 ///
 /// Returns [`GalleryError::Io`] or [`GalleryError::Image`] on failure.
+// Phase 9D Lane C: PNG encoding is gated so a binary that never writes a
+// screenshot does not link the `png` codec.
+#[cfg(feature = "png")]
 pub fn write_png(path: impl AsRef<Path>, image: &RenderedImage) -> Result<()> {
     let path = path.as_ref();
     if let Some(parent) = path.parent() {

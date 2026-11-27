@@ -15,6 +15,7 @@ use crate::display_list::{DisplayList, DrawCommand, ImageFit, TextRun, TextSpanS
 use crate::geom::{Rect, Size};
 use crate::hash::Fnv;
 use crate::input::focus::FocusOrder;
+use crate::input::pick_interactive;
 use crate::input::shortcut::ShortcutRegistry;
 use crate::input::{route, InputEvent, InputState, RouteContext};
 use crate::layout::LayoutEngine;
@@ -332,20 +333,19 @@ impl<Msg: Clone> Ui<Msg> {
     /// Whether a pointer move to `position` would change what the user sees.
     ///
     /// A host calls this before requesting a frame for a pointer move: moving
-    /// inside the same interactive target, with no drag or scroll in flight,
-    /// changes nothing, so an idle body does not repaint. A layout that has not
-    /// been painted yet, a different hovered target, a pressed/captured pointer
-    /// and a moving scroll all ask for a frame.
+    /// inside the same interactive target changes nothing visible, because the
+    /// hover, cursor icon and tooltip all follow from that one target. A layout
+    /// that has not been painted yet, a different target, a pressed or captured
+    /// pointer, a drag and a moving scroll all ask for a frame.
+    ///
+    /// The hit test is `input::pick_interactive`, the same function the input router
+    /// uses, so the pre-check and the routed move can never disagree about the
+    /// target (prompt 15 Phase 9D finding 2).
     pub fn pointer_move_changes(&mut self, position: glam::Vec2) -> bool {
         if self.layout_needed {
             return true;
         }
-        let generation = self.index.generation();
-        self.index.set_generation(generation);
-        let hit = self
-            .index
-            .pick(position, generation)
-            .filter(|id| self.tree.node(*id).is_some_and(|node| !node.style.disabled));
+        let hit = pick_interactive(&mut self.index, &self.tree, position);
         if hit != self.input.hovered {
             return true;
         }

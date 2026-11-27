@@ -7,7 +7,7 @@ edition = "2021"
 wgpu = { workspace = true, optional = true }
 anyhow = "1.0"
 bytemuck = { version = "1.14", features = ["derive"], optional = true }
-image = "0.24"
+image = { version = "0.24", optional = true }
 gltf = { version = "1.4", features = ["import", "utils"] }
 half = { version = "2.3", optional = true }
 ferrous_font = { path = "../ferrous_font", optional = true }
@@ -16,7 +16,12 @@ ferrous_asset_types = { path = "../ferrous_asset_types" }
 log = { workspace = true }
 
 [features]
-default = []
+# Image decoding (`ImageData`, `Texture2d::from_file`/`from_hdr`, the glTF
+# loader) is on by default so existing consumers are unchanged.  Note the
+# separate `gltf` crate keeps its own `image 0.25`; this feature only governs
+# ferrous_assets' own `image 0.24` dependency.
+default = ["image"]
+image = ["dep:image"]
 gpu = ["dep:wgpu", "dep:bytemuck", "dep:half"]
 text = ["dep:ferrous_font", "gpu"]
 svg = ["dep:resvg"]

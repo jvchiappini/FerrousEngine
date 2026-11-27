@@ -1,4 +1,5 @@
 use crate::gpu_types::GuiQuad;
+use crate::image_binding::ImageBindingMode;
 use wgpu::{PipelineCompilationOptions, RenderPipeline};
 
 // `gui.wgsl` reads locations 1..=10, whose last attribute (`z_order`) ends at
@@ -13,12 +14,10 @@ const _: () = {
 /// The shared rounded-clip mask, prepended to both backend shader bodies.
 const CLIP: &str = include_str!("../../../../assets/shaders/gui_clip_common.wgsl");
 
-/// The native quad shader body (`binding_array` textures).
-#[cfg(not(target_arch = "wasm32"))]
+/// The bindless quad shader body (`binding_array` textures).
 const QUAD_BODY: &str = include_str!("../../../../assets/shaders/gui.wgsl");
 
-/// The Web-compatible quad shader body (separate texture bindings).
-#[cfg(any(target_arch = "wasm32", test))]
+/// The compatibility quad shader body (separate texture bindings).
 const QUAD_WEB_BODY: &str = include_str!("../../../../assets/shaders/gui_web.wgsl");
 
 /// Assembles a backend shader body with the shared rounded-clip mask.
@@ -26,31 +25,37 @@ fn assemble(clip: &str, body: &str) -> String {
     format!("{clip}\n{body}")
 }
 
-/// The quad shader source for the current backend.
+/// The quad shader source for a binding strategy.
 ///
-/// Both backends receive the shared `gui_clip_common.wgsl` mask, so a rounded
-/// clip cuts quads, text and SVG identically on native and on the web.
-#[cfg(not(target_arch = "wasm32"))]
-fn quad_shader_source() -> String {
-    assemble(CLIP, QUAD_BODY)
-}
-
-/// The quad shader source for the current backend.
-///
-/// Both backends receive the shared `gui_clip_common.wgsl` mask, so a rounded
-/// clip cuts quads, text and SVG identically on native and on the web.
-#[cfg(target_arch = "wasm32")]
-fn quad_shader_source() -> String {
-    assemble(CLIP, QUAD_WEB_BODY)
+/// Both strategies receive the shared `gui_clip_common.wgsl` mask, so a rounded
+/// clip cuts quads, text and SVG identically on either path.
+fn quad_shader_source(mode: ImageBindingMode) -> String {
+    assemble(
+        CLIP,
+        if mode.is_bindless() {
+            QUAD_BODY
+        } else {
+            QUAD_WEB_BODY
+        },
+    )
 }
 
 /// Builds the quad shader module, so a second renderer can reuse it instead of
 /// compiling the same WGSL again (Phase 8E popup sharing).
+///
+/// The source is selected from the device's enabled features: a device with
+/// the descriptor-array features gets `gui.wgsl`, any other (GL/WebGL2) gets
+/// the separate-binding `gui_web.wgsl`.
 #[must_use]
 pub(crate) fn quad_shader(device: &wgpu::Device) -> wgpu::ShaderModule {
+    let mode = ImageBindingMode::for_features(device.features());
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("GUI Shader"),
-        source: wgpu::ShaderSource::Wgsl(quad_shader_source().into()),
+        label: Some(if mode.is_bindless() {
+            "GUI Shader (bindless)"
+        } else {
+            "GUI Shader (separate)"
+        }),
+        source: wgpu::ShaderSource::Wgsl(quad_shader_source(mode).into()),
     })
 }
 
@@ -206,7 +211,21 @@ pub fn create_quad_pipeline_with_shader(
 
 #[cfg(test)]
 mod tests {
-    use super::{assemble, CLIP, QUAD_WEB_BODY};
+    use super::{assemble, quad_shader_source, CLIP, QUAD_WEB_BODY};
+    use crate::image_binding::ImageBindingMode;
+
+    #[test]
+    fn the_shader_is_selected_from_the_binding_mode() {
+        let bindless = quad_shader_source(ImageBindingMode::Bindless);
+        assert!(bindless.contains("var gui_textures: binding_array"));
+        assert!(bindless.contains("gui_textures"));
+
+        let separate = quad_shader_source(ImageBindingMode::Separate);
+        // Check the declaration, not the word: `gui_web.wgsl`'s header comment
+        // says "instead of binding_array", which a bare substring test caught.
+        assert!(!separate.contains("var gui_textures: binding_array"));
+        assert!(separate.contains("var tex0: texture_2d<f32>;"));
+    }
 
     #[test]
     fn the_web_quad_shader_applies_the_rounded_clip() {

@@ -1198,25 +1198,57 @@ impl TextFieldModel {
     /// let view: Element<()> = model.view(|_| ());
     /// ```
     #[must_use]
-    pub fn view<Msg: Clone>(&mut self, message: impl Fn(String) -> Msg) -> Element<Msg> {
+    pub fn view<Msg: Clone>(&self, message: impl Fn(String) -> Msg) -> Element<Msg> {
+        self.view_with_focus(true, message)
+    }
+
+    /// Renders the field with an explicit focus state.
+    ///
+    /// A host that keeps the model visible before the user clicks it renders
+    /// with `focused = false` (no caret, rest colours) and switches to `true`
+    /// once its click message focused the field; the caret and selection then
+    /// come from the model. [`Self::view`] is the always-focused shorthand.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use guimaker::prelude::*;
+    /// let mut model = TextFieldModel::new(guimaker::input::text_editor::TextEditor::new("hi"));
+    /// let view: Element<()> = model.view_with_focus(false, |_| ());
+    /// ```
+    #[must_use]
+    pub fn view_with_focus<Msg: Clone>(
+        &self,
+        focused: bool,
+        message: impl Fn(String) -> Msg,
+    ) -> Element<Msg> {
         let size = ControlSize::Md;
         let spec = field_spec(self.error.is_some());
         let emit = message(self.editor.text().to_string());
-        let mut surface = field_surface(spec, size, self.disabled, true, emit);
+        let mut surface = field_surface(spec, size, self.disabled, focused, emit);
+        // The caret and the selection are a focus affordance: an unfocused
+        // field shows its text at rest (prompt 15 Phase 9D finding 4).
+        let caret = focused.then_some(self.editor.caret());
         if self.editor.text().is_empty() {
-            surface = surface.child(
-                text::<Msg>(self.placeholder.clone())
-                    .text_role(size.label_role())
-                    .tone(Tone::Faint)
-                    .caret(self.editor.caret()),
-            );
+            let mut label = text::<Msg>(self.placeholder.clone())
+                .text_role(size.label_role())
+                .tone(Tone::Faint);
+            if let Some(caret) = caret {
+                label = label.caret(caret);
+            }
+            surface = surface.child(label);
         } else {
             let mut value =
                 spec.apply_tone(text::<Msg>(self.editor.text()).text_role(size.label_role()));
-            if let Some((start, end)) = self.editor.selection() {
-                value = value.selection(start, end);
+            if focused {
+                if let Some((start, end)) = self.editor.selection() {
+                    value = value.selection(start, end);
+                }
             }
-            surface = surface.child(value.caret(self.editor.caret()));
+            if let Some(caret) = caret {
+                value = value.caret(caret);
+            }
+            surface = surface.child(value);
         }
         labelled_field(None, surface, self.error.as_deref(), None)
     }
@@ -1450,5 +1482,26 @@ mod tests {
             "the text must not be mutated with a | marker"
         );
         assert_eq!(caret_offset(&view), Some(1), "the caret is a byte offset");
+    }
+
+    /// The standard editable path used by apps and the bench: the model owns
+    /// the text and the caret, an unfocused render has no caret, and committed
+    /// text (`on_text` → `insert_text`) grows the document
+    /// (prompt 15 Phase 9D finding 4).
+    #[test]
+    fn an_unfocused_field_model_has_no_caret_and_typing_grows_the_text() {
+        let mut model = TextFieldModel::new(TextEditor::new("ab"));
+        model.editor.set_caret(2);
+        let unfocused: Element<()> = model.view_with_focus(false, |_| ());
+        assert_eq!(
+            caret_offset(&unfocused),
+            None,
+            "an unfocused field has no caret"
+        );
+        let focused: Element<()> = model.view_with_focus(true, |_| ());
+        assert_eq!(caret_offset(&focused), Some(2));
+
+        model.insert_text("cd", 0.0);
+        assert_eq!(model.editor.text(), "abcd");
     }
 }

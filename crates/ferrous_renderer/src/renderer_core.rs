@@ -21,6 +21,7 @@ pub use crate::render_stats;
 pub use crate::geometry::{compute_tangents, Mesh, Vertex};
 pub use crate::graph::frame_packet::Viewport;
 pub use crate::graph::RenderPass;
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub use crate::passes::{
     CelShadedPass, FlatShadedPass, OutlinePass, ParticleSystem, PostProcessPass, PrePass,
     ProceduralSkyPass, SkinningPass, SkyMode, SsaoBlurPass, SsaoPass, WorldPass,
@@ -32,6 +33,8 @@ pub use camera_system::CameraSystem;
 pub use ferrous_core::scene::{MaterialDescriptor, RenderStyle};
 pub use ferrous_core::Color;
 pub use frame_builder::FrameBuilder;
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
+pub use frame_builder::WorldBuilder;
 pub use gizmo_system::GizmoSystem;
 pub use pipeline::PipelineLayouts;
 pub use render_stats::RenderStats;
@@ -57,6 +60,7 @@ pub use crate::passes::CullPass;
 
 // Internal imports needed for method implementations
 use crate::materials::MaterialRegistry;
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 use crate::resources::SsaoResources;
 use camera::controller::OrbitState;
 pub use pipeline::InstancingPipeline;
@@ -741,9 +745,9 @@ struct Font2dEntry {
 /// The instance's `Mat4` maps a canonical local quad to world space.  The
 /// shader has two canonical quads:
 ///
-/// - rounded-rect / circle / line family: `[-0.5, 0.5]²` (`vertex_index`-based
+/// - rounded-rect / circle / line family: `[-0.5, 0.5]^2` (`vertex_index`-based
 ///   corners are re-centred by `0.5` in `shape_2d.wgsl`);
-/// - triangle (`params.w > 1.5`, see `SHAPE_KIND_TRIANGLE`): `[0, 1]²`, with
+/// - triangle (`params.w > 1.5`, see `SHAPE_KIND_TRIANGLE`): `[0, 1]^2`, with
 ///   `c0 = b - a`, `c1 = c - a`, `c3 = a` (the triangle itself is contained).
 ///
 /// Transforming the four corners and taking their min/max yields a world-space
@@ -759,7 +763,7 @@ fn shape_world_aabb(s: &ferrous_2d::render::ShapeInstance) -> (glam::Vec2, glam:
 }
 
 /// World-space AABB of a [`SpriteInstance`].  `sprite_2d.wgsl` maps the
-/// canonical `[-0.5, 0.5]²` quad through the instance matrix (no AA expansion),
+/// canonical `[-0.5, 0.5]^2` quad through the instance matrix (no AA expansion),
 /// so this is exact.
 #[inline]
 fn sprite_world_aabb(s: &ferrous_2d::render::SpriteInstance) -> (glam::Vec2, glam::Vec2) {
@@ -788,13 +792,13 @@ fn aabb_intersects(
     min.x <= rect_max.x && max.x >= rect_min.x && min.y <= rect_max.y && max.y >= rect_min.y
 }
 
-/// | `Full3D` | ✓ | ✓ |
-/// | `Flat2D` | ✗ (skipped) | ✓ (clears to `world_pass.clear_color`) |
+/// | `Full3D` | yes | yes |
+/// | `Flat2D` | no (skipped) | yes (clears to `world_pass.clear_color`) |
 ///
 /// Set via [`Renderer::set_mode`].  The default is [`RendererMode::Full3D`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RendererMode {
-    /// Full 3-D pipeline: prepass → SSAO → world → style → gizmos → post-process → UI.
+    /// Full 3-D pipeline: prepass -> SSAO -> world -> style -> gizmos -> post-process -> UI.
     #[default]
     Full3D,
     /// 2-D GUI-only pipeline: the UI pass clears the surface directly.
@@ -887,6 +891,451 @@ struct View2dCommand {
     background: bool,
 }
 
+/// Builds `value` and records one startup-trace mark with the builder's name
+/// and the wall-clock time it took.
+///
+/// The trace only exists when `AppConfig::startup_trace` (or
+/// `FERROUS_TRACE_STARTUP`) is on; the `format!` cost is paid once per build,
+/// never per frame, so a slow shader compile is visible in the report.
+fn time_pipeline<T>(name: &str, build: impl FnOnce() -> T) -> T {
+    let start = std::time::Instant::now();
+    let value = build();
+    ferrous_core::startup::mark(&format!(
+        "pipeline: {name} ({:.1} ms)",
+        start.elapsed().as_secs_f64() * 1000.0
+    ));
+    value
+}
+
+/// Lazily constructed [`Renderer2d`] for one output configuration.
+///
+/// A mode pays only for the 2-D pipeline set it draws: `Flat2D` (GUI only)
+/// never builds one, `Pure2D` builds the swapchain variant on the first frame
+/// and `Full3D` builds the HDR overlay variant alongside the 3-D group.  The
+/// [`Deref`](std::ops::Deref) implementation keeps the historical
+/// `renderer.renderer_2d_*` call sites compiling; the inherent methods below
+/// shadow the ones the engine calls outside a render path (setters and
+/// counters) so they defer to the first materialization instead of forcing it.
+pub struct Renderer2dSlot {
+    device: Arc<wgpu::Device>,
+    format: wgpu::TextureFormat,
+    depth_format: Option<wgpu::TextureFormat>,
+    sample_count: u32,
+    cache: Option<Arc<wgpu::PipelineCache>>,
+    label: &'static str,
+    /// Interior-mutability cell so `Deref` can build on demand and never panics.
+    cell: std::sync::OnceLock<Renderer2d>,
+    /// Pending settings applied when the renderer is first built.
+    pending_scratch_reuse: bool,
+    pending_pixel_ratio_bits: std::sync::atomic::AtomicU32,
+    pending_legacy: std::sync::atomic::AtomicU32,
+    pending_dash: std::sync::Mutex<[[f32; 8]; 16]>,
+    pending_gradient: Vec<[f32; 4]>,
+    pending_grid: Option<ferrous_2d::render::types::Grid2dParams>,
+}
+
+impl Renderer2dSlot {
+    /// Creates an unbuilt slot for one output configuration.
+    fn new(
+        device: Arc<wgpu::Device>,
+        format: wgpu::TextureFormat,
+        depth_format: Option<wgpu::TextureFormat>,
+        sample_count: u32,
+        cache: Option<Arc<wgpu::PipelineCache>>,
+        label: &'static str,
+    ) -> Self {
+        Self {
+            device,
+            format,
+            depth_format,
+            sample_count,
+            cache,
+            label,
+            cell: std::sync::OnceLock::new(),
+            pending_scratch_reuse: true,
+            pending_pixel_ratio_bits: std::sync::atomic::AtomicU32::new(1.0f32.to_bits()),
+            pending_legacy: std::sync::atomic::AtomicU32::new(0),
+            pending_dash: std::sync::Mutex::new([[0.0; 8]; 16]),
+            pending_gradient: Vec::new(),
+            pending_grid: None,
+        }
+    }
+
+    /// Materializes the renderer on first use, applying every deferred setting.
+    ///
+    /// `Deref` uses this, so reading a slot never panics: the first read builds
+    /// exactly the pipeline banks it needs (the banks themselves stay lazy).
+    fn materialize(&self) -> &Renderer2d {
+        self.cell.get_or_init(|| {
+            let start = std::time::Instant::now();
+            let mut renderer = Renderer2d::new_lazy(
+                self.device.clone(),
+                self.format,
+                self.depth_format,
+                self.sample_count,
+                1024,
+                self.cache.clone(),
+            );
+            renderer.set_scratch_reuse(self.pending_scratch_reuse);
+            renderer.set_pixel_ratio(f32::from_bits(
+                self.pending_pixel_ratio_bits
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            ));
+            renderer.set_legacy_2d(
+                self.pending_legacy
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    != 0,
+            );
+            {
+                let table = self
+                    .pending_dash
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                for id in 1..16 {
+                    if table[id][0] > 0.0 {
+                        renderer.set_dash_pattern(id as u8, &table[id]);
+                    }
+                }
+            }
+            if !self.pending_gradient.is_empty() {
+                renderer.set_gradient_table(&self.pending_gradient);
+            }
+            if let Some(grid) = self.pending_grid {
+                renderer.set_grid(Some(grid));
+            }
+            ferrous_core::startup::mark(&format!(
+                "pipeline: {} 2D set ({:.1} ms)",
+                self.label,
+                start.elapsed().as_secs_f64() * 1000.0
+            ));
+            renderer
+        })
+    }
+
+    /// Builds the 2-D renderer on first use and returns it.
+    ///
+    /// Safe to call from `&self`; unlike raw field access it can never panic.
+    pub fn ensure(&self) -> &Renderer2d {
+        self.materialize()
+    }
+
+    /// Whether the 2-D renderer (its buffers) has been built.
+    #[must_use]
+    pub fn is_ready(&self) -> bool {
+        self.cell.get().is_some()
+    }
+
+    /// Safe immutable accessor for the built renderer, or `None` if unbuilt.
+    #[must_use]
+    pub fn renderer(&self) -> Option<&Renderer2d> {
+        self.cell.get()
+    }
+
+    /// Enables/disables scratch reuse without forcing materialization.
+    pub fn set_scratch_reuse(&mut self, enabled: bool) {
+        self.pending_scratch_reuse = enabled;
+        if let Some(renderer) = self.cell.get_mut() {
+            renderer.set_scratch_reuse(enabled);
+        }
+    }
+
+    /// Records the device-pixels-per-logical-pixel ratio without forcing
+    /// materialization.
+    pub fn set_pixel_ratio(&self, ratio: f32) {
+        let ratio = if ratio.is_finite() && ratio > 0.0 {
+            ratio
+        } else {
+            1.0
+        };
+        self.pending_pixel_ratio_bits
+            .store(ratio.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        if let Some(renderer) = self.cell.get() {
+            renderer.set_pixel_ratio(ratio);
+        }
+    }
+
+    /// Current device-pixels-per-logical-pixel ratio, even while unbuilt.
+    #[must_use]
+    pub fn pixel_ratio(&self) -> f32 {
+        match self.cell.get() {
+            Some(renderer) => renderer.pixel_ratio(),
+            None => f32::from_bits(
+                self.pending_pixel_ratio_bits
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            ),
+        }
+    }
+
+    /// Selects the legacy 2-D line stabiliser without forcing materialization.
+    pub fn set_legacy_2d(&self, legacy: bool) {
+        self.pending_legacy.store(
+            if legacy { 1 } else { 0 },
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        if let Some(renderer) = self.cell.get() {
+            renderer.set_legacy_2d(legacy);
+        }
+    }
+
+    /// Registers a shader dash pattern without forcing materialization.
+    pub fn set_dash_pattern(&self, id: u8, lengths: &[f32]) {
+        if id == 0 {
+            return;
+        }
+        {
+            let mut table = self
+                .pending_dash
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let slot = &mut table[(id as usize).min(15)];
+            *slot = [0.0; 8];
+            for (dst, &src) in slot.iter_mut().zip(lengths.iter()) {
+                if src.is_finite() && src > 0.0 {
+                    *dst = src;
+                }
+            }
+        }
+        if let Some(renderer) = self.cell.get() {
+            renderer.set_dash_pattern(id, lengths);
+        }
+    }
+
+    /// Uploads the gradient table without forcing materialization.
+    pub fn set_gradient_table(&mut self, table: &[[f32; 4]]) {
+        self.pending_gradient.clear();
+        self.pending_gradient.extend_from_slice(table);
+        if let Some(renderer) = self.cell.get_mut() {
+            renderer.set_gradient_table(table);
+        }
+    }
+
+    /// Enables/disables the procedural grid without forcing materialization.
+    pub fn set_grid(&mut self, params: Option<ferrous_2d::render::types::Grid2dParams>) {
+        self.pending_grid = params;
+        if let Some(renderer) = self.cell.get_mut() {
+            renderer.set_grid(params);
+        }
+    }
+
+    /// Whether a grid pass will be drawn, even while unbuilt.
+    #[must_use]
+    pub fn has_grid(&self) -> bool {
+        match self.cell.get() {
+            Some(renderer) => renderer.has_grid(),
+            None => self.pending_grid.is_some(),
+        }
+    }
+
+    /// Resets the frame counters; a no-op while the set is unbuilt.
+    pub fn reset_frame_counters(&self) {
+        if let Some(renderer) = self.cell.get() {
+            renderer.reset_frame_counters();
+        }
+    }
+
+    /// Snapshots the frame counters; zeroes while the set is unbuilt.
+    #[must_use]
+    pub fn frame_counters(&self) -> ferrous_2d::render::Frame2dCounters {
+        match self.cell.get() {
+            Some(renderer) => renderer.frame_counters(),
+            None => ferrous_2d::render::Frame2dCounters::default(),
+        }
+    }
+}
+
+impl std::ops::Deref for Renderer2dSlot {
+    type Target = Renderer2d;
+
+    fn deref(&self) -> &Renderer2d {
+        self.materialize()
+    }
+}
+
+impl std::ops::DerefMut for Renderer2dSlot {
+    fn deref_mut(&mut self) -> &mut Renderer2d {
+        self.materialize();
+        self.cell
+            .get_mut()
+            .expect("the 2D renderer was just materialized")
+    }
+}
+
+/// Lazily built 3-D [`PipelineLayouts`].
+///
+/// A UI-only `Flat2D` app never creates the bind-group and pipeline layouts the
+/// 3-D passes need; `Deref` materializes them on the first 3-D access and the
+/// startup mark makes the (layout-only) cost visible.
+pub struct PipelineLayoutsSlot {
+    device: Arc<wgpu::Device>,
+    cell: std::sync::OnceLock<PipelineLayouts>,
+}
+
+impl PipelineLayoutsSlot {
+    fn new(device: Arc<wgpu::Device>) -> Self {
+        Self {
+            device,
+            cell: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// The layouts, built on first access.
+    pub fn ensure(&self) -> &PipelineLayouts {
+        self.materialize()
+    }
+
+    /// Whether the layouts have been built.
+    #[must_use]
+    pub fn is_ready(&self) -> bool {
+        self.cell.get().is_some()
+    }
+
+    /// Safe accessor: `None` until something needs the 3-D layouts.
+    #[must_use]
+    pub fn get(&self) -> Option<&PipelineLayouts> {
+        self.cell.get()
+    }
+
+    fn materialize(&self) -> &PipelineLayouts {
+        self.cell.get_or_init(|| {
+            let start = std::time::Instant::now();
+            let layouts = PipelineLayouts::new(&self.device);
+            ferrous_core::startup::mark(&format!(
+                "pipeline: 3D layouts ({:.1} ms)",
+                start.elapsed().as_secs_f64() * 1000.0
+            ));
+            layouts
+        })
+    }
+}
+
+impl std::ops::Deref for PipelineLayoutsSlot {
+    type Target = PipelineLayouts;
+
+    fn deref(&self) -> &PipelineLayouts {
+        self.materialize()
+    }
+}
+
+impl std::ops::DerefMut for PipelineLayoutsSlot {
+    fn deref_mut(&mut self) -> &mut PipelineLayouts {
+        self.materialize();
+        self.cell
+            .get_mut()
+            .expect("the 3-D layouts were just materialized")
+    }
+}
+
+/// Lazily built [`CameraSystem`] (CPU camera + GPU uniform).
+///
+/// `Flat2D` frames use an identity camera packet and never touch this slot, so
+/// a GUI-only app does not allocate the camera uniform.  `Deref` builds on
+/// demand; `set_aspect` records a pending aspect without building, so a resize
+/// in `Flat2D` cannot force the camera.
+pub struct CameraSlot {
+    device: Arc<wgpu::Device>,
+    aspect_bits: std::sync::atomic::AtomicU32,
+    cell: std::sync::OnceLock<CameraSystem>,
+}
+
+impl CameraSlot {
+    fn new(device: Arc<wgpu::Device>, width: u32, height: u32) -> Self {
+        let aspect = if width == 0 || height == 0 {
+            1.0
+        } else {
+            width as f32 / height as f32
+        };
+        Self {
+            device,
+            aspect_bits: std::sync::atomic::AtomicU32::new(aspect.to_bits()),
+            cell: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Records an aspect ratio; applies immediately only if the camera exists.
+    pub fn set_aspect(&mut self, aspect: f32) {
+        let aspect = if aspect.is_finite() && aspect > 0.0 {
+            aspect
+        } else {
+            1.0
+        };
+        self.aspect_bits
+            .store(aspect.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        if let Some(camera) = self.cell.get_mut() {
+            camera.set_aspect(aspect);
+        }
+    }
+
+    /// The camera system, built on first access.
+    pub fn ensure(&self) -> &CameraSystem {
+        self.materialize()
+    }
+
+    /// Whether the camera system has been built.
+    #[must_use]
+    pub fn is_ready(&self) -> bool {
+        self.cell.get().is_some()
+    }
+
+    /// Safe accessor: `None` until something needs the camera.
+    #[must_use]
+    pub fn get(&self) -> Option<&CameraSystem> {
+        self.cell.get()
+    }
+
+    fn materialize(&self) -> &CameraSystem {
+        self.cell.get_or_init(|| {
+            let start = std::time::Instant::now();
+            let aspect =
+                f32::from_bits(self.aspect_bits.load(std::sync::atomic::Ordering::Relaxed));
+            let camera = Camera {
+                eye: glam::Vec3::new(0.0, 0.0, 5.0),
+                target: glam::Vec3::ZERO,
+                up: glam::Vec3::Y,
+                projection: ferrous_core::scene::camera::Projection::Perspective {
+                    fov_y_radians: 45.0f32.to_radians(),
+                    aspect_ratio: aspect,
+                    z_near: 0.1,
+                    z_far: 2000.0,
+                },
+                controller: {
+                    let mut controller = Controller::new();
+                    controller.speed = 0.0;
+                    controller.mouse_sensitivity = 0.0;
+                    controller
+                },
+            };
+            let layout = crate::pipeline::layout::create_camera_bind_group_layout(&self.device);
+            let gpu = GpuCamera::new(&self.device, &camera, &layout);
+            ferrous_core::startup::mark(&format!(
+                "pipeline: camera ({:.1} ms)",
+                start.elapsed().as_secs_f64() * 1000.0
+            ));
+            CameraSystem {
+                camera,
+                orbit: OrbitState::default(),
+                gpu,
+            }
+        })
+    }
+}
+
+impl std::ops::Deref for CameraSlot {
+    type Target = CameraSystem;
+
+    fn deref(&self) -> &CameraSystem {
+        self.materialize()
+    }
+}
+
+impl std::ops::DerefMut for CameraSlot {
+    fn deref_mut(&mut self) -> &mut CameraSystem {
+        self.materialize();
+        self.cell
+            .get_mut()
+            .expect("the camera system was just materialized")
+    }
+}
+
 pub struct Renderer {
     pub context: EngineContext,
     /// Internal colour + depth target.
@@ -901,26 +1350,30 @@ pub struct Renderer {
     ///
     /// `None` in `Flat2D`/`Pure2D` until the first 3-D use (prompt 17 S4); see
     /// [`Renderer::ensure_three_d`].
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     world_pass: Option<WorldPass>,
     #[cfg(feature = "gui")]
     pub ui_pass: UiPass,
     /// Post-process pass: tone mapping + gamma correction.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     post_process_pass: Option<PostProcessPass>,
     /// Additional user-supplied passes executed after the built-ins.
     pub extra_passes: Vec<Box<dyn RenderPass>>,
 
     // -- Camera (Fase 3: delegated to CameraSystem) ---------------------------
-    /// All camera state: CPU camera, orbit controller, GPU uniform.
-    pub camera_system: CameraSystem,
+    /// Camera state: CPU camera, orbit controller and GPU uniform.
+    ///
+    /// Built on first 3-D/Pure2D use; a `Flat2D` frame uses an identity camera
+    /// packet and never allocates it.  See [`CameraSlot::is_ready`].
+    pub camera_system: CameraSlot,
 
     // -- Scene (O(1) lookup by id) --------------------------------------------
     /// CPU-side material descriptor cache for detecting changes during sync_world.
     /// Keyed by entity id (u64).
     pub world_material_descs: HashMap<u64, ferrous_core::scene::MaterialDescriptor>,
     /// Storage buffer for instanced World entities.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     instance_buf: Option<InstanceBuffer>,
-    /// Layout for the instance storage buffer bind group.
-    instance_layout: Arc<wgpu::BindGroupLayout>,
     /// The million-particle system. `None` until the first 3-D use.
     pub particle_system: Option<ParticleSystem>,
     /// A copy of the pipeline bind-group layouts; needed when creating
@@ -930,15 +1383,23 @@ pub struct Renderer {
 
     // -- Gizmo system (Phase 3: extracted to GizmoSystem) -------------------
     /// Owns the line-list GPU pipeline and per-frame draw queue.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     gizmo_system: Option<GizmoSystem>,
     pub debug_lines: Vec<DebugLine>,
 
-    // -- Per-frame state (Fase 3: extracted to FrameBuilder) ------------------
+    // -- Per-frame state ------------------------------------------------------
+    /// The always-compiled UI-batch recycler (2D and 3D share it).
     frame_builder: FrameBuilder,
+    /// The 3D mesh caches and instanced-command builder (absent in a Flat2D
+    /// build, where the 3D modules are not compiled).
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
+    world_builder: WorldBuilder,
     /// Separate instance buffer for shadow casters.  Not camera-culled.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     shadow_instance_buf: Option<InstanceBuffer>,
 
     /// Material manager handling textures and bind groups.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     material_registry: Option<MaterialRegistry>,
 
     // -- Surface info (for registering passes post-construction) --------------
@@ -976,7 +1437,7 @@ pub struct Renderer {
     /// Wall-clock duration of the last frame in milliseconds.  Written by the
     /// engine runner around the per-frame work; `0.0` when no runner is used
     /// (e.g. the headless harness).  Only meaningful as a same-machine
-    /// relative delta — never an absolute fps claim.
+    /// relative delta " never an absolute fps claim.
     pub frame_ms: f32,
     /// Exponential moving average of [`Self::frame_ms`] (smoothing factor
     /// `1/60`).  Cheap to update, no allocation.
@@ -986,33 +1447,43 @@ pub struct Renderer {
 
     // -- SSAO -----------------------------------------------------------------
     /// Depth-normal prepass (runs before WorldPass).
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     prepass: Option<PrePass>,
     /// SSAO generation pass (half-resolution).
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     ssao_pass: Option<SsaoPass>,
     /// SSAO bilateral blur pass.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     ssao_blur_pass: Option<SsaoBlurPass>,
     /// CPU-side SSAO resources (kernel, noise, params buffers).
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     ssao_resources: Option<SsaoResources>,
     /// GPU skinning pass.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     skinning_pass: Option<SkinningPass>,
     /// When true, SSAO is computed and applied to the IBL ambient term.
     pub ssao_enabled: bool,
     /// SSAO parameters kept while the resources are not built yet.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     ssao_params: [f32; 4],
 
     // -- Render style (Phase 7) -----------------------------------------------
     /// Active render style.  Defaults to `RenderStyle::Pbr`.
     pub render_style: RenderStyle,
     /// Cel-shaded pass (active when `render_style == CelShaded`).
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     cel_pass: Option<CelShadedPass>,
     /// Inverted-hull outline pass (active when `CelShaded { outline_width > 0 }`).
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     outline_pass: Option<OutlinePass>,
     /// Flat-shaded pass (active when `render_style == FlatShaded`).
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     flat_pass: Option<FlatShadedPass>,
-    /// Copy of pipeline layouts so we can construct style passes at runtime
-    /// without borrowing `Renderer::new` locals.
-    pipeline_layouts: PipelineLayouts,
+    /// 3-D pipeline layouts, built on first 3-D use.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
+    pipeline_layouts: PipelineLayoutsSlot,
     /// Cached directional light for per-frame packet injection.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     current_dir_light: crate::resources::DirectionalLightUniform,
 
     // -- Phase 11: GPU-Driven Rendering --------------------------------------
@@ -1023,17 +1494,24 @@ pub struct Renderer {
     /// The GPU frustum-cull compute pass. Created lazily the first time
     /// `enable_gpu_culling(true)` is called.
     #[cfg(feature = "gpu-driven")]
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     cull_pass: Option<CullPass>,
 
     // -- Antialiasing (Phase AA) ----------------------------------------------
     /// Configurable antialiasing post-process (FXAA / SMAA / None).
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     aa_pass: Option<crate::passes::AntialiasingPass>,
 
     // -- Technical 2D Rendering -----------------------------------------------
-    /// 2D renderer para overlay sobre el HDR texture en Full3D (con MSAA del mundo).
-    pub renderer_2d: Renderer2d,
-    /// 2D renderer para Pure2D: sample_count=1, formato swapchain, sin overhead HDR.
-    pub renderer_2d_pure: Renderer2d,
+    /// 2-D renderer for the Full3D overlay (HDR format, world MSAA sample count).
+    ///
+    /// Built on the first 3-D use, never at `Flat2D`/`Pure2D` construction; use
+    /// [`Renderer2dSlot::is_ready`] to observe the lazy state.
+    pub renderer_2d: Renderer2dSlot,
+    /// 2-D renderer for Pure2D (swapchain format, one sample, no HDR overhead).
+    ///
+    /// Built on the first Pure2D frame, never at `Flat2D`/`Full3D` construction.
+    pub renderer_2d_pure: Renderer2dSlot,
     /// Per-pass GPU timestamps (prompt 18 P0).
     pub gpu_timings: crate::gpu_timing::GpuTimings,
     /// Open temporal-accumulation sequence (see `begin_accumulation_2d`).
@@ -1231,46 +1709,38 @@ impl Renderer {
             RenderTargetHandle::new_lazy(width, height, format, sample_count)
         };
 
-        let layouts = PipelineLayouts::new(device);
-
-        let camera = Camera {
-            eye: glam::Vec3::new(0.0, 0.0, 5.0),
-            target: glam::Vec3::ZERO,
-            up: glam::Vec3::Y,
-            projection: ferrous_core::scene::camera::Projection::Perspective {
-                fov_y_radians: 45.0f32.to_radians(),
-                aspect_ratio: width as f32 / height as f32,
-                z_near: 0.1,
-                z_far: 2000.0,
-            },
-            controller: {
-                let mut c = Controller::new();
-                c.speed = 0.0;
-                c.mouse_sensitivity = 0.0;
-                c
-            },
-        };
-        let gpu_camera = GpuCamera::new(device, &camera, &layouts.camera);
-        let camera_system = CameraSystem {
-            camera,
-            orbit: OrbitState::default(),
-            gpu: gpu_camera,
-        };
+        // The 3-D layouts and the camera are lazy (prompt 15 Phase 9D Lane A):
+        // a UI-only `Flat2D` renderer builds neither.  They materialize with a
+        // startup mark on the first 3-D/Pure2D access.
+        let camera_system = CameraSlot::new(context.device.clone(), width, height);
+        let pipeline_layouts = PipelineLayoutsSlot::new(context.device.clone());
         // Prompt 17 S4: the 3-D passes (world pass, shadow map, SSAO,
         // prepass, skinning, gizmos, particles, post-process and post-AA) are
         // built by `ensure_three_d` on the first 3-D use. The 2-D resources
         // the UI and Pure2D paths need stay here.
         let hdr_format = crate::render_target::HdrTexture::FORMAT;
+        // The GUI target format depends on the mode: Full3D composites on the
+        // HDR/MSAA world, the 2-D modes present to the swapchain.  Building the
+        // matching pipelines once avoids an HDR build+rebuild at start-up (and
+        // a Rgba16Float pipeline a GL Flat2D app cannot use).
         #[cfg(feature = "gui")]
-        let ui_renderer = ferrous_gui::GuiRenderer::new(
-            device.clone(),
-            hdr_format,
-            1024, // initial max instances
-            width,
-            height,
-            sample_count, // Use hardware MSAA
-            context.pipeline_cache.clone(),
-        );
+        let (ui_format, ui_samples) = if mode == RendererMode::Full3D {
+            (hdr_format, sample_count)
+        } else {
+            (format, 1)
+        };
+        #[cfg(feature = "gui")]
+        let ui_renderer = time_pipeline("gui", || {
+            ferrous_gui::GuiRenderer::new(
+                device.clone(),
+                ui_format,
+                1024, // initial max instances
+                width,
+                height,
+                ui_samples,
+                context.pipeline_cache.clone(),
+            )
+        });
 
         #[cfg(feature = "gui")]
         let ui_pass = UiPass::new(ui_renderer);
@@ -1293,43 +1763,55 @@ impl Renderer {
             render_2d_config = render_2d_config.with_overdraw(true);
         }
 
-        let renderer_2d = Renderer2d::new_with_cache(
+        // Both 2-D pipeline sets are lazy (prompt 15 Phase 9D Lane A).  A
+        // `Flat2D` renderer draws only the GUI, so it builds neither; `Pure2D`
+        // builds the swapchain set on its first frame; `Full3D` builds the HDR
+        // overlay set with the rest of the 3-D group in `ensure_three_d`.
+        let renderer_2d = Renderer2dSlot::new(
             context.device.clone(),
             hdr_format,
             Some(wgpu::TextureFormat::Depth32Float),
             sample_count,
-            1024,
-            context.pipeline_cache.as_deref(),
+            context.pipeline_cache.clone(),
+            "HDR overlay",
         );
-        // Pure2D renderiza directo al swapchain: usa formato de superficie (no HDR)
-        // y sample_count=1 (MSAA no es compatible con presentación directa).
-        let renderer_2d_pure = Renderer2d::new_with_cache(
+        // Pure2D renders straight to the swapchain: surface format (not HDR)
+        // and sample_count = 1 (MSAA is incompatible with direct presentation).
+        let renderer_2d_pure = Renderer2dSlot::new(
             context.device.clone(),
             format,
             None,
             1,
-            1024,
-            context.pipeline_cache.as_deref(),
+            context.pipeline_cache.clone(),
+            "Pure2D",
         );
         let shape_batcher = ShapeBatcher::default();
 
         let mut renderer = Self {
             context,
             render_target: rt,
+            #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
             world_pass: None,
             #[cfg(feature = "gui")]
             ui_pass,
+            #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
             post_process_pass: None,
             extra_passes: Vec::new(),
             camera_system,
             world_material_descs: HashMap::new(),
+            #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
             instance_buf: None,
+            #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
             particle_system: None,
-            instance_layout: layouts.instance.clone(),
+            #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
             gizmo_system: None,
             debug_lines: Vec::new(),
             frame_builder: FrameBuilder::new(),
+            #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
+            world_builder: WorldBuilder::new(),
+            #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
             shadow_instance_buf: None,
+            #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
             material_registry: None,
             format,
             sample_count,
@@ -1355,12 +1837,19 @@ impl Renderer {
             frame_ms: 0.0,
             frame_ms_avg: 0.0,
             frame_count: 0,
+            #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
             prepass: None,
+            #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
             ssao_pass: None,
+            #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
             ssao_blur_pass: None,
+            #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
             ssao_resources: None,
+            #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
             skinning_pass: None,
+            #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
             ssao_enabled: true,
+            #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
             ssao_params: [
                 SsaoResources::DEFAULT_RADIUS,
                 SsaoResources::DEFAULT_BIAS,
@@ -1368,15 +1857,21 @@ impl Renderer {
                 SsaoResources::DEFAULT_POWER,
             ],
             render_style: RenderStyle::Pbr,
+            #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
             cel_pass: None,
+            #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
             outline_pass: None,
+            #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
             flat_pass: None,
-            pipeline_layouts: layouts,
+            pipeline_layouts,
+            #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
             current_dir_light: crate::resources::DirectionalLightUniform::default(),
             #[cfg(feature = "gpu-driven")]
             gpu_culling_enabled: false,
             #[cfg(feature = "gpu-driven")]
+            #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
             cull_pass: None,
+            #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
             aa_pass: None,
             renderer_2d,
             renderer_2d_pure,
@@ -1467,6 +1962,40 @@ impl Renderer {
         self.material_registry.is_some()
     }
 
+    /// Whether the HDR overlay [`Renderer2d`] pipeline set has been built.
+    ///
+    /// `false` for a `Flat2D`/`Pure2D` app that never switched to 3-D.
+    #[must_use]
+    pub fn renderer_2d_ready(&self) -> bool {
+        self.renderer_2d.is_ready()
+    }
+
+    /// Whether the Pure2D swapchain [`Renderer2d`] pipeline set has been built.
+    ///
+    /// `false` until the first Pure2D frame (or a manual
+    /// [`Self::draw_static_2d_batches`] call).
+    #[must_use]
+    pub fn renderer_2d_pure_ready(&self) -> bool {
+        self.renderer_2d_pure.is_ready()
+    }
+
+    /// Whether the 3-D [`CameraSystem`] (CPU + GPU uniform) has been built.
+    ///
+    /// `false` for a UI-only `Flat2D` app until it switches to 3-D/Pure2D or
+    /// calls a camera setter.
+    #[must_use]
+    pub fn camera_ready(&self) -> bool {
+        self.camera_system.is_ready()
+    }
+
+    /// Whether the 3-D [`PipelineLayouts`] have been built.
+    ///
+    /// `false` for a UI-only `Flat2D` app until the first 3-D use.
+    #[must_use]
+    pub fn pipeline_layouts_ready(&self) -> bool {
+        self.pipeline_layouts.is_ready()
+    }
+
     /// Builds every 3-D resource now, when they are still missing.
     ///
     /// Called on the first 3-D use and when switching to [`RendererMode::Full3D`]
@@ -1479,6 +2008,9 @@ impl Renderer {
             return;
         }
         let device = self.context.device.clone();
+        // The HDR overlay 2-D set is part of the 3-D group: a Flat2D/Pure2D
+        // renderer that never switches does not build it.
+        self.renderer_2d.ensure();
         // A renderer built in a 2-D mode starts with an unallocated internal
         // target; the 3-D passes need its depth attachment immediately.
         if self.render_target.ensure_allocated(&device) {
@@ -1493,16 +2025,18 @@ impl Renderer {
 
         let instance_buf = InstanceBuffer::new(&device, &self.pipeline_layouts.instance, 64);
         let shadow_instance_buf = InstanceBuffer::new(&device, &self.pipeline_layouts.instance, 64);
-        let mut world_pass = WorldPass::new(
-            self.camera_system.gpu.bind_group.clone(),
-            &device,
-            &queue,
-            &self.pipeline_layouts,
-            self.width,
-            self.height,
-            sample_count,
-            self.hdri_path.as_deref(),
-        );
+        let mut world_pass = time_pipeline("world pass", || {
+            WorldPass::new(
+                self.camera_system.gpu.bind_group.clone(),
+                &device,
+                &queue,
+                &self.pipeline_layouts,
+                self.width,
+                self.height,
+                sample_count,
+                self.hdri_path.as_deref(),
+            )
+        });
         world_pass.set_material_table(&table, registry);
         world_pass.set_instance_buffer(instance_buf.bind_group.clone());
         world_pass.set_shadow_instance_buffer(shadow_instance_buf.bind_group.clone());
@@ -1512,37 +2046,47 @@ impl Renderer {
             world_pass.sky_mode = SkyMode::Solid(color);
         }
 
-        let mut prepass = PrePass::new(
-            &device,
-            self.pipeline_layouts.instance.clone(),
-            self.width,
-            self.height,
-            sample_count,
-        );
+        let mut prepass = time_pipeline("depth/normal prepass", || {
+            PrePass::new(
+                &device,
+                self.pipeline_layouts.instance.clone(),
+                self.width,
+                self.height,
+                sample_count,
+            )
+        });
         prepass.set_instance_buffer(instance_buf.bind_group.clone());
         prepass.set_material_table(&table, registry);
 
-        let mut ssao_resources = SsaoResources::new(&device, &queue);
+        let mut ssao_resources = time_pipeline("ssao", || SsaoResources::new(&device, &queue));
         ssao_resources.radius = self.ssao_params[0];
         ssao_resources.bias = self.ssao_params[1];
         ssao_resources.intensity = self.ssao_params[2];
         ssao_resources.power = self.ssao_params[3];
 
-        let gizmo_system = GizmoSystem::new(
-            &device,
-            hdr_format,
-            sample_count,
-            self.pipeline_layouts.clone(),
-        );
+        let gizmo_system = time_pipeline("gizmos", || {
+            GizmoSystem::new(
+                &device,
+                hdr_format,
+                sample_count,
+                PipelineLayouts::clone(&self.pipeline_layouts),
+            )
+        });
 
         let mut post_process_pass = PostProcessPass::new();
         post_process_pass.set_camera_layout(self.pipeline_layouts.camera.clone());
         // on_attach builds the bloom pipelines (and the tone-mapping pipeline
         // keyed to the swapchain format); must be called before on_resize.
-        post_process_pass.on_attach(&device, &queue, self.format, sample_count);
+        time_pipeline("post-process", || {
+            post_process_pass.on_attach(&device, &queue, self.format, sample_count);
+        });
 
-        let mut aa_pass = crate::passes::AntialiasingPass::new(&device);
-        aa_pass.on_attach(&device, hdr_format, self.context.pipeline_cache.as_deref());
+        let mut aa_pass = time_pipeline("antialiasing", || {
+            crate::passes::AntialiasingPass::new(&device)
+        });
+        time_pipeline("antialiasing pipelines", || {
+            aa_pass.on_attach(&device, hdr_format, self.context.pipeline_cache.as_deref());
+        });
         aa_pass.on_resize(&device, self.width, self.height);
         // Default policy: no redundant post-AA on top of the SDF analytic AA
         // (audit M4).  Consumers opt back in via `set_antialiasing` or
@@ -1553,21 +2097,28 @@ impl Renderer {
         self.shadow_instance_buf = Some(shadow_instance_buf);
         self.world_pass = Some(world_pass);
         self.prepass = Some(prepass);
-        self.ssao_pass = Some(SsaoPass::new(&device, self.width, self.height));
-        self.ssao_blur_pass = Some(SsaoBlurPass::new(&device, self.width, self.height));
+        self.ssao_pass = Some(time_pipeline("ssao pass", || {
+            SsaoPass::new(&device, self.width, self.height)
+        }));
+        self.ssao_blur_pass = Some(time_pipeline("ssao blur", || {
+            SsaoBlurPass::new(&device, self.width, self.height)
+        }));
         self.ssao_resources = Some(ssao_resources);
-        self.skinning_pass = Some(SkinningPass::new(&device));
+        self.skinning_pass = Some(time_pipeline("skinning", || SkinningPass::new(&device)));
         self.gizmo_system = Some(gizmo_system);
         self.post_process_pass = Some(post_process_pass);
         self.aa_pass = Some(aa_pass);
-        self.particle_system.get_or_insert_with(|| {
-            ParticleSystem::new(
-                &device,
-                &self.pipeline_layouts.camera,
-                1_000_000,
-                sample_count,
-            )
-        });
+        if self.particle_system.is_none() {
+            let particles = time_pipeline("particles", || {
+                ParticleSystem::new(
+                    &device,
+                    &self.pipeline_layouts.camera,
+                    1_000_000,
+                    sample_count,
+                )
+            });
+            self.particle_system = Some(particles);
+        }
         self.apply_style_passes();
         self.register_three_d_memory();
         self.mark_dirty();
@@ -1625,21 +2176,8 @@ impl Renderer {
                 let toon_levels = *toon_levels;
                 let outline_width = *outline_width;
 
-                let mut cp = CelShadedPass::new(
-                    &self.context.device,
-                    &self.pipeline_layouts,
-                    self.camera_system.gpu.bind_group.clone(),
-                    hdr_format,
-                    self.sample_count,
-                    toon_levels,
-                    outline_width,
-                );
-                cp.set_instance_buffer(instance_buf.bind_group.clone());
-                cp.set_material_table(&registry.bind_group_table());
-                self.cel_pass = Some(cp);
-
-                if outline_width > 0.0 {
-                    let mut op = OutlinePass::new(
+                let mut cp = time_pipeline("cel-shaded", || {
+                    CelShadedPass::new(
                         &self.context.device,
                         &self.pipeline_layouts,
                         self.camera_system.gpu.bind_group.clone(),
@@ -1647,8 +2185,25 @@ impl Renderer {
                         self.sample_count,
                         toon_levels,
                         outline_width,
-                        [0.0, 0.0, 0.0, 1.0],
-                    );
+                    )
+                });
+                cp.set_instance_buffer(instance_buf.bind_group.clone());
+                cp.set_material_table(&registry.bind_group_table());
+                self.cel_pass = Some(cp);
+
+                if outline_width > 0.0 {
+                    let mut op = time_pipeline("outline", || {
+                        OutlinePass::new(
+                            &self.context.device,
+                            &self.pipeline_layouts,
+                            self.camera_system.gpu.bind_group.clone(),
+                            hdr_format,
+                            self.sample_count,
+                            toon_levels,
+                            outline_width,
+                            [0.0, 0.0, 0.0, 1.0],
+                        )
+                    });
                     op.set_instance_buffer(instance_buf.bind_group.clone());
                     op.set_material_table(&registry.bind_group_table());
                     self.outline_pass = Some(op);
@@ -1658,13 +2213,15 @@ impl Renderer {
                 self.flat_pass = None;
             }
             RenderStyle::FlatShaded => {
-                let mut fp = FlatShadedPass::new(
-                    &self.context.device,
-                    &self.pipeline_layouts,
-                    self.camera_system.gpu.bind_group.clone(),
-                    hdr_format,
-                    self.sample_count,
-                );
+                let mut fp = time_pipeline("flat-shaded", || {
+                    FlatShadedPass::new(
+                        &self.context.device,
+                        &self.pipeline_layouts,
+                        self.camera_system.gpu.bind_group.clone(),
+                        hdr_format,
+                        self.sample_count,
+                    )
+                });
                 fp.set_instance_buffer(instance_buf.bind_group.clone());
                 fp.set_material_table(&registry.bind_group_table());
                 self.flat_pass = Some(fp);
@@ -1769,7 +2326,7 @@ impl Renderer {
             }
         }
 
-        // En Pure2D recalcular la ortho para mantener 1u=1px con el nuevo tamaño.
+        // En Pure2D recalcular la ortho para mantener 1u=1px con el nuevo tamano.
         if self.mode == RendererMode::Pure2D {
             self.camera_system
                 .camera
@@ -1844,7 +2401,7 @@ impl Renderer {
 
     /// Activa el modo 2D puro: ortho pixel-perfect, sin pipeline 3D.
     ///
-    /// La cámara se configura automáticamente:
+    /// La camara se configura automaticamente:
     /// - 1 world-unit = 1 pixel.
     /// - Origen (0, 0) en el centro de la pantalla.
     /// - Eje Y positivo hacia arriba.
@@ -1853,7 +2410,7 @@ impl Renderer {
     /// El `background` es el color de clear que se aplica cada frame.
     pub fn enable_pure_2d(&mut self, background: wgpu::Color) {
         self.set_mode(RendererMode::Pure2D);
-        // Configurar cámara ortho pixel-perfect (1u = 1px)
+        // Configurar camara ortho pixel-perfect (1u = 1px)
         self.camera_system
             .camera
             .set_mode_2d(true, Some(self.height as f32));
@@ -1867,7 +2424,7 @@ impl Renderer {
 
     /// Vuelve al modo 3D completo (PBR / CelShaded / FlatShaded).
     ///
-    /// Restaura la cámara perspectiva. El `eye` vuelve a `(0, 2, 5)`
+    /// Restaura la camara perspectiva. El `eye` vuelve a `(0, 2, 5)`
     /// y se rehabilita el controlador WASD.
     pub fn enable_full_3d(&mut self) {
         self.set_mode(RendererMode::Full3D);
@@ -1951,10 +2508,10 @@ impl Renderer {
     /// // FXAA with default quality (recommended for most use cases)
     /// renderer.set_antialiasing(AntialiasingMode::Fxaa(FxaaParams::default()));
     ///
-    /// // SMAA — sharper edges, three sub-passes
+    /// // SMAA " sharper edges, three sub-passes
     /// renderer.set_antialiasing(AntialiasingMode::Smaa);
     ///
-    /// // Disabled — fastest, no blur
+    /// // Disabled " fastest, no blur
     /// renderer.set_antialiasing(AntialiasingMode::None);
     /// ```
     pub fn set_antialiasing(&mut self, mode: crate::passes::AntialiasingMode) {
@@ -2350,7 +2907,7 @@ impl Renderer {
         if self.aa_pass.is_some() {
             // `AntialiasingPass` keeps its textures private; these are the
             // exact allocations `on_resize` makes (AA-out RGBA16Float and the
-            // two SMAA RGBA8 textures, both swapchain-sized, plus the 1×1
+            // two SMAA RGBA8 textures, both swapchain-sized, plus the 1-1
             // dummy).
             let pixels = u64::from(self.width) * u64::from(self.height);
             register_gpu("3d:aa output", pixels * 8, Subsystem::Renderer);
@@ -2461,7 +3018,7 @@ impl Renderer {
     /// expanded by the effective culling margin.
     ///
     /// Computed by inverting the camera's view-projection and unprojecting the
-    /// four NDC corners `(-1, -1) … (1, 1)` at `z = 0`.  For the Pure2D
+    /// four NDC corners `(-1, -1)  (1, 1)` at `z = 0`.  For the Pure2D
     /// orthographic camera the `xy` of those points is exactly the world rect
     /// the camera can see (independent of the pan/zoom encoding), so it stays
     /// correct for `set_ortho_size`, `set_camera_eye` and camera-target pan.
@@ -2504,7 +3061,7 @@ impl Renderer {
         )
     }
 
-    // ── Retained static 2D batches ───────────────────────────────────────────
+    // --- Retained static 2D batches ---
 
     /// Creates a retained static 2D batch from `shapes` and uploads it to GPU
     /// **once**.  Every subsequent frame draws it with a single instanced draw
@@ -2617,6 +3174,9 @@ impl Renderer {
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
     ) {
+        // This escape hatch can run before the first Pure2D frame, so the
+        // swapchain 2-D set must exist before any batch is recorded.
+        self.renderer_2d_pure.ensure();
         let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Static2D Batches Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -2750,7 +3310,7 @@ impl Renderer {
     /// Wall-clock duration of the last frame in milliseconds (engine runner
     /// only; `0.0` for a manually-driven renderer / headless harness).
     ///
-    /// Same-machine relative delta only — never an absolute fps claim.
+    /// Same-machine relative delta only " never an absolute fps claim.
     pub fn frame_ms(&self) -> f32 {
         self.frame_ms
     }
@@ -2805,11 +3365,13 @@ impl Renderer {
             })
     }
 
-    /// Mutable reference to the internal frame builder (mesh cache, packets).
-    pub fn frame_builder_mut(&mut self) -> &mut FrameBuilder {
-        &mut self.frame_builder
+    /// Mutable reference to the 3D frame builder (mesh cache, packets).
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
+    pub fn world_builder_mut(&mut self) -> &mut WorldBuilder {
+        &mut self.world_builder
     }
 
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn camera(&self) -> &crate::camera::Camera {
         &self.camera_system.camera
     }
@@ -2952,7 +3514,7 @@ impl Renderer {
             return;
         }
         self.ensure_three_d();
-        // 0. Sync DirectionalLight ECS component → GPU uniform (if present)
+        // 0. Sync DirectionalLight ECS component -> GPU uniform (if present)
         {
             use ferrous_core::scene::DirectionalLight;
             let lights: Vec<DirectionalLight> = world
@@ -2969,7 +3531,7 @@ impl Renderer {
             }
         }
 
-        // 0d. Sync ParticleEmitter ECS components → ParticleSystem
+        // 0d. Sync ParticleEmitter ECS components -> ParticleSystem
         {
             use ferrous_core::scene::ParticleEmitter;
             use ferrous_ecs::prelude::Query;
@@ -2995,7 +3557,7 @@ impl Renderer {
             }
         }
 
-        // 0b. Sync Camera3D ECS component → renderer camera (if present)
+        // 0b. Sync Camera3D ECS component -> renderer camera (if present)
         {
             use ferrous_core::scene::Camera3D;
             let cameras: Vec<Camera3D> = world.ecs.query::<Camera3D>().map(|(_, c)| *c).collect();
@@ -3009,7 +3571,7 @@ impl Renderer {
             }
         }
 
-        // 0c. Sync Material ECS components → MaterialDescriptors
+        // 0c. Sync Material ECS components -> MaterialDescriptors
         {
             use ferrous_core::scene::world::MaterialComponent;
             let mat_updates: Vec<(
@@ -3066,7 +3628,8 @@ impl Renderer {
                 .expect("the shadow instance buffer exists after ensure_three_d");
             let vp = self.viewport;
             let vp_mat = camera_packet.view_proj;
-            self.frame_builder.build_world_commands(
+            let instance_layout = self.pipeline_layouts.instance.clone();
+            self.world_builder.build_world_commands(
                 world,
                 &self.context.device,
                 &frustum,
@@ -3074,7 +3637,7 @@ impl Renderer {
                 vp_mat,
                 vp,
                 instance_buf,
-                &self.instance_layout,
+                &instance_layout,
                 shadow_instance_buf,
                 &mut |bg: std::sync::Arc<wgpu::BindGroup>,
                       shadow_bg: std::sync::Arc<wgpu::BindGroup>| {
@@ -3096,7 +3659,7 @@ impl Renderer {
                 ferrous_core::memory::Subsystem::Renderer,
             );
         }
-        self.frame_builder.scene_dirty = true;
+        self.world_builder.scene_dirty = true;
     }
 
     /// Renders the scene into an external texture view.
@@ -3187,14 +3750,23 @@ impl Renderer {
             },
         };
 
-        self.camera_system.sync_gpu(&self.context.queue);
-
-        let camera_packet = CameraPacket {
-            view_proj: self.camera_system.view_proj(),
-            eye: self.camera_system.camera.eye,
+        // Flat2D is a GUI-only frame: it uses an identity camera packet and
+        // never materializes the camera system.  Pure2D/Full3D sync the real
+        // camera as before.
+        let camera_packet = if self.mode == RendererMode::Flat2D {
+            CameraPacket {
+                view_proj: glam::Mat4::IDENTITY,
+                eye: glam::Vec3::ZERO,
+            }
+        } else {
+            self.camera_system.sync_gpu(&self.context.queue);
+            CameraPacket {
+                view_proj: self.camera_system.view_proj(),
+                eye: self.camera_system.camera.eye,
+            }
         };
         let _batch = frame_trace::stage(Stage::BatchBuild);
-        let (mut packet, stats) = self.frame_builder.build(self.viewport, camera_packet);
+        let (mut packet, stats) = self.world_builder.build(self.viewport, camera_packet);
         drop(_batch);
 
         self.render_stats = stats;
@@ -3206,12 +3778,14 @@ impl Renderer {
         #[cfg(not(feature = "gui"))]
         let _ = ui_batch;
 
-        // ── Pure2D fast path ───────────────────────────────────────────────
-        // Pipeline mínima: Clear → Shapes SDF → Sprites → UI → Extra passes.
+        // --- Pure2D fast path ---
+        // Pipeline minima: Clear -> Shapes SDF -> Sprites -> UI -> Extra passes.
         // Sin Prepass, SSAO, WorldPass, Gizmos, Particles, PostFX ni tone-mapping.
-        // NOTA: camera_system.sync_gpu() ya se llamó arriba, no repetir.
+        // NOTA: camera_system.sync_gpu() ya se llamo arriba, no repetir.
         if self.mode == RendererMode::Pure2D {
-            // Subir la cámara al renderer 2D puro
+            // First Pure2D frame: build the swapchain 2-D pipeline set now.
+            self.renderer_2d_pure.ensure();
+            // Subir la camara al renderer 2D puro
             let vp = self.camera_system.view_proj();
             let resolution = glam::Vec2::new(self.width as f32, self.height as f32);
             let _upload = frame_trace::stage(Stage::PrepareUpload);
@@ -3235,12 +3809,12 @@ impl Renderer {
             }
             drop(_upload);
 
-            // ── Pure2D painter-order batcher (audit H3) ─────────────────────
+            // --- Pure2D painter-order batcher (audit H3) ---
             // Build a painter-order command list **without mutating** the
             // batchers, then reorder the instances into reusable scratch
             // uploads so every (pipeline, texture) run is a contiguous GPU
             // range.  A run is merely a span of consecutive same-key commands
-            // — their z may differ — so N distinct-z shapes collapse to one
+            // " their z may differ " so N distinct-z shapes collapse to one
             // draw call and a texture's sprites collapse to one draw per
             // contiguous span.  Global painter order is preserved exactly.
             //
@@ -3267,7 +3841,7 @@ impl Renderer {
                 // Two or more recorded views switch to the per-view camera path.
                 let multi_view = self.views_2d.len() > 1;
 
-                // ── 2D viewport culling rect ────────────────────────────────────
+                // --- 2D viewport culling rect ---
                 // Instances whose world AABB is fully outside the visible camera
                 // rect (expanded by the AA-safe margin) are dropped *before* the
                 // sort and the run walk, so they cost neither sorting nor upload,
@@ -3348,7 +3922,7 @@ impl Renderer {
                     Vec::new()
                 };
 
-                // Fast path: shapes only, already in painter (z) order — the usual
+                // Fast path: shapes only, already in painter (z) order " the usual
                 // CAD case (callers submit in layer order).  No command list and no
                 // sort: cull and pack straight into the upload as a single run.
                 // In multi-view the shape vector is already grouped per view in
@@ -3386,7 +3960,7 @@ impl Renderer {
                         });
                     }
                 } else {
-                    // ── Painter-order batcher (audit H3) ────────────────────────
+                    // --- Painter-order batcher (audit H3) ---
                     // Build a painter-order command list without mutating the
                     // batchers, then reorder the instances into the uploads so
                     // every (pipeline, texture) run is a contiguous GPU range.
@@ -3620,7 +4194,7 @@ impl Renderer {
 
                 let shape_upload_len = shape_upload.len();
 
-                // Un único render pass: Clear → Shapes → Sprites
+                // Un nico render pass: Clear -> Shapes -> Sprites
                 {
                     let timing = self.gpu_timings.pass("Pure2D Main Pass");
                     self.renderer_2d_pure.record_pass();
@@ -3885,11 +4459,13 @@ impl Renderer {
 
             self.merge_gpu_frame_stats();
             self.gpu_timings.end_frame(encoder);
-            self.frame_builder.reclaim(packet);
+            if let Some(batch) = self.world_builder.reclaim(packet) {
+                self.frame_builder.store_ui_batch(batch);
+            }
             return;
         }
 
-        // ── Flat2D fast path ───────────────────────────────────────────────
+        // --- Flat2D fast path ---
         if self.mode == RendererMode::Flat2D {
             #[cfg(feature = "gui")]
             {
@@ -3925,7 +4501,9 @@ impl Renderer {
             }
             self.merge_gpu_frame_stats();
             self.gpu_timings.end_frame(encoder);
-            self.frame_builder.reclaim(packet);
+            if let Some(batch) = self.world_builder.reclaim(packet) {
+                self.frame_builder.store_ui_batch(batch);
+            }
             return;
         }
 
@@ -4332,6 +4910,7 @@ impl Renderer {
 
         // -- 7. Post-Process (Tone Mapping) ------------------------------------
         // Route through AA output when a mode is active; fall back to raw HDR.
+        #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
         use crate::passes::AntialiasingMode;
         let aa_mode = self
             .aa_pass
@@ -4399,7 +4978,9 @@ impl Renderer {
 
         self.merge_gpu_frame_stats();
         self.gpu_timings.end_frame(encoder);
-        self.frame_builder.reclaim(packet);
+        if let Some(batch) = self.world_builder.reclaim(packet) {
+            self.frame_builder.store_ui_batch(batch);
+        }
     }
 
     pub fn register_texture_linear(
@@ -4472,8 +5053,8 @@ impl Renderer {
     }
 
     pub fn register_mesh(&mut self, key: &str, mesh: crate::geometry::Mesh) {
-        // Unconditional — routes to procedural_mesh_cache (always available).
-        crate::renderer_api::register_mesh(&mut self.frame_builder, key, mesh);
+        // Unconditional " routes to procedural_mesh_cache (always available).
+        crate::renderer_api::register_mesh(&mut self.world_builder, key, mesh);
         self.mark_dirty();
     }
 
@@ -4656,7 +5237,7 @@ impl Renderer {
     /// Dibuja un sprite texturizdo en Pure2D mode.
     ///
     /// `texture_id` debe obtenerse de `register_sprite_texture()`.
-    /// El sprite se dibujará centrado en la posición del transform.
+    /// El sprite se dibujar centrado en la posicin del transform.
     ///
     /// # Ejemplo
     /// ```rust,ignore
@@ -4732,7 +5313,7 @@ impl Renderer {
         true
     }
 
-    /// Dibuja un path 2D (líneas, polígonos) para este frame.
+    /// Dibuja un path 2D (lineas, poligonos) para este frame.
     pub fn draw_2d_path(&mut self, path: &ferrous_2d::components::Path2d) {
         let mut cursor = ferrous_core::glam::Vec2::ZERO;
 
@@ -4808,14 +5389,14 @@ impl Renderer {
         }
 
         if !scene.instances.is_empty() {
-            self.frame_builder.scene_dirty = true;
+            self.world_builder.scene_dirty = true;
         }
         self.mark_dirty();
     }
 
     /// Forces the next frame to completely rebuild from the ECS world.
     pub fn mark_dirty(&mut self) {
-        self.frame_builder.scene_dirty = true;
+        self.world_builder.scene_dirty = true;
     }
 }
 
@@ -4852,7 +5433,7 @@ impl Renderer {
     /// Builds the screen-space view-projection used by the 2D overlay pass in
     /// Full3D.  It mirrors the ortho configured by `Camera::set_mode_2d(true,
     /// Some(height))` + `set_aspect(width/height)` in Pure2D, including the
-    /// OpenGL→WGPU depth correction, so the overlay renders with the exact same
+    /// OpenGL'WGPU depth correction, so the overlay renders with the exact same
     /// pixel mapping as Pure2D (origin centred, 1 world-unit = 1 pixel, y up).
     ///
     /// This is kept independent from `camera_system` on purpose: in Full3D the
@@ -4871,7 +5452,7 @@ impl Renderer {
         corrected * view
     }
 
-    /// Activa el modo de exportación headless o video instanciando el readback buffer.
+    /// Activa el modo de exportacin headless o video instanciando el readback buffer.
     pub fn enable_export_mode(&mut self) {
         self.readback_manager = Some(crate::resources::readback::ReadbackFrameManager::new(
             &self.context.device,
@@ -4885,7 +5466,7 @@ impl Renderer {
     /// Devuelve un `texture_id` (u32) que debe asignarse a `Sprite::texture_id`.
     ///
     /// El sampler usa `FilterMode::Nearest` por defecto para pixel-art perfecto.
-    /// Para texturas de alta resolución con suavizado, usa `register_sprite_texture_linear`.
+    /// Para texturas de alta resolucin con suavizado, usa `register_sprite_texture_linear`.
     pub fn register_sprite_texture(&mut self, width: u32, height: u32, data: &[u8]) -> u32 {
         self.register_sprite_texture_inner(width, height, data, wgpu::FilterMode::Nearest, false)
     }
@@ -5273,7 +5854,7 @@ impl Renderer {
         let bind_group = std::sync::Arc::new(self.context.device.create_bind_group(
             &wgpu::BindGroupDescriptor {
                 label: Some("Sprite2D Bind Group"),
-                layout: &self.renderer_2d_pure.pipeline.texture_bind_group_layout,
+                layout: self.renderer_2d_pure.sprite_texture_layout(),
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
@@ -5308,12 +5889,12 @@ impl Renderer {
 
     /// Libera una textura de sprite previamente registrada.
     ///
-    /// Las entidades `Sprite` que referencien este `texture_id` dejarán de renderizarse.
+    /// Las entidades `Sprite` que referencien este `texture_id` dejarn de renderizarse.
     ///
-    /// Además de borrar el bind group, se elimina la entrada del
+    /// Adems de borrar el bind group, se elimina la entrada del
     /// `SpriteBatcher` (si la hubiera) y el id vuelve a una free-list que
     /// `register_sprite_texture*` reutiliza, evitando que ids y claves
-    /// huérfanas crezcan indefinidamente al recargar planos.
+    /// hurfanas crezcan indefinidamente al recargar planos.
     pub fn free_sprite_texture(&mut self, texture_id: u32) {
         let existed = self.sprite_bind_groups.remove(&texture_id).is_some();
         self.premultiplied_textures.remove(&texture_id);
@@ -5473,27 +6054,22 @@ impl Renderer {
             font.atlas.gpu_bytes(),
             ferrous_core::memory::Subsystem::Fonts,
         );
-        let bind_group = std::sync::Arc::new(
-            self.context
-                .device
-                .create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("2D Font Bind Group"),
-                    layout: &self
-                        .renderer_2d_pure
-                        .text_pipeline
-                        .texture_bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(&font.atlas.view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::Sampler(&font.atlas.sampler),
-                        },
-                    ],
-                }),
-        );
+        let bind_group = std::sync::Arc::new(self.context.device.create_bind_group(
+            &wgpu::BindGroupDescriptor {
+                label: Some("2D Font Bind Group"),
+                layout: self.renderer_2d_pure.text_texture_layout(),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&font.atlas.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&font.atlas.sampler),
+                    },
+                ],
+            },
+        ));
         let handle = self.fonts_2d.insert(Font2dEntry {
             key,
             font,
@@ -5545,7 +6121,7 @@ impl Renderer {
     /// Lay out and queue one line of Pure2D text for this frame.
     ///
     /// Each visible glyph becomes one [`TextInstance`] whose model matrix is
-    /// `transform × quad placement`, so rotation, non-uniform scale and parent
+    /// `transform - quad placement`, so rotation, non-uniform scale and parent
     /// transforms compose exactly like shapes and sprites.  Depth is
     /// `transform`'s translation `z`, shared by every glyph of the call; glyphs
     /// keep submission order for equal `z`, so alternate fonts do not reorder.

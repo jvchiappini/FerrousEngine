@@ -4,7 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = ["text", "assets"]
+# Phase 9D Lane C: `render-3d` is the compile-time switch for the 3-D
+# renderer.  It is on by default so the normal build is unchanged.  A Flat2D /
+# GUI-only application can build with
+# `default-features = false, features = ["flat2d"]`; the actual module gates
+# live in `ferrous_renderer` (see its Cargo.toml and the Lane C report for the
+# remaining work).
+default = ["text", "assets", "renderer-gui", "render-3d", "svg"]
 # Accepts FERROUS_DX12_COMPILER=dxc|dynamic_dxc (DX12 shader compiler A/B).
 # wgpu 23 loads dxcompiler.dll/dxil.dll at runtime from its default `dx12`
 # feature, so this adds no dependency; without it the engine stays on Fxc.
@@ -12,13 +18,40 @@ dxc = []
 gpu-driven = ["ferrous_renderer/gpu-driven"]
 bindless = ["ferrous_renderer/bindless"]
 text = ["ferrous_ui_render/text"]
-assets = ["ferrous_ui_render/assets"]
+assets = ["ferrous_ui_render/assets", "ferrous_renderer/assets"]
+# wgpu's GUI pass (`GuiBatch`) needs the renderer's `gui` feature.
+renderer-gui = ["ferrous_renderer/gui"]
+render-3d = ["ferrous_renderer/render-3d"]
+# Convenience bundle for a GUI-only binary: text, textures and the GUI pass,
+# without the 3-D renderer or the SVG parser.  Use with
+# `default-features = false, features = ["flat2d"]`.
+flat2d = ["text", "assets", "renderer-gui"]
+# Forward the SVG parser switch so a host can drop `lyon_svg` from the graph.
+svg = ["ferrous_ui_render/svg"]
 # Per-frame allocation counts in the frame trace (prompt 18 P0).  The binary
 # must install `ferrous_core::alloc_stats::CountingAllocator`.
 alloc-stats = ["ferrous_core/alloc-stats"]
 
+# Phase 9D Lane C: wgpu backend selection.  Not in `default` because the
+# workspace `wgpu` dependency still enables its own defaults; these become the
+# switch once the workspace root sets `default-features = false` (see report).
+# Windows = vulkan + dx12 + gl; other targets forward their own backend.
+# wgpu 23 has no `vulkan` feature: Windows/Linux enable it through wgpu-core's
+# target dependency, so this is a marker that keeps the name explicit.
+wgpu-vulkan = []
+wgpu-dx12 = ["wgpu/dx12"]
+# wgpu 23's GLES backend is `wgpu-core/gles`, exposed by wgpu as `webgl`.
+wgpu-gl = ["wgpu/webgl"]
+wgpu-metal = ["wgpu/metal"]
+wgpu-webgpu = ["wgpu/webgpu"]
+wgpu-webgl = ["wgpu/webgl"]
+wgpu-wgsl = ["wgpu/wgsl"]
+
 [dependencies]
-ferrous_renderer = { path = "../ferrous_renderer", features = ["assets"] }
+# Phase 9D Lane C: features are forwarded from this crate's `[features]`
+# (`assets`, `renderer-gui`, `render-3d`) so `--no-default-features` can
+# actually drop them.
+ferrous_renderer = { path = "../ferrous_renderer", default-features = false }
 ferrous_2d = { path = "../ferrous_2d" }
 ferrous_core = { path = "../ferrous_core", features = ["input", "ecs", "gpu"] }
 ferrous_ecs = { path = "../ferrous_ecs" }
@@ -27,7 +60,12 @@ ferrous_font = { path = "../ferrous_font" }
 winit = "0.30"
 ferrous_gui = { path = "../ferrous_gui" }
 ferrous_ui_core = { path = "../ferrous_ui_core" }
-ferrous_ui_render = { path = "../ferrous_ui_render", features = ["text", "assets"] }
+# Phase 9D Lane C: `text` / `assets` / `svg` are forwarded from `[features]`.
+ferrous_ui_render = { path = "../ferrous_ui_render", default-features = false }
+# Phase 9D Lane C: backend features are forwarded above (`wgpu-*`).  Switching
+# to `default-features = false` belongs in the workspace root entry, not here:
+# on edition 2021 a member override may be rejected/ignored unless the root
+# disables defaults.  The normal build is unchanged.
 wgpu = { workspace = true }
 ferrous_assets = { path = "../ferrous_assets" }
 fern = "0.6"

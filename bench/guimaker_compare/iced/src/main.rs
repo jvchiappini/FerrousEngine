@@ -1,10 +1,11 @@
 //! iced side of the Phase 9B comparison: the start-screen recipe on iced 0.13.
 //! Run with `--seconds N` (default 8); `frames N` is printed to stdout on exit.
 //!
-//! Frames come from `iced::window::frames()` (the subscription tracks the
-//! window refresh rate). iced's `Application::scale_factor` lets us force 1.5,
-//! and the window size is 1280x800 logical. vsync/present mode is owned by
-//! iced's wgpu backend (Fifo/AutoVsync), so there is no knob to set here.
+//! DPI: no forced scale. The window is 1280x800 *logical* and iced follows the
+//! monitor. `WGPU_BACKEND` selects the wgpu backend per tier, and iced's own
+//! `WGPU_PRESENT_MODE` env controls the present mode (the harness leaves it at
+//! Fifo). `--fonts default` keeps iced's bundled default font; `--fonts roboto`
+//! registers the shared Roboto bytes and makes it the default family.
 //! The process is stopped with `std::process::exit` because iced 0.13 no longer
 //! exposes a global exit and the bench only needs the counter on stdout.
 
@@ -17,6 +18,8 @@ use std::time::{Duration, Instant};
 
 use iced::widget::{button, column, container, horizontal_space, row, stack, text, text_input, Space};
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Task, Theme};
+
+const ROBOTO: &[u8] = include_bytes!("../../../../assets/fonts/Roboto-Regular.ttf");
 
 const PAGE: Color = Color {
     r: 6.0 / 255.0,
@@ -77,6 +80,8 @@ struct App {
     started: Instant,
     frames: Arc<AtomicU64>,
     bench_input: String,
+    menu_open: bool,
+    show_fallback_text: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -87,11 +92,13 @@ enum Message {
     Browse,
     BenchInput(String),
     BenchButton,
+    ToggleMenu,
 }
 
 fn update(state: &mut App, message: Message) {
     match message {
         Message::BenchInput(value) => state.bench_input = value,
+        Message::ToggleMenu => state.menu_open = !state.menu_open,
         Message::Settings
         | Message::Docs
         | Message::Create
@@ -219,6 +226,11 @@ fn bench_strip(state: &App) -> Element<'_, Message> {
                 .height(Length::Fixed(36.0))
                 .style(bench_button)
                 .on_press(Message::BenchButton),
+            button(text("Bench menu").size(14))
+                .width(Length::Fixed(140.0))
+                .height(Length::Fixed(36.0))
+                .style(bench_button)
+                .on_press(Message::ToggleMenu),
         ]
         .spacing(20),
     )
@@ -233,6 +245,43 @@ fn bench_strip(state: &App) -> Element<'_, Message> {
         left: 40.0,
     })
     .into()
+}
+
+fn bench_fallback() -> Element<'static, Message> {
+    container(text("漢字 🎬 ✨").size(13).style(tc(MUTED)))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(Alignment::Start)
+        .align_y(Alignment::Start)
+        .padding(Padding {
+            top: 676.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: 40.0,
+        })
+        .into()
+}
+
+fn bench_menu() -> Element<'static, Message> {
+    let entries = column![
+        text("Bench item 1").size(14).style(tc(TEXT)),
+        text("Bench item 2").size(14).style(tc(TEXT)),
+        text("Bench item 3").size(14).style(tc(TEXT)),
+    ]
+    .spacing(8);
+
+    container(container(entries).padding(10).style(card_style))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(Alignment::Start)
+        .align_y(Alignment::Start)
+        .padding(Padding {
+            top: 600.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: 540.0,
+        })
+        .into()
 }
 
 fn divider() -> Element<'static, Message> {
@@ -392,27 +441,40 @@ fn view(state: &App) -> Element<'_, Message> {
     .style(page_style)
     .into();
 
-    stack([page, bench_label(), bench_strip(state)]).into()
+    let mut layers = vec![page, bench_label(), bench_strip(state)];
+    if state.show_fallback_text {
+        layers.push(bench_fallback());
+    }
+    if state.menu_open {
+        layers.push(bench_menu());
+    }
+    stack(layers).into()
 }
 
-fn parse_seconds() -> f64 {
-    std::env::args()
-        .skip_while(|arg| arg != "--seconds")
-        .nth(1)
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(8.0)
+fn parse_arg(name: &str) -> Option<String> {
+    std::env::args().skip_while(|arg| arg != name).nth(1)
 }
 
 pub fn main() -> iced::Result {
-    let seconds = parse_seconds();
+    let seconds = parse_arg("--seconds")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(8.0);
+    let fonts = parse_arg("--fonts").unwrap_or_else(|| "roboto".to_string());
+    println!("backend wgpu");
+    println!("present_mode fifo");
+    println!("fonts {}", fonts);
 
-    iced::application("guimaker-compare-iced", update, view)
+    let mut application = iced::application("guimaker-compare-iced", update, view)
         .theme(|_| Theme::Dark)
         .window_size(iced::Size::new(1280.0, 800.0))
         .resizable(false)
-        .scale_factor(|_| 1.5)
-        .antialiasing(true)
-        .run_with(move || {
+        .antialiasing(true);
+    if fonts != "default" {
+        application = application
+            .font(ROBOTO)
+            .default_font(iced::Font::with_name("Roboto"));
+    }
+    application.run_with(move || {
             let frames = Arc::new(AtomicU64::new(0));
             let counter = Arc::clone(&frames);
             // A watchdog: iced has no global exit, and an idle window must not
@@ -428,6 +490,8 @@ pub fn main() -> iced::Result {
                     started: Instant::now(),
                     frames,
                     bench_input: String::new(),
+                    menu_open: false,
+                    show_fallback_text: fonts == "default",
                 },
                 Task::none(),
             )

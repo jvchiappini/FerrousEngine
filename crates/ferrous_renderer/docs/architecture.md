@@ -313,6 +313,33 @@ time and can be changed dynamically via `set_workgroup_count`.
 
 See `extending/compute_pipeline.md` for a step-by-step worked example.
 
+## Lazy pipeline and object sets
+
+A renderer pays only for the pipeline set its mode actually draws.  The 3-D
+group (world/instancing pipelines, shadow map, HDR target, SSAO + prepass,
+skinning, gizmos, post-process, AA, particles and the material registry) lives
+behind `Renderer::ensure_three_d`; a `Flat2D` or `Pure2D` renderer never builds
+it unless it switches to 3-D.
+
+The two 2-D pipeline sets are also lazy.  Each `renderer_2d` /
+`renderer_2d_pure` field is a `Renderer2dSlot` that builds its `Renderer2d` on
+first use and applies any settings recorded while it was unbuilt.  In practice:
+
+| Mode | 3-D group | HDR overlay `Renderer2d` | Pure2D `Renderer2d` |
+|------|-----------|--------------------------|---------------------|
+| `Flat2D` | no | no (GUI only) | no |
+| `Pure2D` | no | no | on the first Pure2D frame |
+| `Full3D` | yes | with the 3-D group | on the first Pure2D frame |
+
+`Renderer::three_d_ready`, `material_registry_ready`, `renderer_2d_ready` and
+`renderer_2d_pure_ready` expose the lazy state; `tests/flat2d_objects.rs` proves
+with the memory inventory that a `Flat2D` constructor registers no `2d:`, `3d:`
+or `rt:` object.
+
+Each build records one `pipeline: <name> (<ms>)` startup mark (see
+`ferrous_core::startup`) so a slow shader is visible in the trace without a
+profiler.
+
 ## Design rationale
 
 **Why `FramePacket`?**

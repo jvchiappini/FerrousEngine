@@ -6,7 +6,16 @@
 # best-effort per the Phase 9B plan.
 [workspace]
 resolver = "2"
-members = ["guimaker", "egui", "egui-wgpu", "iced", "slint", "imgui"]
+members = [
+    "guimaker",
+    "egui",
+    "egui-wgpu",
+    "iced",
+    "slint",
+    "imgui",
+    "floor-wgpu",
+    "floor-glow",
+]
 exclude = ["webview2"]
 
 [workspace.dependencies]

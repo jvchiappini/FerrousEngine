@@ -1,0 +1,25 @@
+[package]
+name = "floor-wgpu"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Raw wgpu floor: three binaries that only clear the window and idle. They use
+# the exact same wgpu/winit versions as `imgui` so the comparison is one API
+# generation, not two.
+[[bin]]
+name = "floor-wgpu-vulkan"
+path = "src/vulkan.rs"
+
+[[bin]]
+name = "floor-wgpu-dx12"
+path = "src/dx12.rs"
+
+[[bin]]
+name = "floor-wgpu-gl"
+path = "src/gl.rs"
+
+[dependencies]
+wgpu = "29"
+winit = "0.30"
+pollster = "0.4"

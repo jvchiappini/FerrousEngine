@@ -92,10 +92,16 @@ pub(crate) struct Runner<A: FerrousApp + 'static> {
     pub(super) init: Option<super::show::InitJob>,
     /// Continuous vs on-demand frame scheduling (prompt 18 P1).
     pub(super) redraw: Scheduler,
-    /// The next `RedrawRequested` is the one the OS sends when the hidden
+    /// The next `RedrawRequested` may be the one the OS sends when the hidden
     /// window is first shown; the first frame is already on the swapchain.
+    /// Only swallowed when nothing asked for a frame in the meantime.
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) skip_show_redraw: bool,
+    /// The scheduler's request count when the window was shown. A later
+    /// `RedrawRequested` that finds the count unchanged is the redundant OS
+    /// show paint; a moved count is a real frame (prompt 15 Phase 9D finding 1).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) show_request_mark: u64,
     /// Wakes the loop from background workers.
     pub(super) waker: Waker,
     /// Opt-in persistent off-screen UI present path (prompt 18 P7).
@@ -176,6 +182,8 @@ impl<A: FerrousApp + 'static> Runner<A> {
             redraw: Scheduler::new(redraw_policy),
             #[cfg(not(target_arch = "wasm32"))]
             skip_show_redraw: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            show_request_mark: 0,
             waker: Waker::from_proxy(proxy),
             ui_presenter: None,
             #[cfg(not(target_arch = "wasm32"))]

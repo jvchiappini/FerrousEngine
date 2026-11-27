@@ -7,15 +7,53 @@ description = "GUIMaker gallery: stories, headless screenshots, tolerance golden
 license = "Apache-2.0"
 repository = "https://github.com/jvchiappini/FerrousEngine"
 
+# Phase 9D Lane C: feature forwarding so the compare/minimal binary can drop
+# the 3-D renderer, the SVG parser and the PNG codec.  Every feature below is
+# on by default, so the normal build is unchanged.
+[features]
+default = ["text", "assets", "renderer-gui", "render-3d", "svg", "png"]
+text = ["ferrous_engine/text", "ferrous_ui_render/text"]
+assets = ["ferrous_engine/assets", "ferrous_ui_render/assets"]
+renderer-gui = ["ferrous_engine/renderer-gui", "ferrous_renderer/gui"]
+render-3d = ["ferrous_engine/render-3d", "ferrous_renderer/render-3d"]
+# GUI-only bundle: no 3-D, no SVG parser, no PNG codec.
+flat2d = ["text", "assets", "renderer-gui"]
+svg = ["ferrous_engine/svg", "ferrous_ui_render/svg", "guimaker_ferrous/svg"]
+# PNG encode (screenshots) + decode (goldens).
+png = ["dep:png"]
+
+# The CLI needs PNG; the library (used by the compare binary) does not.
+[[bin]]
+name = "guimaker_gallery"
+path = "src/main.rs"
+required-features = ["png"]
+
+# These examples/tests write or read PNGs and therefore need the codec.
+[[example]]
+name = "p8b_shots"
+path = "examples/p8b_shots.rs"
+required-features = ["png"]
+
+[[example]]
+name = "p8d_popup"
+path = "examples/p8d_popup.rs"
+required-features = ["png"]
+
+[[test]]
+name = "goldens"
+path = "tests/goldens.rs"
+required-features = ["png"]
+
 [dependencies]
 guimaker = { path = "../guimaker" }
-guimaker_ferrous = { path = "../guimaker_ferrous" }
-ferrous_engine = { path = "../ferrous_engine" }
-ferrous_renderer = { path = "../ferrous_renderer" }
-ferrous_ui_render = { path = "../ferrous_ui_render", features = ["text", "assets"] }
+guimaker_ferrous = { path = "../guimaker_ferrous", default-features = false }
+ferrous_engine = { path = "../ferrous_engine", default-features = false }
+ferrous_renderer = { path = "../ferrous_renderer", default-features = false }
+ferrous_ui_render = { path = "../ferrous_ui_render", default-features = false }
 ferrous_font = { path = "../ferrous_font" }
 glam = { workspace = true }
-png = "0.17"
+png = { version = "0.17", optional = true }
+# Phase 9D Lane C: backend selection is a workspace-root change (see report).
 wgpu = { workspace = true }
 
 [target.'cfg(windows)'.dev-dependencies]

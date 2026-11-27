@@ -11,8 +11,14 @@ serde = { version = "1.0", features = ["derive"] }
 ron = "0.8"
 ferrous_assets = { path = "../ferrous_assets", optional = true }
 ferrous_ui_macros = { path = "../ferrous_ui_macros" }
-ferrous_svg = { path = "../ferrous_svg" }
+ferrous_svg = { path = "../ferrous_svg", default-features = false }
 serde_json = "1.0.149"
 
 [features]
+# SVG tessellation (`SvgWidget::from_svg_string`) is on by default so existing
+# consumers keep the same behaviour.  `--no-default-features` drops the
+# `ferrous_svg` parser (and its lyon backend) and `from_svg_string` becomes a
+# typed empty fallback instead of parsing.
+default = ["svg"]
+svg = ["ferrous_svg/parser"]
 assets = ["dep:ferrous_assets"]

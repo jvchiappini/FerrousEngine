@@ -6,6 +6,7 @@ pub mod gadgets;
 pub mod gpu_types;
 pub mod gui_batch;
 pub mod gui_renderer;
+pub mod image_binding;
 pub mod overdraw;
 pub mod persist;
 pub mod pipelines;
@@ -20,6 +21,7 @@ pub use gui_batch::{
     TexturedRectSpec,
 };
 pub use gui_renderer::{GuiRenderer, UiFrameCounters};
+pub use image_binding::{ImageBindingMode, BINDLESS_FEATURES, SEPARATE_TEXTURE_SLOTS};
 pub use persist::PersistentUiTarget;
 pub use to_batches::ToBatches;
 pub use ui_present::UiPresenter;

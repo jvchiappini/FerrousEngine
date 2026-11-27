@@ -5,16 +5,22 @@ edition = "2021"
 
 [dependencies]
 ferrous_core = { path = "../ferrous_core" }
+# Phase 9D Lane C: backend selection is a workspace-root change (see report).
 wgpu = { workspace = true }
 bytemuck = { version = "1.14", features = ["derive"] }
 glam = "0.29"
 ferrous_assets = { path = "../ferrous_assets", optional = true, features = ["gpu", "text"] }
 ferrous_ui_core = { path = "../ferrous_ui_core" }
-ferrous_svg = { path = "../ferrous_svg" }
+# Phase 9D Lane C: the parser is forwarded through the `svg` feature.
+ferrous_svg = { path = "../ferrous_svg", default-features = false }
 crossbeam-channel = "0.5.13"
 log = { workspace = true }
 
 [features]
-default = ["text"]
+# Phase 9D Lane C: `svg` is on by default so the normal build is unchanged.
+# Disable it (`default-features = false`) when the host draws icons from
+# pre-tessellated meshes and does not want `lyon_svg`/`lyon_tessellation`.
+default = ["text", "svg"]
 text = ["dep:ferrous_assets"]
 assets = ["dep:ferrous_assets", "ferrous_ui_core/assets"]
+svg = ["ferrous_svg/parser"]

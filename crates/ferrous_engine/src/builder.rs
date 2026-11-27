@@ -307,8 +307,9 @@ pub struct AppConfig {
     /// Each entry gets its own `wgpu::Instance`; the engine moves to the next
     /// one only when the current one yields no adapter (or an adapter that
     /// cannot present on the window).  Default: Vulkan, then DX12, then GL on
-    /// Windows; Metal on macOS; Vulkan, then GL elsewhere.  `WGPU_BACKEND`, when
-    /// set, replaces the list with exactly those backends.
+    /// Windows; Metal on macOS; Vulkan, then GL elsewhere.  [`AppMode::Flat2D`]
+    /// uses [`flat2d_backends`] instead, which is the same order today.
+    /// `WGPU_BACKEND`, when set, replaces the list with exactly those backends.
     pub backends: Vec<wgpu::Backends>,
     /// Which DX12 shader compiler wgpu uses, when the selected backend is DX12.
     ///
@@ -437,6 +438,128 @@ pub fn default_backends() -> Vec<wgpu::Backends> {
     #[cfg(target_arch = "wasm32")]
     {
         vec![wgpu::Backends::BROWSER_WEBGPU]
+    }
+}
+
+/// Which backends a [`AppMode::Flat2D`] launch tries, in order.
+///
+/// This is the single place that selects the Flat2D default.  It is kept
+/// separate from [`default_backends`] so a UI/editor app can have a different
+/// measured winner from a 3-D app without touching every call site.
+/// The default [`AppConfig`] still starts from [`default_backends`];
+/// [`App::with_mode`] switches to this list only when the caller did not choose
+/// a backend list.
+///
+/// The order is the same as [`default_backends`] today, so the observed default
+/// is unchanged.  The Windows decision is documented in `G-0013`
+/// (`crates/guimaker/docs/decisions/G-0013.md`); the per-OS alternatives are
+/// measured before this list changes.
+#[must_use]
+pub fn flat2d_backends() -> Vec<wgpu::Backends> {
+    // Phase 9D: set to the measured winner (G-0013)
+    #[cfg(target_os = "windows")]
+    {
+        // Vulkan first: a DX12 2-D pipeline set costs seconds to compile
+        // (G-0011/G-0012).  GL follows only because the GUI image path asks
+        // for texture-binding-array features (G-0012); Lane A is making that
+        // requirement optional, after which GL becomes a candidate.
+        vec![
+            wgpu::Backends::VULKAN,
+            wgpu::Backends::DX12,
+            wgpu::Backends::GL,
+        ]
+    }
+    #[cfg(target_os = "macos")]
+    {
+        vec![wgpu::Backends::METAL]
+    }
+    #[cfg(all(
+        not(target_os = "windows"),
+        not(target_os = "macos"),
+        not(target_arch = "wasm32")
+    ))]
+    {
+        vec![wgpu::Backends::VULKAN, wgpu::Backends::GL]
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        vec![wgpu::Backends::BROWSER_WEBGPU]
+    }
+}
+
+/// Default backend order for an [`AppMode`].
+///
+/// [`AppMode::Flat2D`] returns [`flat2d_backends`]; [`AppMode::Game3D`] returns
+/// [`default_backends`].  Both return the same order on every host today, so
+/// this is additive: it only gives the two modes a separate switch point.
+#[must_use]
+pub fn default_backends_for_mode(mode: AppMode) -> Vec<wgpu::Backends> {
+    match mode {
+        AppMode::Flat2D => flat2d_backends(),
+        AppMode::Game3D => default_backends(),
+    }
+}
+
+/// One graphics API, for the readable single-backend shorthand.
+///
+/// [`App::with_backends`] still takes the raw `wgpu::Backends` bits when a
+/// caller wants a custom ordered list. This enum is the explicit one-backend
+/// choice ([`App::with_backend`]); `WGPU_BACKEND` still overrides both at run
+/// time. Every backend the engine is compiled with must run the same app; if
+/// the machine has no adapter for the requested one the engine stops with an
+/// actionable "no usable wgpu adapter" message naming the backend, instead of
+/// silently falling back (prompt 15 Phase 9D addendum).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Backend {
+    /// Vulkan (Windows, Linux, Android).
+    Vulkan,
+    /// Direct3D 12 (Windows).
+    Dx12,
+    /// OpenGL / OpenGL ES (wgpu's GLES backend).
+    Gl,
+    /// Metal (macOS, iOS).
+    Metal,
+    /// WebGPU (the browser).
+    WebGpu,
+}
+
+impl Backend {
+    /// The `wgpu` backend bit for [`Self`].
+    #[must_use]
+    pub fn to_wgpu(self) -> wgpu::Backends {
+        match self {
+            Self::Vulkan => wgpu::Backends::VULKAN,
+            Self::Dx12 => wgpu::Backends::DX12,
+            Self::Gl => wgpu::Backends::GL,
+            Self::Metal => wgpu::Backends::METAL,
+            Self::WebGpu => wgpu::Backends::BROWSER_WEBGPU,
+        }
+    }
+
+    /// Parses a `WGPU_BACKEND`-style name (`vulkan`, `dx12`, `gl`, `metal`,
+    /// `webgpu`; case-insensitive).
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "vulkan" | "vk" => Some(Self::Vulkan),
+            "dx12" | "d3d12" => Some(Self::Dx12),
+            "gl" | "gles" | "opengl" => Some(Self::Gl),
+            "metal" => Some(Self::Metal),
+            "webgpu" | "browser_webgpu" => Some(Self::WebGpu),
+            _ => None,
+        }
+    }
+
+    /// The `WGPU_BACKEND` name for [`Self`].
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Vulkan => "vulkan",
+            Self::Dx12 => "dx12",
+            Self::Gl => "gl",
+            Self::Metal => "metal",
+            Self::WebGpu => "webgpu",
+        }
     }
 }
 
@@ -881,6 +1004,12 @@ impl<A: FerrousApp + 'static> App<A> {
     ///     .run();
     /// ```
     pub fn with_mode(mut self, mode: crate::builder::AppMode) -> Self {
+        // Phase 9D: swap to the per-mode default only when the caller has not
+        // already replaced the backend list.  Both lists are identical today,
+        // so the observed default does not change (G-0013).
+        if self.config.backends == default_backends() {
+            self.config.backends = default_backends_for_mode(mode);
+        }
         self.config.mode = mode;
         self
     }
@@ -938,6 +1067,26 @@ impl<A: FerrousApp + 'static> App<A> {
     /// ```
     pub fn with_backends(mut self, backends: impl IntoIterator<Item = wgpu::Backends>) -> Self {
         self.config.backends = backends.into_iter().collect();
+        self
+    }
+
+    /// Runs on exactly one graphics API (a readable shorthand for
+    /// [`Self::with_backends`]).
+    ///
+    /// `WGPU_BACKEND` (`vulkan`, `dx12`, `gl`, `metal`, `webgpu`) still wins at
+    /// run time, so a developer can override a shipped choice without a
+    /// rebuild. Every compiled backend runs the same app; asking for one this
+    /// machine lacks stops with the engine's actionable "no usable wgpu
+    /// adapter" message naming the backend and suggesting `WGPU_BACKEND`, never
+    /// a silent fallback (prompt 15 Phase 9D addendum).
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// App::new(MyApp).with_backend(Backend::Dx12).run();
+    /// ```
+    pub fn with_backend(mut self, backend: Backend) -> Self {
+        self.config.backends = vec![backend.to_wgpu()];
         self
     }
 
@@ -1161,5 +1310,57 @@ mod tests {
             app.config.dx12_compiler,
             Some(wgpu::Dx12Compiler::Dxc { .. })
         ));
+    }
+
+    #[test]
+    fn flat2d_backends_match_the_3d_default_today() {
+        // G-0013 keeps both orders identical until a per-OS winner is measured.
+        assert_eq!(flat2d_backends(), default_backends());
+        assert_eq!(
+            default_backends_for_mode(AppMode::Flat2D),
+            flat2d_backends()
+        );
+        assert_eq!(
+            default_backends_for_mode(AppMode::Game3D),
+            default_backends()
+        );
+    }
+
+    #[test]
+    fn with_mode_switches_only_the_untouched_backend_default() {
+        struct TestApp;
+        impl FerrousApp for TestApp {}
+
+        let picked = App::new(TestApp)
+            .with_mode(AppMode::Flat2D)
+            .with_backends([wgpu::Backends::DX12]);
+        assert_eq!(picked.config.backends, vec![wgpu::Backends::DX12]);
+
+        let by_mode = App::new(TestApp).with_mode(AppMode::Flat2D);
+        assert_eq!(by_mode.config.backends, flat2d_backends());
+    }
+
+    #[test]
+    fn a_backend_is_the_single_backend_shorthand() {
+        struct TestApp;
+        impl FerrousApp for TestApp {}
+
+        // The readable names round-trip their `WGPU_BACKEND` spellings.
+        for (name, backend, wgpu) in [
+            ("vulkan", Backend::Vulkan, wgpu::Backends::VULKAN),
+            ("dx12", Backend::Dx12, wgpu::Backends::DX12),
+            ("gl", Backend::Gl, wgpu::Backends::GL),
+            ("metal", Backend::Metal, wgpu::Backends::METAL),
+            ("webgpu", Backend::WebGpu, wgpu::Backends::BROWSER_WEBGPU),
+        ] {
+            assert_eq!(Backend::parse(name), Some(backend), "{name}");
+            assert_eq!(backend.name(), name);
+            assert_eq!(backend.to_wgpu(), wgpu);
+        }
+        assert_eq!(Backend::parse(" D3D12 "), Some(Backend::Dx12));
+        assert_eq!(Backend::parse("nonsense"), None);
+
+        let app = App::new(TestApp).with_backend(Backend::Dx12);
+        assert_eq!(app.config.backends, vec![wgpu::Backends::DX12]);
     }
 }

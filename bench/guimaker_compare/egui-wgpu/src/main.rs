@@ -2,9 +2,10 @@
 //! eframe 0.29 / egui 0.29 through wgpu. Run with `--seconds N` (default 8); the harness
 //! samples the process and reads `frames N` from stdout on exit.
 //!
-//! DPI: egui is forced to a 1.5 pixels-per-point zoom factor, and the window is
-//! created with a 1280x800 *logical* inner size, so it matches the spec when the
-//! host monitor is at 1.5x (winit has no per-window scale override on Windows).
+//! DPI: no forced zoom. The window is created with a 1280x800 *logical* inner
+//! size and egui uses the monitor's own pixels-per-point. The swapchain is FIFO,
+//! two images deep, and the wgpu backend comes from `WGPU_BACKEND` (set by the
+//! harness per tier). `--fonts default` keeps the library default font.
 
 use std::io::Write;
 use std::sync::{
@@ -15,6 +16,8 @@ use std::time::{Duration, Instant};
 
 use eframe::egui;
 use egui::{Align, Color32, Layout, Margin, RichText, Rounding, Stroke, Vec2};
+
+const ROBOTO: &[u8] = include_bytes!("../../../../assets/fonts/Roboto-Regular.ttf");
 
 const PAGE: Color32 = Color32::from_rgb(0x06, 0x08, 0x0D);
 const CARD: Color32 = Color32::from_rgb(0x0F, 0x12, 0x17);
@@ -31,10 +34,12 @@ struct CompareApp {
     seconds: f64,
     frames: Arc<AtomicU64>,
     bench_input: String,
+    menu_open: bool,
+    show_fallback_text: bool,
 }
 
 impl CompareApp {
-    fn new(seconds: f64) -> Self {
+    fn new(seconds: f64, show_fallback_text: bool) -> Self {
         let frames = Arc::new(AtomicU64::new(0));
         // A watchdog, because eframe's idle repaint is not guaranteed to fire
         // the close request when the window has no input.
@@ -50,6 +55,8 @@ impl CompareApp {
             seconds,
             frames,
             bench_input: String::new(),
+            menu_open: false,
+            show_fallback_text,
         }
     }
 
@@ -62,6 +69,15 @@ impl CompareApp {
             .show(ctx, |ui| {
                 ui.label(RichText::new("Bench input").size(12.0).color(MUTED));
             });
+
+        if self.show_fallback_text {
+            egui::Area::new(egui::Id::new("fallback_sample"))
+                .fixed_pos(egui::pos2(40.0, 676.0))
+                .interactable(false)
+                .show(ctx, |ui| {
+                    ui.label(RichText::new("漢字 🎬 ✨").size(13.0).color(MUTED));
+                });
+        }
 
         egui::Area::new(egui::Id::new("bench_strip"))
             .fixed_pos(egui::pos2(40.0, 724.0))
@@ -87,8 +103,45 @@ impl CompareApp {
                         egui::FontId::proportional(14.0),
                         TEXT,
                     );
+                    ui.add_space(20.0);
+                    let (menu_rect, menu_response) =
+                        ui.allocate_exact_size(Vec2::new(140.0, 36.0), egui::Sense::click());
+                    let menu_bg = if menu_response.hovered() { BORDER } else { RAISED };
+                    ui.painter().rect_filled(menu_rect, 8.0, menu_bg);
+                    ui.painter()
+                        .rect_stroke(menu_rect, 8.0, Stroke::new(1.0, BORDER));
+                    ui.painter().text(
+                        menu_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "Bench menu",
+                        egui::FontId::proportional(14.0),
+                        TEXT,
+                    );
+                    if menu_response.clicked() {
+                        self.menu_open = !self.menu_open;
+                    }
                 });
             });
+
+        if self.menu_open {
+            egui::Area::new(egui::Id::new("bench_menu"))
+                .fixed_pos(egui::pos2(
+                    540.0,
+                    ctx.screen_rect().height() - 176.0,
+                ))
+                .show(ctx, |ui| {
+                    egui::Frame::none()
+                        .fill(CARD)
+                        .stroke(Stroke::new(1.0, BORDER))
+                        .rounding(Rounding::same(6.0))
+                        .inner_margin(Margin::same(8.0))
+                        .show(ui, |ui| {
+                            for item in ["Bench item 1", "Bench item 2", "Bench item 3"] {
+                                ui.label(RichText::new(item).size(14.0).color(TEXT));
+                            }
+                        });
+                });
+        }
     }
 }
 
@@ -291,32 +344,52 @@ fn link(ui: &mut egui::Ui, text: &str) {
     ui.label(RichText::new(text).size(14.0).color(MUTED));
 }
 
-fn parse_seconds() -> f64 {
-    std::env::args()
-        .skip_while(|arg| arg != "--seconds")
-        .nth(1)
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(8.0)
+fn parse_arg(name: &str) -> Option<String> {
+    std::env::args().skip_while(|arg| arg != name).nth(1)
 }
 
 fn main() -> eframe::Result<()> {
-    let seconds = parse_seconds();
+    let seconds = parse_arg("--seconds")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(8.0);
+    let fonts = parse_arg("--fonts").unwrap_or_else(|| "roboto".to_string());
+    println!("backend wgpu");
+    println!("present_mode fifo");
+    println!("fonts {}", fonts);
 
-    let options = eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("guimaker-compare-egui-wgpu")
             .with_inner_size([1280.0, 800.0])
             .with_resizable(false),
         renderer: eframe::Renderer::Wgpu,
         vsync: true,
+        multisampling: 0,
+        ..Default::default()
+    };
+    options.wgpu_options = eframe::egui_wgpu::WgpuConfiguration {
+        present_mode: eframe::wgpu::PresentMode::Fifo,
+        desired_maximum_frame_latency: Some(2),
         ..Default::default()
     };
 
+    let load_roboto = fonts != "default";
     eframe::run_native(
         "guimaker-compare-egui-wgpu",
         options,
         Box::new(move |cc| {
-            cc.egui_ctx.set_pixels_per_point(1.5);
+            if load_roboto {
+                let mut definitions = egui::FontDefinitions::default();
+                definitions
+                    .font_data
+                    .insert("roboto".to_owned(), egui::FontData::from_static(ROBOTO));
+                definitions
+                    .families
+                    .get_mut(&egui::FontFamily::Proportional)
+                    .expect("proportional family")
+                    .insert(0, "roboto".to_owned());
+                cc.egui_ctx.set_fonts(definitions);
+            }
 
             let mut visuals = egui::Visuals::dark();
             visuals.panel_fill = PAGE;
@@ -330,7 +403,8 @@ fn main() -> eframe::Result<()> {
             visuals.selection.bg_fill = ACCENT;
             cc.egui_ctx.set_visuals(visuals);
 
-            let app: Box<dyn eframe::App> = Box::new(CompareApp::new(seconds));
+            let app: Box<dyn eframe::App> =
+                Box::new(CompareApp::new(seconds, fonts == "default"));
             Ok(app)
         }),
     )

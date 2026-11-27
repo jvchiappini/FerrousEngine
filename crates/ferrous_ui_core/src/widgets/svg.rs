@@ -44,9 +44,8 @@
 //! - En modo textura: placeholder estético mientras carga.
 
 use crate::{
-    Widget, RenderCommand, DrawContext, BuildContext, LayoutContext, EventContext,
-    EventResponse, UiEvent, Rect, Vec2,
-    ImageFit,
+    BuildContext, DrawContext, EventContext, EventResponse, ImageFit, LayoutContext, Rect,
+    RenderCommand, UiEvent, Vec2, Widget,
 };
 
 // ─── SvgPrimitive ─────────────────────────────────────────────────────────────
@@ -58,14 +57,19 @@ use crate::{
 pub enum SvgPrimitive {
     /// Rectángulo relleno con radio de esquina opcional.
     Rect {
-        x: f32, y: f32, width: f32, height: f32,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
         radius: f32,
         fill: bool,
         stroke_width: f32,
     },
     /// Círculo (elipse con `rx == ry`).
     Circle {
-        cx: f32, cy: f32, r: f32,
+        cx: f32,
+        cy: f32,
+        r: f32,
         fill: bool,
         stroke_width: f32,
     },
@@ -74,17 +78,24 @@ pub enum SvgPrimitive {
     /// las líneas perfectamente H o V se renderizan exactas, las oblicuas
     /// se aproximan con el Quad más próximo.
     Line {
-        x1: f32, y1: f32, x2: f32, y2: f32,
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
         stroke_width: f32,
     },
     /// Rectángulo horizontal (útil para líneas de separación).
     HLine {
-        x: f32, y: f32, length: f32,
+        x: f32,
+        y: f32,
+        length: f32,
         stroke_width: f32,
     },
     /// Rectángulo vertical.
     VLine {
-        x: f32, y: f32, length: f32,
+        x: f32,
+        y: f32,
+        length: f32,
         stroke_width: f32,
     },
 }
@@ -101,7 +112,12 @@ enum SvgSource {
     /// Primitivas vectoriales dibujadas en `draw()`.
     Primitives { primitives: Vec<SvgPrimitive> },
     /// Tessellated SVG mesh ready for the GPU.
-    Tessellated { mesh: std::sync::Arc<ferrous_svg::SvgMesh> },
+    // Only constructed by `from_svg_string`; when the `svg` feature is off the
+    // variant is still matched/drawn but never built, so silence dead_code.
+    #[allow(dead_code)]
+    Tessellated {
+        mesh: std::sync::Arc<ferrous_svg::SvgMesh>,
+    },
     /// SVG source en texto; el backend lo rasterizará de forma diferida.
     Source {
         content: String,
@@ -186,9 +202,24 @@ impl<App> SvgWidget<App> {
     }
 
     /// Crea un `SvgWidget` que tesela una cadena SVG en tiempo real.
+    ///
+    /// Requires the `svg` feature (on by default), which enables the
+    /// `ferrous_svg` parser.  Without it this is a typed fallback that keeps
+    /// the widget constructible but draws no geometry.
+    #[cfg(feature = "svg")]
     pub fn from_svg_string(svg: &str) -> Self {
         let mesh = ferrous_svg::SvgMesh::from_str(svg).unwrap_or_default();
-        Self::new_inner(SvgSource::Tessellated { mesh: std::sync::Arc::new(mesh) })
+        Self::new_inner(SvgSource::Tessellated {
+            mesh: std::sync::Arc::new(mesh),
+        })
+    }
+
+    /// Typed fallback used when the `svg` feature (and therefore the SVG
+    /// parser) is compiled out: no tessellation happens and the widget is
+    /// empty, which is the documented `--no-default-features` behaviour.
+    #[cfg(not(feature = "svg"))]
+    pub fn from_svg_string(_svg: &str) -> Self {
+        Self::from_primitives(Vec::new())
     }
 
     fn new_inner(source: SvgSource) -> Self {
@@ -243,7 +274,7 @@ impl<App> SvgWidget<App> {
     pub fn set_texture_id(&mut self, id: u64) {
         match &mut self.source {
             SvgSource::Source { texture_id, .. } => *texture_id = id,
-            SvgSource::Texture { texture_id, .. }    => *texture_id = id,
+            SvgSource::Texture { texture_id, .. } => *texture_id = id,
             _ => {}
         }
     }
@@ -305,7 +336,15 @@ impl<App> SvgWidget<App> {
 
         for prim in primitives {
             match prim {
-                SvgPrimitive::Rect { x, y, width, height, radius, fill: _, stroke_width } => {
+                SvgPrimitive::Rect {
+                    x,
+                    y,
+                    width,
+                    height,
+                    radius,
+                    fill: _,
+                    stroke_width,
+                } => {
                     let px = self.transform_x(*x, scale_x, offset_x);
                     let py = self.transform_y(*y, scale_y, offset_y);
                     let pw = width * scale_x;
@@ -320,7 +359,13 @@ impl<App> SvgWidget<App> {
                     let _ = stroke_width;
                 }
 
-                SvgPrimitive::Circle { cx, cy, r, fill: _, stroke_width } => {
+                SvgPrimitive::Circle {
+                    cx,
+                    cy,
+                    r,
+                    fill: _,
+                    stroke_width,
+                } => {
                     let px = self.transform_x(cx - r, scale_x, offset_x);
                     let py = self.transform_y(cy - r, scale_y, offset_y);
                     let pr = r * scale_x.min(scale_y);
@@ -335,7 +380,12 @@ impl<App> SvgWidget<App> {
                     let _ = stroke_width;
                 }
 
-                SvgPrimitive::HLine { x, y, length, stroke_width } => {
+                SvgPrimitive::HLine {
+                    x,
+                    y,
+                    length,
+                    stroke_width,
+                } => {
                     let px = self.transform_x(*x, scale_x, offset_x);
                     let py = self.transform_y(*y, scale_y, offset_y);
                     let pw = length * scale_x;
@@ -348,7 +398,12 @@ impl<App> SvgWidget<App> {
                     });
                 }
 
-                SvgPrimitive::VLine { x, y, length, stroke_width } => {
+                SvgPrimitive::VLine {
+                    x,
+                    y,
+                    length,
+                    stroke_width,
+                } => {
                     let px = self.transform_x(*x, scale_x, offset_x);
                     let py = self.transform_y(*y, scale_y, offset_y);
                     let pw = (stroke_width * scale_x).max(1.0);
@@ -361,7 +416,13 @@ impl<App> SvgWidget<App> {
                     });
                 }
 
-                SvgPrimitive::Line { x1, y1, x2, y2, stroke_width } => {
+                SvgPrimitive::Line {
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    stroke_width,
+                } => {
                     // Líneas oblicuas: aproximación con Quad horizontal/vertical
                     // Para renderizado exacto de líneas diagonales se requiere
                     // soporte de rotación en el backend.
@@ -403,8 +464,16 @@ impl<App> SvgWidget<App> {
 
     /// Calcula el rect de destino para el modo textura (equivalente al de ImageWidget).
     fn texture_dest_rect(&self, r: Rect) -> Rect {
-        let iw = if self.intrinsic_width > 0.0 { self.intrinsic_width } else { self.viewbox_w };
-        let ih = if self.intrinsic_height > 0.0 { self.intrinsic_height } else { self.viewbox_h };
+        let iw = if self.intrinsic_width > 0.0 {
+            self.intrinsic_width
+        } else {
+            self.viewbox_w
+        };
+        let ih = if self.intrinsic_height > 0.0 {
+            self.intrinsic_height
+        } else {
+            self.viewbox_h
+        };
 
         if iw <= 0.0 || ih <= 0.0 {
             return r;
@@ -462,21 +531,23 @@ impl<App: Send + Sync + 'static> Widget<App> for SvgWidget<App> {
                     #[cfg(feature = "assets")]
                     {
                         match &self.source {
-                            SvgSource::Texture { texture, .. } | SvgSource::Source { texture, .. } => texture.is_some(),
+                            SvgSource::Texture { texture, .. }
+                            | SvgSource::Source { texture, .. } => texture.is_some(),
                             _ => false,
                         }
                     }
                     #[cfg(not(feature = "assets"))]
                     false
-                }
-            =>
+                } =>
             {
                 let dest = self.texture_dest_rect(r);
-                
+
                 #[cfg(feature = "assets")]
                 {
                     let tex = match &self.source {
-                        SvgSource::Texture { texture, .. } | SvgSource::Source { texture, .. } => texture.clone(),
+                        SvgSource::Texture { texture, .. } | SvgSource::Source { texture, .. } => {
+                            texture.clone()
+                        }
                         _ => None,
                     };
 
@@ -564,8 +635,16 @@ impl<App: Send + Sync + 'static> Widget<App> for SvgWidget<App> {
     }
 
     fn calculate_size(&self, ctx: &mut LayoutContext) -> Vec2 {
-        let w = if self.intrinsic_width > 0.0 { self.intrinsic_width } else { self.viewbox_w };
-        let h = if self.intrinsic_height > 0.0 { self.intrinsic_height } else { self.viewbox_h };
+        let w = if self.intrinsic_width > 0.0 {
+            self.intrinsic_width
+        } else {
+            self.viewbox_w
+        };
+        let h = if self.intrinsic_height > 0.0 {
+            self.intrinsic_height
+        } else {
+            self.viewbox_h
+        };
         if w > 0.0 && h > 0.0 {
             Vec2::new(w, h)
         } else {
@@ -573,11 +652,7 @@ impl<App: Send + Sync + 'static> Widget<App> for SvgWidget<App> {
         }
     }
 
-    fn on_event(
-        &mut self,
-        _ctx: &mut EventContext<App>,
-        _event: &UiEvent,
-    ) -> EventResponse {
+    fn on_event(&mut self, _ctx: &mut EventContext<App>, _event: &UiEvent) -> EventResponse {
         EventResponse::Ignored
     }
 }
@@ -593,74 +668,186 @@ impl Icons {
     /// Icono `×` para cerrar / eliminar.
     pub fn close<App>() -> SvgWidget<App> {
         SvgWidget::from_primitives(vec![
-            SvgPrimitive::Line { x1: 4.0, y1: 4.0, x2: 20.0, y2: 20.0, stroke_width: 2.0 },
-            SvgPrimitive::Line { x1: 20.0, y1: 4.0, x2: 4.0, y2: 20.0, stroke_width: 2.0 },
+            SvgPrimitive::Line {
+                x1: 4.0,
+                y1: 4.0,
+                x2: 20.0,
+                y2: 20.0,
+                stroke_width: 2.0,
+            },
+            SvgPrimitive::Line {
+                x1: 20.0,
+                y1: 4.0,
+                x2: 4.0,
+                y2: 20.0,
+                stroke_width: 2.0,
+            },
         ])
     }
 
     /// Icono `+` para añadir.
     pub fn plus<App>() -> SvgWidget<App> {
         SvgWidget::from_primitives(vec![
-            SvgPrimitive::HLine { x: 4.0, y: 12.0, length: 16.0, stroke_width: 2.0 },
-            SvgPrimitive::VLine { x: 12.0, y: 4.0, length: 16.0, stroke_width: 2.0 },
+            SvgPrimitive::HLine {
+                x: 4.0,
+                y: 12.0,
+                length: 16.0,
+                stroke_width: 2.0,
+            },
+            SvgPrimitive::VLine {
+                x: 12.0,
+                y: 4.0,
+                length: 16.0,
+                stroke_width: 2.0,
+            },
         ])
     }
 
     /// Icono de búsqueda (lupa circular).
     pub fn search<App>() -> SvgWidget<App> {
         SvgWidget::from_primitives(vec![
-            SvgPrimitive::Circle { cx: 10.0, cy: 10.0, r: 6.5, fill: false, stroke_width: 2.0 },
-            SvgPrimitive::Line { x1: 15.0, y1: 15.0, x2: 20.0, y2: 20.0, stroke_width: 2.0 },
+            SvgPrimitive::Circle {
+                cx: 10.0,
+                cy: 10.0,
+                r: 6.5,
+                fill: false,
+                stroke_width: 2.0,
+            },
+            SvgPrimitive::Line {
+                x1: 15.0,
+                y1: 15.0,
+                x2: 20.0,
+                y2: 20.0,
+                stroke_width: 2.0,
+            },
         ])
     }
 
     /// Icono de ajustes (engranaje aproximado con un círculo).
     pub fn settings<App>() -> SvgWidget<App> {
         SvgWidget::from_primitives(vec![
-            SvgPrimitive::Circle { cx: 12.0, cy: 12.0, r: 9.0, fill: false, stroke_width: 2.0 },
-            SvgPrimitive::Circle { cx: 12.0, cy: 12.0, r: 3.5, fill: true, stroke_width: 0.0 },
+            SvgPrimitive::Circle {
+                cx: 12.0,
+                cy: 12.0,
+                r: 9.0,
+                fill: false,
+                stroke_width: 2.0,
+            },
+            SvgPrimitive::Circle {
+                cx: 12.0,
+                cy: 12.0,
+                r: 3.5,
+                fill: true,
+                stroke_width: 0.0,
+            },
         ])
     }
 
     /// Icono de menú (tres líneas horizontales — hamburguesa).
     pub fn menu<App>() -> SvgWidget<App> {
         SvgWidget::from_primitives(vec![
-            SvgPrimitive::HLine { x: 3.0, y: 6.0,  length: 18.0, stroke_width: 2.0 },
-            SvgPrimitive::HLine { x: 3.0, y: 12.0, length: 18.0, stroke_width: 2.0 },
-            SvgPrimitive::HLine { x: 3.0, y: 18.0, length: 18.0, stroke_width: 2.0 },
+            SvgPrimitive::HLine {
+                x: 3.0,
+                y: 6.0,
+                length: 18.0,
+                stroke_width: 2.0,
+            },
+            SvgPrimitive::HLine {
+                x: 3.0,
+                y: 12.0,
+                length: 18.0,
+                stroke_width: 2.0,
+            },
+            SvgPrimitive::HLine {
+                x: 3.0,
+                y: 18.0,
+                length: 18.0,
+                stroke_width: 2.0,
+            },
         ])
     }
 
     /// Icono de flecha hacia la derecha.
     pub fn arrow_right<App>() -> SvgWidget<App> {
         SvgWidget::from_primitives(vec![
-            SvgPrimitive::HLine { x: 4.0,  y: 12.0, length: 16.0, stroke_width: 2.0 },
-            SvgPrimitive::Line  { x1: 14.0, y1: 6.0, x2: 20.0, y2: 12.0, stroke_width: 2.0 },
-            SvgPrimitive::Line  { x1: 14.0, y1: 18.0, x2: 20.0, y2: 12.0, stroke_width: 2.0 },
+            SvgPrimitive::HLine {
+                x: 4.0,
+                y: 12.0,
+                length: 16.0,
+                stroke_width: 2.0,
+            },
+            SvgPrimitive::Line {
+                x1: 14.0,
+                y1: 6.0,
+                x2: 20.0,
+                y2: 12.0,
+                stroke_width: 2.0,
+            },
+            SvgPrimitive::Line {
+                x1: 14.0,
+                y1: 18.0,
+                x2: 20.0,
+                y2: 12.0,
+                stroke_width: 2.0,
+            },
         ])
     }
 
     /// Icono de check (✓).
     pub fn check<App>() -> SvgWidget<App> {
         SvgWidget::from_primitives(vec![
-            SvgPrimitive::Line { x1: 4.0, y1: 12.0, x2: 9.0, y2: 17.0, stroke_width: 2.5 },
-            SvgPrimitive::Line { x1: 9.0, y1: 17.0, x2: 20.0, y2: 6.0, stroke_width: 2.5 },
+            SvgPrimitive::Line {
+                x1: 4.0,
+                y1: 12.0,
+                x2: 9.0,
+                y2: 17.0,
+                stroke_width: 2.5,
+            },
+            SvgPrimitive::Line {
+                x1: 9.0,
+                y1: 17.0,
+                x2: 20.0,
+                y2: 6.0,
+                stroke_width: 2.5,
+            },
         ])
     }
 
     /// Icono de advertencia (triángulo aproximado con líneas).
     pub fn warning<App>() -> SvgWidget<App> {
         SvgWidget::from_primitives(vec![
-            SvgPrimitive::VLine { x: 12.0, y: 7.0,  length: 7.0, stroke_width: 2.0 },
-            SvgPrimitive::Circle { cx: 12.0, cy: 17.5, r: 1.5, fill: true, stroke_width: 0.0 },
+            SvgPrimitive::VLine {
+                x: 12.0,
+                y: 7.0,
+                length: 7.0,
+                stroke_width: 2.0,
+            },
+            SvgPrimitive::Circle {
+                cx: 12.0,
+                cy: 17.5,
+                r: 1.5,
+                fill: true,
+                stroke_width: 0.0,
+            },
         ])
     }
 
     /// Icono de información (i).
     pub fn info<App>() -> SvgWidget<App> {
         SvgWidget::from_primitives(vec![
-            SvgPrimitive::Circle { cx: 12.0, cy: 7.0, r: 1.5, fill: true, stroke_width: 0.0 },
-            SvgPrimitive::VLine  { x: 12.0, y: 10.0, length: 7.0, stroke_width: 2.0 },
+            SvgPrimitive::Circle {
+                cx: 12.0,
+                cy: 7.0,
+                r: 1.5,
+                fill: true,
+                stroke_width: 0.0,
+            },
+            SvgPrimitive::VLine {
+                x: 12.0,
+                y: 10.0,
+                length: 7.0,
+                stroke_width: 2.0,
+            },
         ])
     }
 }

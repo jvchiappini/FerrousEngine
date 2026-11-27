@@ -62,8 +62,9 @@ pub use ferrous_renderer::exporter::{FFmpegExporter, FrameExporter};
 
 // --- Compatibilidad con Framework (Opcional) ---
 pub use builder::{
-    default_backends, resolve_present_mode, App, AppConfig, AppMode, PipelineCacheConfig,
-    PresentMode, DX12_COMPILER_ENV, PRESENT_MODE_ENV,
+    default_backends, default_backends_for_mode, flat2d_backends, resolve_present_mode, App,
+    AppConfig, AppMode, Backend, PipelineCacheConfig, PresentMode, DX12_COMPILER_ENV,
+    PRESENT_MODE_ENV,
 };
 pub use context::{AppContext, WindowResizeDirection};
 pub use ferrous_core::scene::camera::Projection as ProjectionType;

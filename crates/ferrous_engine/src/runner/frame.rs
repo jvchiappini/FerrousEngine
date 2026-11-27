@@ -606,7 +606,17 @@ impl<A: FerrousApp + 'static> Runner<A> {
                             crate::window_style::show_ready(&window);
                             // The OS sends a RedrawRequested for the newly shown
                             // window; the first frame is already on the swapchain.
-                            self.skip_show_redraw = true;
+                            // Windows always sends that paint; other platforms may
+                            // not, so the flag is only armed where it is needed.
+                            // Snapshot the request count so a frame requested
+                            // after this instant (an app animation in `tick`, a
+                            // scheduled wake) is never swallowed
+                            // (prompt 15 Phase 9D finding 1).
+                            #[cfg(target_os = "windows")]
+                            {
+                                self.skip_show_redraw = true;
+                                self.show_request_mark = self.redraw.requests();
+                            }
                             startup::mark("engine: window visible");
                             first_frame_shown = true;
                         }

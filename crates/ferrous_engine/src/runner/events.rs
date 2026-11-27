@@ -331,6 +331,15 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
         // carries the whole frame, so bracketing it made the previous frame's
         // render time appear as the next frame's "event handling".
         let is_redraw = matches!(event, WindowEvent::RedrawRequested);
+        // Prompt 15 Phase 9D finding 1: the show-paint guard must not outlive
+        // the paint it was armed for. Any other event means this is not that
+        // paint (or it merged with a real one), so clear the flag and let the
+        // next redraw through. Without this, a platform that sends no paint
+        // after `ShowWindow` would eat the first real frame.
+        #[cfg(target_os = "windows")]
+        if self.skip_show_redraw && !is_redraw {
+            self.skip_show_redraw = false;
+        }
         let _event = (!is_redraw).then(ferrous_core::frame_trace::event_guard);
         // Prompt 17 S3b: user input waits for the first frame, then is
         // delivered in order.  Closing, destruction and redraws pass at once.
@@ -383,8 +392,17 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
 
         match event {
             WindowEvent::RedrawRequested => {
+                // Prompt 15 Phase 9D finding 1: swallow the OS paint only when
+                // no frame was requested since the first present. Winit merges
+                // redraw requests, so a `tick` request made between the present
+                // and this paint arrives as the same event; skipping it would
+                // stall a startup animation until the next input.
                 #[cfg(not(target_arch = "wasm32"))]
-                if self.skip_show_redraw {
+                if crate::redraw::swallow_show_paint(
+                    self.skip_show_redraw,
+                    self.show_request_mark,
+                    self.redraw.requests(),
+                ) {
                     self.skip_show_redraw = false;
                     return;
                 }

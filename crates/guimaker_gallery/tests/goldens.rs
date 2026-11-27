@@ -113,6 +113,25 @@ fn committed_goldens_match_the_current_render() {
             "golden `{name}` is out of tolerance: {}",
             report.summary()
         );
+
+        // Prompt 15 Phase 9D: on Vulkan the same pixels must be byte-identical,
+        // not merely within the 12/255 gallery budget. DX12/GL keep the
+        // documented tolerance (different AA/text rasterisation).
+        let backend = std::env::var("WGPU_BACKEND")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if backend.is_empty() || backend == "vulkan" {
+            let exact = Tolerance {
+                max_channel_delta: 0,
+                max_diff_pixels: 0,
+            };
+            let strict = compare_png(&path, &image, exact).expect("strict golden comparison");
+            assert!(
+                strict.within_tolerance,
+                "golden `{name}` is not byte-identical on Vulkan: {}",
+                strict.summary()
+            );
+        }
     }
 }
 
