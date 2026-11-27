@@ -21,4 +21,4 @@ serde_json = "1.0.149"
 # typed empty fallback instead of parsing.
 default = ["svg"]
 svg = ["ferrous_svg/parser"]
-assets = ["dep:ferrous_assets"]
+assets = ["dep:ferrous_assets", "ferrous_assets/gpu", "ferrous_assets/image"]
