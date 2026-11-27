@@ -126,3 +126,11 @@ Every crate in `crates/*/docs/` is aggregated by `scripts/build_docs.sh` into a
 root `docs/` folder, then rendered with
 [MkDocs Material](https://squidfunk.github.io/mkdocs-material/) and deployed to
 GitHub Pages on every push to `main`.
+
+<!-- PHASE9D-PERFORMANCE:START -->
+
+## Performance (Phase 9D)
+
+Not measured yet; run `python bench/guimaker_compare/run_compare.py --confirmed-host-free --runs 5 --scenario idle6 --scenario idle30 --scenario hover_body --scenario hover_button --scenario typing --scenario resize --scenario menu --tier vulkan --tier dx12 --tier gl --interactive-tier vulkan --write-readme` (see [PROTOCOL.md](bench/guimaker_compare/PROTOCOL.md)) to fill this section.
+
+<!-- PHASE9D-PERFORMANCE:END -->
