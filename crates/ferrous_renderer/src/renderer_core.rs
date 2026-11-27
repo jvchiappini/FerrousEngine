@@ -924,7 +924,7 @@ pub struct Renderer2dSlot {
     cache: Option<Arc<wgpu::PipelineCache>>,
     label: &'static str,
     /// Interior-mutability cell so `Deref` can build on demand and never panics.
-    cell: std::sync::OnceLock<Renderer2d>,
+    cell: std::sync::OnceLock<Box<Renderer2d>>,
     /// Pending settings applied when the renderer is first built.
     pending_scratch_reuse: bool,
     pending_pixel_ratio_bits: std::sync::atomic::AtomicU32,
@@ -1008,7 +1008,7 @@ impl Renderer2dSlot {
                 self.label,
                 start.elapsed().as_secs_f64() * 1000.0
             ));
-            renderer
+            Box::new(renderer)
         })
     }
 
@@ -1028,7 +1028,7 @@ impl Renderer2dSlot {
     /// Safe immutable accessor for the built renderer, or `None` if unbuilt.
     #[must_use]
     pub fn renderer(&self) -> Option<&Renderer2d> {
-        self.cell.get()
+        self.cell.get().map(|renderer| &**renderer)
     }
 
     /// Enables/disables scratch reuse without forcing materialization.
@@ -1167,7 +1167,7 @@ impl std::ops::DerefMut for Renderer2dSlot {
 /// startup mark makes the (layout-only) cost visible.
 pub struct PipelineLayoutsSlot {
     device: Arc<wgpu::Device>,
-    cell: std::sync::OnceLock<PipelineLayouts>,
+    cell: std::sync::OnceLock<Box<PipelineLayouts>>,
 }
 
 impl PipelineLayoutsSlot {
@@ -1192,13 +1192,13 @@ impl PipelineLayoutsSlot {
     /// Safe accessor: `None` until something needs the 3-D layouts.
     #[must_use]
     pub fn get(&self) -> Option<&PipelineLayouts> {
-        self.cell.get()
+        self.cell.get().map(|layouts| &**layouts)
     }
 
     fn materialize(&self) -> &PipelineLayouts {
         self.cell.get_or_init(|| {
             let start = std::time::Instant::now();
-            let layouts = PipelineLayouts::new(&self.device);
+            let layouts = Box::new(PipelineLayouts::new(&self.device));
             ferrous_core::startup::mark(&format!(
                 "pipeline: 3D layouts ({:.1} ms)",
                 start.elapsed().as_secs_f64() * 1000.0
@@ -1234,7 +1234,7 @@ impl std::ops::DerefMut for PipelineLayoutsSlot {
 pub struct CameraSlot {
     device: Arc<wgpu::Device>,
     aspect_bits: std::sync::atomic::AtomicU32,
-    cell: std::sync::OnceLock<CameraSystem>,
+    cell: std::sync::OnceLock<Box<CameraSystem>>,
 }
 
 impl CameraSlot {
@@ -1279,7 +1279,7 @@ impl CameraSlot {
     /// Safe accessor: `None` until something needs the camera.
     #[must_use]
     pub fn get(&self) -> Option<&CameraSystem> {
-        self.cell.get()
+        self.cell.get().map(|camera| &**camera)
     }
 
     fn materialize(&self) -> &CameraSystem {
@@ -1310,11 +1310,11 @@ impl CameraSlot {
                 "pipeline: camera ({:.1} ms)",
                 start.elapsed().as_secs_f64() * 1000.0
             ));
-            CameraSystem {
+            Box::new(CameraSystem {
                 camera,
                 orbit: OrbitState::default(),
                 gpu,
-            }
+            })
         })
     }
 }
@@ -1393,7 +1393,7 @@ pub struct Renderer {
     /// The 3D mesh caches and instanced-command builder (absent in a Flat2D
     /// build, where the 3D modules are not compiled).
     #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
-    world_builder: WorldBuilder,
+    world_builder: Box<WorldBuilder>,
     /// Separate instance buffer for shadow casters.  Not camera-culled.
     #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     shadow_instance_buf: Option<InstanceBuffer>,
@@ -1808,7 +1808,7 @@ impl Renderer {
             debug_lines: Vec::new(),
             frame_builder: FrameBuilder::new(),
             #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
-            world_builder: WorldBuilder::new(),
+            world_builder: Box::new(WorldBuilder::new()),
             #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
             shadow_instance_buf: None,
             #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]

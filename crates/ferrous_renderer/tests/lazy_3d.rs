@@ -123,3 +123,42 @@ fn a_full_3d_renderer_still_builds_its_group_at_construction() {
     assert!(renderer.material_registry_ready());
     assert!(renderer.particle_system.is_some());
 }
+
+/// The 1 MiB stack guard for the Motioner pin.
+///
+/// `motioner preview` runs on the Windows main thread, whose debug stack is
+/// 1 MiB. Building the `Full3D` renderer and running its first frame used to
+/// overflow it after the Phase 9D state grew (the `WorldBuilder`, the lazy
+/// slots and the enlarged `ensure_three_d` frame). This test creates the GPU
+/// context on the test thread, then performs the first `Full3D` frame on a
+/// thread with exactly 1 MiB; raising the stack is not an acceptable fix, so
+/// the engine must keep the frame small.
+#[test]
+fn a_full_3d_first_frame_fits_in_a_one_megabyte_stack() {
+    let _guard = GPU_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(context) = context() else {
+        return;
+    };
+    let worker = std::thread::Builder::new()
+        .name("1mib-full3d".to_owned())
+        .stack_size(1024 * 1024)
+        .spawn(move || {
+            let mut renderer = Renderer::new_with_mode(
+                context,
+                320,
+                200,
+                wgpu::TextureFormat::Bgra8UnormSrgb,
+                1,
+                None,
+                RendererMode::Full3D,
+            );
+            renderer.sync_world(&World::default());
+            render_one_frame(&mut renderer);
+        })
+        .expect("spawn the 1 MiB worker");
+    worker
+        .join()
+        .expect("the Full3D first frame must fit in a 1 MiB stack");
+}

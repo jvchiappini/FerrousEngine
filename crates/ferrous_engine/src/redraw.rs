@@ -134,6 +134,47 @@ pub(crate) fn event_requests_frame(event: &WindowEvent, redraw_on_pointer_move: 
     !is_cursor || redraw_on_pointer_move
 }
 
+/// Whether `event` is a genuine input event.
+///
+/// The show-paint guard is cleared only by these: a `Focused`, `Moved`,
+/// `Resized` or `ScaleFactorChanged` event can be produced by showing the window
+/// itself (Windows sends focus after `ShowWindow`), and clearing the guard on it
+/// would turn the OS paint into a second idle frame.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn is_input_event(event: &WindowEvent) -> bool {
+    matches!(
+        event,
+        WindowEvent::CursorMoved { .. }
+            | WindowEvent::CursorEntered { .. }
+            | WindowEvent::CursorLeft { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::KeyboardInput { .. }
+            | WindowEvent::Ime(_)
+            | WindowEvent::Touch(_)
+            | WindowEvent::ModifiersChanged(_)
+            | WindowEvent::DroppedFile(_)
+            | WindowEvent::HoveredFile(_)
+            | WindowEvent::HoveredFileCancelled
+    )
+}
+
+/// Whether `event` can be a side effect of showing the window.
+///
+/// While the show-paint guard is armed these events must not request a frame:
+/// the frame is already on the swapchain and the event changes nothing visible,
+/// so asking for one makes the OS paint a redundant second frame.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn is_show_settling(event: &WindowEvent) -> bool {
+    matches!(
+        event,
+        WindowEvent::Focused(_)
+            | WindowEvent::Moved(_)
+            | WindowEvent::Resized(_)
+            | WindowEvent::ScaleFactorChanged { .. }
+    )
+}
+
 /// Whether the OS paint that follows showing the window may be swallowed.
 ///
 /// The first frame is already on the swapchain when the window is shown, so the
@@ -509,6 +550,28 @@ mod tests {
         // Once the show paint has been consumed the flag is cleared, so a later
         // redraw is never swallowed either.
         assert!(!swallow_show_paint(false, 7, 7));
+    }
+
+    #[test]
+    fn the_shows_own_focus_does_not_clear_or_move_the_show_guard() {
+        // `show_ready` calls `focus_window`, so Windows delivers a `Focused`
+        // event before the OS paint. It must not count as a frame request, or
+        // the paint becomes a redundant second idle frame (review of Phase 9D
+        // finding 1).
+        let focused = WindowEvent::Focused(true);
+        assert!(is_show_settling(&focused));
+        assert!(!is_input_event(&focused));
+
+        // With the request count unchanged, the OS paint is swallowed: one
+        // frame in total.
+        let mark = 7;
+        assert!(swallow_show_paint(true, mark, mark));
+
+        // A real input event is different: it clears the guard and moves the
+        // count, so the next frame renders.
+        assert!(is_input_event(&WindowEvent::CursorEntered {
+            device_id: winit::event::DeviceId::dummy(),
+        }));
     }
 
     #[test]

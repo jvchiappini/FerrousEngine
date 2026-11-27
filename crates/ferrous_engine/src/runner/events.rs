@@ -332,12 +332,13 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
         // render time appear as the next frame's "event handling".
         let is_redraw = matches!(event, WindowEvent::RedrawRequested);
         // Prompt 15 Phase 9D finding 1: the show-paint guard must not outlive
-        // the paint it was armed for. Any other event means this is not that
-        // paint (or it merged with a real one), so clear the flag and let the
-        // next redraw through. Without this, a platform that sends no paint
-        // after `ShowWindow` would eat the first real frame.
+        // the paint it was armed for, but only a genuine input event proves a
+        // real frame was requested. Showing the window sends `Focused` (from
+        // `show_ready`'s `focus_window`) and may send `Moved`/`Resized`/
+        // `ScaleFactorChanged`; clearing the guard on those made the OS paint
+        // a redundant second idle frame. Clear on input only.
         #[cfg(target_os = "windows")]
-        if self.skip_show_redraw && !is_redraw {
+        if self.skip_show_redraw && !is_redraw && crate::redraw::is_input_event(&event) {
             self.skip_show_redraw = false;
         }
         let _event = (!is_redraw).then(ferrous_core::frame_trace::event_guard);
@@ -374,6 +375,16 @@ impl<A: FerrousApp + 'static> ApplicationHandler<EngineEvent> for Runner<A> {
                     )
             }
             _ => crate::redraw::event_requests_frame(&event, self.config.redraw_on_pointer_move),
+        };
+        // While the show-paint guard is armed, the show's own focus/move/resize
+        // events must not request a frame: the frame is already on screen, and
+        // a request would move the scheduler's count so the OS paint draws a
+        // redundant second frame (review of Phase 9D finding 1).
+        #[cfg(not(target_arch = "wasm32"))]
+        let requests_frame = if self.skip_show_redraw && crate::redraw::is_show_settling(&event) {
+            false
+        } else {
+            requests_frame
         };
         if let WindowEvent::CursorMoved { position, .. } = &event {
             #[cfg(target_arch = "wasm32")]
