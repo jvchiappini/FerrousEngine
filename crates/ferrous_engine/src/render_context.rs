@@ -46,9 +46,11 @@
 
 use ferrous_core::glam::Vec3;
 use ferrous_core::Color;
-use ferrous_renderer::{
-    graph::RenderPass, MaterialDescriptor, MaterialHandle, RenderStats, RenderStyle,
-};
+use ferrous_renderer::{graph::RenderPass, RenderStats, RenderStyle};
+// The material API is part of the 3-D renderer (its registry is compiled out
+// of a Flat2D build).
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
+use ferrous_renderer::{MaterialDescriptor, MaterialHandle};
 
 /// User-facing renderer API. No GPU internals are visible.
 ///
@@ -86,6 +88,7 @@ impl<'r> RenderContext<'r> {
     ///
     /// Has no effect when `style` is `FlatShaded` or `CelShaded` (those passes
     /// do not read the AO texture).
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn set_ssao(&mut self, enabled: bool) {
         self.inner.ssao_enabled = enabled;
     }
@@ -95,6 +98,7 @@ impl<'r> RenderContext<'r> {
     /// * `bias`: self-occlusion bias (default ~0.02).
     /// * `intensity`: strength multiplier (default 1.0).
     /// * `power`: contrast curve (default 1.2).
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn set_ssao_params(&mut self, radius: f32, bias: f32, intensity: f32, power: f32) {
         self.inner.set_ssao_params(radius, bias, intensity, power);
     }
@@ -145,12 +149,14 @@ impl<'r> RenderContext<'r> {
 
     /// Enable and configure distance fog.
     /// `color`: linear RGB. `density`: typical values 0.01 - 0.05.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn set_fog(&mut self, color: [f32; 3], density: f32) {
         self.inner.set_fog(color, density);
     }
 
     /// Adjust the global exposure multiplier.
     /// Values < 1.0 are darker, > 1.0 are brighter. 0.5 is a good baseline for HDR.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn set_exposure(&mut self, exposure: f32) {
         self.inner.set_exposure(exposure);
     }
@@ -162,6 +168,7 @@ impl<'r> RenderContext<'r> {
 
     /// Set the global ambient light for the scene.
     /// `color`: linear RGB. `intensity`: scalar multiplier.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn set_ambient_light(&mut self, color: [f32; 3], intensity: f32) {
         self.inner.set_ambient_light(color, intensity);
     }
@@ -187,11 +194,13 @@ impl<'r> RenderContext<'r> {
     /// // Disabled
     /// ctx.render.set_antialiasing(AntialiasingMode::None);
     /// ```
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn set_antialiasing(&mut self, mode: ferrous_renderer::AntialiasingMode) {
         self.inner.set_antialiasing(mode);
     }
 
     /// Returns the currently active antialiasing mode.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn antialiasing_mode(&self) -> ferrous_renderer::AntialiasingMode {
         self.inner.antialiasing_mode()
     }
@@ -219,6 +228,7 @@ impl<'r> RenderContext<'r> {
     /// [`World::set_material_handle`](ferrous_core::World::set_material_handle).
     /// Identical descriptors are **not** automatically deduplicated — call this
     /// once per logical material and store the handle.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn create_material(&mut self, desc: &MaterialDescriptor) -> MaterialHandle {
         self.inner.create_material(desc)
     }
@@ -228,11 +238,13 @@ impl<'r> RenderContext<'r> {
     ///
     /// All entities sharing this handle will observe the change on the next
     /// frame.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn update_material(&mut self, handle: MaterialHandle, desc: &MaterialDescriptor) {
         self.inner.update_material_params(handle, desc);
     }
 
     /// Register a GPU texture from raw RGBA8 bytes.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn register_texture(
         &mut self,
         width: u32,
@@ -252,6 +264,7 @@ impl<'r> RenderContext<'r> {
     /// Prefer spawning a [`ferrous_core::scene::DirectionalLight`] ECS
     /// component instead — this method exists for cases where the light must be
     /// controlled imperatively (e.g. UI panels that let the user drag sliders).
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn set_directional_light(&mut self, direction: [f32; 3], color: [f32; 3], intensity: f32) {
         self.inner
             .set_directional_light(direction, color, intensity);
@@ -431,11 +444,13 @@ impl<'r> RenderContext<'r> {
     }
 
     /// World-space position of the camera eye this frame.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn camera_eye(&self) -> Vec3 {
         self.inner.camera().eye
     }
 
     /// World-space position of the camera look-at target this frame.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn camera_target(&self) -> Vec3 {
         self.inner.camera().target
     }
@@ -446,11 +461,13 @@ impl<'r> RenderContext<'r> {
     /// `OrbitCameraController`.
     /// Useful for initialising ECS `OrbitCamera` components to match the
     /// renderer state on startup.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn camera_orbit_distance(&self) -> f32 {
         self.inner.camera().controller.orbit_distance
     }
 
     /// Set the world-space eye position on the renderer's built-in camera.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn set_camera_eye(&mut self, eye: Vec3) {
         self.inner.camera_mut().eye = eye;
     }
@@ -619,11 +636,13 @@ impl<'r> RenderContext<'r> {
     ///
     /// Once registered, any entity with `ElementKind::Mesh { asset_key: "key" }`
     /// will render using this geometry.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn register_mesh(&mut self, key: &str, mesh: ferrous_renderer::Mesh) {
         ferrous_renderer::register_mesh(self.inner.world_builder_mut(), key, mesh);
     }
 
     /// Remove a procedural mesh previously registered under `key`.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn free_mesh(&mut self, key: &str) {
         ferrous_renderer::free_mesh(self.inner.world_builder_mut(), key);
     }
@@ -633,6 +652,7 @@ impl<'r> RenderContext<'r> {
     /// This is a convenience wrapper around buffer allocation and tangent
     /// generation. The resulting `Mesh` can then be registered via
     /// [`register_mesh`](Self::register_mesh).
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn create_mesh(
         &self,
         label: &str,
@@ -699,7 +719,7 @@ mod tests {
     #[test]
     fn material_handle_is_copy() {
         fn assert_copy<T: Copy>() {}
-        assert_copy::<MaterialHandle>();
+        assert_copy::<ferrous_renderer::MaterialHandle>();
     }
 
     #[test]

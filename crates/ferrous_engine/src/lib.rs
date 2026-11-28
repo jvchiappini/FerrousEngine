@@ -24,6 +24,9 @@
 //! }
 //! ```
 
+/// glTF/image upload bridge: it registers GPU textures/materials/meshes, so
+/// it belongs to the 3-D renderer and is absent from a Flat2D build.
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 mod asset_bridge;
 mod builder;
 pub mod config;
@@ -83,6 +86,7 @@ pub use ferrous_core::{
 pub use ferrous_ecs::prelude::Entity;
 
 // --- Estilos de Renderizado ---
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub use ferrous_renderer::{AntialiasingMode, FxaaParams};
 pub use ferrous_renderer::{RenderStyle, RendererMode};
 // Runtime 2D performance/config API (metrics + knobs).  Re-exported so a
@@ -92,6 +96,7 @@ pub use ferrous_renderer::{
 };
 
 // --- Helpers de Assets ---
+#[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
 pub use crate::asset_bridge::{spawn_gltf, spawn_gltf_async, GltfSpawnTask};
 
 // --- Startup trace (generic marks so an application can add its own) ---

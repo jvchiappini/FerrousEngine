@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use glow::HasContext;
 use glutin::config::{ConfigTemplateBuilder, GlConfig};
 use glutin::context::{
     ContextApi, ContextAttributesBuilder, NotCurrentGlContext, PossiblyCurrentContext, Version,
@@ -16,11 +17,11 @@ use glutin::context::{
 use glutin::display::{GetGlDisplay, GlDisplay};
 use glutin::surface::{GlSurface, SwapInterval, WindowSurface};
 use glutin_winit::{DisplayBuilder, GlWindow};
-use glow::HasContext;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::raw_window_handle::HasWindowHandle;
 use winit::window::{Window, WindowId};
 
 struct Gfx {
@@ -104,7 +105,8 @@ fn create(event_loop: &ActiveEventLoop) -> Gfx {
 
 fn render(gfx: &mut Gfx) {
     unsafe {
-        gfx.gl.clear_color(6.0 / 255.0, 8.0 / 255.0, 13.0 / 255.0, 1.0);
+        gfx.gl
+            .clear_color(6.0 / 255.0, 8.0 / 255.0, 13.0 / 255.0, 1.0);
         gfx.gl.clear(glow::COLOR_BUFFER_BIT);
     }
     let _ = gfx.surface.swap_buffers(&gfx.context);

@@ -16,8 +16,10 @@ text = ["ferrous_engine/text", "ferrous_ui_render/text"]
 assets = ["ferrous_engine/assets", "ferrous_ui_render/assets"]
 renderer-gui = ["ferrous_engine/renderer-gui", "ferrous_renderer/gui"]
 render-3d = ["ferrous_engine/render-3d", "ferrous_renderer/render-3d"]
-# GUI-only bundle: no 3-D, no SVG parser, no PNG codec.
-flat2d = ["text", "assets", "renderer-gui"]
+# GUI-only bundle: no 3-D, no SVG parser, no PNG codec.  The `flat2d` flags are
+# forwarded to the renderer too: its module gates are `any(render-3d,
+# not(flat2d))`, so a bundle that omits them still links the 3-D renderer.
+flat2d = ["text", "assets", "renderer-gui", "ferrous_engine/flat2d", "ferrous_renderer/flat2d"]
 svg = ["ferrous_engine/svg", "ferrous_ui_render/svg", "guimaker_ferrous/svg"]
 # PNG encode (screenshots) + decode (goldens).
 png = ["dep:png"]

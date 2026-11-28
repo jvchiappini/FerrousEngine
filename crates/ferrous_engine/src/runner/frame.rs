@@ -95,11 +95,14 @@ impl<A: FerrousApp + 'static> Runner<A> {
     fn run_draw(&mut self, window: &Arc<Window>, time: Time) -> Option<DrawOutcome> {
         let (render_stats, camera_eye, camera_target) = {
             let gfx = self.graphics.as_mut()?;
-            (
-                gfx.renderer.render_stats,
-                gfx.renderer.camera().eye,
-                gfx.renderer.camera().target,
-            )
+            #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
+            let (eye, target) = (gfx.renderer.camera().eye, gfx.renderer.camera().target);
+            #[cfg(not(any(feature = "render-3d", not(feature = "flat2d"))))]
+            let (eye, target) = (
+                ferrous_core::glam::Vec3::ZERO,
+                ferrous_core::glam::Vec3::ZERO,
+            );
+            (gfx.renderer.render_stats, eye, target)
         };
         let mut gui_batch = {
             let gfx = self.graphics.as_mut()?;
@@ -128,6 +131,7 @@ impl<A: FerrousApp + 'static> Runner<A> {
                     app.draw_3d(ctx);
                 }
 
+                #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
                 for gizmo in ctx.gizmos.drain(..) {
                     ctx.render.inner.queue_gizmo(gizmo);
                 }
@@ -417,8 +421,11 @@ impl<A: FerrousApp + 'static> Runner<A> {
 
         // ECS → renderer sync and 3-D camera input are active in Game3D mode
         // OR if the renderer has been explicitly switched to Full3D (hybrid mode).
+        #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
         let dt = time.delta;
+        #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
         let renderer_mode = self.graphics.as_ref()?.renderer.mode;
+        #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
         if self.config.mode == AppMode::Game3D
             || renderer_mode == ferrous_renderer::RendererMode::Full3D
         {

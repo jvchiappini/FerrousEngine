@@ -25,7 +25,12 @@ render-3d = ["ferrous_renderer/render-3d"]
 # Convenience bundle for a GUI-only binary: text, textures and the GUI pass,
 # without the 3-D renderer or the SVG parser.  Use with
 # `default-features = false, features = ["flat2d"]`.
-flat2d = ["text", "assets", "renderer-gui"]
+#
+# It must forward `ferrous_renderer/flat2d`: the renderer's module gates use
+# `any(render-3d, not(flat2d))`, so without this the 3-D renderer stayed
+# compiled in the Flat2D bench (`render_internal`/`WorldBuilder` in the binary;
+# prompt 15 Phase 9D review finding 2).
+flat2d = ["text", "assets", "renderer-gui", "ferrous_renderer/flat2d"]
 # Forward the SVG parser switch so a host can drop `lyon_svg` from the graph.
 svg = ["ferrous_ui_render/svg"]
 # Per-frame allocation counts in the frame trace (prompt 18 P0).  The binary

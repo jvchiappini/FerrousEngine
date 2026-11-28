@@ -156,6 +156,7 @@ impl Renderer {
     }
 
     /// Spawns a 3D Mesh into the renderer.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn spawn_mesh(&mut self, mesh_name: &str, transform: Transform) -> NodeId {
         let id = self.generate_id();
 
@@ -210,6 +211,7 @@ impl Renderer {
     }
 
     /// Spawns a generic 2D path.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn spawn_2d_path(
         &mut self,
         transform: Transform,
@@ -262,6 +264,7 @@ impl Renderer {
     }
 
     /// Spawns a filled 2D circle in the XY plane.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn spawn_2d_circle(&mut self, x: f32, y: f32, z: f32, radius: f32) -> NodeId {
         use ferrous_core::scene::world::types::{PathCommand, PathData};
         // Approximate circle with 4 bezier curves (Standard Manim/Vectorial approach)
@@ -296,6 +299,7 @@ impl Renderer {
     }
 
     /// Spawns a filled 2D rectangle in the XY plane.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn spawn_2d_rect(&mut self, x: f32, y: f32, z: f32, width: f32, height: f32) -> NodeId {
         use ferrous_core::scene::world::types::{PathCommand, PathData};
         let hw = width * 0.5;
@@ -331,6 +335,7 @@ impl Renderer {
     }
 
     /// Spawns a thick 2D line segment.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn spawn_2d_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, thickness: f32) -> NodeId {
         let id = self.spawn_2d_shape(
             "line",
@@ -359,6 +364,7 @@ impl Renderer {
     /// without PBR lighting (i.e. *unlit* for the shading model), while still
     /// being a normal ECS entity that participates in the shadow pass when
     /// the `ShadowCaster` component is present.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     fn spawn_2d_shape(&mut self, label: &str, transform: Transform, kind: ElementKind) -> NodeId {
         let id = self.generate_id();
 
@@ -465,6 +471,7 @@ impl Renderer {
     }
 
     /// Returns a mutable reference to the internal camera.
+    #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
     pub fn camera_mut(&mut self) -> &mut ferrous_renderer::Camera {
         &mut self.gpu.camera_system.camera
     }
@@ -718,6 +725,7 @@ impl Renderer {
             .run(&mut self.world.ecs, &mut resources);
 
         // 1. Sync ECS world to GPU (skip in Pure2D — 2D entities use shape batcher instead)
+        #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
         if self.gpu.mode != RendererMode::Pure2D {
             self.gpu.sync_world(&self.world);
         }
@@ -727,7 +735,6 @@ impl Renderer {
 
         // 2. Begin encoding
         let mut encoder = self.gpu.begin_frame();
-
         // 3. Render scene to internal target
         self.gpu.render_to_internal_target(&mut encoder, None);
 
@@ -771,6 +778,7 @@ impl Renderer {
         self.animator_system
             .run(&mut self.world.ecs, &mut resources);
 
+        #[cfg(any(feature = "render-3d", not(feature = "flat2d")))]
         if self.gpu.mode != RendererMode::Pure2D {
             self.gpu.sync_world(&self.world);
         }
